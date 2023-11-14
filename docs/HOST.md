@@ -57,7 +57,14 @@ metadata for pull/apply still need to land before switching the host to it.
 at `/var/lib/pantheon-diplomats/AGENT` (0700). Each inbox at
 `/var/lib/pantheon-inbox/AGENT` is owned by `pantheon:inbox-AGENT` (2770);
 only the node account and that diplomat are added to its group. The node's
-`.ssh` is 0700. Existing accounts with different homes are refused.
+`.ssh` is 0700. Existing accounts with different homes are refused. Before any provisioning
+mutation, all configured accounts and inbox groups are audited: UID 0 and
+shared UIDs are refused; an existing diplomat may belong only to its private
+and assigned inbox groups. An existing inbox group may admit only pantheon
+and its assigned diplomat, including primary-group membership, and must not
+share its GID with another group. A failed audit leaves users and permissions
+untouched; the operator must resolve the reported membership before retrying.
+The audit is also emitted by `HOST_DRY` and runs again on repeat provisioning.
 `HOST_DRY=DIR scripts/host.sh users` writes the same operations to
 `DIR/users.sh` without root or account changes. It also writes, last,
 `/etc/sudoers.d/pantheon` (0440, checked with `visudo -cf` when visudo
