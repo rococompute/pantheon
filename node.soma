@@ -1200,12 +1200,19 @@ codex_reply_of (text : string) (read : unit -> option string) : string :=
   if starts "!" text then text
   else match read tt with Some out => out | None => "!codex wrote no reply" end.
 
-(** A finished job's callback still runs before its cleanup (Codex reads
-    its output file there). Generated model replies are interpreted before
-    the turn's events run, at the finished job's original queue position. *)
+(** A failed process must never open its reply file. Resolve the text
+    before removing the file; cleanup also runs when the read fails. *)
+codex_file_reply (text path : string) : string :=
+  node_reply_finish path (codex_reply_of text (fun _ => fs_read_text path)).
+
+(** Generated model replies are interpreted before the turn's events run,
+    at the finished job's original queue position. Codex's file remains
+    until Soma has applied the process-failure guard and resolved it. *)
 model_output_events (h : node_t) (ev : list string) : list (list string) :=
   match ev with
   | "llm_output" :: id :: kind :: prompt0 :: text :: ctx => model_reply_events h id kind prompt0 text ctx
+  | "codex_file" :: id :: kind :: prompt0 :: text :: path :: ctx =>
+      model_reply_events h id kind prompt0 (codex_file_reply text path) ctx
   | "codex_output" :: id :: kind :: prompt0 :: text :: "1" :: out :: ctx =>
       model_reply_events h id kind prompt0 (codex_reply_of text (fun _ => Some out)) ctx
   | "codex_output" :: id :: kind :: prompt0 :: text :: "0" :: ctx =>

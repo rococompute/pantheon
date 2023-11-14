@@ -840,6 +840,7 @@ let node_llm_start id req kind raw prompt ctx clean launch env = (lookup_handle 
 let node_tool_checkout id r = (lookup_handle id).h_tool_checkout r
 let node_self_exe () = self_exe
 let node_json_string s = Yojson.Safe.to_string (`String s)
+let node_reply_finish path text = (try Sys.remove path with _ -> ()); text
 let node_env_entries () = Array.to_list (Unix.environment ())
 (* a model's output: node.soma's reply_fields decides what it becomes.
    These bindings only report the cap and yojson's value as tokens. Where
@@ -1147,9 +1148,8 @@ let node_open packed home flags =
          let out = Filename.temp_file "pantheon-codex" ".txt" in
          start_job ~limit:(float_of_string limit_s) prog
            (List.map (fun a -> if a = "@OUT@" then out else a) args) ~stdin_text:prompt ~env:(Array.of_list env)
-           ~on_done:(fun t -> deliver ("codex_output" :: id :: kind :: prompt0 :: t ::
-             (try "1" :: read_file out :: ctx with _ -> "0" :: ctx)))
-           ~clean:(fun () -> try Sys.remove out with _ -> ())
+           ~on_done:(fun t -> deliver ("codex_file" :: id :: kind :: prompt0 :: t :: out :: ctx))
+           ~clean:ignore
      (* Soma's grok_request made the header text and the body (the prompt) *)
      | prog :: limit_s :: "grok" :: hdr_text :: args ->
          let hdr = Filename.temp_file "pantheon-h" ".txt" in

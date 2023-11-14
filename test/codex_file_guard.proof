@@ -1,0 +1,17 @@
+Theorem codex_failed_job_ignores_reader : forall text reader,
+  starts "!" text = true -> codex_reply_of text reader = text.
+Proof. intros text reader H. unfold codex_reply_of. rewrite H. reflexivity. Qed.
+
+Theorem codex_successful_file_bytes : forall text out,
+  starts "!" text = false -> codex_reply_of text (fun _ => Some out) = out.
+Proof. intros text out H. unfold codex_reply_of. rewrite H. reflexivity. Qed.
+
+Theorem codex_successful_missing_file : forall text,
+  starts "!" text = false -> codex_reply_of text (fun _ => None) = "!codex wrote no reply".
+Proof. intros text H. unfold codex_reply_of. rewrite H. reflexivity. Qed.
+
+Example codex_guard_fixed_inputs :
+  codex_reply_of "!failed" (fun _ => Some "stale") = "!failed" /\
+  codex_reply_of "pending" (fun _ => Some "") = "" /\
+  codex_reply_of "pending" (fun _ => None) = "!codex wrote no reply".
+Proof. repeat split; reflexivity. Qed.
