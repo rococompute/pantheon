@@ -219,20 +219,15 @@ let clone url dir commit =
 
 (* ---------- edits ---------- *)
 
-let matches_at s i sub =
-  let k = String.length sub in
-  let rec f j = j = k || (s.[i + j] = sub.[j] && f (j + 1)) in
-  i + k <= String.length s && f 0
-
-(* where sub occurs in s: the first two places at most *)
-let positions s sub =
-  let n = String.length s and k = String.length sub in
-  let rec go i acc = if List.length acc >= 2 || i + k > n then List.rev acc else go (i + 1) (if matches_at s i sub then i :: acc else acc) in
-  if k = 0 then [] else go 0 []
-
-let contains s sub = positions s sub <> []
-
-let replace_at s i old by = String.sub s 0 i ^ by ^ String.sub s (i + String.length old) (String.length s - i - String.length old)
+(* The edit matching is Soma's, in util.soma: [edit_once] (a text with its
+   one occurrence of old replaced, None when old is missing or ambiguous)
+   and [contains] (pattern first). [run] sets these once, first thing, from
+   its arguments (docs/SHELL-IN-SOMA.md). *)
+let soma_edit_once : (string -> string -> string -> string option) ref = ref (fun _ _ _ -> failwith "edit_once: not set by run")
+let soma_contains : (string -> string -> bool) ref = ref (fun _ _ -> failwith "contains: not set by run")
+let edit_once s old by = !soma_edit_once s old by
+(* every caller's pattern is nonempty *)
+let contains s sub = !soma_contains sub s
 
 (* no part of the path is a symlink: a write can't leave the checkout *)
 let no_symlink dir p =
@@ -269,10 +264,10 @@ let apply_edits dir edits =
         else if not (Sys.file_exists f) then Error (p ^ ": no such file to edit")
         else
           let c = read_file f in
-          match positions c o with
-          | [ i ] -> write_keep_mode f (replace_at c i o n); go rest
-          | [] -> Error (p ^ ": the old text isn't in the file")
-          | _ -> Error (p ^ ": the old text appears more than once, so give more of it")
+          match edit_once c o n with
+          | Some t -> write_keep_mode f t; go rest
+          | None when not (contains c o) -> Error (p ^ ": the old text isn't in the file")
+          | None -> Error (p ^ ": the old text appears more than once, so give more of it")
   in
   try go edits with e -> Error (Printexc.to_string e)
 
@@ -304,7 +299,7 @@ let hunk_edits g p before now =
     let es = List.rev_map (fun (o, n) -> (p, o, n)) !hunks in
     if !bad || es = [] || List.exists (fun (_, o, _) -> o = "") es then whole
     else
-      let step acc (_, o, n) = match acc with Some c -> (match positions c o with [ i ] -> Some (replace_at c i o n) | _ -> None) | None -> None in
+      let step acc (_, o, n) = match acc with Some c -> edit_once c o n | None -> None in
       if List.fold_left step (Some before) es = Some now then es else whole
   end
 
@@ -726,7 +721,9 @@ let json_in_reply text =
       else (try Some (Yojson.Safe.from_string raw) with _ -> None)
   | _ -> None
 
-let rec run init step checkpoint restore plan_open replace_all =
+let rec run init step checkpoint restore plan_open replace_all edit_once contains =
+  soma_edit_once := edit_once;
+  soma_contains := contains;
   let argv = Array.to_list Sys.argv |> List.tl in
   match argv with
   | "init" :: rest -> cmd_init rest
