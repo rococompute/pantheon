@@ -6,9 +6,9 @@
     precommit two values in one round, so two values can't both gather a
     quorum. *)
 Theorem quorums_intersect_in_an_honest_node :
-  forall c : obj, 1 <= length (nodes c) -> length (nodes c) + weak c <= 2 * quorum c.
+  forall c : consensus_state, 1 <= length (nodes c) -> length (nodes c) + weak c <= 2 * quorum c.
 Proof.
-  Take c : obj.
+  Take c : consensus_state.
   Assume that 1 <= length (nodes c) as Hn.
   unfold weak, quorum, faulty.
   By Nat.Div0.mul_div_le, it holds that 3 * ((length (nodes c) - 1) / 3) <= length (nodes c) - 1 as Hf.
@@ -17,9 +17,9 @@ Proof.
 Qed.
 
 (** With 4 validators, a quorum is 3 and f + 1 is 2. *)
-Theorem four_validators : forall c : obj, length (nodes c) = 4 -> quorum c = 3 /\ weak c = 2.
+Theorem four_validators : forall c : consensus_state, length (nodes c) = 4 -> quorum c = 3 /\ weak c = 2.
 Proof.
-  Take c : obj.
+  Take c : consensus_state.
   Assume that length (nodes c) = 4 as H.
   unfold quorum, weak, faulty.
   rewrite H.
