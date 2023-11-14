@@ -109,3 +109,59 @@ Example startup_saves_before_votes_even_without_a_changed_snapshot :
      ["perform", "broadcast", "vote"], ["perform", "timer", "commit", "8", "0", "0"]] /\
   startup_effects [] = [["save_snapshot"]].
 Proof. split; reflexivity. Qed.
+
+(** Catch-up decisions name the actual table writes, reads, and sends. *)
+Example behind_selects_catchup_and_malformed_arity_is_unchanged :
+  plan_output ["behind", "peer", "3"] = CatchupPeer "peer" "3" /\
+  plan_output ["behind", "peer"] = LegacyOutput ["behind", "peer"] /\
+  plan_output ["behind", "peer", "3", "extra"] = LegacyOutput ["behind", "peer", "3", "extra"].
+Proof. repeat split; reflexivity. Qed.
+
+Example catchup_remembers_before_reading_each_block :
+  catchup_plan "peer" "3" "6" 10%float None true false =
+    [RememberPeer "peer" "3" 10%float, ReadPeerBlock "peer" 3,
+     ReadPeerBlock "peer" 4, ReadPeerBlock "peer" 5].
+Proof. reflexivity. Qed.
+
+Example catchup_duplicate_requests_no_bindings :
+  catchup_plan "peer" "3" "6" 10%float (Some 9%float) true false = [].
+Proof. reflexivity. Qed.
+
+Example catchup_at_two_seconds_can_send_again :
+  catchup_plan "peer" "3" "4" 10%float (Some 8%float) true false =
+    [RememberPeer "peer" "3" 10%float, ReadPeerBlock "peer" 3].
+Proof. reflexivity. Qed.
+
+Example catchup_backward_clock_still_throttles :
+  catchup_plan "peer" "3" "6" 10%float (Some 11%float) true false = [].
+Proof. reflexivity. Qed.
+
+Example catchup_silent_or_absent_peer_still_remembers :
+  catchup_plan "peer" "3" "6" 10%float None true true =
+    [RememberPeer "peer" "3" 10%float] /\
+  catchup_plan "peer" "3" "6" 10%float None false false =
+    [RememberPeer "peer" "3" 10%float].
+Proof. split; reflexivity. Qed.
+
+Example catchup_empty_range_still_remembers :
+  catchup_plan "peer" "6" "6" 10%float None true false =
+    [RememberPeer "peer" "6" 10%float] /\
+  catchup_plan "peer" "7" "6" 10%float None true false =
+    [RememberPeer "peer" "7" 10%float].
+Proof. split; reflexivity. Qed.
+
+Example catchup_caps_reads_at_fifty_one :
+  catchup_plan "peer" "3" "100" 10%float None true false =
+    RememberPeer "peer" "3" 10%float :: map (ReadPeerBlock "peer") (List.seq 3 51).
+Proof. reflexivity. Qed.
+
+Example catchup_missing_block_requests_no_send :
+  catchup_send "peer" 4 None = None.
+Proof. reflexivity. Qed.
+
+Example catchup_existing_and_empty_blocks_request_exact_peer_send :
+  catchup_send "peer" 4 (Some ["one", "two"]) =
+    Some ("peer", ["done", "4", "0", "0", hash_list ["one", "two"], "one", "two"]) /\
+  catchup_send "peer" 4 (Some []) =
+    Some ("peer", ["done", "4", "0", "0", hash_list []]).
+Proof. split; reflexivity. Qed.

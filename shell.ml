@@ -785,7 +785,12 @@ type node_handle = { h_events : unit -> string list list; h_perform : string lis
                      h_push : string list -> unit; h_draw : string * (string * string);
                      h_block : string -> string list option;
                      h_store : string -> string list -> unit;
-                     h_height : string -> unit }
+                     h_height : string -> unit;
+                     h_current_height : unit -> string;
+                     h_last_served : string -> string -> float option;
+                     h_mark_served : string -> string -> float -> unit;
+                     h_peer_exists : string -> bool;
+                     h_peer_send : string -> string list -> unit }
 let node_handles : (string, node_handle) Hashtbl.t = Hashtbl.create 4
 let node_counter = ref 0
 let lookup_handle id = try Hashtbl.find node_handles id with Not_found -> fail "unknown node handle %s" id
@@ -803,6 +808,13 @@ let node_draw id = (lookup_handle id).h_draw
 let node_block id height = (lookup_handle id).h_block height
 let node_store id height txs = (lookup_handle id).h_store height txs; true
 let node_height id h = (lookup_handle id).h_height h; true
+(* Reads/writes and authenticated socket sends; catch-up policy is Soma. *)
+let node_clock () = Unix.gettimeofday ()
+let node_current_height id = (lookup_handle id).h_current_height ()
+let node_last_served id who h = (lookup_handle id).h_last_served who h
+let node_mark_served id who h now = (lookup_handle id).h_mark_served who h now; true
+let node_peer_exists id who = (lookup_handle id).h_peer_exists who
+let node_peer_send id who fields = (lookup_handle id).h_peer_send who fields; true
 let rec forever f s = forever f (f s)
 
 let node_open plan_open packed json_fn home flags =
@@ -1282,20 +1294,6 @@ let node_open plan_open packed json_fn home flags =
              (match f with _ :: h :: _ -> mine := (int_of_string h, f) :: !mine | _ -> ());
              send_consensus f
          | None -> ())
-    | [ "behind"; who; h ] ->
-        let h = int_of_string h and now = Unix.gettimeofday () in
-        (match Hashtbl.find_opt served (who, h) with
-         | Some t when now -. t < 2. -> ()
-         | _ ->
-             Hashtbl.replace served (who, h) now;
-             List.iter (fun p ->
-                 if p.name = who then
-                   for k = h to min (!height - 1) (h + 50) do
-                     match Hashtbl.find_opt blocks k with
-                     | Some txs when byz <> "silent" -> send_to p (wire ("done" :: string_of_int k :: "0" :: "0" :: hash_list txs :: txs))
-                     | _ -> ()
-                   done)
-               peers)
     | "status" :: ls ->
         let heads = List.map (fun (n, _, _, _) -> Printf.sprintf "checkout %s %s" n (git_out (rdir n) [ "rev-parse"; "--short"; "HEAD" ])) repos in
         let bad = List.map (fun (r, why) -> Printf.sprintf "DIVERGED %s at merge %s" r why) !diverged in
@@ -1600,6 +1598,11 @@ let node_open plan_open packed json_fn home flags =
         append_line_synced blocks_path (Yojson.Safe.to_string (`Assoc [ ("h", `Int h); ("txs", strings_json txs) ])));
       h_height = (fun h -> let h = int_of_string h in
         height := h;
-        mine := List.filter (fun (mh, _) -> mh >= h) !mine) };
+        mine := List.filter (fun (mh, _) -> mh >= h) !mine);
+      h_current_height = (fun () -> string_of_int !height);
+      h_last_served = (fun who h -> Hashtbl.find_opt served (who, int_of_string h));
+      h_mark_served = (fun who h now -> Hashtbl.replace served (who, int_of_string h) now);
+      h_peer_exists = (fun who -> List.exists (fun p -> p.name = who) peers);
+      h_peer_send = (fun who fields -> List.iter (fun p -> if p.name = who then send_to p (wire fields)) peers) };
   handle_id
 
