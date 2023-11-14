@@ -200,8 +200,18 @@ worth a note in this file rather than a workaround.
   non-limit texts, deadlines past and future, units, the backoff's cap and
   each outcome, with theorems that a reply with no JSON object or a failed
   job never becomes a reply event. Left of step 5: lines into events
-  (`on_line`, `decode_tx`, the line and connection limits) and the reply's
+  (`decode_tx`, the line and connection limits) and the reply's
   JSON (`json_in_reply`, `flatten_reply`).
+
+- Step 5, part: a peer line is accepted or dropped in Soma. The shell
+  parses the JSON and hands Soma the sender, signature, fields, and
+  whether the line is its own or an already-refused transaction;
+  `run_event` drops those without a verify (so refused transactions
+  resent every few seconds never pay for one), verifies the rest
+  through `node_verify_line`, and turns a verified line into its
+  `tx` or `msg` event. `node.proof` checks the drops and both
+  events. Left of step 5: `decode_tx`, the line and connection
+  limits, and the reply JSON.
 
 - Step 5, part: when held model requests go back is decided in Soma.
   `node_tick` asks `release_held` first each turn: pure `release_plan_of`

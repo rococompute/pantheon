@@ -798,6 +798,7 @@ type node_handle = { h_events : unit -> string list list;
                      h_peer_count : unit -> string;
                      h_send_peer : string -> string list -> unit;
                      h_run_check : string -> string -> string -> string list -> unit;
+                     h_verify_line : string -> string -> string list -> bool;
                      h_merge_applied : string -> string option;
                      h_merge_diverged : string -> bool;
                      h_merge_reset : string -> unit;
@@ -898,6 +899,7 @@ let node_remember_vote id slot vid fields = (lookup_handle id).h_remember_vote s
 let node_remember_broadcast id height kind fields alt = (lookup_handle id).h_remember_broadcast height kind fields alt; true
 let node_peer_count id = (lookup_handle id).h_peer_count ()
 let node_send_peer id index fields = (lookup_handle id).h_send_peer index fields; true
+let node_verify_line id from sg fields = (lookup_handle id).h_verify_line from sg fields
 (* a decided merge's I/O: node.soma's perform_merge decides *)
 let node_merge_applied id r = (lookup_handle id).h_merge_applied r
 let node_merge_diverged id r = (lookup_handle id).h_merge_diverged r
@@ -1318,11 +1320,9 @@ let node_open packed json_fn home flags =
     try
       let j = Yojson.Safe.from_string line in
       let from = to_string (member "from" j) and fields = json_strings (member "fields" j) and sg = to_string (member "sig" j) in
-      match Hashtbl.find_opt pubkeys from with
-      | _ when (match fields with [ "tx"; raw ] -> Hashtbl.mem refused raw | _ -> false) -> ()
-      | Some k when from <> me && verify k (msg_bytes from fields) sg ->
-          (match fields with [ "tx"; raw ] -> push [ "tx"; raw ] | _ -> push ("msg" :: from :: fields))
-      | _ -> ()
+      let self = if from = me then "1" else "0" in
+      let refusedf = match fields with [ "tx"; raw ] -> if Hashtbl.mem refused raw then "1" else "0" | _ -> "0" in
+      push ("peer_line" :: self :: refusedf :: from :: sg :: fields)
     with _ -> ()
   in
   let collect_events () =
@@ -1565,6 +1565,10 @@ let node_open packed json_fn home flags =
         match List.nth_opt peers (int_of_string index) with
         | Some p -> send_to p (wire fields)
         | None -> ());
+      h_verify_line = (fun from sg fields ->
+        match Hashtbl.find_opt pubkeys from with
+        | Some k -> verify k (msg_bytes from fields) sg
+        | None -> false);
       h_run_check = run_check;
       h_merge_applied = (fun r -> Option.map string_of_int (Hashtbl.find_opt applied r));
       h_merge_diverged = (fun r -> List.mem_assoc r !diverged);

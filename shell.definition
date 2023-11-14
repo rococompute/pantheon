@@ -63,6 +63,9 @@ node_last_served : string -> string -> string -> option float.
 node_mark_served : string -> string -> string -> float -> bool.
 node_peer_exists : string -> string -> bool.
 node_peer_send : string -> string -> list string -> bool.
+(** Verify a peer line's signature; Soma asks only for lines that are
+    neither this node's own nor an already-refused transaction. *)
+node_verify_line : string -> string -> string -> list string -> bool.
 
 (** Status metadata and atomic file I/O; Soma assembles every status line. *)
 node_checkout_heads : string -> list (string * string).
