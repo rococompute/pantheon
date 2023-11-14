@@ -136,6 +136,9 @@ node_reply_finish : string -> string -> string.
     limit (until when, its reason, the next backoff; the probe is over);
     and setting the backoff after an answer (the probe is over). *)
 node_job_output_limit : unit -> string.
+(** Platform wait-status constants, in kill/term/segv/abrt/int order, as raw
+    signed integers. Soma chooses names and the resulting failure text. *)
+node_job_signal_codes : unit -> list string.
 (** Resume a completed job with Soma's formatted outcome; invoke its stored
     callback before cleanup and return the events that callback queued, in
     order. Missing/already-completed identifiers return no events. *)

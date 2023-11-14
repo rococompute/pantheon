@@ -882,3 +882,11 @@ The rest:
 - Each task leaves `run`'s or `node`'s arguments no longer than it found
   them, after step 1 above: a new Soma helper OCaml needs goes in the
   record (step 3), not in a new argument or ref.
+
+Step 5's job wait-status boundary now reports raw signal integers for
+`WSIGNALED`/`WSTOPPED`. `node_job_signal_codes` exposes the five native constants;
+Soma's `job_signal_name` maps those to names, preserves unknown signed values,
+and `job_wait_status` keeps exit codes separate. The job-output path calls this
+before formatting the existing timeout/flood result. Four general proofs and
+16 fixed checks cover the mapping and its use, including the actual platform
+constants. The shell's signal-name decision branches are removed.

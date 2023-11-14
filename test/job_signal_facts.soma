@@ -1,0 +1,34 @@
+(** Fixed signal facts, no process or timing dependency; the last check also
+    reads the host constants through the production binding. *)
+Import util shell node.
+check (b : bool) (label : string) : string := append (if b then "ok " else "FAIL ") label.
+codes : list string := ["K", "T", "S", "A", "I"].
+finished (tag raw : string) (timeout : option string) (flood : bool) : string :=
+  match job_wait_status codes tag raw with
+  | Some status => job_result status timeout flood "4" "out"
+  | None => "none"
+  end.
+Fixpoint same (xs ys : list string) : bool := match xs, ys with
+  | [], [] => true | x :: xs, y :: ys => seq x y && same xs ys | _, _ => false end.
+main := print_lines [
+ check (seq (job_signal_name codes "K") "SIGKILL") "kill",
+ check (seq (job_signal_name codes "T") "SIGTERM") "term",
+ check (seq (job_signal_name codes "S") "SIGSEGV") "segv",
+ check (seq (job_signal_name codes "A") "SIGABRT") "abrt",
+ check (seq (job_signal_name codes "I") "SIGINT") "interrupt",
+ check (seq (job_signal_name codes "-99") "signal -99") "negative unknown",
+ check (seq (job_signal_name codes "99") "signal 99") "positive unknown",
+ check (seq (finished "exit" "K" None false) "!process failed (exit K): out") "exit is not a signal",
+ check (seq (finished "signal" "T" None false) "!process failed (killed by SIGTERM): out") "signaled result",
+ check (seq (finished "stop" "I" None false) "!process failed (stopped by SIGINT): out") "stopped result",
+ check (seq (finished "signal" "K" (Some "600") false)
+       "!process failed (it ran past its time limit of 600 s, so the node stopped it): out") "timeout precedence",
+ check (seq (finished "stop" "I" (Some "600") true)
+       "!process failed (it printed more than 4 MB, so the node stopped it): out") "flood precedence",
+ check (seq (finished "other" "K" None false) "none") "malformed tag",
+ check (seq (job_signal_name [] "K") "signal K") "missing platform facts",
+ check (seq (job_signal_name ["X", "X", "X", "X", "X"] "X") "SIGKILL") "first matching constant wins",
+ check (let native := node_job_signal_codes tt in
+        same (map (job_signal_name native) native) ["SIGKILL", "SIGTERM", "SIGSEGV", "SIGABRT", "SIGINT"])
+       "actual platform constants"
+].

@@ -825,6 +825,8 @@ let node_set_timers id ts = (lookup_handle id).h_set_timers ts; true
 let node_jobs id = (lookup_handle id).h_jobs ()
 let node_job_expire id jid = (lookup_handle id).h_job_expire jid; true
 let node_queue_empty id = (lookup_handle id).h_queue_empty ()
+let node_job_signal_codes () =
+  List.map string_of_int [Sys.sigkill; Sys.sigterm; Sys.sigsegv; Sys.sigabrt; Sys.sigint]
 let node_job_complete id job result = (lookup_handle id).h_job_complete job result
 let node_job_flood id jid = (lookup_handle id).h_job_flood jid; true
 let node_check_exclusions id = (lookup_handle id).h_check_exclusions ()
@@ -1403,14 +1405,10 @@ let node_open packed home flags =
     List.iter (fun (j, status) ->
         (* Report native wait facts. Soma chooses success/failure and the
            exact output; the callback and cleanup wait for node_job_complete. *)
-        let signal_name sg =
-          if sg = Sys.sigkill then "SIGKILL" else if sg = Sys.sigterm then "SIGTERM"
-          else if sg = Sys.sigsegv then "SIGSEGV" else if sg = Sys.sigabrt then "SIGABRT"
-          else if sg = Sys.sigint then "SIGINT" else Printf.sprintf "signal %d" sg in
         let tag, value = match status with
           | Unix.WEXITED c -> ("exit", string_of_int c)
-          | Unix.WSIGNALED sg -> ("signal", signal_name sg)
-          | Unix.WSTOPPED sg -> ("stop", signal_name sg) in
+          | Unix.WSIGNALED sg -> ("signal", string_of_int sg)
+          | Unix.WSTOPPED sg -> ("stop", string_of_int sg) in
         let timeout = match Hashtbl.find_opt overtime j.jpid with Some limit -> node_float_text limit | None -> "" in
         let flood = if Hashtbl.mem flooded j.jpid then "1" else "0" in
         Hashtbl.remove overtime j.jpid; Hashtbl.remove flooded j.jpid;

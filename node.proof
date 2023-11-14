@@ -1081,3 +1081,23 @@ Example check_eligibility_scope_precedence :
   check_request_op "9" "calc" "head" [] ["calc"] ["calc"] =
     IoQueue ["check_unchecked_repo", "9", "calc", "true"].
 Proof. reflexivity. Qed.
+
+Theorem wait_exit_preserves_code : forall codes code,
+  job_wait_status codes "exit" code = Some (JobExit code).
+Proof. reflexivity. Qed.
+
+Theorem wait_signal_uses_platform_constants : forall codes raw,
+  job_wait_status codes "signal" raw = Some (JobSignal (job_signal_name codes raw)).
+Proof. reflexivity. Qed.
+
+Theorem wait_stop_uses_platform_constants : forall codes raw,
+  job_wait_status codes "stop" raw = Some (JobStop (job_signal_name codes raw)).
+Proof. reflexivity. Qed.
+
+Theorem unknown_wait_tag_has_no_status : forall codes tag raw,
+  seq tag "exit" = false -> seq tag "signal" = false -> seq tag "stop" = false ->
+  job_wait_status codes tag raw = None.
+Proof.
+  intros codes tag raw He Hs Ht. unfold job_wait_status, job_status_of.
+  rewrite He, Hs, Ht. reflexivity.
+Qed.

@@ -1184,7 +1184,7 @@ model_reply_events (h : node_t) (id kind prompt0 text : string) (ctx : list stri
   else reply_events h id kind prompt0 text ctx.
 
 (** The operating system's wait status, decoded without deciding its
-    meaning. Signal names are platform data supplied by the shell. *)
+    meaning. The shell supplies raw platform signal constants; Soma names them. *)
 Inductive job_status := JobExit (code : string) | JobSignal (name : string) | JobStop (name : string).
 
 job_status_of (tag value : string) : option job_status :=
@@ -1192,6 +1192,21 @@ job_status_of (tag value : string) : option job_status :=
   else if seq tag "signal" then Some (JobSignal value)
   else if seq tag "stop" then Some (JobStop value)
   else None.
+
+(** Signal formatting is a decision over native constants, not an OS call.
+    Keep signed integer text: OCaml's portable signal codes may be negative. *)
+job_signal_name (codes : list string) (raw : string) : string :=
+  match codes with
+  | [kill, term, segv, abrt, interrupt] =>
+      if seq raw kill then "SIGKILL" else if seq raw term then "SIGTERM"
+      else if seq raw segv then "SIGSEGV" else if seq raw abrt then "SIGABRT"
+      else if seq raw interrupt then "SIGINT" else append "signal " raw
+  | _ => append "signal " raw
+  end.
+
+job_wait_status (codes : list string) (tag raw : string) : option job_status :=
+  job_status_of tag
+    (if seq tag "signal" || seq tag "stop" then job_signal_name codes raw else raw).
 
 (** The same final 3000 bytes as the old process failure report. *)
 job_failure_tail (out : string) : string :=
@@ -1333,7 +1348,7 @@ job_output_events (h : node_t) (st : node_state) (ev : list string) : node_state
   | ["job_finished", id, tag, value, timeout, flooded] =>
       let out := Stdlib.Strings.String.concat "" (job_buffer st id) in
       let st := job_forget st id in
-      match job_status_of tag value with
+      match job_wait_status (node_job_signal_codes tt) tag value with
       | None => (st, [])
       | Some status =>
           let seconds := if seq timeout "" then None else Some timeout in
