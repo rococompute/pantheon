@@ -39,10 +39,6 @@ new_consensus (me : string) (nodes : list string) (h : nat) : consensus_state :=
      lockr := 0; lockv := []; validr := 0; validv := []; log := []; once := []; block_ms := 1000 |}.
 
 (* Stopgap until Soma's record update elaborates to setters. *)
-with_lockr (c : consensus_state) (v : nat) : consensus_state :=
-  {| me := me c; nodes := nodes c; height := height c; round := round c; step := step c;
-     lockr := v; lockv := lockv c; validr := validr c; validv := validv c; log := log c; once := once c; block_ms := block_ms c |}.
-
 with_lockv (c : consensus_state) (v : list string) : consensus_state :=
   {| me := me c; nodes := nodes c; height := height c; round := round c; step := step c;
      lockr := lockr c; lockv := v; validr := validr c; validv := validv c; log := log c; once := once c; block_ms := block_ms c |}.
@@ -146,7 +142,7 @@ r_lock (c : consensus_state) (valid : list string -> bool) : step_result :=
       if (1 <=? step c) && negb (fired c flag) && (quorum c <=? senders c Prevote r (vid p)) && valid (value p) then
         let c := mark c flag in
         let c := {| c with validr := r + 1; validv := value p |} in
-        if step c =? 1 then Some (vote (with_lockv (with_lockr c (r + 1)) (value p)) Precommit (vid p) 2)
+        if step c =? 1 then Some (vote (with_lockv ({| c with lockr := r + 1 |}) (value p)) Precommit (vid p) 2)
         else Some (c, [])
       else None
   | None => None
