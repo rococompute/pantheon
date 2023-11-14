@@ -358,3 +358,22 @@ Proof.
     - intros x Hx Hmerged. left. exact Hx. }
   destruct (H b Hin Hb) as [Hold|Hfinal]; [contradiction|exact Hfinal].
 Qed.
+
+(** Selection is bounded even for malformed rosters or exhausted windows. *)
+Theorem bidders_for_at_most_two : forall (m : obj) (t : task),
+  length (bidders_for m t) <= 2.
+Proof.
+  intros m t. unfold bidders_for. apply firstn_le_length.
+Qed.
+
+Theorem bidders_for_excludes_leader : forall (m : obj) (t : task),
+  ~ In (leader m) (bidders_for m t).
+Proof.
+  intros m t Hin. unfold bidders_for in Hin.
+  match type of Hin with In _ (firstn 2 ?xs) =>
+    assert (H : In (leader m) xs) by
+      (rewrite <- (firstn_skipn 2 xs); apply in_or_app; left; exact Hin)
+  end.
+  apply filter_In in H. destruct H as [_ H].
+  unfold seq in H. rewrite Stdlib.Strings.String.eqb_refl in H. discriminate.
+Qed.

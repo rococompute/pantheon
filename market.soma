@@ -110,6 +110,35 @@ new_market (agents : list string) : obj :=
    ("nonces", ([] : list (string * nat)) : Any), ("lastbid", ([] : list (string * nat)) : Any),
    ("counters", ([] : list (string * nat)) : Any), ("params", ([] : list (string * nat)) : Any)].
 
+(** Rotate a task's two-worker window through the nonleaders. A worker is
+    spent only after it has bid and every one of its bids was rejected or
+    cleared: an unstarted worker or a pending bid keeps the window open. *)
+bidder_spent (m : obj) (t : task) (a : string) : bool :=
+  let bs := filter (fun b => (btask b =? tid t) && seq (bidder b) a) (bids m) in
+  negb (length bs =? 0) &&
+    forallb (fun b => match bst b with Rejected | Cleared => true | _ => false end) bs.
+
+rotate_bidders (pool : list string) : list string :=
+  match pool with [] => [] | a :: rest => rest ++ [a] end.
+
+Fixpoint next_bidders (fuel : nat) (m : obj) (t : task) (pool : list string) : list string :=
+  match fuel with
+  | 0 => pool
+  | Succ f =>
+      if forallb (bidder_spent m t) (firstn 2 pool)
+      then next_bidders f m t (rotate_bidders pool)
+      else pool
+  end.
+
+(** version advances on every merge and survives term changes. Consecutive
+    task ids therefore move the window even within the same term. *)
+bidders_for (m : obj) (t : task) : list string :=
+  let pool := filter (fun a => negb (seq a (leader m))) (nodup_s (agents m)) in
+  let start := (tid t + version m) mod length pool in
+  let pool := skipn start pool ++ firstn start pool in
+  firstn 2 (filter (fun a => negb (seq a (leader m)))
+    (next_bidders (length pool) m t pool)).
+
 nonce_of (m : obj) (a : string) : nat := get_or 0 a (nonces m).
 
 count (m : obj) (a k : string) : obj := setf m "counters" (bump (append a (append "." k)) (counters m)).
@@ -229,6 +258,7 @@ apply (m : obj) (a : string) (fields : list string) : obj * list (list string) *
       | Some tk =>
           if negb (topen tk) then fail "task is closed"
           else if lead || seq (leader m) "" then fail "the leader doesn't bid, and nobody bids between terms"
+          else if negb (mem a (bidders_for m tk)) then fail "not an eligible bidder for this task: two rotating bidders only"
           else if (0 <? get_or 0 a (lastbid m)) && (mheight m <? get_or 0 a (lastbid m) + param m "bid_cooldown") then fail "bid cooldown"
           else
             let m := setf m "lastbid" (put a (mheight m) (lastbid m)) in
