@@ -25,6 +25,7 @@
 Import util shell.
 
 Inductive status := Pending | Merged | Cleared | Rejected | Withdrawn.
+Scheme Boolean Equality for status.
 
 status_name (s : status) : string :=
   match s with
@@ -32,7 +33,7 @@ status_name (s : status) : string :=
   | Rejected => "rejected" | Withdrawn => "withdrawn"
   end.
 
-is_pending (s : status) : bool := match s with Pending => true | _ => false end.
+is_pending (s : status) : bool := status_beq s Pending.
 
 (** a task in a repository, with paths a model without tools should read *)
 Record task := { tid : nat; spec : string; poster : string; posted_at : nat; topen : bool;
