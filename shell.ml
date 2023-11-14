@@ -142,6 +142,22 @@ let append_line_synced p s =
       let n = Unix.write fd b 0 (Bytes.length b) in
       if n <> Bytes.length b then failwith "signed.log: short write";
       Unix.fsync fd)
+(* Atomic, synced consensus snapshots. A malformed snapshot aborts startup. *)
+let save_consensus path state =
+  let tmp = path ^ ".tmp" in
+  let oc = open_out_bin tmp in
+  Fun.protect ~finally:(fun () -> close_out oc) (fun () ->
+      Marshal.to_channel oc state [];
+      flush oc;
+      Unix.fsync (Unix.descr_of_out_channel oc));
+  Unix.rename tmp path;
+  let fd = Unix.openfile (Filename.dirname path) [Unix.O_RDONLY] 0 in
+  Fun.protect ~finally:(fun () -> Unix.close fd) (fun () -> Unix.fsync fd)
+
+let load_consensus path =
+  let ic = open_in_bin path in
+  Fun.protect ~finally:(fun () -> close_in ic) (fun () -> Marshal.from_channel ic)
+
 let read_json p = try Yojson.Safe.from_file p with _ -> fail "cannot read %s: is this a home made by `pantheon init`?" p
 let lines p = if Sys.file_exists p then String.split_on_char '\n' (read_file p) |> List.filter (( <> ) "") else []
 
@@ -731,7 +747,7 @@ let json_in_reply text =
       else (try Some (Yojson.Safe.from_string raw) with _ -> None)
   | _ -> None
 
-let rec run init step =
+let rec run init step checkpoint restore =
   let argv = Array.to_list Sys.argv |> List.tl in
   match argv with
   | "init" :: rest -> cmd_init rest
@@ -793,7 +809,7 @@ let rec run init step =
       Sys.set_signal Sys.sigint (Sys.Signal_handle stop);
       Sys.set_signal Sys.sigterm (Sys.Signal_handle stop);
       List.iter (fun p -> ignore (Unix.waitpid [] p)) pids
-  | "node" :: home :: flags -> node init step home flags
+  | "node" :: home :: flags -> node init step checkpoint restore home flags
   | _ ->
       print_string
         "pantheon: a private BFT labor market where LLM agents take turns as term leader.\n\n\
@@ -813,7 +829,7 @@ let rec run init step =
          Backends: scripted, claude, codex, grok (XAI_API_KEY), cmd:PROGRAM (prompt on stdin, JSON reply on stdout;\n\
          a patch request also gets a scratch checkout in $PANTHEON_WORKTREE: see scripts/bidder.sh).\n"
 
-and node init step home flags =
+and node init step checkpoint restore home flags =
   Sys.set_signal Sys.sigpipe Sys.Signal_ignore;
   (* jobs run from scratch directories: every path the node hands out is absolute *)
   let home = if Filename.is_relative home then Filename.concat (Sys.getcwd ()) home else home in
@@ -1285,7 +1301,7 @@ and node init step home flags =
         let h = int_of_string h in
         if not (Hashtbl.mem blocks h) then begin
           Hashtbl.replace blocks h txs;
-          append_line blocks_path (Yojson.Safe.to_string (`Assoc [ ("h", `Int h); ("txs", strings_json txs) ]))
+          append_line_synced blocks_path (Yojson.Safe.to_string (`Assoc [ ("h", `Int h); ("txs", strings_json txs) ]))
         end
     | [ "behind"; who; h ] ->
         let h = int_of_string h and now = Unix.gettimeofday () in
@@ -1348,10 +1364,18 @@ and node init step home flags =
   in
   let debug = (try Sys.getenv "PANTHEON_DEBUG" with Not_found -> "") <> "" in
   let brief l = String.concat " " (List.map (fun f -> if String.length f > 16 then String.sub f 0 16 else f) (List.filteri (fun i _ -> i < 7) l)) in
+  let checkpoint_path = Filename.concat home "consensus.state" in
+  let participating = ref false in
   let feed ev =
     if debug then say "event: %s" (brief ev);
     let s, outs = step !st ev in
     if debug then List.iter (fun o -> say "  out: %s" (brief o)) outs;
+    (* Persist before any vote or other externally visible effect. Decisions
+       reach blocks.log first; a stale snapshot is ignored after replay. *)
+    if !participating then begin
+      List.iter (function ("decided" :: _ as o) -> handle o | _ -> ()) outs;
+      save_consensus checkpoint_path (checkpoint s)
+    end;
     st := s;
     List.iter handle outs
   in
@@ -1374,6 +1398,13 @@ and node init step home flags =
       with _ -> ())
     (lines blocks_path);
   if !replayed > 0 then say "replayed %d blocks from disk" !replayed;
+  if Sys.file_exists checkpoint_path then begin
+    let saved = load_consensus checkpoint_path in
+    st := restore !st saved
+  end;
+  if not (Sys.file_exists checkpoint_path) && Hashtbl.length signed > 0 then
+    fail "missing consensus.state with existing votes: start a new chain";
+  participating := true;
   feed [ "start" ];
   drain ();
   (* sockets *)

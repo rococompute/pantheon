@@ -20,6 +20,11 @@ with_pool (c : node_state) (v : list string) : node_state :=
 with_live (c : node_state) (v : bool) : node_state :=
   {| cons := cons c; mkt := mkt c; ag := ag c; pool := pool c; live := v |}.
 
+(** A snapshot from a completed height may remain if the process crashed
+    after syncing blocks.log. Never roll the replayed chain back. *)
+restore_cons (n : node_state) (c : consensus_state) : node_state :=
+  if height c =? height (cons n) then with_cons n c else n.
+
 empty_node : node_state :=
   {| cons := new_consensus "" [] 1; mkt := new_market []; ag := new_agent ""; pool := []; live := false |}.
 
@@ -113,7 +118,11 @@ step (n : node_state) (ev : list string) : node_state * list (list string) :=
       let n := with_live n true in
       let h := height (cons n) in
       let (a, o) := tick (ag n) (mkt n) in
-      and_status (with_ag n a) (o ++ [["height", show h], timer "commit" h 0 0])
+      if (round (cons n) =? 0) && (step (cons n) =? 0) && (lockr (cons n) =? 0) then
+        and_status (with_ag n a) (o ++ [["height", show h], timer "commit" h 0 0])
+      else
+        let (c, co) := start_round (cons n) (round (cons n) + 1) (build_block (mkt n) (pool n)) in
+        and_status (with_cons (with_ag n a) c) (o ++ [["height", show h]] ++ co)
   (* running *)
   | "msg" :: from :: fields => consensus_event n (receive (cons n) from fields)
   | "timeout" :: fields => consensus_event n (timeout (cons n) fields (build_block (mkt n) (pool n)))
