@@ -136,6 +136,17 @@ node_head_file : string -> string -> string -> option string.
 node_token : unit -> string.
 node_float_text : float -> string.
 
+(** Connection admission and the buffered-line cap are Soma's
+    (node.soma admit_decision_of, buffer_over): an offered socket the
+    shell is holding, admitted in the mode Soma names (closing the
+    named connection when evicting), the live connections and their
+    last-activity times, closing one, and the line byte cap as a
+    decimal string. The shell only accepts, reads and closes sockets. *)
+node_conn_admit : string -> string -> string -> string -> bool.
+node_conns : string -> list (string * float).
+node_conn_close : string -> string -> bool.
+node_line_limit : string -> string.
+
 (** The CI check job; Soma selects it, the shell runs the process. *)
 node_run_check : string -> string -> string -> string -> list string -> bool.
 (** A decided merge's I/O; node.soma's perform_merge decides. The version

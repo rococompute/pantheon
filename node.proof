@@ -3,6 +3,16 @@
     effect appears only when consensus changed (as [empty_node]'s has not),
     decided outputs come before it, and the rest come after. *)
 
+Example connection_admission_and_line_cap_edges :
+  admit_decision_of 15 63 = AdmitNew /\ admit_decision_of 16 0 = AdmitRefuse /\
+  admit_decision_of 0 64 = AdmitEvict /\ admit_decision_of 16 64 = AdmitRefuse /\
+  admit_decision_of 15 64 = AdmitEvict /\ admit_decision_of 0 0 = AdmitNew /\
+  oldest_conn [] = "" /\ oldest_conn [("a", 5%float)] = "a" /\
+  oldest_conn [("a", 5%float), ("b", 3%float), ("c", 3%float)] = "b" /\
+  oldest_conn [("a", 1%float), ("b", 2%float)] = "a" /\
+  buffer_over 10 10 = false /\ buffer_over 11 10 = true /\ buffer_over 0 0 = false.
+Proof. repeat split; reflexivity. Qed.
+
 Example decided_snapshot_rest :
   order_effects ["msg", "peer", "x"] empty_node (with_cons empty_node (new_consensus "me" ["me"] 2))
     [["broadcast", "vote"], ["decided", "1", "tx"], ["status", "s"]]
