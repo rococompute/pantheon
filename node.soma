@@ -348,6 +348,14 @@ io_of_wire (w : list string) : option node_op :=
   | _ => None
   end.
 
+(** Eligibility is decided before any check process or temporary checkout
+    is created. Preserve the queued fact and scope-over-flag precedence. *)
+check_request_op (id repo head : string) (edits denied excluded : list string) : node_op :=
+  let outside := mem repo excluded in
+  if mem repo denied || outside then
+    IoQueue ["check_unchecked_repo", id, repo, (if outside then "true" else "false")]
+  else IoCheck id repo head edits.
+
 (** Effects use the first of the pair. The call's result is that bool, so
     the interpretation is not dropped. *)
 io_do (h : node_t) (op : node_op) : bool := fst (node_io h (io_wire op)).
@@ -373,13 +381,12 @@ action_io (action : output_action) : option node_op :=
   | _ => None
   end.
 
-(** The outputs that are a single operation (a timer, a log line, a CI
-    check request). *)
+(** Outputs that are unconditionally a single operation (timer and log).
+    Check requests first consult the eligibility metadata. *)
 output_io (out : list string) : option node_op :=
   match plan_output out with
   | SetTimer ms ev => Some (IoTimer ms ev)
   | WriteLog text => Some (IoLog text)
-  | CheckRequest id r head edits => Some (IoCheck id r head edits)
   | _ => None
   end.
 
@@ -1553,7 +1560,9 @@ perform_output (h : node_t) (out : list string) : bool :=
           carry_output_actions h (broadcast_plan byz n fields (Some (k, ht, r, vid))
             (node_signed_vote h slot) (node_signed_body h slot))
       end
-  | CheckRequest id r head edits => io_do h (IoCheck id r head edits)
+  | CheckRequest id r head edits =>
+      let (denied, excluded) := node_check_exclusions h in
+      io_do h (check_request_op id r head edits denied excluded)
   | MergeRequest r v tree bid task bidder spec edits => perform_merge h r v tree bid task bidder spec edits
   | LlmRequest id kind prompt ctx => perform_llm h id kind prompt ctx
   | LegacyOutput _ => true

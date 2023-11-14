@@ -230,6 +230,13 @@ separate work; this status does not mark `.plan`.
 
 ## Done so far
 
+- Step 5, check eligibility: `check_request_op` selects a check launch or
+  the queued unchecked-repository fact from raw flag and scope lists.
+  Scope exclusions retain precedence over `--no-check`. The native gate
+  is gone; refused checks no longer create temporary files just to delete
+  them. `test/check-eligibility.sh` checks six exact operation results.
+  Other native orchestration still needs auditing; the plan stays open.
+
 - Step 5, unchecked repository reasons: the shell reports a raw
   `check_unchecked_repo` fact with the repository and scope membership.
   Soma's `check_unchecked_reason` chooses the scope or `--no-check`

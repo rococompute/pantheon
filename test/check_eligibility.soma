@@ -1,0 +1,38 @@
+(** Deterministic check launch and refusal plans; no running node. *)
+Import util shell node.
+From Stdlib Require ExtrOcamlNatInt.
+Extract Inlined Constant Nat.div => "(fun a b -> if b = 0 then 0 else a / b)".
+Extract Inlined Constant Nat.modulo => "(fun a b -> if b = 0 then a else a mod b)".
+Extract Inlined Constant Stdlib.Strings.String.length => "String.length".
+Extract Inlined Constant Stdlib.Strings.String.get =>
+  "(fun n s -> if n < String.length s then Some (String.unsafe_get s n) else None)".
+Extract Inlined Constant Stdlib.Strings.String.substring =>
+  "(fun n m s -> let l = String.length s in if n >= l then """" else String.sub s n (min m (l - n)))".
+From Stdlib Require Import Ascii.
+
+check (label : string) (ok : bool) : string := append (if ok then "ok " else "FAIL ") label.
+
+ch (n : nat) : string := Stdlib.Strings.String.String (ascii_of_nat n) Stdlib.Strings.String.EmptyString.
+
+same_op (got want : node_op) : bool := eq_strs (io_wire got) (io_wire want).
+
+main := print_lines [
+  check "eligible with empty lists" (same_op
+    (check_request_op "9" "soma" "head" ["edit"] [] [])
+    (IoCheck "9" "soma" "head" ["edit"])),
+  check "unrelated exclusions" (same_op
+    (check_request_op "9" "soma" "head" [] ["other"] ["third"])
+    (IoCheck "9" "soma" "head" [])),
+  check "explicit no-check" (same_op
+    (check_request_op "9" "soma" "head" [] ["soma"] [])
+    (IoQueue ["check_unchecked_repo", "9", "soma", "false"])),
+  check "outside scope" (same_op
+    (check_request_op "9" "soma" "head" [] [] ["soma"])
+    (IoQueue ["check_unchecked_repo", "9", "soma", "true"])),
+  check "scope wins over flag" (same_op
+    (check_request_op "9" "soma" "head" [] ["soma"] ["soma"])
+    (IoQueue ["check_unchecked_repo", "9", "soma", "true"])),
+  check "membership beyond first" (same_op
+    (check_request_op "9" "soma" "head" [] ["other", "soma", "soma"] [])
+    (IoQueue ["check_unchecked_repo", "9", "soma", "false"]))
+].

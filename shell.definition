@@ -233,3 +233,7 @@ node_signed_restore : string -> string -> string -> list string -> bool.
 node_fail : string -> bool.
 node_remember_broadcast : string -> string -> string -> list string -> list string -> bool.
 node_peer_count : string -> string.
+
+(** Raw --no-check names and genesis scope exclusions. Soma decides whether
+    to launch a check or queue an unchecked-repository fact. *)
+node_check_exclusions : string -> list string * list string.

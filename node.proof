@@ -896,7 +896,7 @@ Example votes_floods_and_checks_become_operations :
      Some (IoSendAll ["prevote", "1", "0", "-1", "v", "nil"])] /\
   map action_io (firstn 3 (submission_plan "future-nonce" false "7" ["withdraw", "0"])) =
     [None, Some IoMarkNonceFlood, Some (IoLog "FAULT INJECTION: flooding 600 future-nonce transactions")] /\
-  output_io ["check", "9", "calc", "head1", "e1", "e2"] = Some (IoCheck "9" "calc" "head1" ["e1", "e2"]) /\
+  check_request_op "9" "calc" "head1" ["e1", "e2"] [] [] = IoCheck "9" "calc" "head1" ["e1", "e2"] /\
   output_io ["check", "9", "calc"] = None.
 Proof. repeat split; reflexivity. Qed.
 
@@ -1076,3 +1076,8 @@ Example backend_flag_cases :
   backend_kind_name "scripted:" = "llm" /\ backend_behavior_event "scripted:" = [] /\
   backend_kind_name "llm" = "llm" /\ backend_behavior_event "scripted:a:b" = [["agent", "behavior", "a:b"]].
 Proof. repeat split; reflexivity. Qed.
+
+Example check_eligibility_scope_precedence :
+  check_request_op "9" "calc" "head" [] ["calc"] ["calc"] =
+    IoQueue ["check_unchecked_repo", "9", "calc", "true"].
+Proof. reflexivity. Qed.

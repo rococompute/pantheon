@@ -798,6 +798,7 @@ type node_handle = { h_events : float -> string list list;
                      h_remember_broadcast : string -> string -> string list -> string list -> unit;
                      h_peer_count : unit -> string;
                      h_send_peer : string -> string list -> unit;
+                     h_check_exclusions : unit -> string list * string list;
                      h_run_check : string -> string -> string -> string list -> unit;
                      h_identity : string;
                      h_seen_refused : string -> bool;
@@ -830,6 +831,7 @@ let node_job_expire id jid = (lookup_handle id).h_job_expire jid; true
 let node_queue_empty id = (lookup_handle id).h_queue_empty ()
 let node_job_complete id job result = (lookup_handle id).h_job_complete job result
 let node_job_flood id jid = (lookup_handle id).h_job_flood jid; true
+let node_check_exclusions id = (lookup_handle id).h_check_exclusions ()
 let node_plain_text s = plain_text s
 let node_ci_launch id req out tree ci = (lookup_handle id).h_ci_launch req out tree ci
 (* a model call's I/O: node.soma's perform_llm decides and builds the prompt *)
@@ -1222,9 +1224,7 @@ let node_open packed home flags =
     (* whose a failure is comes from stage alone, which the node decides from
        its own signals (exit codes, a job that never started), never from
        what the check or the bid's CI printed (docs/SECURITY-REVIEW-2.md P-6) *)
-    (* a repository this node doesn't check: node.soma makes it a result
-       that is this node's own (check_unchecked) *)
-    if List.mem r !no_check || List.mem r my_excluded then (rm_out (); (try Sys.remove ef with _ -> ()); push [ "check_unchecked_repo"; id; r; string_of_bool (List.mem r my_excluded) ]) else
+    (* Soma checks eligibility before requesting this process. *)
     start_job self_exe [ "check"; rdir r; head; ef; out ] ~stdin_text:"" ~env:(Unix.environment ())
       ~on_done:(fun t ->
         (* a failure, the trimmed tree, or a CI run: node.soma's check_apply_events *)
@@ -1570,6 +1570,7 @@ let node_open packed home flags =
         match Hashtbl.find_opt pubkeys from with
         | Some k -> verify k (msg_bytes from fields) sg
         | None -> false);
+      h_check_exclusions = (fun () -> (!no_check, my_excluded));
       h_run_check = run_check;
       h_merge_applied = (fun r -> Option.map string_of_int (Hashtbl.find_opt applied r));
       h_merge_diverged = (fun r -> List.mem_assoc r !diverged);
