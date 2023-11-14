@@ -230,6 +230,17 @@ separate work; this status does not mark `.plan`.
 
 ## Done so far
 
+- Step 4, llm (part): a model job's launch is completed in Soma. For a
+  cmd: backend, `tool_job_of` decides the time limit (1200 s without a
+  tool checkout, 1800 s with one, 600 s when its clone failed), the
+  `PANTHEON_WORKTREE`/`GITDIR`/`REPO`/`BIN` entries placed before the rest
+  of the environment, and the directories removed afterwards; the shell
+  only makes the checkout (`node_tool_checkout`) and names its own binary
+  (`node_self_exe`). For grok, `grok_request` checks `XAI_API_KEY`, writes
+  the header text and the JSON body with `GROK_MODEL` or grok-4.7 (quoting
+  through `node_json_string`); the shell writes the header file and still
+  reads grok's reply. `test/llm-launch.sh` checks these on fixed inputs.
+
 - Step 5, part: a job's output bytes are accumulated in Soma. The shell
   reads a chunk from the job's descriptor and hands it over as a
   `job_bytes` event; `job_feed` appends it to that job's chunks and, past

@@ -1,0 +1,72 @@
+(** Pure model-launch decisions: a cmd: job's limit, environment and
+    cleanup from its tool checkout, and grok's header and body. No node. *)
+Import util shell market agent node.
+From Stdlib Require ExtrOcamlNatInt.
+Extract Inlined Constant Nat.div => "(fun a b -> if b = 0 then 0 else a / b)".
+Extract Inlined Constant Nat.modulo => "(fun a b -> if b = 0 then a else a mod b)".
+Extract Inlined Constant Stdlib.Strings.String.length => "String.length".
+Extract Inlined Constant Stdlib.Strings.String.get =>
+  "(fun n s -> if n < String.length s then Some (String.unsafe_get s n) else None)".
+Extract Inlined Constant Stdlib.Strings.String.substring =>
+  "(fun n m s -> let l = String.length s in if n >= l then """" else String.sub s n (min m (l - n)))".
+
+check (label got expected : string) : string :=
+  append (if seq got expected then "ok " else "FAIL ") label.
+
+joined (l : list string) : string := Stdlib.Strings.String.concat "|" l.
+
+job_text (tj : tool_job) : string :=
+  append (tool_limit tj) (append ";" (append (joined (tool_env tj)) (append ";" (joined (tool_clean tj))))).
+
+launch_text (r : list string * (list string * list string)) : string :=
+  append (joined (fst r)) (append ";" (append (joined (fst (snd r))) (append ";" (joined (snd (snd r)))))).
+
+quote (s : string) : string := append """" (append s """").
+
+grok_text (r : option (string * string)) : string :=
+  match r with None => "none" | Some (hdr, body) => append hdr (append "#" body) end.
+
+opt_text (o : option string) : string := match o with None => "none" | Some s => append "=" s end.
+
+made_ok : option ((string * string) * bool) := Some (("/w", "/w.git"), true).
+made_bad : option ((string * string) * bool) := Some (("/w", "/w.git"), false).
+
+checks : list string := [
+  check "no checkout: 1200 s, nothing extra"
+    (job_text (tool_job_of None None "/bin/p")) "1200;;",
+  check "checkout made: 1800 s, its environment and both directories"
+    (job_text (tool_job_of (Some "calc") made_ok "/bin/p"))
+    "1800;PANTHEON_WORKTREE=/w|PANTHEON_GITDIR=/w.git|PANTHEON_REPO=calc|PANTHEON_BIN=/bin/p;/w|/w.git",
+  check "checkout failed: 600 s, directories still removed"
+    (job_text (tool_job_of (Some "calc") made_bad "/bin/p")) "600;;/w|/w.git",
+  check "cmd launch gets its limit and the extra environment first"
+    (launch_text (tool_launch (backend_launch "cmd:./bid.sh") ["A=1", "B=2"]
+       (tool_job_of (Some "calc") made_ok "/bin/p")))
+    "./bid.sh|1800|cmd;PANTHEON_WORKTREE=/w|PANTHEON_GITDIR=/w.git|PANTHEON_REPO=calc|PANTHEON_BIN=/bin/p|A=1|B=2;/w|/w.git",
+  check "cmd launch without a checkout"
+    (launch_text (tool_launch (backend_launch "cmd:x") ["A=1"] (tool_job_of None None "/bin/p")))
+    "x|1200|cmd;A=1;",
+  check "launch mode of each backend"
+    (joined (map (fun b => launch_mode (backend_launch b)) ["claude", "codex", "grok", "cmd:x", "nope"]))
+    "prompt|codex|grok|cmd|",
+  check "env value: first entry wins" (opt_text (env_value "K" ["K=a", "K=b"])) "=a",
+  check "env value: a longer name is not it" (opt_text (env_value "K" ["KX=a"])) "none",
+  check "env value: empty" (opt_text (env_value "K" ["K="])) "=",
+  check "grok without a key" (grok_text (grok_request quote ["GROK_MODEL=m"] "hi")) "none",
+  check "grok with an empty key" (grok_text (grok_request quote ["XAI_API_KEY="] "hi")) "none",
+  check "grok default model"
+    (grok_text (grok_request quote ["XAI_API_KEY=sk"] "hi"))
+    "Authorization: Bearer sk
+Content-Type: application/json
+#{""model"":""grok-4.7"",""messages"":[{""role"":""user"",""content"":""hi""}]}",
+  check "grok model from the environment"
+    (grok_text (grok_request quote ["GROK_MODEL=g5", "XAI_API_KEY=sk"] "p"))
+    "Authorization: Bearer sk
+Content-Type: application/json
+#{""model"":""g5"",""messages"":[{""role"":""user"",""content"":""p""}]}",
+  check "grok launch carries the header after the mode"
+    (joined (grok_launch "H" (backend_launch "grok")))
+    "curl|600|grok|H|-s|-m|600|-H|@HDR@|-d|@-|https://api.x.ai/v1/chat/completions"
+].
+
+main := print_lines checks.

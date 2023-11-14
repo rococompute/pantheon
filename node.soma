@@ -1153,6 +1153,73 @@ backend_launch (backend : string) : list string :=
 model_env_entries (entries : list string) : list string :=
   filter (fun kv => negb ((9 <? slen kv) && starts "PANTHEON_" kv)) entries.
 
+(** how a launch's input and output files work: its third entry *)
+launch_mode (launch : list string) : string := hd "" (tl (tl launch)).
+
+(** A cmd: job, decided from its tool checkout: none asked (1200 s, no
+    extra environment, nothing to remove), one the shell made (1800 s, the
+    worktree, git directory, repository and the node's binary in the
+    environment) or one whose clone or checkout failed (600 s). Both of a
+    made checkout's directories are removed when the job is over. *)
+Record tool_job := { tool_limit : string; tool_env : list string; tool_clean : list string }.
+
+tool_job_of (checkout : option string) (made : option ((string * string) * bool)) (self : string) : tool_job :=
+  match checkout, made with
+  | Some r, Some (dirs, ok) =>
+      let (wt, gd) := dirs in
+      if ok then
+        {| tool_limit := "1800";
+           tool_env := [append "PANTHEON_WORKTREE=" wt, append "PANTHEON_GITDIR=" gd,
+                        append "PANTHEON_REPO=" r, append "PANTHEON_BIN=" self];
+           tool_clean := [wt, gd] |}
+      else {| tool_limit := "600"; tool_env := []; tool_clean := [wt, gd] |}
+  | _, _ => {| tool_limit := "1200"; tool_env := []; tool_clean := [] |}
+  end.
+
+(** a cmd: launch with its limit filled in, the job's extra environment
+    before the rest, and what to remove after; any other launch as it is *)
+tool_launch (launch env : list string) (tj : tool_job) : list string * (list string * list string) :=
+  match launch with
+  | prog :: _ :: mode :: args => (prog :: tool_limit tj :: mode :: args, (tool_env tj ++ env, tool_clean tj))
+  | _ => (launch, (env, tool_clean tj))
+  end.
+
+(** an environment entry's value: the first NAME=, as getenv finds it *)
+env_value (name : string) (env : list string) : option string :=
+  let pre := append name "=" in
+  match find (starts pre) env with
+  | Some kv => Some (drop_str (slen pre) kv)
+  | None => None
+  end.
+
+(** Grok's request: the header file's text and the JSON body around the
+    prompt ([json] quotes a string, yojson's way), with GROK_MODEL or
+    grok-4.7; none without an XAI_API_KEY. *)
+grok_request (json : string -> string) (env : list string) (prompt : string) : option (string * string) :=
+  match env_value "XAI_API_KEY" env with
+  | None => None
+  | Some k =>
+      if seq k "" then None else
+      let model := match env_value "GROK_MODEL" env with Some m => m | None => "grok-4.7" end in
+      Some (append "Authorization: Bearer " (append k (append newline (append "Content-Type: application/json" newline))),
+            append "{""model"":" (append (json model) (append ",""messages"":[{""role"":""user"",""content"":"
+              (append (json prompt) "}]}"))))
+  end.
+
+(** the grok launch with its header text after the mode *)
+grok_launch (hdr : string) (launch : list string) : list string :=
+  match launch with
+  | prog :: lim :: mode :: args => prog :: lim :: mode :: hdr :: args
+  | _ => launch
+  end.
+
+llm_begin (h : node_t) (id kind prompt input : string) (ctx clean launch env : list string) : bool :=
+  match node_llm_start h id kind prompt input ctx clean launch env with
+  | None => true
+  (* the process couldn't start: its output is here at once *)
+  | Some text => push_all h (reply_events h id kind prompt text ctx)
+  end.
+
 llm_call (h : node_t) (id kind prompt : string) (ctx : list string) : bool :=
   let token := node_token tt in
   let backend := fst (snd (node_limit_info h)) in
@@ -1160,15 +1227,19 @@ llm_call (h : node_t) (id kind prompt : string) (ctx : list string) : bool :=
   | [] => io_push h ["llm_error", id, append "unknown backend " backend]
   | launch =>
       let all_env := node_env_entries tt in
-      let env := if seq (hd "" (tl (tl launch))) "grok" then all_env
-                 else model_env_entries all_env in
-      match node_llm_start h id kind prompt
-        (prompt_assemble token prompt ctx (fun _ => llm_repos_text h token) (fun _ => llm_plan_text h token)
-           (llm_repo_text h token)) ctx (llm_checkout kind ctx (node_repo_names h)) launch env with
-      | None => true
-      (* the process couldn't start: its output is here at once *)
-      | Some text => push_all h (reply_events h id kind prompt text ctx)
-      end
+      let text := prompt_assemble token prompt ctx (fun _ => llm_repos_text h token) (fun _ => llm_plan_text h token)
+                    (llm_repo_text h token) in
+      if seq (launch_mode launch) "grok" then
+        match grok_request node_json_string all_env text with
+        | None => io_push h ["llm_error", id, "backend grok needs XAI_API_KEY"]
+        | Some (hdr, body) => llm_begin h id kind prompt body ctx [] (grok_launch hdr launch) all_env
+        end
+      else if seq (launch_mode launch) "cmd" then
+        let co := llm_checkout kind ctx (node_repo_names h) in
+        let made := match co with Some r => Some (node_tool_checkout h r) | None => None end in
+        let (l, rest) := tool_launch launch (model_env_entries all_env) (tool_job_of co made (node_self_exe tt)) in
+        llm_begin h id kind prompt text ctx (snd rest) l (fst rest)
+      else llm_begin h id kind prompt text ctx [] launch (model_env_entries all_env)
   end.
 
 perform_llm (h : node_t) (id kind prompt : string) (ctx : list string) : bool :=

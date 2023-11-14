@@ -763,7 +763,8 @@ type node_handle = { h_events : unit -> string list list;
                      h_job_flood : string -> unit;
                      h_llm_budget : unit -> string * string;
                      h_llm_hold : string -> string -> string -> string list -> unit;
-                     h_llm_start : string -> string -> string -> string -> string list -> string option -> string list -> string list -> string option;
+                     h_llm_start : string -> string -> string -> string -> string list -> string list -> string list -> string list -> string option;
+                     h_tool_checkout : string -> (string * string) * bool;
                      h_limit_set : float -> string -> float -> unit;
                      h_limit_clear : float -> unit;
                      h_repo_names : unit -> string list;
@@ -829,7 +830,10 @@ let node_job_flood id jid = (lookup_handle id).h_job_flood jid; true
 (* a model call's I/O: node.soma's perform_llm decides and builds the prompt *)
 let node_llm_budget id = (lookup_handle id).h_llm_budget ()
 let node_llm_hold id req kind prompt ctx = (lookup_handle id).h_llm_hold req kind prompt ctx; true
-let node_llm_start id req kind raw prompt ctx checkout launch env = (lookup_handle id).h_llm_start req kind raw prompt ctx checkout launch env
+let node_llm_start id req kind raw prompt ctx clean launch env = (lookup_handle id).h_llm_start req kind raw prompt ctx clean launch env
+let node_tool_checkout id r = (lookup_handle id).h_tool_checkout r
+let node_self_exe () = self_exe
+let node_json_string s = Yojson.Safe.to_string (`String s)
 let node_env_entries () = Array.to_list (Unix.environment ())
 (* a model's output: node.soma's reply_fields decides what it becomes.
    These bindings only report the cap, where the braces are, and yojson's
@@ -1152,7 +1156,7 @@ let node_open packed home flags =
   (* the model process for a prompt Soma assembled from prompt0. Its output
      comes back raw as an llm_output event, or at once when the process
      couldn't start *)
-  let call_model id kind prompt0 prompt ctx checkout launch env =
+  let call_model id kind prompt0 prompt ctx clean launch env =
     let starting = ref true and immediate = ref None in
     let reply text =
       if !starting then immediate := Some text
@@ -1165,39 +1169,20 @@ let node_open packed home flags =
            (List.map (fun a -> if a = "@OUT@" then out else a) args) ~stdin_text:prompt ~env:(Array.of_list env)
            ~on_done:(fun t -> if String.length t > 0 && t.[0] = '!' then reply t else reply (try read_file out with _ -> "!codex wrote no reply"))
            ~clean:(fun () -> try Sys.remove out with _ -> ())
-     | prog :: limit_s :: "grok" :: args ->
-         let k = try Sys.getenv "XAI_API_KEY" with Not_found -> "" in
-         if k = "" then push [ "llm_error"; id; "backend grok needs XAI_API_KEY" ]
-         else begin
-           let hdr = Filename.temp_file "pantheon-h" ".txt" in
-           write_file hdr ("Authorization: Bearer " ^ k ^ "\nContent-Type: application/json\n");
-           let body = Yojson.Safe.to_string (`Assoc [ ("model", `String (try Sys.getenv "GROK_MODEL" with Not_found -> "grok-4.7"));
-                                                      ("messages", `List [ `Assoc [ ("role", `String "user"); ("content", `String prompt) ] ]) ]) in
-           start_job ~limit:(float_of_string limit_s) prog
-             (List.map (fun a -> if a = "@HDR@" then "@" ^ hdr else a) args) ~stdin_text:body ~env:(Unix.environment ())
-             ~on_done:(fun t ->
-               try reply (Yojson.Safe.Util.(to_string (member "content" (member "message" (List.hd (to_list (member "choices" (Yojson.Safe.from_string t))))))))
-               with _ -> push [ "llm_error"; id; "grok: " ^ String.sub t 0 (min 300 (String.length t)) ])
-             ~clean:(fun () -> try Sys.remove hdr with _ -> ())
-         end
-     | prog :: _ :: "cmd" :: args ->
-         let extra, clean, limit =
-           match checkout with
-           | Some r ->
-               let wt = Filename.temp_dir "pantheon-work" "" in
-               let gd = wt ^ ".git" in
-               let gone () = remove_tree_later wt; remove_tree_later gd in
-               let commit = git_out (rdir r) [ "rev-parse"; "HEAD" ] in
-               if fst (capture "git" [ "clone"; "--quiet"; "--shared"; "--no-checkout"; "--separate-git-dir=" ^ gd; rdir r; wt ])
-                  && git_ok wt [ "checkout"; "-q"; "--detach"; commit ] then
-                 ([ "PANTHEON_WORKTREE=" ^ wt; "PANTHEON_GITDIR=" ^ gd; "PANTHEON_REPO=" ^ r; "PANTHEON_BIN=" ^ self_exe ],
-                  gone, 1800.)
-               else ([], gone, 600.)
-           | None -> ([], ignore, 1200.)
-         in
-         start_job ~limit prog args ~stdin_text:prompt ~env:(Array.append (Array.of_list extra) (Array.of_list env)) ~on_done:reply ~clean
+     (* Soma's grok_request made the header text and the body (the prompt) *)
+     | prog :: limit_s :: "grok" :: hdr_text :: args ->
+         let hdr = Filename.temp_file "pantheon-h" ".txt" in
+         write_file hdr hdr_text;
+         start_job ~limit:(float_of_string limit_s) prog
+           (List.map (fun a -> if a = "@HDR@" then "@" ^ hdr else a) args) ~stdin_text:prompt ~env:(Array.of_list env)
+           ~on_done:(fun t ->
+             try reply (Yojson.Safe.Util.(to_string (member "content" (member "message" (List.hd (to_list (member "choices" (Yojson.Safe.from_string t))))))))
+             with _ -> push [ "llm_error"; id; "grok: " ^ String.sub t 0 (min 300 (String.length t)) ])
+           ~clean:(fun () -> try Sys.remove hdr with _ -> ())
+     (* cmd: too, its limit, environment and paths to remove chosen by Soma's tool_job_of *)
      | prog :: limit_s :: _ :: args ->
-         start_job ~limit:(float_of_string limit_s) prog args ~stdin_text:prompt ~env:(Array.of_list env) ~on_done:reply ~clean:ignore
+         start_job ~limit:(float_of_string limit_s) prog args ~stdin_text:prompt ~env:(Array.of_list env) ~on_done:reply
+           ~clean:(fun () -> List.iter remove_tree_later clean)
      | _ -> push [ "llm_error"; id; "unknown backend " ^ !backend ]);
     starting := false;
     !immediate
@@ -1542,6 +1527,12 @@ let node_open packed home flags =
       h_llm_budget = (fun () -> incr calls; (string_of_int !calls, string_of_int !max_calls));
       h_llm_hold = hold;
       h_llm_start = call_model;
+      (* a cmd: patch's fresh checkout, its git directory outside the worktree *)
+      h_tool_checkout = (fun r ->
+        let wt = Filename.temp_dir "pantheon-work" "" in
+        let gd = wt ^ ".git" and commit = git_out (rdir r) [ "rev-parse"; "HEAD" ] in
+        ((wt, gd), fst (capture "git" [ "clone"; "--quiet"; "--shared"; "--no-checkout"; "--separate-git-dir=" ^ gd; rdir r; wt ])
+                   && git_ok wt [ "checkout"; "-q"; "--detach"; commit ]));
       h_limit_set = (fun until reason backoff ->
         limited_until := until; limit_reason := reason; limit_backoff := backoff; probing := false);
       h_limit_clear = (fun backoff -> limit_backoff := backoff; probing := false);

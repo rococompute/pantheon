@@ -111,7 +111,15 @@ node_nonce_flooded : string -> bool.
 node_llm_budget : string -> string * string.
 node_llm_hold : string -> string -> string -> string -> list string -> bool.
 node_env_entries : unit -> list string.
-node_llm_start : string -> string -> string -> string -> string -> list string -> option string -> list string -> list string -> option string.
+(** node_llm_start's arguments after the context: the paths to remove when
+    the job is over, the launch (node.soma's backend_launch, as llm_launch
+    and grok_launch complete it) and the environment. A cmd: patch's fresh
+    checkout (its worktree, its git directory, and whether the clone and
+    checkout worked); the node's own binary; a string as a JSON string. *)
+node_llm_start : string -> string -> string -> string -> string -> list string -> list string -> list string -> list string -> option string.
+node_tool_checkout : string -> string -> (string * string) * bool.
+node_self_exe : unit -> string.
+node_json_string : string -> string.
 (** What a model's output becomes is decided in Soma (node.soma's
     reply_events and reply_fields). node_llm_start gives the output at once
     when the process couldn't start (none: it runs, and its output comes
