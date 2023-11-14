@@ -39,7 +39,7 @@ Nothing listens beyond localhost. The nodes talk on 127.0.0.1. Muse's VM (Lima o
 - **A worker is slow:** a patch request gets under 30 minutes, and a late bid is dropped. Diplomats are told to keep answering attestations while workers run.
 - **File permissions:** `network` and `start` restrict each node home to 0700 and its `key.json` to 0600. The inbox token configuration is created privately and restricted to 0600 by `start` and `vm`. For an existing stopped deployment, `scripts/host.sh permissions` applies these modes; `HOST_DRY=DIR scripts/host.sh permissions` writes the same operations to `DIR/permissions.sh` without changing the deployment. This is only the permissions step of P-1; ownership and process identities are still unchanged.
 
-- **Diplomats as the host's one user:** until `users`, `services` and `sessions` (below) have run, a diplomat could read the other nodes' keys. After them, each session runs as its own user.
+- **Diplomats as the host's one user:** until `users`, `services` and `sessions` (below) have run, a diplomat could read the other nodes' keys. After them, each session runs as its own user. `diplomats` skips agents without an isolated session entry; it never launches a CLI as the operator.
 
 The inbox backend also supports `PANTHEON_INBOX_GROUP` for deployments with
 separate users: set it in the node's backend wrapper to that agent's inbox
@@ -126,7 +126,9 @@ user finds its CLI, makes the tab's shell that user's login shell
 wrappers first), and starts the CLI there with approvals off and herdr's
 readiness wait, as before. The prompt points at the user's own
 `instructions.md`. No `PANTHEON_*` or `PATH` of the operator's reaches
-the session. Agents not in `sessions` keep the old path.
+the session. A local diplomat absent from `sessions` is skipped with a provisioning
+message, including on repeat launches. Other provisioned sessions can start.
+VM agents do not need a local session entry.
 `HOST_DRY=DIR` previews the script (`DIR/sessions.sh`). Its own read-only
 GitHub key for the clone is the operator's to add.
 

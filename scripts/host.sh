@@ -876,6 +876,13 @@ cmd_diplomats() {
       esac
       say "$a: in its VM, tab \"$a (vm)\""; continue
     fi
+    # An unprovisioned diplomat must never fall back to the operator,
+    # who may own node keys and push credentials. Other isolated sessions
+    # can still start while this account awaits provisioning.
+    if ! own_session "$a"; then
+      say "$a: no isolated session; run scripts/host.sh users, services and sessions before starting it"
+      continue
+    fi
     case $(kind "$a") in
       claude) kind=claude exe=claude args="--dangerously-skip-permissions" ;;
       codex)  kind=codex exe=codex args="--dangerously-bypass-approvals-and-sandbox" ;;
@@ -899,16 +906,7 @@ cmd_diplomats() {
       say "$a: started as $u in tab \"$a\""
       continue
     fi
-    command -v "$exe" >/dev/null || { say "$a: no $exe on this host: install it and log it in, then run this again"; continue; }
-    render_diplomat "$a"
-    p=$(herdr tab create --workspace "$ws" --label "$a" --cwd "$P/desk/$a" --no-focus \
-      --env "PANTHEON_INBOX=$P/inbox/$a" --env "PANTHEON_REMOTE=$REMOTE" --env "PANTHEON_BRANCH=$BRANCH" \
-      --env "PANTHEON_CHECK=$here/scripts/host.sh check" --env "PATH=$here/scripts:$PATH" | jq -r .result.root_pane.pane_id)
-    # shellcheck disable=SC2086
-    herdr agent start "$a" --kind "$kind" --pane "$p" --timeout 60000 -- $args >/dev/null \
-      || { say "$a: $exe didn't come up ready (logged in? herdr pane read $p)"; continue; }
-    herdr agent prompt "$a" "Read $P/diplomats/$a.md: it is your job, as $a's diplomat in a Pantheon network. Follow it now." >/dev/null
-    say "$a: started in tab \"$a\""
+    die "$a lost its isolated session configuration: run scripts/host.sh sessions before diplomats"
   done
   say "in this workspace ($ws): a tab per agent, and one for status"
 }
