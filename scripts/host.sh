@@ -20,6 +20,7 @@
 #   scripts/host.sh join               the network directory (as tar, on stdin) that holds every agent's
 #                                      part: each node's genesis from it, and the genesis hash
 #   scripts/host.sh start              write the services and (re)start them all: nodes, mirror, inbox server
+#   scripts/host.sh services           nodes, mirror and inbox server as the pantheon user, as system services (root; HOST_DRY=DIR to preview)
 #   scripts/host.sh vm AGENT           AGENT's VM (Muse's): made and started, the agent's CLI in it, a token
 #   scripts/host.sh login AGENT        log AGENT's CLI in, in its VM (device code: you open the URL)
 #   scripts/host.sh diplomats          from a herdr pane: a workspace with one tab per agent, each session started
@@ -157,6 +158,13 @@ permissions_script() {
 
 # Provision identities independently of migrating a running deployment. These
 # accounts are deliberately not used by the legacy user services yet.
+valid_agent_names() {
+  for a in $AGENTS; do
+    case $a in ''|*[!a-z0-9-]*|-*) die "unsafe agent name for a Unix account: $a" ;; esac
+    [ ${#a} -le 23 ] || die "agent name too long for a Unix account: $a"
+  done
+}
+
 cmd_users() {
   case $HOST_OPERATOR in ''|*[!a-z0-9_-]*|-*) die "unsafe operator name for the sudoers file: $HOST_OPERATOR" ;; esac
   if [ "$HOST_OPERATOR" = root ] && [ -z "$HOST_OPERATOR_GIVEN" ]; then
@@ -229,6 +237,110 @@ ROOT
   printf 'install -o root -g root -m 0440 "$host_sudo" /etc/sudoers.d/pantheon\n'
   printf 'rm -f "$host_sudo"\n'
 }
+
+# Nodes, mirror and inbox server as the pantheon user (system services).
+# Like users, this emits one root script; HOST_DRY previews it and a
+# rootless test can run it against a fixture root with stubbed tools.
+cmd_services() {
+  valid_agent_names
+  if [ -n "${HOST_DRY:-}" ]; then
+    mkdir -p "$HOST_DRY"
+    services_script > "$HOST_DRY/services.sh"
+  else
+    [ "$(id -u)" = 0 ] || die "services requires root (or HOST_DRY=DIR to preview)"
+    services_script | sh -eu
+  fi
+}
+
+services_script() {
+  printf '#!/bin/sh\nset -eu\nR=${HOST_ROOT:-}\n'
+  cat <<'ROOT'
+# Refuse symlinked or missing destinations before any root write: a
+# node-owned symlink must never be followed by root.
+refuse_link() { [ ! -L "$1" ] || { echo "host: refusing symlinked path $1" >&2; exit 1; }; }
+refuse_link "$R/var/lib/pantheon"
+refuse_link "$R/var/lib/pantheon/inbox.json"
+refuse_link "$R/var/lib/pantheon/goal.txt"
+ROOT
+  for a in $AGENTS; do
+    printf '[ -d "$R/var/lib/pantheon/net/%s" ] || { echo "host: no node home for %s under /var/lib/pantheon/net (make the network there first)" >&2; exit 1; }\n' "$a" "$a"
+    printf 'refuse_link "$R/var/lib/pantheon/net/%s"\n' "$a"
+    for f in key.json run.sh backend.sh; do
+      printf 'refuse_link "$R/var/lib/pantheon/net/%s/%s"\n' "$a" "$f"
+    done
+  done
+  # What the units point at must be reachable by pantheon, checked as
+  # pantheon itself, before any write below.
+  printf 'runuser -u pantheon -- test -x %s || { echo "host: pantheon cannot execute the node binary: install Pantheon where the pantheon user can read it" >&2; exit 1; }\n' "$(q "$BIN")"
+  for tool_path in "$here/scripts/host.sh" "$here/deploy/host/ci-sandbox" "$here/scripts/bidder-inbox.sh" "$here/scripts/inbox-http.py"; do
+    printf 'runuser -u pantheon -- test -r %s || { echo "host: pantheon cannot read %s: install Pantheon where the pantheon user can read it" >&2; exit 1; }\n' "$(q "$tool_path")" "$(q "$tool_path")"
+  done
+  cat <<'ROOT'
+# Everything is built in a root-only stage, then installed into place.
+# Per-node files arrive over runuser's stdin: root reads its own stage
+# (0700, never traversed by pantheon) and pantheon writes its own files.
+stage=$(mktemp -d)
+trap 'rm -rf "$stage"' EXIT HUP INT TERM
+uid=$(id -u pantheon)
+install -d -o pantheon -m 0700 "$R/var/lib/pantheon/.ssh"
+ROOT
+  for a in $AGENTS; do
+    printf 'install -d -o pantheon -m 0700 "$R/var/lib/pantheon/net/%s"\n' "$a"
+  done
+  printf 'cat > "$stage/pantheon-node@.service" <<EOF\n'
+  cat <<'UNIT'
+[Unit]
+Description=Pantheon node %i
+[Service]
+User=pantheon
+WorkingDirectory=/var/lib/pantheon/net/%i
+Environment=SOMA_DIR=/var/lib/pantheon/soma
+Environment=XDG_RUNTIME_DIR=/run/user/$uid
+ExecStart=/var/lib/pantheon/net/%i/run.sh
+Restart=on-failure
+RestartSec=10
+[Install]
+WantedBy=multi-user.target
+UNIT
+  printf 'EOF\ninstall -o root -g root -m 0644 "$stage/pantheon-node@.service" "$R/etc/systemd/system/pantheon-node@.service"\n'
+  if [ -n "$REMOTE" ]; then
+    printf 'cat > "$stage/pantheon-mirror.service" <<EOF\n'
+    printf '[Unit]\nDescription=Pantheon mirror\n[Service]\nUser=pantheon\nEnvironment=PANTHEON_HOST=/var/lib/pantheon\nExecStart=%s/scripts/host.sh mirror-loop\nRestart=on-failure\nRestartSec=60\n[Install]\nWantedBy=multi-user.target\nEOF\n' "$here"
+    printf 'install -o root -g root -m 0644 "$stage/pantheon-mirror.service" "$R/etc/systemd/system/pantheon-mirror.service"\n'
+  fi
+  if [ -n "$VM_AGENTS" ]; then
+    printf 'cat > "$stage/pantheon-inbox.service" <<EOF\n'
+    printf '[Unit]\nDescription=Pantheon inbox server\n[Service]\nUser=pantheon\nExecStart=/usr/bin/python3 %s/scripts/inbox-http.py serve /var/lib/pantheon/inbox.json\nRestart=on-failure\nRestartSec=5\n[Install]\nWantedBy=multi-user.target\nEOF\n' "$here"
+    printf 'install -o root -g root -m 0644 "$stage/pantheon-inbox.service" "$R/etc/systemd/system/pantheon-inbox.service"\n'
+  fi
+  for a in $AGENTS; do
+    exec_line="exec $BIN node /var/lib/pantheon/net/$a --backend cmd:/var/lib/pantheon/net/$a/backend.sh --goal /var/lib/pantheon/goal.txt --listen $LISTEN --ci-repo pantheon $CI_CMD --ci-sandbox $here/deploy/host/ci-sandbox --ci-memory $CI_MEMORY"
+    printf 'printf "%%s\\n" %s %s > "$stage/run-%s.sh"\n' "$(q '#!/bin/sh')" "$(q "$exec_line")" "$a"
+    printf 'printf "%%s\\n" %s %s > "$stage/backend-%s.sh"\n' "$(q '#!/bin/sh')" "$(q "PANTHEON_INBOX=/var/lib/pantheon-inbox/$a PANTHEON_INBOX_GROUP=inbox-$a exec $here/scripts/bidder-inbox.sh")" "$a"
+    printf 'runuser -u pantheon -- sh -c %s sh "$R/var/lib/pantheon/net/%s/run.sh" < "$stage/run-%s.sh"\n' "$(q 'cat > "$1" && chmod 0755 "$1"')" "$a" "$a"
+    printf 'runuser -u pantheon -- sh -c %s sh "$R/var/lib/pantheon/net/%s/backend.sh" < "$stage/backend-%s.sh"\n' "$(q 'cat > "$1" && chmod 0755 "$1"')" "$a" "$a"
+  done
+  cat <<'ROOT'
+# ci-sandbox runs a user service for a check: pantheon's user manager
+# must exist (linger starts it at boot and gives it /run/user/UID).
+loginctl enable-linger pantheon
+ROOT
+  printf 'op=%s\n' "$(q "$HOST_OPERATOR")"
+  printf 'legacy="pantheon-mirror.service pantheon-inbox.service"; for a in %s; do legacy="$legacy pantheon-node@$a.service"; done\n' "$AGENTS"
+  cat <<'ROOT'
+# No second copy of a node under the operator's user units after a reboot.
+if [ "$op" != root ] && [ "$op" != pantheon ]; then
+  runuser -u "$op" -- env "XDG_RUNTIME_DIR=/run/user/$(id -u "$op")" systemctl --user disable --now $legacy \
+    || { echo "host: could not disable the operator's legacy user units; not enabling a second copy" >&2; exit 1; }
+fi
+systemctl daemon-reload
+ROOT
+  units=""; for a in $AGENTS; do units="$units pantheon-node@$a.service"; done
+  [ -n "$REMOTE" ] && units="$units pantheon-mirror.service"
+  [ -n "$VM_AGENTS" ] && units="$units pantheon-inbox.service"
+  printf 'systemctl enable --now%s\n' "$units"
+}
+
 
 cmd_network() {
   need_bin
@@ -589,7 +701,7 @@ cmd_logs() {
 
 c=${1:-}; [ $# -gt 0 ] && shift
 case $c in
-  users|permissions|network|keygen|join|start|vm|login|diplomats|watchdog|instructions|mirror|check|stop|status|logs) "cmd_$c" "$@" ;;
+  users|services|permissions|network|keygen|join|start|vm|login|diplomats|watchdog|instructions|mirror|check|stop|status|logs) "cmd_$c" "$@" ;;
   mirror-loop) cmd_mirror_loop ;;
   watchdog-loop) cmd_watchdog_loop ;;
   *) awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "$0"; [ -z "$c" ] || exit 1 ;;

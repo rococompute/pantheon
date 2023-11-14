@@ -68,6 +68,19 @@ is `HOST_OPERATOR`, or who ran sudo (`SUDO_USER`), never root by
 default: a root default is refused unless `HOST_OPERATOR=root` is set
 on purpose.
 
+`scripts/host.sh services` is the next step: it writes the nodes, the
+mirror and the inbox server as system units (`User=pantheon`, the node
+unit with `XDG_RUNTIME_DIR=/run/user/<pantheon's uid>` for ci-sandbox's
+user bus, and linger so that user manager exists), refusing symlinked
+or missing node homes - and units whose binary or scripts pantheon
+cannot reach - before any root write. Its files are built in a
+root-only stage; per-node scripts are piped to pantheon over stdin,
+never read out of that stage. It disables the operator's legacy user
+units before enabling the system ones, so no node runs twice.
+`HOST_DRY=DIR` previews the same script (`DIR/services.sh`); running
+the units for real, and then starting diplomat sessions as their
+users, is what is left.
+
 This command only prepares accounts. It does not migrate a running network,
 credentials, checkouts, instructions or services, and does not yet isolate
 existing diplomat sessions. Continue treating those sessions as having access
