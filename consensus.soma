@@ -93,6 +93,33 @@ decide (c : consensus_state) (v : list string) : consensus_state * list (list st
   let c' := {| c' with log := filter (fun m => h <? mh m) (log c) |} in
   (c', [("decided" :: show h :: v), ["height", show (h + 1)], timer "commit" (h + 1) 0 (block_ms c)]).
 
+(** M-3: the validators follow the roster by height. After a block is
+    applied, the node enters the next height's roster, the market's
+    [roster_at] for that height: a change takes effect only at a height
+    after the one committing it, so the roster is fixed before the height's
+    first round. Messages already logged for the new height from agents not
+    on it are dropped, so no quorum counts them. The same roster leaves the
+    state exactly as it was. *)
+Fixpoint same_roster (a b : list string) : bool :=
+  match a, b with
+  | [], [] => true
+  | x :: r, y :: s => seq x y && same_roster r s
+  | _, _ => false
+  end.
+
+enter_roster (c : consensus_state) (roster : list string) : consensus_state :=
+  if same_roster (nodes c) roster then c
+  else {| c with nodes := roster; log := filter (fun m => mem (frm m) roster) (log c) |}.
+
+(** A validator the roster doesn't name (removed, catching up, rejoining)
+    takes no block as valid: it neither locks nor decides on its own vote,
+    which nobody else counts, and moves on only by f + 1 matching [Done]
+    messages of the roster's members. *)
+member (c : consensus_state) : bool := mem (me c) (nodes c).
+
+member_valid (c : consensus_state) (valid : list string -> bool) (v : list string) : bool :=
+  member c && valid v.
+
 can_accept (c : consensus_state) (v : list string) : bool :=
   (lockr c =? 0) || seq (hash_list (lockv c)) (hash_list v).
 
@@ -208,7 +235,7 @@ Fixpoint settle (fuel : nat) (c : consensus_state) (valid : list string -> bool)
   match fuel with
   | 0 => (c, outs)
   | Succ k =>
-      match rule c valid getv with
+      match rule c (member_valid c valid) getv with
       | Some (c', o) => if height c' =? height c then settle k c' valid getv (outs ++ o) else (c', outs ++ o)
       | None => (c, outs)
       end

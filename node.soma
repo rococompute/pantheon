@@ -89,6 +89,8 @@ and_status (n : node_state) (outs : list (list string)) : node_state * list (lis
     agent react. *)
 on_decided (n : node_state) (h : nat) (txs : list string) : node_state * list (list string) :=
   let (m, o) := apply_block (mkt n) h txs in
+  (* M-3: consensus counts the next height on that height's roster *)
+  let n := with_cons n (enter_roster (cons n) (roster_at (agents m) (roster_changes m) (h + 1))) in
   let n := with_pool (with_mkt n m) (filter (fun raw => negb (mem raw txs) && poolable m raw) (pool n)) in
   if live n then
     let (a, o') := tick (ag n) m in
