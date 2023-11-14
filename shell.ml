@@ -782,8 +782,8 @@ type node_handle = { h_events : float -> string list list;
                      h_divergences : unit -> (string * string) list;
                      h_limit_info : unit -> float * (string * (string * string));
                      h_release_state : unit -> float * bool;
-                     h_release_one : unit -> (((string * string) * string) * string list) option;
-                     h_release_all : unit -> (((string * string) * string) * string list) list;
+                     h_held_requests : unit -> (((string * string) * string) * string list) list;
+                     h_held_store : (((string * string) * string) * string list) list -> bool -> unit;
                      h_write_status : string -> unit;
                      h_encode_tx : string -> string list -> string;
                      h_track_tx : string -> unit;
@@ -932,8 +932,8 @@ let node_checkout_heads id = (lookup_handle id).h_checkout_heads ()
 let node_divergences id = (lookup_handle id).h_divergences ()
 let node_limit_info id = (lookup_handle id).h_limit_info ()
 let node_release_state id = (lookup_handle id).h_release_state ()
-let node_release_one id = (lookup_handle id).h_release_one ()
-let node_release_all id = (lookup_handle id).h_release_all ()
+let node_held_requests id = (lookup_handle id).h_held_requests ()
+let node_held_store id requests probing = (lookup_handle id).h_held_store requests probing; true
 let node_local_time until =
   let tm = Unix.localtime until in Printf.sprintf "%02d:%02d" tm.Unix.tm_hour tm.Unix.tm_min
 let node_encode_tx id nonce fields = (lookup_handle id).h_encode_tx nonce fields
@@ -1136,7 +1136,7 @@ let node_open packed home flags =
      reply_events); the shell keeps their state. *)
   let limited_until = ref 0. and limit_reason = ref "" and limit_backoff = ref 900. and held = ref [] and probing = ref false in
   (* a held request, raw: Soma assembles its prompt again when it's asked *)
-  let hold id kind prompt0 ctx = held := (id, kind, prompt0, ctx) :: !held in
+  let hold id kind prompt0 ctx = held := (((id, kind), prompt0), ctx) :: !held in
   (* the model process for a prompt Soma assembled from prompt0. Its output
      comes back raw as an llm_output event, or at once when the process
      couldn't start *)
@@ -1534,16 +1534,10 @@ let node_open packed home flags =
       h_checkout_heads = (fun () -> List.map (fun (n, _, _, _) -> (n, git_out (rdir n) [ "rev-parse"; "--short"; "HEAD" ])) repos);
       h_divergences = (fun () -> !diverged);
       h_limit_info = (fun () -> (!limited_until, (!backend, (string_of_int (List.length !held), !limit_reason))));
-      (* Raw held requests, oldest first; Soma constructs their events. *)
+      (* Storage only: Soma chooses the queue, flag and oldest-first events. *)
       h_release_state = (fun () -> (!limit_backoff, !probing));
-      h_release_one = (fun () ->
-        match List.rev !held with
-        | (id, kind, prompt, ctx) :: rest -> held := List.rev rest; probing := true; Some (((id, kind), prompt), ctx)
-        | [] -> None);
-      h_release_all = (fun () ->
-        let hs = List.rev !held in
-        held := [];
-        List.map (fun (id, kind, prompt, ctx) -> (((id, kind), prompt), ctx)) hs);
+      h_held_requests = (fun () -> !held);
+      h_held_store = (fun requests probe -> held := requests; probing := probe);
       h_write_status = (fun text -> write_file (Filename.concat home "status.txt") text);
       h_encode_tx = encode_tx key me;
       h_track_tx = (fun raw -> my_txs := (Unix.gettimeofday (), raw) :: !my_txs);

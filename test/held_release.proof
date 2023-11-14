@@ -1,0 +1,20 @@
+Theorem held_release_none_preserves : forall probing requests,
+  held_remaining (held_batch_of ReleaseNone probing requests) = requests /\
+  held_probe (held_batch_of ReleaseNone probing requests) = probing /\
+  held_events (held_batch_of ReleaseNone probing requests) = [].
+Proof. intros; repeat split; reflexivity. Qed.
+
+Theorem held_release_all_clears_and_preserves_probe : forall probing requests,
+  held_remaining (held_batch_of ReleaseAll probing requests) = [] /\
+  held_probe (held_batch_of ReleaseAll probing requests) = probing /\
+  held_events (held_batch_of ReleaseAll probing requests) =
+    map held_request_event (rev_onto requests []).
+Proof. intros; repeat split; reflexivity. Qed.
+
+Example held_release_one_oldest :
+  held_batch_of ReleaseOne false
+    [((("new", "pick"), "p"), []), ((("old", "patch"), "q"), ["calc"])] =
+  {| held_remaining := [((("new", "pick"), "p"), [])];
+     held_probe := true;
+     held_events := [["llm_release", "old", "patch", "q", "calc"]] |}.
+Proof. reflexivity. Qed.

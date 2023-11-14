@@ -89,14 +89,11 @@ node_verify_line : string -> string -> string -> list string -> bool.
 node_checkout_heads : string -> list (string * string).
 node_divergences : string -> list (string * string).
 node_limit_info : string -> float * (string * (string * string)).
-(** Held model requests for node.soma's release_held: the limit backoff in
-    seconds and whether one released request is out to probe the limit;
-    taking the oldest held request (it becomes the probe) or all of them,
-    oldest first, as raw (id, kind, prompt, context) tuples. Soma builds
-    the llm_release events. *)
+(** Held model request facts: newest-first raw queue and probe metadata.
+    Soma chooses the next queue and probe flag and constructs release events. *)
 node_release_state : string -> float * bool.
-node_release_one : string -> option (string * string * string * list string).
-node_release_all : string -> list (string * string * string * list string).
+node_held_requests : string -> list (string * string * string * list string).
+node_held_store : string -> list (string * string * string * list string) -> bool -> bool.
 node_local_time : float -> string.
 (** Signing, retry-table access and socket writes; Soma selects submissions. *)
 node_encode_tx : string -> string -> list string -> string.

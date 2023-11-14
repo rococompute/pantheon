@@ -2026,6 +2026,30 @@ held_request_event (request : string * string * string * list string) : list str
 held_one_events (request : option (string * string * string * list string)) : list (list string) :=
   match request with None => [] | Some r => [held_request_event r] end.
 
+(** A batch preserves the newest-first storage order and emits oldest
+    first. Empty queues produce no event, as held_one_events None does. *)
+held_request : Type := string * string * string * list string.
+Record held_batch := {
+  held_remaining : list held_request;
+  held_probe : bool;
+  held_events : list (list string)
+}.
+held_batch_of (plan : release_plan) (probing : bool) (requests : list held_request) : held_batch :=
+  match plan with
+  | ReleaseNone => {| held_remaining := requests; held_probe := probing; held_events := [] |}
+  | ReleaseOne =>
+      match rev_onto requests [] with
+      | [] => {| held_remaining := []; held_probe := probing; held_events := [] |}
+      | oldest :: rest => {| held_remaining := rev_onto rest []; held_probe := true;
+                            held_events := [held_request_event oldest] |}
+      end
+  | ReleaseAll => {| held_remaining := []; held_probe := probing;
+                    held_events := map held_request_event (rev_onto requests []) |}
+  end.
+perform_held_batch (h : node_t) (plan : release_plan) (probing : bool) : list (list string) :=
+  let batch := held_batch_of plan probing (node_held_requests h) in
+  if node_held_store h (held_remaining batch) (held_probe batch) then held_events batch else [].
+
 (** The held requests this turn gives back, oldest first, as llm_release
     events; the shell only keeps them and hands them over. *)
 release_held (h : node_t) : list (list string) :=
@@ -2036,8 +2060,8 @@ release_held (h : node_t) : list (list string) :=
   let over := negb (PrimFloat.ltb (io_now h) until) in
   match release_plan_of (num held) over probing (PrimFloat.ltb 900%float backoff) with
   | ReleaseNone => []
-  | ReleaseOne => if io_log h (release_one_text backend held) then held_one_events (node_release_one h) else []
-  | ReleaseAll => if io_log h (release_all_text backend held) then map held_request_event (node_release_all h) else []
+  | ReleaseOne => if io_log h (release_one_text backend held) then perform_held_batch h ReleaseOne probing else []
+  | ReleaseAll => if io_log h (release_all_text backend held) then perform_held_batch h ReleaseAll probing else []
   end.
 
 (** ---- Step 5: job deadlines and which timers fire ----

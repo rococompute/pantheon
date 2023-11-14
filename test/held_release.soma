@@ -1,0 +1,66 @@
+(** Pantheon: a private, Byzantine-fault-tolerant labor market where LLM
+    agents take turns as term leader. Soma selects commands and node.soma decides the market;
+    shell.ml supplies command implementations and I/O. *)
+Import util shell node.
+
+(** Numbers run as OCaml ints. The kernel and the proofs still see Peano
+    naturals: these only say how extracted code computes them. *)
+From Stdlib Require ExtrOcamlNatInt.
+Extract Inlined Constant Nat.div => "(fun a b -> if b = 0 then 0 else a / b)".
+Extract Inlined Constant Nat.modulo => "(fun a b -> if b = 0 then a else a mod b)".
+
+(** Strings run as OCaml's (ExtrOcamlNativeString), which leaves out the
+    operations that count in [nat]. With [nat] as OCaml ints they're
+    OCaml's own, each as total as its definition: offsets past the end give
+    [None] or an empty string. util.soma reads long text through them. *)
+Extract Inlined Constant Stdlib.Strings.String.length => "String.length".
+Extract Inlined Constant Stdlib.Strings.String.get =>
+  "(fun n s -> if n < String.length s then Some (String.unsafe_get s n) else None)".
+Extract Inlined Constant Stdlib.Strings.String.substring =>
+  "(fun n m s -> let l = String.length s in if n >= l then """" else String.sub s n (min m (l - n)))".
+
+
+check (label : string) (ok : bool) : string := append (if ok then "ok " else "FAIL ") label.
+Fixpoint events_eq (a b : list (list string)) : bool :=
+  match a, b with [], [] => true | x :: xs, y :: ys => eq_strs x y && events_eq xs ys | _, _ => false end.
+requests_eq (a b : list held_request) : bool :=
+  events_eq (map held_request_event a) (map held_request_event b).
+oldest : held_request := ((("one", "patch"), "original prompt
+"), ["repo", "calc", "0"]).
+middle : held_request := ((("two", "attest"), ""), ["1", "context", ""]).
+newest : held_request := ((("three", "pick"), "prompt!"), []).
+queue : list held_request := [newest, middle, oldest].
+one : held_batch := held_batch_of ReleaseOne false queue.
+all : held_batch := held_batch_of ReleaseAll false queue.
+none : held_batch := held_batch_of ReleaseNone true queue.
+wide : list held_request := repeat oldest (num "5000").
+checks : list string := [
+  check "fields and context unchanged" (eq_strs (held_request_event oldest) ["llm_release", "one", "patch", "original prompt
+", "repo", "calc", "0"]),
+  check "empty context" (eq_strs (held_request_event newest) ["llm_release", "three", "pick", "prompt!"]),
+  check "empty prompt and context entries" (eq_strs (held_request_event middle) ["llm_release", "two", "attest", "", "1", "context", ""]),
+  check "one takes oldest" (events_eq (held_events one) [held_request_event oldest]),
+  check "one keeps newest-first queue" (requests_eq (held_remaining one) [newest, middle]),
+  check "one sets probe" (held_probe one),
+  check "one leaves existing probe set" (held_probe (held_batch_of ReleaseOne true queue)),
+  check "all emits oldest first" (events_eq (held_events all) [held_request_event oldest, held_request_event middle, held_request_event newest]),
+  check "all clears queue" (requests_eq (held_remaining all) []),
+  check "all leaves false probe" (negb (held_probe all)),
+  check "all preserves true probe" (held_probe (held_batch_of ReleaseAll true queue)),
+  check "none emits nothing" (events_eq (held_events none) []),
+  check "none keeps queue" (requests_eq (held_remaining none) queue),
+  check "none preserves probe" (held_probe none),
+  check "none preserves false probe" (negb (held_probe (held_batch_of ReleaseNone false queue))),
+  check "empty one emits no event" (events_eq (held_events (held_batch_of ReleaseOne false [])) []),
+  check "empty one does not set probe" (negb (held_probe (held_batch_of ReleaseOne false []))),
+  check "empty all emits nothing" (events_eq (held_events (held_batch_of ReleaseAll false [])) []),
+  check "singleton one drains" (requests_eq (held_remaining (held_batch_of ReleaseOne false [oldest])) []),
+  check "singleton all" (events_eq (held_events (held_batch_of ReleaseAll false [oldest])) [held_request_event oldest]),
+  check "wide one keeps all other requests" (length (held_remaining (held_batch_of ReleaseOne false wide)) =? num "4999"),
+  check "wide all emits every request" (length (held_events (held_batch_of ReleaseAll false wide)) =? num "5000"),
+  check "waiting limit takes none" (match release_plan_of 3 false false true with ReleaseNone => true | _ => false end),
+  check "probe still in flight takes none" (match release_plan_of 3 true true true with ReleaseNone => true | _ => false end),
+  check "expired backoff takes one" (match release_plan_of 3 true false true with ReleaseOne => true | _ => false end),
+  check "successful probe releases rest" (match release_plan_of 3 true false false with ReleaseAll => true | _ => false end)
+].
+main := print_lines checks.

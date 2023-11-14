@@ -815,6 +815,14 @@ record replacement order: earlier fence markers inserted by a later section
 stay literal, while later section markers still expand. No runtime move is
 needed for these laws; the shared Soma assembler already implements them.
 
+Held-request orchestration is now Soma too: `held_batch_of` selects the
+oldest probe, preserves the newest-first remainder, drains a successful
+limit's queue oldest first, and updates the probe flag. The shell exposes
+only queue/probe storage. Event construction continues through the merged
+`held_request_event`; empty release batches produce no event. New fixed
+checks cover exact fields, ordering, empty queues and 5000 requests, with
+proofs for the none/all plans and a concrete oldest-first Example.
+
 ## How a bid is judged
 
 Soma is gradually typed (Soma's GRADUAL.md): code with loose types (`Any`)
