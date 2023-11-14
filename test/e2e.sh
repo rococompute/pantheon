@@ -220,6 +220,89 @@ scenario_crash() {
   echo "ok crash: grok killed twice, caught up at $(field crash height grok)"
 }
 
+# docs/SECURITY-REVIEW-2.md P-4: a node locks on a block, is killed and
+# restarted, and must still be locked. One node runs; the others' keys sign,
+# as they would, a proposal of block A at height 1 round 0 and a quorum of
+# prevotes for it, so it locks on A and precommits. Nothing else precommits,
+# so A is never decided. Restarted, it is shown block B at round 2 (with a
+# second sender, so it skips to that round at once, not on a timer): it must
+# prevote nil because B conflicts with its lock, not prevote B. A and B are
+# each one signed transaction at its agent's next nonce, so both are valid
+# blocks: the node precommits only a valid block, and says "conflicts with
+# our lock" only of one ("is not a valid block" otherwise).
+scenario_restart_lock() {
+  init restart-lock 28650 term_blocks=1000 stall_blocks=900 || return 1
+  d=$ROOT/restart-lock py=$ROOT/restart-lock/msg.py
+  : > "$d/goal.txt"
+  cat > "$py" <<'PY'
+import hashlib, json, socket, sys, time
+net, mode = sys.argv[1], sys.argv[2]
+gen = json.load(open(net + "/claude/genesis.json"))
+names = [a["name"] for a in gen["agents"]]
+chain = gen["chain_id"]
+me = names[0]   # the proposers of height 1, rounds 0 and 2, are names[1] and names[3]
+def compact(x): return json.dumps(x, separators=(",", ":"))
+def sign(who, data):
+    k = json.load(open("%s/%s/key.json" % (net, who)))["key"]
+    n, d, kb = int(k["n"], 16), int(k["d"], 16), k["size"] // 8
+    t = bytes.fromhex("3031300d060960864801650304020105000420") + hashlib.sha256(data).digest()
+    em = b"\x00\x01" + b"\xff" * (kb - len(t) - 3) + b"\x00" + t
+    return format(pow(int.from_bytes(em, "big"), d, n), "x").zfill(2 * kb)
+def tx(who, nonce, fields):
+    sg = sign(who, "\0".join(["tx", chain, who, nonce, compact(fields)]).encode())
+    return compact({"agent": who, "nonce": nonce, "fields": fields, "sig": sg})
+def hash_list(l): return hashlib.sha256("".join("%d:%s" % (len(x.encode()), x) for x in l).encode()).hexdigest()
+def wire(who, fields):
+    return compact({"from": who, "fields": fields, "sig": sign(who, "\0".join(["msg", chain, who, compact(fields)]).encode())}) + "\n"
+A = [tx(names[1], "1", ["post", "calc", "block A, locked before the restart"])]
+B = [tx(names[2], "1", ["post", "calc", "block B, offered after the restart"])]
+a, b = hash_list(A), hash_list(B)
+def send(lines):
+    gport = [x["addr"] for x in gen["agents"] if x["name"] == me][0].rsplit(":", 1)[1]
+    s = socket.create_connection(("127.0.0.1", int(gport)), timeout=5)
+    s.sendall("".join(lines).encode()); time.sleep(1); s.close()
+if mode == "names": print(me, names[3])
+elif mode == "ids": print(a, b)
+elif mode == "lock":
+    send([wire(names[1], ["proposal", "1", "0", "0", a] + A)]
+         + [wire(w, ["prevote", "1", "0", "0", a]) for w in names[1:4]])
+elif mode == "conflict":
+    send([wire(names[3], ["proposal", "1", "2", "0", b] + B), wire(names[1], ["prevote", "1", "2", "0", b])])
+elif mode == "votes":
+    # what the node signed: "SLOT VID" per vote, nil for a vote for nil
+    try: text = open("%s/%s/signed.log" % (net, me)).read()
+    except OSError: text = ""
+    for l in text.splitlines():
+        try:
+            slot, vid, js = l.split(" ", 2)
+            f = json.loads(js)
+            if f[4] == vid: print(slot, vid or "nil")
+        except (ValueError, IndexError, TypeError, KeyError): continue
+PY
+  set -- $(python3 -I "$py" "$d" names); me=$1 p2=$2
+  set -- $(python3 -I "$py" "$d" ids); a=$1 b=$2
+  [ -n "$me" ] && [ -n "$b" ] || { echo "FAIL restart-lock: the message script failed"; return 1; }
+  votes() { python3 -I "$py" "$d" votes; }
+  node restart-lock "$me" -- --behavior silent
+  wait_for restart-lock "$me" 30 "$me listening" sh -c "grep -q ' listening;' $d/$me/node.log" || { stop restart-lock; return 1; }
+  python3 -I "$py" "$d" lock || { echo "FAIL restart-lock: couldn't send the lock's messages"; stop restart-lock; return 1; }
+  wait_for restart-lock "$me" 30 "$me to lock on A and precommit it" sh -c "python3 -I '$py' '$d' votes | grep -qx 'precommit/1/0 $a'" || { stop restart-lock; return 1; }
+  [ -s "$d/$me/consensus.state" ] || { echo "FAIL restart-lock: no consensus.state after the lock"; stop restart-lock; return 1; }
+  [ -s "$d/$me/blocks.log" ] && { echo "FAIL restart-lock: a block was decided, so nothing is left locked"; stop restart-lock; return 1; }
+  # restart it as crash does
+  pid=$(cat "$d/$me/pid"); kill_node restart-lock "$me"; wait "$pid" 2>/dev/null
+  node restart-lock "$me" -- --behavior silent
+  wait_for restart-lock "$me" 30 "$me listening again" sh -c "[ \$(grep -c ' listening;' $d/$me/node.log) -ge 2 ]" || { stop restart-lock; return 1; }
+  python3 -I "$py" "$d" conflict || { echo "FAIL restart-lock: couldn't send the conflicting proposal"; stop restart-lock; return 1; }
+  wait_for restart-lock "$me" 30 "B refused for the lock" sh -c "grep -q 'prevote nil: proposal from $p2 at height 1 round 2 conflicts with our lock' $d/$me/node.log" || { stop restart-lock; return 1; }
+  sleep 1; stop restart-lock
+  v=$(votes)
+  echo "$v" | grep -qx 'prevote/1/2 nil' || { echo "FAIL restart-lock: no signed nil prevote at round 2: $v"; return 1; }
+  echo "$v" | grep -q " $b\$" && { echo "FAIL restart-lock: $me signed a vote for B: $v"; return 1; }
+  [ -s "$d/$me/blocks.log" ] && { echo "FAIL restart-lock: a block was decided"; return 1; }
+  echo "ok restart-lock: $me locked on A, was killed and restarted, and refused B at round 2 for its lock"
+}
+
 # one validator misbehaving at the consensus layer
 scenario_byz() {
   mode=$1 port=$2
@@ -731,6 +814,7 @@ run() {
     bidder-fallback) scenario_bidder_fallback ;;
     bidder-timeout) scenario_bidder_timeout ;;
     crash) scenario_crash ;;
+    restart-lock) scenario_restart_lock ;;
     equivocate) scenario_byz equivocate 27400 ;;
     double-vote) scenario_byz double-vote 27450 ;;
     silent) scenario_byz silent 27500 ;;
@@ -758,7 +842,7 @@ run() {
   esac
 }
 
-ALL="bidders bidder-fallback bidder-timeout happy crash equivocate double-vote silent bad-sig withhold bad-tree future-nonce deny silent-model policy model stuck limit limit-cli prune epoch text network ci cifail ciflood cispoof flood"
+ALL="bidders bidder-fallback bidder-timeout happy crash restart-lock equivocate double-vote silent bad-sig withhold bad-tree future-nonce deny silent-model policy model stuck limit limit-cli prune epoch text network ci cifail ciflood cispoof flood"
 want=${*:-$ALL}
 pids=""
 for s in $want; do (run "$s" > "$ROOT/$s.result" 2>&1; echo $? > "$ROOT/$s.code") & pids="$pids $!"; done
