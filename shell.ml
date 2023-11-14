@@ -163,14 +163,25 @@ let safe_path p =
 
 (* ---------- processes and git ---------- *)
 
-(* run a program; its stdout, and whether it succeeded *)
-let capture ?(env = Unix.environment ()) prog args =
+(* run a program; its stdout, and whether it succeeded. With [stdin], the
+   program reads that text on its standard input (from a temporary file, so
+   no pipe can fill up while its output is read) instead of /dev/null *)
+let capture ?(env = Unix.environment ()) ?stdin prog args =
   let r, w = Unix.pipe ~cloexec:true () in
   let devnull = Unix.openfile "/dev/null" [ O_RDWR; O_CLOEXEC ] 0 in
-  match Unix.create_process_env prog (Array.of_list (prog :: args)) env devnull w devnull with
-  | exception e -> Unix.close r; Unix.close w; Unix.close devnull; (false, Printexc.to_string e)
+  let inp, cleanup =
+    match stdin with
+    | None -> (devnull, fun () -> ())
+    | Some text ->
+        let f = Filename.temp_file "pantheon-stdin" ".txt" in
+        Out_channel.with_open_bin f (fun oc -> output_string oc text);
+        let fd = Unix.openfile f [ O_RDONLY; O_CLOEXEC ] 0 in
+        (fd, fun () -> Unix.close fd; (try Sys.remove f with _ -> ()))
+  in
+  match Unix.create_process_env prog (Array.of_list (prog :: args)) env inp w devnull with
+  | exception e -> Unix.close r; Unix.close w; Unix.close devnull; cleanup (); (false, Printexc.to_string e)
   | pid ->
-      Unix.close w; Unix.close devnull;
+      Unix.close w; Unix.close devnull; cleanup ();
       let ic = Unix.in_channel_of_descr r in
       let out = In_channel.input_all ic in
       close_in ic;
@@ -184,13 +195,17 @@ let git_env extra =
     (extra @ [ "GIT_CONFIG_NOSYSTEM=1"; "GIT_CONFIG_GLOBAL=/dev/null"; "GIT_TERMINAL_PROMPT=0" ]
      @ List.filter (fun kv -> not (String.length kv > 4 && String.sub kv 0 4 = "GIT_")) (Array.to_list (Unix.environment ())))
 
-let git ?(extra = []) dir args =
-  capture ~env:(git_env extra) "git"
+let git ?(extra = []) ?stdin dir args =
+  capture ~env:(git_env extra) ?stdin "git"
     ("-C" :: dir :: "-c" :: "core.hooksPath=/dev/null" :: "-c" :: "commit.gpgsign=false" :: "-c" :: "core.autocrlf=false"
      :: "-c" :: "core.fileMode=true" :: "-c" :: "core.symlinks=true" :: args)
 
 let git_out dir args = String.trim (snd (git dir args))
-let git_ok ?(extra = []) dir args = fst (git ~extra dir args)
+let git_ok ?(extra = []) ?stdin dir args = fst (git ~extra ?stdin dir args)
+
+(* text with every control character but tab and newline made a space: what
+   the market's plain_text accepts (docs/SECURITY-REVIEW-2.md P-17) *)
+let plain_text s = String.map (fun c -> if (c < ' ' && c <> '\t' && c <> '\n') || c = '\127' then ' ' else c) s
 
 (* a clone from anywhere git can fetch: here the user's own git config
    applies, for credentials to a private repository *)
@@ -1103,7 +1118,9 @@ and node init step home flags =
        abstains rather than blame the bid). stage is where a failure happened:
        apply (no tree yet), ci (a tree, then CI), or node (this node's own
        problem, which ok=error already sends the agent to abstain on) *)
-    let result ok tree why stage = push [ "check_result"; id; "ok"; (if ok then "true" else if contains why "node problem:" then "error" else "false"); "tree"; tree; "why"; why; "stage"; stage ] in
+    (* why carries the bid's own output (its CI's): no control character of
+       it goes on to a rejection's reason *)
+    let result ok tree why stage = let why = plain_text why in push [ "check_result"; id; "ok"; (if ok then "true" else if contains why "node problem:" then "error" else "false"); "tree"; tree; "why"; why; "stage"; stage ] in
     start_job self_exe [ "check"; rdir r; head; ef; out ] ~stdin_text:"" ~env:(Unix.environment ())
       ~on_done:(fun t ->
         if String.length t > 0 && t.[0] = '!' then (say "check of request %s failed: %s" id t; result false "" t (if contains t "node problem:" then "node" else "apply"))
@@ -1183,7 +1200,10 @@ and node init step home flags =
                       "GIT_COMMITTER_EMAIL=pantheon@localhost"; "GIT_AUTHOR_DATE=" ^ date; "GIT_COMMITTER_DATE=" ^ date ] in
           let msg = Printf.sprintf "Merge bid %s for task %s by %s\n\n%s\n\nPantheon-Version: %d\nPantheon-Bid: %s\nPantheon-Tree: %s\n" bid task bidder spec v bid tree in
           ignore (git dir [ "add"; "-A"; "-f" ]);
-          if not (git_ok ~extra:who dir [ "commit"; "-q"; "--allow-empty"; "--no-verify"; "--cleanup=verbatim"; "-m"; msg ]) then diverge "git commit failed"
+          (* the message on stdin, not as an argument: the spec in it is the
+             leader's text, and an argument can't carry every string whole
+             (docs/SECURITY-REVIEW-2.md P-17) *)
+          if not (git_ok ~extra:who ~stdin:msg dir [ "commit"; "-q"; "--allow-empty"; "--no-verify"; "--cleanup=verbatim"; "-F"; "-" ]) then diverge "git commit failed"
           else
             let got = git_out dir [ "rev-parse"; "HEAD^{tree}" ] in
             if got <> tree then diverge (Printf.sprintf "got tree %s, attested %s" got tree)

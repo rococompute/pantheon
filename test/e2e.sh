@@ -618,6 +618,61 @@ Pantheon-Bid: 64")
   echo "ok epoch: a genesis carrying an earlier chain's version, and this chain's merges still applied"
 }
 
+# docs/SECURITY-REVIEW-2.md P-17: a spec, note or reason with a NUL or another
+# control character is refused by the market; ordinary text (tabs, newlines,
+# quotes, UTF-8) is taken; and the merge commit's message reaches git on its
+# stdin, whole, never as an argument. A git wrapper on the nodes' PATH writes
+# down the arguments of every `git commit`.
+scenario_text() {
+  init text 28500 term_blocks=400 stall_blocks=300 max_merges=1 bid_cooldown=2 || return 1
+  : > "$ROOT/text/goal.txt"
+  real=$(command -v git)
+  mkdir -p "$ROOT/text/bin"
+  cat > "$ROOT/text/bin/git" <<F
+#!/bin/sh
+for a in "\$@"; do [ "\$a" = commit ] && { printf '%s\n' "\$@" >> "$ROOT/text/commit-args"; break; }; done
+exec "$real" "\$@"
+F
+  chmod +x "$ROOT/text/bin/git"
+  for a in $AGENTS; do node text "$a" PATH="$ROOT/text/bin:$PATH"; done
+  wait_for text claude 60 "a leader" sh -c "grep -qs 'leader [a-z]*$' $ROOT/text/claude/status.txt && ! grep -q '(drawing)' $ROOT/text/claude/status.txt" || { stop text; return 1; }
+  leader=$(sed -n 's/.*leader \([a-z]*\)$/\1/p' "$ROOT/text/claude/status.txt")
+  other=""; for a in $AGENTS; do [ "$a" != "$leader" ] && [ -z "$other" ] && other=$a; done
+  # a NUL, which an argument can't carry, straight into the leader's inbox
+  mkdir -p "$ROOT/text/$leader/inbox"
+  printf '["post", "calc", "nul\\u0000spec"]\n' > "$ROOT/text/$leader/inbox/0.000001.json"
+  wait_for text claude 60 "the NUL spec refused" sh -c "grep -c \"$leader: a task's spec has a NUL or control character\" $ROOT/text/claude/node.log | grep -q '^1$'" || { stop text; return 1; }
+  "$BIN" tx "$ROOT/text/$leader" post calc "$(printf 'escape\033[31m red')" >/dev/null
+  wait_for text claude 60 "the escape spec refused" sh -c "grep -c \"$leader: a task's spec has a NUL or control character\" $ROOT/text/claude/node.log | grep -q '^2$'" || { stop text; return 1; }
+  spec=$(printf 'add a sub command\n\t-m "quoted" $(not run) --amend ünïcode\n-F last line')
+  "$BIN" tx "$ROOT/text/$leader" post calc "$spec" >/dev/null
+  wait_for text claude 60 "the ordinary spec taken" sh -c "grep -q '^task 1 \[[a-z]*\] calc: add a sub command' $ROOT/text/claude/status.txt" || { stop text; return 1; }
+  grep -q '^task 2 ' "$ROOT/text/claude/status.txt" && { echo "FAIL text: a refused spec became a task"; stop text; return 1; }
+  "$BIN" tx "$ROOT/text/$other" bid 1 0 "$(printf 'bell\007note')" bell.txt "" "x" >/dev/null
+  wait_for text claude 60 "the control note refused" sh -c "grep -q \"$other: a bid's note has a NUL or control character\" $ROOT/text/claude/node.log" || { stop text; return 1; }
+  "$BIN" tx "$ROOT/text/$leader" reject 1 "$(printf 'reason\001here')" >/dev/null
+  wait_for text claude 60 "the control reason refused" sh -c "grep -q \"$leader: a rejection's reason has a NUL or control character\" $ROOT/text/claude/node.log" || { stop text; return 1; }
+  wait_for text claude 90 "the merge" merges_at_least text claude 1 || { stop text; return 1; }
+  sleep 2; stop text
+  grep -q 'bell.txt' "$ROOT/text/claude/status.txt" && { echo "FAIL text: a bid with a control character in its note was taken"; return 1; }
+  grep -q '^bid 1 \[rejected\]' "$ROOT/text/claude/status.txt" && { echo "FAIL text: a reason with a control character rejected a bid"; return 1; }
+  agree text claude codex grok muse && agree_files text claude codex grok muse || return 1
+  [ -s "$ROOT/text/commit-args" ] || { echo "FAIL text: no git commit went through the wrapper"; return 1; }
+  grep -q 'Merge bid\|add a sub command' "$ROOT/text/commit-args" && { echo "FAIL text: the merge message was a git argument"; return 1; }
+  for a in $AGENTS; do
+    body=$(git -C "$ROOT/text/$a/repos/calc" log -1 --format=%B)
+    case "$body" in
+      "Merge bid "*"for task 1 by "*"
+
+$spec
+
+Pantheon-Version: "*) ;;
+      *) echo "FAIL text: $a's merge message isn't whole: $body"; return 1 ;;
+    esac
+  done
+  echo "ok text: NUL and control characters refused in a spec, a note and a reason; the merge message reached git on stdin, whole"
+}
+
 run() {
   case "$1" in
     happy) scenario_happy ;;
@@ -645,11 +700,12 @@ run() {
     limit-cli) scenario_limit_cli ;;
     prune) scenario_prune ;;
     epoch) scenario_epoch ;;
+    text) scenario_text ;;
     *) echo "unknown scenario $1"; return 1 ;;
   esac
 }
 
-ALL="bidders bidder-fallback bidder-timeout happy crash equivocate double-vote silent bad-sig withhold bad-tree deny silent-model policy model stuck limit limit-cli prune epoch network ci cifail ciflood flood"
+ALL="bidders bidder-fallback bidder-timeout happy crash equivocate double-vote silent bad-sig withhold bad-tree deny silent-model policy model stuck limit limit-cli prune epoch text network ci cifail ciflood flood"
 want=${*:-$ALL}
 pids=""
 for s in $want; do (run "$s" > "$ROOT/$s.result" 2>&1; echo $? > "$ROOT/$s.code") & pids="$pids $!"; done

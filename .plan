@@ -12,7 +12,7 @@
 + sandbox fetch publishes the market's merges to each local checkout's default branch, not pantheon/merged: fast-forward, merge as publish.sh does, leave a dirty or conflicting checkout alone and say so (scripts/sandbox.sh cmd_fetch, scripts/publish.sh, docs/SANDBOX.md; a test/publish.sh case against a non-bare checkout)
 + P-10: make the node's own path absolute at startup, so `./main.exe` works (docs/SECURITY-REVIEW-2.md P-10)
 + P-9: genesis requires exactly four parts, with unique names and unique keys (docs/SECURITY-REVIEW-2.md P-9)
-P-17: refuse NUL and control characters in specs, notes and reasons; give git the merge commit's message on stdin (docs/SECURITY-REVIEW-2.md P-17)
++ P-17: refuse NUL and control characters in specs, notes and reasons; give git the merge commit's message on stdin (docs/SECURITY-REVIEW-2.md P-17)
 P-14: deny .gitattributes and .gitmodules in any path component, in any case (docs/SECURITY-REVIEW-2.md P-14)
 P-16: bound a model's JSON reply before parsing it: depth, field count, iterative flattening (docs/SECURITY-REVIEW-2.md P-16)
 P-6: decide that CI couldn't run from the node's own signals, never from the check's output (docs/SECURITY-REVIEW-2.md P-6)
