@@ -350,6 +350,7 @@ ROOT
 Description=Pantheon node %i
 [Service]
 User=pantheon
+UMask=0077
 WorkingDirectory=/var/lib/pantheon/net/%i
 Environment=SOMA_DIR=/var/lib/pantheon/soma
 Environment=XDG_RUNTIME_DIR=/run/user/$uid
@@ -363,12 +364,12 @@ UNIT
   printf 'EOF\ninstall -o root -g root -m 0644 "$stage/pantheon-node@.service" "$R/etc/systemd/system/pantheon-node@.service"\n'
   if [ -n "$REMOTE" ]; then
     printf 'cat > "$stage/pantheon-mirror.service" <<EOF\n'
-    printf '[Unit]\nDescription=Pantheon mirror\n[Service]\nUser=pantheon\nEnvironment=PANTHEON_HOST=/var/lib/pantheon\nExecStart=%s/scripts/host.sh mirror-loop\nRestart=on-failure\nRestartSec=60\n[Install]\nWantedBy=multi-user.target\nEOF\n' "$here"
+    printf '[Unit]\nDescription=Pantheon mirror\n[Service]\nUser=pantheon\nUMask=0077\nEnvironment=PANTHEON_HOST=/var/lib/pantheon\nExecStart=%s/scripts/host.sh mirror-loop\nRestart=on-failure\nRestartSec=60\n[Install]\nWantedBy=multi-user.target\nEOF\n' "$here"
     printf 'install -o root -g root -m 0644 "$stage/pantheon-mirror.service" "$R/etc/systemd/system/pantheon-mirror.service"\n'
   fi
   if [ -n "$VM_AGENTS" ]; then
     printf 'cat > "$stage/pantheon-inbox.service" <<EOF\n'
-    printf '[Unit]\nDescription=Pantheon inbox server\n[Service]\nUser=pantheon\nExecStart=/usr/bin/python3 %s/scripts/inbox-http.py serve /var/lib/pantheon/inbox.json\nRestart=on-failure\nRestartSec=5\n[Install]\nWantedBy=multi-user.target\nEOF\n' "$here"
+    printf '[Unit]\nDescription=Pantheon inbox server\n[Service]\nUser=pantheon\nUMask=0077\nExecStart=/usr/bin/python3 %s/scripts/inbox-http.py serve /var/lib/pantheon/inbox.json\nRestart=on-failure\nRestartSec=5\n[Install]\nWantedBy=multi-user.target\nEOF\n' "$here"
     printf 'install -o root -g root -m 0644 "$stage/pantheon-inbox.service" "$R/etc/systemd/system/pantheon-inbox.service"\n'
   fi
   for a in $AGENTS; do

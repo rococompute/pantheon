@@ -85,7 +85,10 @@ root-only stage; per-node scripts are piped to pantheon over stdin,
 never read out of that stage. It disables the operator's legacy user
 units before enabling the system ones, so no node runs twice.
 `HOST_DRY=DIR` previews the same script (`DIR/services.sh`). The node
-unit sets `CI_LOCK=/var/lib/pantheon/.ci-lock`, the host's one CI lock.
+unit sets `CI_LOCK=/var/lib/pantheon/.ci-lock`, the host's one CI lock. All three system
+service definitions set `UMask=0077` so newly created files are private
+to pantheon unless an operation explicitly shares them. The inbox backend
+sets its own group-sharing umask and modes for requests and worktrees.
 
 `sudo scripts/host.sh sessions` comes after both. It refuses to run
 before `services` has written the node unit, since the inbox server must
