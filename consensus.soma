@@ -10,16 +10,13 @@
 Import util shell.
 
 Inductive kind := Proposal | Prevote | Precommit | Done.
+Scheme Boolean Equality for kind.
 
 (** [vr] is Tendermint's validRound plus one, so that 0 is its -1. [vid] is
     the hash of the value, or "" for a vote for nil. *)
 Record msg := { kd : kind; frm : string; mh : nat; mr : nat; vr : nat; vid : string; value : list string }.
 
-kind_eq (a b : kind) : bool :=
-  match a, b with
-  | Proposal, Proposal | Prevote, Prevote | Precommit, Precommit | Done, Done => true
-  | _, _ => false
-  end.
+kind_eq (a b : kind) : bool := kind_beq a b.
 
 kind_name (k : kind) : string :=
   match k with Proposal => "proposal" | Prevote => "prevote" | Precommit => "precommit" | Done => "done" end.
