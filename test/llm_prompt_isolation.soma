@@ -1,0 +1,36 @@
+(** Pantheon: a private, Byzantine-fault-tolerant labor market where LLM
+    agents take turns as term leader. Soma selects commands and node.soma decides the market;
+    shell.ml supplies command implementations and I/O. *)
+Import util shell node.
+
+(** Numbers run as OCaml ints. The kernel and the proofs still see Peano
+    naturals: these only say how extracted code computes them. *)
+From Stdlib Require ExtrOcamlNatInt.
+Extract Inlined Constant Nat.div => "(fun a b -> if b = 0 then 0 else a / b)".
+Extract Inlined Constant Nat.modulo => "(fun a b -> if b = 0 then a else a mod b)".
+
+(** Strings run as OCaml's (ExtrOcamlNativeString), which leaves out the
+    operations that count in [nat]. With [nat] as OCaml ints they're
+    OCaml's own, each as total as its definition: offsets past the end give
+    [None] or an empty string. util.soma reads long text through them. *)
+Extract Inlined Constant Stdlib.Strings.String.length => "String.length".
+Extract Inlined Constant Stdlib.Strings.String.get =>
+  "(fun n s -> if n < String.length s then Some (String.unsafe_get s n) else None)".
+Extract Inlined Constant Stdlib.Strings.String.substring =>
+  "(fun n m s -> let l = String.length s in if n >= l then """" else String.sub s n (min m (l - n)))".
+
+check (label got want : string) : string := append (if seq got want then "ok " else "FAIL ") label.
+assembled (p : string) (ctx : list string) : string :=
+  prompt_assemble "T" p ctx (fun _ => "repo list") (fun _ => "open plans")
+    (fun r paths => append r (Stdlib.Strings.String.concat "," paths)).
+checks : list string := [
+  check "plain with task context" (assembled "plain" ["calc", "a"]) "plain",
+  check "missing context keeps repository marker" (assembled "{{REPO}}" []) "{{REPO}}",
+  check "empty context still expands global sections" (assembled "{{REPOS}} / {{PLAN}} / {{REPO}}" []) "repo list / open plans / {{REPO}}",
+  check "task repository receives paths in order" (assembled "{{REPO}}" ["calc", "a", "b"]) "calca,b",
+  check "earlier fence marker in inserted repo text stays literal"
+    (prompt_assemble "T" "{{REPOS}}" [] (fun _ => "{{F}}") (fun _ => "unused") (fun _ _ => "unused")) "{{F}}",
+  check "later placeholder in inserted repo listing expands"
+    (prompt_assemble "T" "{{REPOS}}" [] (fun _ => "{{PLAN}}") (fun _ => "open plans") (fun _ _ => "unused")) "open plans"
+].
+main := print_lines checks.

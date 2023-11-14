@@ -1,0 +1,18 @@
+(** Callback independence of the shared prompt assembler. These quantify
+    over all callback functions, not just the fixed fixture outputs. *)
+Theorem llm_empty_context_ignores_task_reader : forall token prompt repos plan reader1 reader2,
+  prompt_assemble token prompt [] repos plan reader1 =
+  prompt_assemble token prompt [] repos plan reader2.
+Proof. reflexivity. Qed.
+
+Theorem llm_plain_prompt_ignores_all_readers : forall token ctx repos plan reader,
+  prompt_assemble token "plain" ctx repos plan reader = "plain".
+Proof. intros token ctx repos plan reader. destruct ctx; reflexivity. Qed.
+
+Theorem llm_empty_prompt_ignores_all_readers : forall token ctx repos plan reader,
+  prompt_assemble token "" ctx repos plan reader = "".
+Proof. intros token ctx repos plan reader. destruct ctx; reflexivity. Qed.
+
+Theorem llm_missing_context_keeps_repo_placeholder : forall repos plan reader,
+  prompt_assemble "T" "{{REPO}}" [] repos plan reader = "{{REPO}}".
+Proof. reflexivity. Qed.

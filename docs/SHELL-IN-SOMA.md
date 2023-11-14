@@ -783,6 +783,14 @@ at the time; their `run` references are historical.
   It walked the text a character at a time, a quadratic scan of every
   peer message and transaction, and now reads it by offset (`char_at`).
 
+The LLM migration's callback boundaries are also checked in
+`test/llm_prompt_isolation.proof`: an empty context is independent of the
+task-repository reader for every prompt and every pair of readers, and
+plain/empty prompts are independent of all context readers. Fixed checks
+record replacement order: earlier fence markers inserted by a later section
+stay literal, while later section markers still expand. No runtime move is
+needed for these laws; the shared Soma assembler already implements them.
+
 ## How a bid is judged
 
 Soma is gradually typed (Soma's GRADUAL.md): code with loose types (`Any`)
