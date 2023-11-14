@@ -483,3 +483,36 @@ Proof.
   destruct (rule_broadcast_precommit_step c2 valid' getv' c3 o3 y Hlast Hh3 Hy Hyb Hyp)
     as [Hs _]. congruence.
 Qed.
+
+(** M-3's certificate names are exactly the names counted by consensus,
+    with no duplicates. This exposes the evidence without changing wire
+    values or decision outputs. Persisting it on chain is a separate step. *)
+Theorem precommitters_count : forall c r id,
+  length (precommitters c r id) = senders c Precommit r id.
+Proof. intros c r id. reflexivity. Qed.
+
+Theorem precommitters_distinct : forall c r id,
+  NoDup (precommitters c r id).
+Proof. intros c r id. unfold precommitters. apply nodup_s_NoDup. Qed.
+
+Theorem decision_has_precommitter_certificate : forall c valid c' outs,
+  r_decide c valid = Some (c', outs) ->
+  exists p, In p (log c) /\ mh p = height c /\
+    (c', outs) = decide c (value p) /\
+    NoDup (precommitters c (mr p) (vid p)) /\
+    quorum c <= length (precommitters c (mr p) (vid p)).
+Proof.
+  intros c valid c' outs H. unfold r_decide in H.
+  destruct (find _ (log c)) as [p|] eqn:E; [|discriminate H].
+  apply (f_equal (fun o => match o with Some x => x | None => (c', outs) end)) in H.
+  cbn beta iota in H.
+  apply find_some_in in E. destruct E as [Hin Hp].
+  apply andb_split in Hp. destruct Hp as [Hp Hv].
+  apply andb_split in Hp. destruct Hp as [Hp Hq].
+  apply andb_split in Hp. destruct Hp as [Hp Hproposer].
+  apply andb_split in Hp. destruct Hp as [Hkind Hheight].
+  apply Nat.eqb_eq in Hheight. apply Nat.leb_le in Hq.
+  exists p. split; [exact Hin|]. split; [exact Hheight|].
+  split; [symmetry; exact H|]. split; [apply precommitters_distinct|].
+  rewrite precommitters_count. exact Hq.
+Qed.

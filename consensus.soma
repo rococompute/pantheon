@@ -44,6 +44,15 @@ proposer (c : consensus_state) (h r : nat) : string := nth ((h + r) mod length (
 senders (c : consensus_state) (k : kind) (r : nat) (id : string) : nat :=
   distinct (map frm (filter (fun m => kind_eq (kd m) k && (mh m =? height c) && (mr m =? r) && seq (vid m) id) (log c))).
 
+(** The distinct signers of one commit certificate. Keep this separate from
+    the count: membership heartbeats need the names, and must not count
+    another height, round, value or vote kind as participation. The order
+    is nodup_s's deterministic log order, not arrival-independent evidence
+    suitable for insertion into a block without consensus. *)
+precommitters (c : consensus_state) (r : nat) (id : string) : list string :=
+  nodup_s (map frm (filter (fun m => kind_eq (kd m) Precommit && (mh m =? height c)
+    && (mr m =? r) && seq (vid m) id) (log c))).
+
 senders_any (c : consensus_state) (k : kind) (r : nat) : nat :=
   distinct (map frm (filter (fun m => kind_eq (kd m) k && (mh m =? height c) && (mr m =? r)) (log c))).
 

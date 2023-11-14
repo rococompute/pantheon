@@ -1,0 +1,25 @@
+(** M-3 prerequisite: exact certificate names, deterministic inputs. *)
+Import util shell consensus.
+
+message (k : kind) (a : string) (h r : nat) (id : string) : msg :=
+  {| kd := k; frm := a; mh := h; mr := r; vr := 0; vid := id; value := [] |}.
+
+sample : consensus_state :=
+  let c := new_consensus "a" ["a", "b", "c", "d"] 8 in
+  {| c with log :=
+     [message Precommit "a" 8 2 "block",
+      message Precommit "b" 8 2 "block",
+      message Precommit "a" 8 2 "block",
+      message Precommit "c" 7 2 "block",
+      message Precommit "c" 8 3 "block",
+      message Precommit "c" 8 2 "other",
+      message Prevote "d" 8 2 "block",
+      message Precommit "d" 8 2 "block"] |}.
+
+main := print_lines
+  (precommitters sample 2 "block" ++ ["--"] ++
+   precommitters sample 3 "block" ++ ["--"] ++
+   precommitters sample 2 "other" ++ ["--"] ++
+   precommitters sample 0 "missing" ++ ["--"] ++
+   [show (length (precommitters sample 2 "block")),
+    show (senders sample Precommit 2 "block")]).
