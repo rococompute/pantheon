@@ -67,10 +67,6 @@ with_validv (c : consensus_state) (v : list string) : consensus_state :=
   {| me := me c; nodes := nodes c; height := height c; round := round c; step := step c;
      lockr := lockr c; lockv := lockv c; validr := validr c; validv := v; log := log c; once := once c; block_ms := block_ms c |}.
 
-with_block_ms (c : consensus_state) (v : nat) : consensus_state :=
-  {| me := me c; nodes := nodes c; height := height c; round := round c; step := step c;
-     lockr := lockr c; lockv := lockv c; validr := validr c; validv := validv c; log := log c; once := once c; block_ms := v |}.
-
 faulty (c : consensus_state) : nat := (length (nodes c) - 1) / 3.
 quorum (c : consensus_state) : nat := length (nodes c) - faulty c.
 weak (c : consensus_state) : nat := faulty c + 1.
@@ -116,7 +112,7 @@ start_round (c : consensus_state) (r : nat) (getv : list string) : consensus_sta
 decide (c : consensus_state) (v : list string) : consensus_state * list (list string) :=
   let h := height c in
   let c' := new_consensus (me c) (nodes c) (h + 1) in
-  let c' := with_block_ms c' (block_ms c) in
+  let c' := {| c' with block_ms := block_ms c |} in
   let c' := {| c' with log := filter (fun m => h <? mh m) (log c) |} in
   (c', [("decided" :: show h :: v), ["height", show (h + 1)], timer "commit" (h + 1) 0 (block_ms c)]).
 
