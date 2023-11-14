@@ -88,14 +88,26 @@ node_send_all : string -> list string -> bool.
     prompt. The call count, bumped for this call, and the budget; holding a
     raw request until the limit's wait is over (it comes back as an
     llm_release event); starting the model process on the assembled prompt
-    (the raw one too, held again if the reply says the model is limited);
+    (the raw one too, which comes back with the output);
     the governed repositories; a checkout's git ls-files; a file at a
     checkout's head (none: git show failed); a fresh fence token; a float
     with no decimals. None of these decides anything: the prompt
     node_llm_start gets is complete, assembled by Soma's prompt_assemble. *)
 node_llm_budget : string -> string * string.
 node_llm_hold : string -> string -> string -> string -> list string -> bool.
-node_llm_start : string -> string -> string -> string -> string -> list string -> bool.
+node_llm_start : string -> string -> string -> string -> string -> list string -> option string.
+(** What a model's output becomes is decided in Soma (node.soma's
+    reply_events). node_llm_start gives the output at once when the
+    process couldn't start (none: it runs, and its output comes back as an
+    llm_output event). A reply's JSON object, flattened to key, value, ...
+    (none: there is none); a run of decimal digits as a float (OCaml's
+    float_of_string); noting a limit (until when, its reason, the next
+    backoff; the probe is over); and setting the backoff after an answer
+    (the probe is over). *)
+node_reply_fields : string -> option (list string).
+node_float_of_digits : string -> float.
+node_limit_set : string -> float -> string -> float -> bool.
+node_limit_clear : string -> float -> bool.
 node_repo_names : string -> list string.
 node_ls_files : string -> string -> string.
 node_head_file : string -> string -> string -> option string.

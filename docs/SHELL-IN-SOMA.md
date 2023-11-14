@@ -168,6 +168,26 @@ worth a note in this file rather than a workaround.
 
 ## Done so far
 
+- Step 5, part: what a model call's output becomes is decided in Soma.
+  A finished model job comes back raw as an `llm_output` event (or at once
+  from `node_llm_start` when the process couldn't start), and `node_tick`
+  turns each into what it becomes (`job_outputs`, in order, before any of
+  the turn's events runs, as the shell did when the job finished). Pure
+  `reply_outcome_of` gives a hold, an error (with the old "no JSON object"
+  and "empty" texts) or the reply's fields; `is_limit` (the limit words and
+  429 as a number of its own), `reset_in` (Claude Code's "|deadline", "try
+  again in" and "resets in" with their units), `limit_wait` and
+  `limit_next_backoff` decide the hold, and Soma writes the LIMIT line.
+  The shell keeps the limit's state (`node_limit_set`, `node_limit_clear`),
+  reads a digit run with `float_of_string` (so big numbers cross as
+  floats, not unary nat) and still parses the JSON: `node_reply_fields` is
+  `json_in_reply` and `flatten_reply`. `node.proof` checks limit and
+  non-limit texts, deadlines past and future, units, the backoff's cap and
+  each outcome, with theorems that a reply with no JSON object or a failed
+  job never becomes a reply event. Left of step 5: lines into events
+  (`on_line`, `decode_tx`, the line and connection limits) and the reply's
+  JSON (`json_in_reply`, `flatten_reply`).
+
 - Step 5, part: when held model requests go back is decided in Soma.
   `node_tick` asks `release_held` first each turn: pure `release_plan_of`
   releases none while the limit lasts, while a probe is out or when none
