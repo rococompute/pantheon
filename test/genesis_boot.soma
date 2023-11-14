@@ -1,0 +1,68 @@
+(** genesis.json's text through the real yojson binding into boot events:
+    a wide genesis (many params and excludes, no cap on their count), the
+    old order, and texts that don't start. No node, no disk. *)
+Import util shell node.
+From Stdlib Require ExtrOcamlNatInt.
+Extract Inlined Constant Nat.div => "(fun a b -> if b = 0 then 0 else a / b)".
+Extract Inlined Constant Nat.modulo => "(fun a b -> if b = 0 then a else a mod b)".
+Extract Inlined Constant Stdlib.Strings.String.length => "String.length".
+Extract Inlined Constant Stdlib.Strings.String.get =>
+  "(fun n s -> if n < String.length s then Some (String.unsafe_get s n) else None)".
+Extract Inlined Constant Stdlib.Strings.String.substring =>
+  "(fun n m s -> let l = String.length s in if n >= l then """" else String.sub s n (min m (l - n)))".
+
+check (label : string) (ok : bool) : string := append (if ok then "ok " else "FAIL ") label.
+
+evs_text (e : option (list (list string))) : string :=
+  match e with
+  | None => "none"
+  | Some l => Stdlib.Strings.String.concat ";" (map (Stdlib.Strings.String.concat ",") l)
+  end.
+
+events_of (raw : string) : string := evs_text (genesis_events (node_json_tokens raw)).
+
+small : string :=
+  "{""agents"":[{""name"":""a"",""pubkey"":{""n"":""1""},""tip"":""ta"",""exclude"":[""soma""]},{""name"":""b"",""tip"":""tb""}],""block_ms"":1000,""params"":{""p"":""3"",""q"":""4""},""repos"":[{""name"":""pantheon"",""url"":""u"",""commit"":""c"",""tree"":""t""}],""chain_id"":""x""}".
+
+Fixpoint wide_params (n : nat) (acc : string) : string :=
+  match n with
+  | 0 => acc
+  | Succ m => wide_params m (append acc (append ",""k" (append (show m) """:""v""")))
+  end.
+
+Fixpoint wide_excludes (n : nat) (acc : string) : string :=
+  match n with
+  | 0 => acc
+  | Succ m => wide_excludes m (append acc (append ",""r" (append (show m) """")))
+  end.
+
+wide : string :=
+  append "{""agents"":[{""name"":""a"",""tip"":""t"",""exclude"":[""r"""
+    (append (wide_excludes (num "12000") "")
+      (append "]}],""block_ms"":1000,""params"":{""k"":""v"""
+        (append (wide_params (num "12000") "") "},""repos"":[]}"))).
+
+count_events (raw : string) : nat :=
+  match genesis_events (node_json_tokens raw) with Some l => length l | None => 0 end.
+
+main := print_lines [
+  check "the old order" (seq (events_of small)
+    "agents,a,b;tip,a,ta;tip,b,tb;param,block_ms,1000;param,p,3;param,q,4;repo,pantheon,t;exclude,a,soma"),
+  check "a wide genesis has no cap: 12001 params and 12001 excludes"
+    (count_events wide =? num "24005"),
+  check "not JSON" (seq (events_of "{bad") "none"),
+  check "not an object" (seq (events_of "[]") "none"),
+  check "block_ms not an int" (seq (events_of
+    "{""agents"":[],""block_ms"":""1000"",""params"":{},""repos"":[]}") "none"),
+  check "a param that isn't a string" (seq (events_of
+    "{""agents"":[],""block_ms"":1000,""params"":{""p"":3},""repos"":[]}") "none"),
+  check "params missing" (seq (events_of
+    "{""agents"":[],""block_ms"":1000,""repos"":[]}") "none"),
+  check "an agent with no tip" (seq (events_of
+    "{""agents"":[{""name"":""a""}],""block_ms"":1000,""params"":{},""repos"":[]}") "none"),
+  check "an exclude that isn't a string" (seq (events_of
+    "{""agents"":[{""name"":""a"",""tip"":""t"",""exclude"":[1]}],""block_ms"":1000,""params"":{},""repos"":[]}") "none"),
+  check "an exclude that isn't a list is none" (seq (events_of
+    "{""agents"":[{""name"":""a"",""tip"":""t"",""exclude"":""r""}],""block_ms"":1000,""params"":{},""repos"":[]}")
+    "agents,a;tip,a,t;param,block_ms,1000")
+].

@@ -1,0 +1,38 @@
+(** genesis.json's tokens become the old boot events, in the old order. *)
+Example genesis_boot_order :
+  genesis_events (Some ["A", "4",
+      "agents", "L", "2",
+        "A", "3", "name", "S", "a", "tip", "S", "ta", "exclude", "L", "1", "S", "r2",
+        "A", "2", "tip", "S", "tb", "name", "S", "b",
+      "block_ms", "I", "500",
+      "params", "A", "2", "x", "S", "1", "x", "S", "2",
+      "repos", "L", "1", "A", "2", "name", "S", "r1", "tree", "S", "t1"]) =
+  Some [["agents", "a", "b"], ["tip", "a", "ta"], ["tip", "b", "tb"],
+        ["param", "block_ms", "500"], ["param", "x", "1"], ["param", "x", "2"],
+        ["repo", "r1", "t1"], ["exclude", "a", "r2"]].
+Proof. reflexivity. Qed.
+
+(** What the old reads refused: no event list, so the node doesn't start. *)
+Example genesis_boot_refusals :
+  genesis_events None = None /\
+  genesis_events (Some ["L", "0"]) = None /\
+  genesis_events (Some ["A", "4", "agents", "L", "0", "block_ms", "S", "500",
+      "params", "A", "0", "repos", "L", "0"]) = None /\
+  genesis_events (Some ["A", "4", "agents", "L", "0", "block_ms", "I", "500",
+      "params", "A", "1", "x", "I", "1", "repos", "L", "0"]) = None /\
+  genesis_events (Some ["A", "4", "agents", "L", "1", "A", "1", "name", "S", "a",
+      "block_ms", "I", "500", "params", "A", "0", "repos", "L", "0"]) = None /\
+  genesis_events (Some ["A", "4", "agents", "L", "1",
+      "A", "3", "name", "S", "a", "tip", "S", "t", "exclude", "L", "1", "I", "1",
+      "block_ms", "I", "500", "params", "A", "0", "repos", "L", "0"]) = None /\
+  genesis_events (Some ["A", "3", "agents", "L", "0", "block_ms", "I", "500", "repos", "L", "0"]) = None.
+Proof. repeat split; reflexivity. Qed.
+
+(** The first of a repeated key wins, as Yojson's member read it, and an
+    exclude that isn't a list is none. *)
+Example genesis_boot_first_key :
+  genesis_events (Some ["A", "5", "block_ms", "I", "7", "agents", "L", "1",
+      "A", "4", "name", "S", "a", "name", "S", "z", "tip", "S", "t", "exclude", "S", "r",
+      "block_ms", "I", "9", "params", "A", "0", "repos", "L", "0"]) =
+  Some [["agents", "a"], ["tip", "a", "t"], ["param", "block_ms", "7"]].
+Proof. reflexivity. Qed.

@@ -230,6 +230,19 @@ separate work; this status does not mark `.plan`.
 
 ## Done so far
 
+- Step 5, genesis.json at startup: the shell feeds the file's text as one
+  `genesis` boot event; Soma's `boot_expand` turns it, through the JSON
+  token binding and `genesis_events`, into the old boot events in the old
+  order (the roster, tips, block_ms, params in file order with repeats,
+  repositories, excludes), first key winning as Yojson's member did. The
+  walks share one fuel bound and skip each value once, so a wide genesis
+  costs linear work, with no cap on the number of agents, params or
+  excludes. What the old reads refused (a name, tip or param that isn't a
+  string, a block_ms that isn't an int, a non-string exclude, params
+  missing) stops the start through `node_fail`. `test/genesis-boot.sh`
+  runs real texts, including 12001 params and excludes;
+  `test/genesis_boot.proof` checks token streams.
+
 - Step 5, job buffer storage: output chunks now live in node_state's
   jbufs, through job_buffer, job_remember and job_forget. job_bytes uses
   that state with the existing job_feed cap plan; job_outputs threads the

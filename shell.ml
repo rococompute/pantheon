@@ -1263,13 +1263,9 @@ let node_open packed home flags =
   let boot_rev = ref [] in
   let feed ev = boot_rev := ev :: !boot_rev in
   (* genesis, then what's on disk *)
-  feed ("agents" :: names);
-  List.iter (fun a -> feed [ "tip"; to_string (member "name" a); to_string (member "tip" a) ]) agents;
-  feed [ "param"; "block_ms"; string_of_int (to_int (member "block_ms" gen)) ];
-  List.iter (fun (k, v) -> feed [ "param"; k; to_string v ]) (to_assoc (member "params" gen));
-  List.iter (fun (n, _, _, tree) -> feed [ "repo"; n; tree ]) repos;
-  List.iter (fun a -> List.iter (fun r -> feed [ "exclude"; to_string (member "name" a); to_string r ])
-                        (match member "exclude" a with `List l -> l | _ -> [])) agents;
+  (* the roster, tips, block_ms, params, repositories and excludes are
+     node.soma's genesis_events, from the file's text *)
+  feed [ "genesis"; read_file (Filename.concat home "genesis.json") ];
   feed [ "me"; me ];
   feed [ "agent"; "backend"; backend_kind ];
   List.iter feed !agent_events;

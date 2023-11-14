@@ -2220,6 +2220,154 @@ signed_needs_snapshot (snapshot_missing votes_found : bool) : bool := snapshot_m
 
 signed_missing_text : string := "missing consensus.state with existing votes: start a new chain".
 
+(** ---- genesis.json at startup (step 5) ----
+    The shell only reads the file; Soma turns its JSON tokens (the yojson
+    binding's) into the boot events, in the old order: the roster, each
+    agent's tip, block_ms, the params in file order (repeats included), the
+    repositories, then each agent's excludes. A member is its object's
+    first such key, as Yojson's member read it. Every walk shares one fuel
+    bound and skips each value once, so a wide genesis costs linear work,
+    and there is no cap on how many agents, params or excludes it holds.
+    What the old reads refused (a tip, name or param that isn't a string,
+    a block_ms that isn't an int, an exclude that isn't a string) gives
+    None, and the node refuses to start. *)
+Fixpoint genesis_pairs_go (fuel n : nat) (toks : list string) (acc : list (string * list string))
+    : option (list (string * list string)) :=
+  match n with
+  | 0 => Some (rev_onto acc [])
+  | Succ m =>
+      match toks with
+      | key :: rest =>
+          match json_skip fuel [false] rest with
+          | Some after => genesis_pairs_go fuel m after ((key, rest) :: acc)
+          | None => None
+          end
+      | [] => None
+      end
+  end.
+
+Fixpoint genesis_items_go (fuel n : nat) (toks : list string) (acc : list (list string))
+    : option (list (list string)) :=
+  match n with
+  | 0 => Some (rev_onto acc [])
+  | Succ m =>
+      match json_skip fuel [false] toks with
+      | Some after => genesis_items_go fuel m after (toks :: acc)
+      | None => None
+      end
+  end.
+
+(** an object's members, each with the tokens where its value starts *)
+genesis_pairs (fuel : nat) (toks : list string) : option (list (string * list string)) :=
+  match toks with
+  | "A" :: ns :: rest => genesis_pairs_go fuel (num ns) rest []
+  | _ => None
+  end.
+
+(** a list's elements, each as the tokens where it starts *)
+genesis_items (fuel : nat) (toks : list string) : option (list (list string)) :=
+  match toks with
+  | "L" :: ns :: rest => genesis_items_go fuel (num ns) rest []
+  | _ => None
+  end.
+
+Fixpoint genesis_member (k : string) (pairs : list (string * list string)) : option (list string) :=
+  match pairs with
+  | [] => None
+  | (key, v) :: rest => if seq key k then Some v else genesis_member k rest
+  end.
+
+genesis_text (v : option (list string)) : option string :=
+  match v with Some ("S" :: s :: _) => Some s | _ => None end.
+
+(** One agent: its name, its tip and its excludes (absent or not a list:
+    none, as before; a list must hold strings). *)
+genesis_agent (fuel : nat) (a : list string) : option (string * (string * list string)) :=
+  match genesis_pairs fuel a with
+  | None => None
+  | Some ps =>
+      match genesis_text (genesis_member "name" ps), genesis_text (genesis_member "tip" ps) with
+      | Some name, Some tip =>
+          match genesis_member "exclude" ps with
+          | Some (("L" :: _) as ex) =>
+              match peer_string_list ex with
+              | Some rs => Some (name, (tip, rs))
+              | None => None
+              end
+          | _ => Some (name, (tip, []))
+          end
+      | _, _ => None
+      end
+  end.
+
+Fixpoint genesis_all {A B : Type} (f : A -> option B) (l : list A) (acc : list B) : option (list B) :=
+  match l with
+  | [] => Some (rev_onto acc [])
+  | x :: r => match f x with Some y => genesis_all f r (y :: acc) | None => None end
+  end.
+
+genesis_param (kv : string * list string) : option (list string) :=
+  match genesis_text (Some (snd kv)) with
+  | Some v => Some ["param", fst kv, v]
+  | None => None
+  end.
+
+genesis_repo (fuel : nat) (r : list string) : option (list string) :=
+  match genesis_pairs fuel r with
+  | Some ps =>
+      match genesis_text (genesis_member "name" ps), genesis_text (genesis_member "tree" ps) with
+      | Some n, Some tree => Some ["repo", n, tree]
+      | _, _ => None
+      end
+  | None => None
+  end.
+
+genesis_events (tokens : option (list string)) : option (list (list string)) :=
+  match tokens with
+  | None => None
+  | Some t =>
+      let fuel := Succ (length t) in
+      match genesis_pairs fuel t with
+      | None => None
+      | Some top =>
+          let items (k : string) : option (list (list string)) :=
+                       match genesis_member k top with
+                         | Some v => genesis_items fuel v
+                         | None => None
+                         end in
+          match items "agents", genesis_member "block_ms" top,
+                (match genesis_member "params" top with Some v => genesis_pairs fuel v | None => None end),
+                items "repos" with
+          | Some agents, Some ("I" :: ms :: _), Some params, Some repos =>
+              match genesis_all (genesis_agent fuel) agents [],
+                    genesis_all genesis_param params [],
+                    genesis_all (genesis_repo fuel) repos [] with
+              | Some ags, Some pevs, Some revs =>
+                  Some ((("agents" :: map fst ags) ::
+                         map (fun a => ["tip", fst a, fst (snd a)]) ags) ++
+                        [["param", "block_ms", ms]] ++ pevs ++ revs ++
+                        flat_map (fun a => map (fun r => ["exclude", fst a, r]) (snd (snd a))) ags)
+              | _, _, _ => None
+              end
+          | _, _, _, _ => None
+          end
+      end
+  end.
+
+genesis_refused_text : string := "genesis.json is not a genesis this node can start from".
+
+(** The shell's ["genesis", raw] boot event becomes the events above. *)
+boot_expand (h : node_t) (evs : list (list string)) : list (list string) :=
+  flat_map (fun ev =>
+    match ev with
+    | ["genesis", raw] =>
+        match genesis_events (node_json_tokens raw) with
+        | Some gevs => gevs
+        | None => if node_fail genesis_refused_text then [] else [["genesis_refused"]]
+        end
+    | _ => [ev]
+    end) evs.
+
 run_node (home : string) (flags : list string) : unit :=
   let h := node_open (pack_helpers node_helpers) home flags in
   let snap : option consensus_state := boot_snapshot h in
@@ -2227,7 +2375,7 @@ run_node (home : string) (flags : list string) : unit :=
   let missing := match snap with None => true | Some _ => false end in
   let guarded := if signed_needs_snapshot missing found then node_fail signed_missing_text else true in
   if restored && guarded then
-    let st := run_boot h empty_node (boot_events h) in
+    let st := run_boot h empty_node (boot_expand h (boot_events h)) in
     let n := replay_count h in
     let logged := if seq n "0" then true else io_log h (append "replayed " (append n " blocks from disk")) in
     let st := match snap with Some c => restore_cons st c | None => st end in
