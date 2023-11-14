@@ -1122,14 +1122,42 @@ llm_checkout (kind : string) (ctx names : list string) : option string :=
   | [] => None
   end.
 
+
+(** A backend's whole launch, as data: the program, its time limit in
+    seconds (empty for cmd:, whose limit follows the tool checkout),
+    how its input and output files work ("prompt", "codex" or "grok";
+    anything else is the prompt on stdin), and its fixed arguments.
+    [\@OUT\@] and [\@HDR\@] name files the shell makes. An unknown
+    backend launches nothing: the caller reports it. *)
+backend_launch (backend : string) : list string :=
+  if seq backend "claude" then
+    ["claude", "600", "prompt", "-p", "--tools", "", "--strict-mcp-config",
+     "--no-session-persistence", "--setting-sources", "", "--output-format", "text"]
+  else if seq backend "codex" then
+    ["codex", "600", "codex", "exec", "--skip-git-repo-check", "--ephemeral",
+     "--sandbox", "read-only", "--disable", "shell_tool", "--disable", "unified_exec",
+     "--disable", "apps", "--disable", "browser_use", "-c", "approval_policy=""never""",
+     "-c", "mcp_servers={}", "-o", "@OUT@", "-"]
+  else if seq backend "grok" then
+    ["curl", "600", "grok", "-s", "-m", "600", "-H", "@HDR@", "-d", "@-",
+     "https://api.x.ai/v1/chat/completions"]
+  else if starts "cmd:" backend && (4 <? slen backend) then
+    [drop_str 4 backend, "", "cmd"]
+  else [].
+
 llm_call (h : node_t) (id kind prompt : string) (ctx : list string) : bool :=
   let token := node_token tt in
-  match node_llm_start h id kind prompt
-    (prompt_assemble token prompt ctx (fun _ => llm_repos_text h token) (fun _ => llm_plan_text h token)
-       (llm_repo_text h token)) ctx (llm_checkout kind ctx (node_repo_names h)) with
-  | None => true
-  (* the process couldn't start: its output is here at once *)
-  | Some text => push_all h (reply_events h id kind prompt text ctx)
+  let backend := fst (snd (node_limit_info h)) in
+  match backend_launch backend with
+  | [] => io_push h ["llm_error", id, append "unknown backend " backend]
+  | launch =>
+      match node_llm_start h id kind prompt
+        (prompt_assemble token prompt ctx (fun _ => llm_repos_text h token) (fun _ => llm_plan_text h token)
+           (llm_repo_text h token)) ctx (llm_checkout kind ctx (node_repo_names h)) launch with
+      | None => true
+      (* the process couldn't start: its output is here at once *)
+      | Some text => push_all h (reply_events h id kind prompt text ctx)
+      end
   end.
 
 perform_llm (h : node_t) (id kind prompt : string) (ctx : list string) : bool :=

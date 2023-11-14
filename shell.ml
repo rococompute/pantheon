@@ -763,7 +763,7 @@ type node_handle = { h_events : unit -> string list list;
                      h_job_flood : string -> unit;
                      h_llm_budget : unit -> string * string;
                      h_llm_hold : string -> string -> string -> string list -> unit;
-                     h_llm_start : string -> string -> string -> string -> string list -> string option -> string option;
+                     h_llm_start : string -> string -> string -> string -> string list -> string option -> string list -> string option;
                      h_limit_set : float -> string -> float -> unit;
                      h_limit_clear : float -> unit;
                      h_repo_names : unit -> string list;
@@ -829,7 +829,7 @@ let node_job_flood id jid = (lookup_handle id).h_job_flood jid; true
 (* a model call's I/O: node.soma's perform_llm decides and builds the prompt *)
 let node_llm_budget id = (lookup_handle id).h_llm_budget ()
 let node_llm_hold id req kind prompt ctx = (lookup_handle id).h_llm_hold req kind prompt ctx; true
-let node_llm_start id req kind raw prompt ctx checkout = (lookup_handle id).h_llm_start req kind raw prompt ctx checkout
+let node_llm_start id req kind raw prompt ctx checkout launch = (lookup_handle id).h_llm_start req kind raw prompt ctx checkout launch
 (* a model's output: node.soma's reply_fields decides what it becomes.
    These bindings only report the cap, where the braces are, and yojson's
    value as tokens. The slice, the guards and the key paths are Soma. *)
@@ -1154,56 +1154,53 @@ let node_open packed home flags =
   (* the model process for a prompt Soma assembled from prompt0. Its output
      comes back raw as an llm_output event, or at once when the process
      couldn't start *)
-  let call_model id kind prompt0 prompt ctx checkout =
+  let call_model id kind prompt0 prompt ctx checkout launch =
     let starting = ref true and immediate = ref None in
     let reply text =
       if !starting then immediate := Some text
       else push ("llm_output" :: id :: kind :: prompt0 :: text :: ctx)
     in
-    (match !backend with
-    | "claude" ->
-        start_job "claude" [ "-p"; "--tools"; ""; "--strict-mcp-config"; "--no-session-persistence"; "--setting-sources"; ""; "--output-format"; "text" ]
-          ~stdin_text:prompt ~env:(model_env ()) ~on_done:reply ~clean:ignore
-    | "codex" ->
-        let out = Filename.temp_file "pantheon-codex" ".txt" in
-        start_job "codex" [ "exec"; "--skip-git-repo-check"; "--ephemeral"; "--sandbox"; "read-only"; "--disable"; "shell_tool";
-                            "--disable"; "unified_exec"; "--disable"; "apps"; "--disable"; "browser_use";
-                            "-c"; "approval_policy=\"never\""; "-c"; "mcp_servers={}"; "-o"; out; "-" ]
-          ~stdin_text:prompt ~env:(model_env ())
-          ~on_done:(fun t -> if String.length t > 0 && t.[0] = '!' then reply t else reply (try read_file out with _ -> "!codex wrote no reply"))
-          ~clean:(fun () -> try Sys.remove out with _ -> ())
-    | "grok" ->
-        let k = try Sys.getenv "XAI_API_KEY" with Not_found -> "" in
-        if k = "" then push [ "llm_error"; id; "backend grok needs XAI_API_KEY" ]
-        else begin
-          let hdr = Filename.temp_file "pantheon-h" ".txt" in
-          write_file hdr ("Authorization: Bearer " ^ k ^ "\nContent-Type: application/json\n");
-          let body = Yojson.Safe.to_string (`Assoc [ ("model", `String (try Sys.getenv "GROK_MODEL" with Not_found -> "grok-4.7"));
-                                                     ("messages", `List [ `Assoc [ ("role", `String "user"); ("content", `String prompt) ] ]) ]) in
-          start_job "curl" [ "-s"; "-m"; "600"; "-H"; "@" ^ hdr; "-d"; "@-"; "https://api.x.ai/v1/chat/completions" ]
-            ~stdin_text:body ~env:(Unix.environment ())
-            ~on_done:(fun t ->
-              try reply (Yojson.Safe.Util.(to_string (member "content" (member "message" (List.hd (to_list (member "choices" (Yojson.Safe.from_string t))))))))
-              with _ -> push [ "llm_error"; id; "grok: " ^ String.sub t 0 (min 300 (String.length t)) ])
-            ~clean:(fun () -> try Sys.remove hdr with _ -> ())
-        end
-    | b when String.length b > 4 && String.sub b 0 4 = "cmd:" ->
-        let extra, clean, limit =
-          match checkout with
-          | Some r ->
-              let wt = Filename.temp_dir "pantheon-work" "" in
-              let gd = wt ^ ".git" in
-              let gone () = remove_tree_later wt; remove_tree_later gd in
-              let commit = git_out (rdir r) [ "rev-parse"; "HEAD" ] in
-              if fst (capture "git" [ "clone"; "--quiet"; "--shared"; "--no-checkout"; "--separate-git-dir=" ^ gd; rdir r; wt ])
-                 && git_ok wt [ "checkout"; "-q"; "--detach"; commit ] then
-                ([ "PANTHEON_WORKTREE=" ^ wt; "PANTHEON_GITDIR=" ^ gd; "PANTHEON_REPO=" ^ r; "PANTHEON_BIN=" ^ self_exe ],
-                 gone, 1800.)
-              else ([], gone, 600.)
-          | None -> ([], ignore, 1200.)
-        in
-        start_job ~limit (String.sub b 4 (String.length b - 4)) [] ~stdin_text:prompt ~env:(Array.append (Array.of_list extra) (model_env ())) ~on_done:reply ~clean
-    | b -> push [ "llm_error"; id; "unknown backend " ^ b ]);
+    (match launch with
+     | prog :: limit_s :: "codex" :: args ->
+         let out = Filename.temp_file "pantheon-codex" ".txt" in
+         start_job ~limit:(float_of_string limit_s) prog
+           (List.map (fun a -> if a = "@OUT@" then out else a) args) ~stdin_text:prompt ~env:(model_env ())
+           ~on_done:(fun t -> if String.length t > 0 && t.[0] = '!' then reply t else reply (try read_file out with _ -> "!codex wrote no reply"))
+           ~clean:(fun () -> try Sys.remove out with _ -> ())
+     | prog :: limit_s :: "grok" :: args ->
+         let k = try Sys.getenv "XAI_API_KEY" with Not_found -> "" in
+         if k = "" then push [ "llm_error"; id; "backend grok needs XAI_API_KEY" ]
+         else begin
+           let hdr = Filename.temp_file "pantheon-h" ".txt" in
+           write_file hdr ("Authorization: Bearer " ^ k ^ "\nContent-Type: application/json\n");
+           let body = Yojson.Safe.to_string (`Assoc [ ("model", `String (try Sys.getenv "GROK_MODEL" with Not_found -> "grok-4.7"));
+                                                      ("messages", `List [ `Assoc [ ("role", `String "user"); ("content", `String prompt) ] ]) ]) in
+           start_job ~limit:(float_of_string limit_s) prog
+             (List.map (fun a -> if a = "@HDR@" then "@" ^ hdr else a) args) ~stdin_text:body ~env:(Unix.environment ())
+             ~on_done:(fun t ->
+               try reply (Yojson.Safe.Util.(to_string (member "content" (member "message" (List.hd (to_list (member "choices" (Yojson.Safe.from_string t))))))))
+               with _ -> push [ "llm_error"; id; "grok: " ^ String.sub t 0 (min 300 (String.length t)) ])
+             ~clean:(fun () -> try Sys.remove hdr with _ -> ())
+         end
+     | prog :: _ :: "cmd" :: args ->
+         let extra, clean, limit =
+           match checkout with
+           | Some r ->
+               let wt = Filename.temp_dir "pantheon-work" "" in
+               let gd = wt ^ ".git" in
+               let gone () = remove_tree_later wt; remove_tree_later gd in
+               let commit = git_out (rdir r) [ "rev-parse"; "HEAD" ] in
+               if fst (capture "git" [ "clone"; "--quiet"; "--shared"; "--no-checkout"; "--separate-git-dir=" ^ gd; rdir r; wt ])
+                  && git_ok wt [ "checkout"; "-q"; "--detach"; commit ] then
+                 ([ "PANTHEON_WORKTREE=" ^ wt; "PANTHEON_GITDIR=" ^ gd; "PANTHEON_REPO=" ^ r; "PANTHEON_BIN=" ^ self_exe ],
+                  gone, 1800.)
+               else ([], gone, 600.)
+           | None -> ([], ignore, 1200.)
+         in
+         start_job ~limit prog args ~stdin_text:prompt ~env:(Array.append (Array.of_list extra) (model_env ())) ~on_done:reply ~clean
+     | prog :: limit_s :: _ :: args ->
+         start_job ~limit:(float_of_string limit_s) prog args ~stdin_text:prompt ~env:(model_env ()) ~on_done:reply ~clean:ignore
+     | _ -> push [ "llm_error"; id; "unknown backend " ^ !backend ]);
     starting := false;
     !immediate
   in

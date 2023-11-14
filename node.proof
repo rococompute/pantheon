@@ -3,6 +3,13 @@
     effect appears only when consensus changed (as [empty_node]'s has not),
     decided outputs come before it, and the rest come after. *)
 
+Example backend_launches_are_fixed_data :
+  backend_launch "claude" = ["claude", "600", "prompt", "-p", "--tools", "", "--strict-mcp-config", "--no-session-persistence", "--setting-sources", "", "--output-format", "text"] /\
+  hd "" (tl (tl (backend_launch "codex"))) = "codex" /\ backend_launch "cmd:my-model" = ["my-model", "", "cmd"] /\
+  backend_launch "cmd:" = [] /\ backend_launch "Claude" = [] /\ backend_launch "" = [] /\
+  backend_launch "scripted" = [] /\ backend_launch "grok" = ["curl", "600", "grok", "-s", "-m", "600", "-H", "@HDR@", "-d", "@-", "https://api.x.ai/v1/chat/completions"].
+Proof. repeat split; reflexivity. Qed.
+
 Example feed_chunks_splits_lines_and_keeps_the_partial :
   feed_chunks [] "one
 tw" = (["one"], ["tw"]) /\
