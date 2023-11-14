@@ -246,18 +246,21 @@ Inductive output_action :=
     one binding, [node_io], and Sandbox could interpret the same values for
     a unikernel. So far: logging, a timer, queueing an event for the loop,
     and sending on peer links (to every peer, to the peer at an index, to a
-    peer by name). Reads (the clock, tables), files, git, model and CI jobs
-    are still bindings of their own: the next parts of U-1. An operation
-    crosses the binding as its wire form ([io_wire]), since a .definition
-    takes no Soma inductive; [io_of_wire] reads it back, and shell.ml's
-    [node_io] does exactly that match. *)
+    peer by name). The clock is a read of the same interface: interpreting
+    it yields the time, the same [Unix.gettimeofday] value as before.
+    Table reads, files, git, model and CI jobs are still bindings of their
+    own: the next parts of U-1. An operation crosses the binding as its
+    wire form ([io_wire]), since a .definition takes no Soma inductive;
+    [io_of_wire] reads it back, and shell.ml's [node_io] does exactly that
+    match. An effect's result is [(true, 0)]; the clock's is [(true, now)]. *)
 Inductive node_op :=
 | IoLog (text : string)
 | IoTimer (ms : string) (event : list string)
 | IoQueue (event : list string)
 | IoSendAll (fields : list string)
 | IoSendPeer (index : string) (fields : list string)
-| IoPeerSend (who : string) (fields : list string).
+| IoPeerSend (who : string) (fields : list string)
+| IoClock.
 
 io_wire (op : node_op) : list string :=
   match op with
@@ -267,6 +270,7 @@ io_wire (op : node_op) : list string :=
   | IoSendAll fields => "send_all" :: fields
   | IoSendPeer index fields => "send_peer" :: index :: fields
   | IoPeerSend who fields => "peer_send" :: who :: fields
+  | IoClock => ["clock"]
   end.
 
 io_of_wire (w : list string) : option node_op :=
@@ -277,11 +281,17 @@ io_of_wire (w : list string) : option node_op :=
   | "send_all" :: fields => Some (IoSendAll fields)
   | "send_peer" :: index :: fields => Some (IoSendPeer index fields)
   | "peer_send" :: who :: fields => Some (IoPeerSend who fields)
+  | ["clock"] => Some IoClock
   | _ => None
   end.
 
-(** The one place these operations happen. *)
-io_do (h : node_t) (op : node_op) : bool := node_io h (io_wire op).
+(** Effects use the first of the pair. The call's result is that bool, so
+    the interpretation is not dropped. *)
+io_do (h : node_t) (op : node_op) : bool := fst (node_io h (io_wire op)).
+
+(** The clock, through the same interpreter. The second of the pair is the
+    time; the first only says the read happened. *)
+io_now (h : node_t) : float := snd (node_io h (io_wire IoClock)).
 
 io_log (h : node_t) (text : string) : bool := io_do h (IoLog text).
 
@@ -972,7 +982,7 @@ reply_fields (text : string) : option (list string) :=
 reply_events (h : node_t) (id kind prompt0 text : string) (ctx : list string) : list (list string) :=
   match reply_outcome_of text reply_fields with
   | ReplyHold body =>
-      let now := node_clock tt in
+      let now := io_now h in
       let (backoff, _) := node_release_state h in
       let (_, info) := node_limit_info h in
       let wait := limit_wait (reset_in node_float_of_digits now body) backoff in
@@ -1033,7 +1043,7 @@ llm_call (h : node_t) (id kind prompt : string) (ctx : list string) : bool :=
 
 perform_llm (h : node_t) (id kind prompt : string) (ctx : list string) : bool :=
   let (calls, max) := node_llm_budget h in
-  let now := node_clock tt in
+  let now := io_now h in
   let (until, info) := node_limit_info h in
   let backend := fst info in
   match llm_gate_of calls max now until with
@@ -1057,7 +1067,7 @@ perform_output (h : node_t) (out : list string) : bool :=
       carry_output_actions h (decided_plan height txs (node_block h height))
   | SetHeight height => node_height h height
   | CatchupPeer who first =>
-      let now := node_clock tt in
+      let now := io_now h in
       let last := node_last_served h who first in
       let (byz, _) := node_draw h in
       carry_output_actions h (catchup_plan who first (node_current_height h)
@@ -1065,7 +1075,7 @@ perform_output (h : node_t) (out : list string) : bool :=
   | WriteStatus lines =>
       let heads := node_checkout_heads h in
       let bad := node_divergences h in
-      let now := node_clock tt in
+      let now := io_now h in
       let (until, info) := node_limit_info h in
       let (backend, detail) := info in
       let (held, reason) := detail in
@@ -1238,7 +1248,7 @@ release_held (h : node_t) : list (list string) :=
   let (backend, detail) := info in
   let (held, _) := detail in
   let (backoff, probing) := node_release_state h in
-  let over := negb (PrimFloat.ltb (node_clock tt) until) in
+  let over := negb (PrimFloat.ltb (io_now h) until) in
   match release_plan_of (num held) over probing (PrimFloat.ltb 900%float backoff) with
   | ReleaseNone => []
   | ReleaseOne => if io_log h (release_one_text backend held) then [node_release_one h] else []

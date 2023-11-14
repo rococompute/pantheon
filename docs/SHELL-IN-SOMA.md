@@ -160,13 +160,14 @@ What a `Sandbox` interpreter of each operation still lacks:
 | `IoTimer ms event` | a timer list checked each select turn | a millisecond clock and sleep (Soma's "a millisecond clock") |
 | `IoQueue event` | the event queue the next turn drains | nothing: a queue in the program's loop |
 | `IoSendAll fields`, `IoSendPeer index fields`, `IoPeerSend peer fields` | sign, frame and buffer on the peer's TCP link | links that stay open (Soma's "links that stay open") and RSA signing (Soma's "SHA-256 and RSA") |
+| `IoClock` | `Unix.gettimeofday`, returned as the second of `(true, now)` | a millisecond clock (Soma's "a millisecond clock"); Sandbox's time of day is not this clock |
 
 Not yet operations, still bindings of their own (the next parts of U-1):
-the clock and the node's tables (reads, which need operations with a
-result, as `Sandbox.io`'s binds have), the block log, signed votes and the
-snapshot (Soma's "storage"), the listener and accepted connections (links),
-SHA-256 and RSA (Soma's item), and git, model and CI jobs (Soma's
-"services": `fetch` with a timeout and HTTP POST).
+the node's tables (reads, which need operations with a result, as
+`Sandbox.io`'s binds have; the clock is the first of those), the block
+log, signed votes and the snapshot (Soma's "storage"), the listener and
+accepted connections (links), SHA-256 and RSA (Soma's item), and git,
+model and CI jobs (Soma's "services": `fetch` with a timeout and HTTP POST).
 
 ## The first pieces, bottom-up (superseded by the section above)
 
@@ -197,8 +198,12 @@ worth a note in this file rather than a workaround.
   `output_io` give the operation a plan's action or an output is, and
   `node.proof` checks them on concrete plans and proves each is carried
   out as exactly its operation, and that the wire form reads back.
-  Left: reads (clock, tables), files, git, model and CI jobs (see "Two
-  directions, and the unikernel").
+  The clock is the same interface: `IoClock` wires as `["clock"]`, and
+  `node_io` returns `(true, Unix.gettimeofday ())`; `io_now` is that
+  second component, and the old `node_clock` binding is gone. Effects
+  still return `(true, 0)` and `io_do` keeps the first component, so the
+  call is not dropped. Left: table reads, files, git, model and CI jobs
+  (see "Two directions, and the unikernel").
 
 - Step 5, connection and line limits: an accepted socket reaches Soma
   as a `conn_offer` event carrying its per-host and total counts;

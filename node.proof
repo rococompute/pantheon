@@ -697,6 +697,8 @@ Example io_wire_forms :
   io_wire (IoSendAll ["prevote", "1"]) = ["send_all", "prevote", "1"] /\
   io_wire (IoSendPeer "0" []) = ["send_peer", "0"] /\
   io_wire (IoPeerSend "codex" ["done", "4"]) = ["peer_send", "codex", "done", "4"] /\
+  io_wire IoClock = ["clock"] /\ io_of_wire ["clock"] = Some IoClock /\
+  io_of_wire ["clock", "extra"] = None /\
   io_of_wire ["log"] = None /\ io_of_wire ["log", "a", "b"] = None /\
   io_of_wire ["timer"] = None /\ io_of_wire [] = None /\ io_of_wire ["nope", "x"] = None.
 Proof. repeat split; reflexivity. Qed.
