@@ -854,7 +854,7 @@ Proof.
   intros op. destruct op as [text | ms event | event | fields | index fields |
     who fields | height txs | height | text | slot vid fields | raw | |
     id repo head edits | repo version | repo entry | | height kind fields alternate |
-    offer mode target | conn | job | job]; try reflexivity.
+    offer mode target | conn | job | job | who | | repo]; try reflexivity.
   change (match resend_parts (resend_fields fields ++ ("alternate" :: alternate)) with
     | Some (original, alt) => Some (IoRememberBroadcast height kind original alt)
     | None => None end = Some (IoRememberBroadcast height kind fields alternate)).
