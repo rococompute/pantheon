@@ -913,6 +913,14 @@ let node_io id op =
   | [ "merge_applied"; r; v ] -> h.h_merge_set_applied r v; (true, 0.)
   | [ "merge_diverged"; r; entry ] -> h.h_merge_note_diverged r entry; (true, 0.)
   | [ "clock" ] -> (true, Unix.gettimeofday ())
+  | "remember_broadcast" :: height :: kind :: parts ->
+      let rec unpack rev = function
+        | "alternate" :: alternate -> (List.rev rev, alternate)
+        | "field" :: value :: rest -> unpack (value :: rev) rest
+        | _ -> fail "malformed node resend record"
+      in
+      let fields, alternate = unpack [] parts in
+      h.h_remember_broadcast height kind fields alternate; (true, 0.)
   | _ -> fail "unknown node operation %s" (String.concat " " op)
 let node_conn_admit id oid mode target = (lookup_handle id).h_conn_admit oid mode target; true
 let node_conns id = (lookup_handle id).h_conns ()
@@ -944,7 +952,6 @@ let node_signed_text id = (lookup_handle id).h_signed_text
 let node_signed_restore id slot vid fields = (lookup_handle id).h_signed_restore slot vid fields; true
 (* a startup Soma refuses: the message on stderr, exit 1, as `fail` *)
 let node_fail msg : bool = fail "%s" msg
-let node_remember_broadcast id height kind fields alt = (lookup_handle id).h_remember_broadcast height kind fields alt; true
 let node_peer_count id = (lookup_handle id).h_peer_count ()
 (* Node metadata for peer lines. Soma gates the parse, reads the members
    from node_json_tokens' tokens (node.soma's node_line_parts), and decides

@@ -838,8 +838,27 @@ Proof. intros cap me raw parts refused H. unfold peer_raw_event. rewrite H. refl
 (** U-1: the node's operations as one interface. The dispatch produces
     [node_op] values; each crosses the binding as its wire form, which
     reads back as the same operation (shell.ml's node_io is that match). *)
+Lemma resend_parts_reads_fields : forall fields alternate,
+  resend_parts (resend_fields fields ++ ("alternate" :: alternate)) = Some (fields, alternate).
+Proof.
+  induction fields as [|field rest IH]; intros alternate.
+  - reflexivity.
+  - change (match resend_parts (resend_fields rest ++ ("alternate" :: alternate)) with
+      | Some (fields, alt) => Some (field :: fields, alt)
+      | None => None end = Some (field :: rest, alternate)).
+    rewrite IH. reflexivity.
+Qed.
+
 Theorem io_wire_reads_back : forall op, io_of_wire (io_wire op) = Some op.
-Proof. intros op. destruct op; reflexivity. Qed.
+Proof.
+  intros op. destruct op as [text | ms event | event | fields | index fields |
+    who fields | height txs | height | text | slot vid fields | raw | |
+    id repo head edits | repo version | repo entry | | height kind fields alternate]; try reflexivity.
+  change (match resend_parts (resend_fields fields ++ ("alternate" :: alternate)) with
+    | Some (original, alt) => Some (IoRememberBroadcast height kind original alt)
+    | None => None end = Some (IoRememberBroadcast height kind fields alternate)).
+  rewrite resend_parts_reads_fields. reflexivity.
+Qed.
 
 Example io_wire_forms :
   io_wire (IoLog "hi there") = ["log", "hi there"] /\
@@ -867,7 +886,9 @@ Example plans_become_operations :
   map action_io (reveal_plan "" "4" "secret" "2") =
     [Some (IoQueue ["local_tx", "reveal", sha256 (sha256 "secret")])] /\
   map action_io (broadcast_plan "equivocate" 2 ["proposal", "3", "1", "0", "vid", "val"] None None None) =
-    [None, Some (IoSendPeer "0" ["proposal", "3", "1", "0", "vid", "val"]),
+    [Some (IoRememberBroadcast "3" "each" ["proposal", "3", "1", "0", "vid", "val"]
+       ["proposal", "3", "1", "0", hash_list ["equivocation", "3", "1"], "equivocation", "3", "1"]),
+     Some (IoSendPeer "0" ["proposal", "3", "1", "0", "vid", "val"]),
      Some (IoSendPeer "1" ["proposal", "3", "1", "0", hash_list ["equivocation", "3", "1"], "equivocation", "3", "1"])] /\
   map action_io (broadcast_plan "" 2 ["ping"] None None None) = [Some (IoSendAll ["ping"])] /\
   action_io (StoreAction "7" []) = Some (IoStore "7" []).
@@ -892,7 +913,8 @@ Proof. repeat split; reflexivity. Qed.
 Example votes_floods_and_checks_become_operations :
   map action_io (broadcast_plan "" 2 ["prevote", "1", "0", "-1", "v", "nil"]
     (Some ("prevote", "1", "0", "v")) None None) =
-    [Some (IoSignVote "prevote/1/0" "v" ["prevote", "1", "0", "-1", "v", "nil"]), None,
+    [Some (IoSignVote "prevote/1/0" "v" ["prevote", "1", "0", "-1", "v", "nil"]),
+     Some (IoRememberBroadcast "1" "all" ["prevote", "1", "0", "-1", "v", "nil"] ["prevote", "1", "0", "-1", "v", "nil"]),
      Some (IoSendAll ["prevote", "1", "0", "-1", "v", "nil"])] /\
   map action_io (firstn 3 (submission_plan "future-nonce" false "7" ["withdraw", "0"])) =
     [None, Some IoMarkNonceFlood, Some (IoLog "FAULT INJECTION: flooding 600 future-nonce transactions")] /\
