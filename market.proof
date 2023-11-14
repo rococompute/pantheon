@@ -215,15 +215,27 @@ Lemma apply_preserves_merged : forall P,
     merged_satisfy P (fst (fst (apply m a fields))).
 Proof.
   intros P Hfinal m a fields Hm. unfold apply.
+  (* Match the state constructor before applying a preservation lemma: failed
+     unification would otherwise unfold whole transaction branches. *)
   Ltac merged_steps :=
     repeat first [ assumption
-      | apply merged_count
-      | apply merged_setf_other; [reflexivity|]
-      | apply merged_set_bid; [discriminate|] ].
+      | match goal with
+        | |- merged_satisfy _ (count _ _ _) => apply merged_count
+        | |- merged_satisfy _ (setf _ _ _) =>
+            apply merged_setf_other; [reflexivity|]
+        | |- merged_satisfy _ (set_bid _ _) =>
+            apply merged_set_bid; [discriminate|]
+        end ].
   repeat first [solve [merged_steps]
-    | solve [apply merged_append_pending; [discriminate|]; merged_steps]
-    | solve [apply merged_clear_fold;
-        [intros; destruct (_ && _); merged_steps | merged_steps]]
+    | solve [match goal with
+        | |- merged_satisfy _ (setf _ "bids" _) =>
+            apply merged_append_pending; [discriminate|]; merged_steps
+        end]
+    | solve [match goal with
+        | |- merged_satisfy _ (fold_left _ _ _) =>
+            apply merged_clear_fold;
+              [intros; destruct (_ && _); merged_steps | merged_steps]
+        end]
     | match goal with
       | |- merged_satisfy _ (fst (fst (match settle ?s with _ => _ end))) =>
         let Hs := fresh "Hs" in
@@ -234,7 +246,7 @@ Proof.
       end
     | progress cbn beta iota zeta delta [fst]
     | match goal with
-      | |- merged_satisfy _ (fst (fst (match ?x with _ => _ end))) => destruct x eqn:?
+      | |- merged_satisfy _ (fst (fst (match ?x with _ => _ end))) => destruct x
       end ].
 Qed.
 
