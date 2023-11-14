@@ -123,8 +123,8 @@ let load_consensus path =
   Fun.protect ~finally:(fun () -> close_in ic) (fun () -> Marshal.from_channel ic)
 
 let read_json p = try Yojson.Safe.from_file p with _ -> fail "cannot read %s: is this a home made by `pantheon init`?" p
-let lines p = if Sys.file_exists p then String.split_on_char '\n' (read_file p) |> List.filter (( <> ) "") else []
-(* a log's bytes, or "" when there is none: Soma splits it (node.soma's log_lines) *)
+(* a file's bytes, or "" when there is none: Soma splits logs and goal files
+   (node.soma's log_lines) *)
 let file_text p = if Sys.file_exists p then read_file p else ""
 
 (* A .plan's open items are computed in Soma ([plan_open] in util.soma), and
@@ -744,6 +744,7 @@ type node_handle = { h_events : float -> string list list;
                      h_job_complete : string -> string -> string list list;
                      h_job_flood : string -> unit;
                      h_check_result : string -> bool -> string -> string -> string -> unit;
+                     h_ci_launch : string -> string -> string -> string -> string list list;
                      h_llm_budget : unit -> string * string;
                      h_llm_hold : string -> string -> string -> string list -> unit;
                      h_llm_start : string -> string -> string -> string -> string list -> string list -> string list -> string list -> string list option;
@@ -831,6 +832,7 @@ let node_queue_empty id = (lookup_handle id).h_queue_empty ()
 let node_job_complete id job result = (lookup_handle id).h_job_complete job result
 let node_job_flood id jid = (lookup_handle id).h_job_flood jid; true
 let node_check_result id req ok tree why stage = (lookup_handle id).h_check_result req ok tree why stage; true
+let node_ci_launch id req out tree ci = (lookup_handle id).h_ci_launch req out tree ci
 (* a model call's I/O: node.soma's perform_llm decides and builds the prompt *)
 let node_llm_budget id = (lookup_handle id).h_llm_budget ()
 let node_llm_hold id req kind prompt ctx = (lookup_handle id).h_llm_hold req kind prompt ctx; true
@@ -994,7 +996,7 @@ let node_open packed home flags =
   let rec go = function
     | "--backend" :: b :: r -> backend := b; go r
     | "--behavior" :: b :: r -> agent_events := !agent_events @ [ [ "agent"; "behavior"; b ] ]; go r
-    | "--goal" :: f :: r -> agent_events := !agent_events @ List.map (fun l -> [ "agent"; "goal"; l ]) (lines f); go r
+    | "--goal" :: f :: r -> agent_events := !agent_events @ [ [ "goal_text"; file_text f ] ]; go r
     | "--deny" :: p :: r -> agent_events := !agent_events @ [ [ "agent"; "deny"; p ] ]; go r
     | "--bid-window" :: n :: r -> agent_events := !agent_events @ [ [ "agent"; "bid_window"; n ] ]; go r
     | "--perspective" :: t :: r -> agent_events := !agent_events @ [ [ "agent"; "perspective"; t ] ]; go r
@@ -1171,6 +1173,38 @@ let node_open packed home flags =
   let ci_busy = ref false and ci_waiting = Queue.create () in
   let ci_next () = match Queue.take_opt ci_waiting with Some f -> f () | None -> ci_busy := false in
   let with_ci f = if !ci_busy then Queue.add f ci_waiting else (ci_busy := true; f ()) in
+  (* CI for a tree Soma already accepted (node.soma's check_apply_events).
+     The checkout's .git goes: a --shared clone's objects live in this
+     node's own repository (through alternates), which isn't in CI's
+     sandbox, so git there saw a broken repository ("bad object HEAD") and
+     its errors led the reason of a rejection. The tree is already computed. *)
+  let launch_ci id out tree ci =
+    ignore (Sys.command ("rm -rf " ^ Filename.quote (Filename.concat out ".git")));
+    ignore (Sys.command ("chmod -R a+rX " ^ Filename.quote out));
+    let name = "pantheon-ci-" ^ random_hex 6 in
+    with_ci (fun () ->
+      let prog, args =
+        if !ci_sandbox <> "" then (!ci_sandbox, [ !ci_memory; out; ci_wrap ci ]) else
+        ("docker", [ "run"; "--rm"; "--name"; name; "--network=none"; "--read-only"; "--tmpfs"; "/tmp:exec,size=" ^ !ci_memory; "--cap-drop=ALL";
+          "--security-opt=no-new-privileges"; "--pids-limit=512"; "--memory=" ^ !ci_memory; "--memory-swap=" ^ !ci_memory;
+          "--user=65534:65534"; "-e"; "HOME=/tmp";
+          (* its errors too, as start_job keeps only stdout; and a build the
+             kernel killed for the container's memory (oom_kill in its cgroup)
+             ends as 137, the way docker ends the container itself *)
+          "-v"; out ^ ":/work:ro"; "-w"; "/work"; !ci_image; "sh"; "-c"; ci_wrap ci ]) in
+      start_job ~limit:3600. prog args
+        ~stdin_text:"" ~env:(Unix.environment ())
+        ~on_done:(fun t ->
+          (* what the check's outcome is (passed, the bid's failure or
+             this node's problem, and why) is node.soma's ci_outcome,
+             from the node's own signals only (docs/SECURITY-REVIEW-2.md P-6) *)
+          push [ "ci_done"; id; tree; !ci_memory; (if !ci_sandbox <> "" then "sandbox" else "docker"); t ];
+          ci_next ())
+        ~clean:(fun () -> if !ci_sandbox = "" then ignore (Sys.command ("docker rm -f " ^ name ^ " >/dev/null 2>&1")); remove_tree_later out));
+    let evs = ref [] in
+    while not (Queue.is_empty queue) do evs := Queue.pop queue :: !evs done;
+    List.rev !evs
+  in
   (* A check for an attestor: the bid's edits on the head, in a fresh clone,
      give a tree; then the repository's CI, if this node has one, runs on it in
      a container with no network, a read-only root and nobody's uid. *)
@@ -1198,41 +1232,8 @@ let node_open packed home flags =
     if List.mem r !no_check || List.mem r my_excluded then (rm_out (); (try Sys.remove ef with _ -> ()); result false "" ("this node doesn't check " ^ r ^ (if List.mem r my_excluded then " (outside its scope: its genesis part excludes it)" else " (--no-check " ^ r ^ ")")) "node") else
     start_job self_exe [ "check"; rdir r; head; ef; out ] ~stdin_text:"" ~env:(Unix.environment ())
       ~on_done:(fun t ->
-        (* whose a failed apply is: node.soma's check_apply_stage decides *)
-        if String.length t > 0 && t.[0] = '!' then push [ "check_failed"; id; t ]
-        else
-          let tree = if byz = "bad-tree" then (say "FAULT INJECTION: naming a wrong tree"; sha256 ("lie" ^ id)) |> fun x -> String.sub x 0 40 else String.trim t in
-          if ci = "" then result true tree "" ""
-          else begin
-            (* CI gets the merged tree's files without the clone's .git: a
-               --shared clone's objects live in this node's own repository
-               (through alternates), which isn't in CI's sandbox, so git
-               there saw a broken repository ("bad object HEAD") and its
-               errors led the reason of a rejection (Soma's build runs git
-               for its revision). The tree is already computed *)
-            ignore (Sys.command ("rm -rf " ^ Filename.quote (Filename.concat out ".git")));
-            ignore (Sys.command ("chmod -R a+rX " ^ Filename.quote out));
-            let name = "pantheon-ci-" ^ random_hex 6 in
-            with_ci @@ fun () ->
-            let prog, args =
-              if !ci_sandbox <> "" then (!ci_sandbox, [ !ci_memory; out; ci_wrap ci ]) else
-              ("docker", [ "run"; "--rm"; "--name"; name; "--network=none"; "--read-only"; "--tmpfs"; "/tmp:exec,size=" ^ !ci_memory; "--cap-drop=ALL";
-                "--security-opt=no-new-privileges"; "--pids-limit=512"; "--memory=" ^ !ci_memory; "--memory-swap=" ^ !ci_memory;
-                "--user=65534:65534"; "-e"; "HOME=/tmp";
-                (* its errors too, as start_job keeps only stdout; and a build the
-                   kernel killed for the container's memory (oom_kill in its cgroup)
-                   ends as 137, the way docker ends the container itself *)
-                "-v"; out ^ ":/work:ro"; "-w"; "/work"; !ci_image; "sh"; "-c"; ci_wrap ci ]) in
-            start_job ~limit:3600. prog args
-              ~stdin_text:"" ~env:(Unix.environment ())
-              ~on_done:(fun t ->
-                (* what the check's outcome is (passed, the bid's failure or
-                   this node's problem, and why) is node.soma's ci_outcome,
-                   from the node's own signals only (docs/SECURITY-REVIEW-2.md P-6) *)
-                push [ "ci_done"; id; tree; !ci_memory; (if !ci_sandbox <> "" then "sandbox" else "docker"); t ];
-                ci_next ())
-              ~clean:(fun () -> if !ci_sandbox = "" then ignore (Sys.command ("docker rm -f " ^ name ^ " >/dev/null 2>&1")); rm_out ())
-          end)
+        (* a failure, the trimmed tree, or a CI run: node.soma's check_apply_events *)
+        push [ "check_apply_out"; id; out; ci; t ])
       ~clean:(fun () -> (try Sys.remove ef with _ -> ()); if ci = "" then rm_out ())
   in
   (* A decided merge's commit, the same on every node (fixed author and
@@ -1462,6 +1463,7 @@ let node_open packed home flags =
             while not (Queue.is_empty queue) do evs := Queue.pop queue :: !evs done;
             List.rev !evs);
       h_check_result = push_check_result;
+      h_ci_launch = launch_ci;
       h_job_flood = (fun jid ->
         match List.find_opt (fun j -> j.jid = jid) !jobs with
         | Some j when not (Hashtbl.mem flooded j.jpid) ->

@@ -1220,9 +1220,65 @@ codex_reply_of (text : string) (read : unit -> option string) : string :=
 codex_file_reply (text path : string) : string :=
   node_reply_finish path (codex_reply_of text (fun _ => fs_read_text path)).
 
+(** A check job's output, once the edits have been applied. An output that
+    starts with "!" is the job failing; [check_apply_stage] still says whose
+    fault that is. Otherwise the tree is [ocaml_trim] of the output.
+    [with_ci] means this repository has a CI command, so the shell starts
+    that run and no success event is emitted yet. [lie] is the bad-tree
+    fault: the caller substitutes the lie hash and does not use [tree]. *)
+Inductive check_apply_plan :=
+| CheckApplyFailed
+| CheckApplyTree (with_ci : bool) (lie : bool) (tree : string).
+
+check_apply_plan_of (byz ci raw : string) : check_apply_plan :=
+  if starts "!" raw then CheckApplyFailed
+  else CheckApplyTree (negb (seq ci "")) (seq byz "bad-tree") (ocaml_trim raw).
+
+(** The success event [push_check_result] used to queue, with an empty why. *)
+check_result_ready (id tree : string) : list string :=
+  ["check_result", id, "ok", "true", "tree", tree, "why", "", "stage", ""].
+
+(** Events this output becomes. CI adds none: the shell starts the run, and
+    [ci_done] comes back when it ends. [lie_hash] is used only when the plan
+    says to lie. *)
+check_apply_choice (lie_hash id raw : string) (plan : check_apply_plan) : list (list string) :=
+  match plan with
+  | CheckApplyFailed => [["check_failed", id, raw]]
+  | CheckApplyTree with_ci lie tree =>
+      if with_ci then [] else [check_result_ready id (if lie then lie_hash else tree)]
+  end.
+
+(** The first 40 hex characters of sha256("lie" ^ id), the old fault. *)
+check_lie_tree (id : string) : string := substr (sha256 (append "lie" id)) 0 40.
+
+check_apply_tree (plan : check_apply_plan) (lie_hash : string) : string :=
+  match plan with
+  | CheckApplyTree _ true _ => lie_hash
+  | CheckApplyTree _ _ tree => tree
+  | CheckApplyFailed => ""
+  end.
+
+(** The shell queued the raw output. Log the fault, ask the shell to start
+    CI, or return the event, in the old order. Events an immediate CI start
+    failure queued come back with these, so they stay in this turn. *)
+check_apply_events (h : node_t) (id out ci raw : string) : list (list string) :=
+  let plan := check_apply_plan_of (fst (node_draw h)) ci raw in
+  let lying := match plan with CheckApplyTree _ true _ => true | _ => false end in
+  let lie_hash := if lying then check_lie_tree id else "" in
+  let noted := if lying then io_log h "FAULT INJECTION: naming a wrong tree" else true in
+  let evs := check_apply_choice lie_hash id raw plan in
+  if noted then
+    match plan with
+    | CheckApplyTree true _ _ =>
+        evs ++ node_ci_launch h id out (check_apply_tree plan lie_hash) ci
+    | _ => evs
+    end
+  else [].
+
 (** Generated model replies are interpreted before the turn's events run,
     at the finished job's original queue position. Codex's file remains
-    until Soma has applied the process-failure guard and resolved it. *)
+    until Soma has applied the process-failure guard and resolved it.
+    A check's raw output is decided here too, before those events run. *)
 model_output_events (h : node_t) (ev : list string) : list (list string) :=
   match ev with
   | "llm_output" :: id :: kind :: prompt0 :: text :: ctx => model_reply_events h id kind prompt0 text ctx
@@ -1232,6 +1288,7 @@ model_output_events (h : node_t) (ev : list string) : list (list string) :=
       model_reply_events h id kind prompt0 (codex_reply_of text (fun _ => Some out)) ctx
   | "codex_output" :: id :: kind :: prompt0 :: text :: "0" :: ctx =>
       model_reply_events h id kind prompt0 (codex_reply_of text (fun _ => None)) ctx
+  | ["check_apply_out", id, out, ci, raw] => check_apply_events h id out ci raw
   | _ => [ev]
   end.
 
@@ -2214,11 +2271,16 @@ Fixpoint restore_signed (h : node_t) (lines : list string) (found : bool) : bool
       end
   end.
 
-(** A log file's lines (blocks.log, signed.log): the bytes split at each
-    newline, empty lines dropped, as the shell's old [lines] did with
-    String.split_on_char. A missing file comes as "", which has none.
-    [split_lines] reads by offset, so a long log is one pass. *)
+(** A log file's lines (blocks.log, signed.log) and a --goal file: the bytes
+    split at each newline, empty lines dropped, as the shell's old [lines]
+    did with String.split_on_char. A missing file comes as "", which has
+    none. [split_lines] reads by offset, so a long log is one pass. *)
 log_lines (text : string) : list string := filter (fun l => negb (seq l "")) (split_lines text).
+
+(** One --goal file, in order. The shell feeds its bytes as one goal_text
+    boot event ("" when the file is missing). *)
+goal_events (text : string) : list (list string) :=
+  map (fun l => ["agent", "goal", l]) (log_lines text).
 
 (** Votes signed with no consensus.state to go with them: a node that
     started would forget its lock, so it doesn't start. *)
@@ -2372,6 +2434,7 @@ boot_expand (h : node_t) (evs : list (list string)) : list (list string) :=
         | None => if node_fail genesis_refused_text then [] else [["genesis_refused"]]
         end
     | ["block_log_text", text] => map (fun l => ["block_log", l]) (log_lines text)
+    | ["goal_text", text] => goal_events text
     | _ => [ev]
     end) evs.
 

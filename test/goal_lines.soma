@@ -1,0 +1,49 @@
+(** A --goal file's bytes become agent goal events (node.soma's goal_events),
+    through the same split as a log. Fixed texts, no node. *)
+Import util shell node.
+From Stdlib Require Import Ascii.
+From Stdlib Require ExtrOcamlNatInt.
+Extract Inlined Constant Nat.div => "(fun a b -> if b = 0 then 0 else a / b)".
+Extract Inlined Constant Nat.modulo => "(fun a b -> if b = 0 then a else a mod b)".
+Extract Inlined Constant Stdlib.Strings.String.length => "String.length".
+Extract Inlined Constant Stdlib.Strings.String.get =>
+  "(fun n s -> if n < String.length s then Some (String.unsafe_get s n) else None)".
+Extract Inlined Constant Stdlib.Strings.String.substring =>
+  "(fun n m s -> let l = String.length s in if n >= l then """" else String.sub s n (min m (l - n)))".
+
+check (label got expected : string) : string :=
+  append (if seq got expected then "ok " else "FAIL ") label.
+
+joined (l : list string) : string := Stdlib.Strings.String.concat "|" l.
+
+evs_text (evs : list (list string)) : string := Stdlib.Strings.String.concat ";" (map joined evs).
+
+nl : string := newline.
+cr : string := SCons (ascii_of_nat 13) SNil.
+
+goals (text : string) : string := evs_text (goal_events text).
+
+checks : list string := [
+  check "a missing file adds no goal" (goals "") "",
+  check "one line" (goals "- add a sub command") "agent|goal|- add a sub command",
+  check "a final newline does not add an empty goal" (
+    goals (append "- add a sub command" nl)) "agent|goal|- add a sub command",
+  check "two lines, an empty one between them" (
+    goals (append "- one" (append nl (append nl (append "- two" nl)))))
+    "agent|goal|- one;agent|goal|- two",
+  check "a last line without a newline is kept" (
+    goals (append "- one" (append nl "- two"))) "agent|goal|- one;agent|goal|- two",
+  check "only newlines add nothing" (goals (append nl nl)) "",
+  check "a space-only line is a goal" (goals " ") "agent|goal| ",
+  check "a hash line is a goal, not a plan note" (goals "# note") "agent|goal|# note",
+  check "a carriage return stays on the line" (
+    goals (append "- one" (append cr (append nl "- two"))))
+    (append "agent|goal|- one" (append cr ";agent|goal|- two")),
+  check "goals sit between the boot events around the file" (
+    evs_text (boot_expand "0" [["agent", "behavior", "honest"],
+      ["goal_text", append "- one" (append nl (append nl (append "- two" nl)))],
+      ["agent", "deny", "secret"]]))
+    "agent|behavior|honest;agent|goal|- one;agent|goal|- two;agent|deny|secret"
+].
+
+main := print_lines checks.

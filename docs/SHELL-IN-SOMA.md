@@ -230,6 +230,26 @@ separate work; this status does not mark `.plan`.
 
 ## Done so far
 
+- Step 5, a check's output: the shell queues the raw output as
+  `check_apply_out` (request, checkout, CI command, text). Soma's
+  `check_apply_plan_of` keeps the old split: an output that starts with
+  `!` is `check_failed` (so `check_apply_stage` still says whose fault,
+  from the node's own signals), and anything else is the trimmed tree.
+  The bad-tree fault still logs and substitutes sha256("lie" ^ id)'s
+  first 40 hex characters. No CI command queues the success
+  `check_result` on this turn; a command asks `node_ci_launch`, which
+  only strips `.git`, runs the sandbox or docker, and queues `ci_done`.
+  The refusal for `--no-check` or an excluded repository still happens
+  before the check job starts. `test/check-apply.sh` checks fixed
+  outputs, including the lie hash against SHA-256.
+
+- Step 5, goal files at startup: the shell no longer splits a `--goal`
+  file. It feeds the bytes ("" when the file is missing) as one
+  `goal_text` boot event, and `goal_events` (through `log_lines`, the
+  same split as blocks.log) turns each nonempty line into an
+  `agent`/`goal` event in order, among the other boot events.
+  `test/goal-lines.sh` checks fixed texts. `.plan` is not marked.
+
 - Step 5, log lines at startup: the shell no longer splits blocks.log or
   signed.log. It hands over each file's bytes ("" when it is missing):
   blocks.log as one `block_log_text` boot event, which `boot_expand` turns
