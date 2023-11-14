@@ -168,6 +168,14 @@ worth a note in this file rather than a workaround.
 
 ## Done so far
 
+- Step 5, part: `decode_tx` is Soma (market.soma). It refuses a raw
+  transaction over the byte cap or not bounded JSON (`tx_shape_ok`, the caps
+  as decimal strings), one the shell can't read as a transaction's JSON, one
+  whose nonce isn't 1 to 17 digits (`nonce_ok`, before any signature is
+  checked) and one whose signature doesn't verify (`tx_decision`). The shell
+  only reads the JSON's members (`tx_parts`) and checks the signature
+  (`tx_verify`). Left of step 5: the limits on lines and connections.
+
 - Step 5, part: a model reply's JSON is decided in Soma. `json_in_reply`
   takes the job-output cap and the byte offsets of the first `{` and the
   last `}` as decimal strings (the cap is about 4 MB, so it is not a unary

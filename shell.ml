@@ -62,7 +62,6 @@ let json_strings = function `List l -> List.map (function `String s -> s | _ -> 
 let tx_bytes agent nonce fields =
   String.concat "\x00" [ "tx"; !chain_id; agent; nonce; Yojson.Safe.to_string (strings_json fields) ]
 
-let all_digits s = s <> "" && String.length s < 18 && String.for_all (fun c -> c >= '0' && c <= '9') s
 
 (* Soma's bounded JSON scan, installed by [node_open]. Decimal limits keep
    extracted nat abstract at the OCaml boundary. *)
@@ -71,18 +70,22 @@ let soma_shallow_json : (string -> string -> string -> bool) ref =
 let shallow_json ?(max = 4) ?(max_items = max_int) s =
   !soma_shallow_json (string_of_int max) (string_of_int max_items) s
 
-let decode_tx raw =
-  if String.length raw > max_tx_bytes || not (shallow_json raw) then []
-  else
-    try
-      let j = Yojson.Safe.from_string raw in
-      let open Yojson.Safe.Util in
-      let agent = to_string (member "agent" j) and nonce = to_string (member "nonce" j) in
-      let fields = json_strings (member "fields" j) and sg = to_string (member "sig" j) in
-      match Hashtbl.find_opt pubkeys agent with
-      | Some key when all_digits nonce && verify key (tx_bytes agent nonce fields) sg -> agent :: nonce :: fields
-      | _ -> []
-    with _ -> []
+(* A signed transaction's I/O: market.soma's decode_tx decides (the caps,
+   the bounded scan, the nonce, the signature's verdict). *)
+let tx_parts raw =
+  try
+    let j = Yojson.Safe.from_string raw in
+    let open Yojson.Safe.Util in
+    let agent = to_string (member "agent" j) and nonce = to_string (member "nonce" j) in
+    let fields = json_strings (member "fields" j) and sg = to_string (member "sig" j) in
+    Some (agent, (nonce, (fields, sg)))
+  with _ -> None
+let tx_verify agent nonce fields sg =
+  match Hashtbl.find_opt pubkeys agent with
+  | Some key -> (try verify key (tx_bytes agent nonce fields) sg with _ -> false)
+  | None -> false
+let tx_byte_cap () = string_of_int max_tx_bytes
+let tx_item_cap () = string_of_int max_int
 
 let encode_tx key agent nonce fields =
   Yojson.Safe.to_string

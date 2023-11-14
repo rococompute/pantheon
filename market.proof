@@ -602,3 +602,30 @@ Proof.
   split; [exact Ev|]. split; [congruence|].
   intros U. exact (U v w Ev Ew).
 Qed.
+
+(** decode_tx's decisions: the caps, the nonce, the signature's verdict. *)
+Example nonce_ok_cases :
+  nonce_ok "0" = true /\ nonce_ok "12345678901234567" = true /\
+  nonce_ok "123456789012345678" = false /\ nonce_ok "" = false /\
+  nonce_ok "1a" = false /\ nonce_ok "-1" = false.
+Proof. repeat split; reflexivity. Qed.
+
+Example tx_shape_cases :
+  tx_shape_ok "10" "100" "{}" = true /\
+  tx_shape_ok "1" "100" "{}" = false /\
+  tx_shape_ok "100" "100" "[[[[[1]]]]]" = false /\
+  tx_shape_ok "100" "100" "[[[[1]]]]" = true.
+Proof. repeat split; reflexivity. Qed.
+
+Example tx_decision_cases :
+  tx_decision None (fun _ _ _ _ => true) = [] /\
+  tx_decision (Some ("a", ("7", (["post", "x"], "sig")))) (fun _ _ _ _ => true) = ["a", "7", "post", "x"] /\
+  tx_decision (Some ("a", ("7", (["post", "x"], "sig")))) (fun _ _ _ _ => false) = [] /\
+  tx_decision (Some ("a", ("x7", (["post"], "sig")))) (fun _ _ _ _ => true) = [] /\
+  tx_decision (Some ("a", ("", (["post"], "sig")))) (fun _ _ _ _ => true) = [].
+Proof. repeat split; reflexivity. Qed.
+
+(** A transaction whose nonce isn't digits is refused whatever its signature. *)
+Theorem bad_nonce_refused : forall agent nonce fields sg verified,
+  nonce_ok nonce = false -> tx_decision (Some (agent, (nonce, (fields, sg)))) verified = [].
+Proof. intros agent nonce fields sg verified H. simpl. rewrite H. reflexivity. Qed.

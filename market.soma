@@ -28,6 +28,44 @@
     seeds, so an agent that held back in one draw is barred from the next: a
     recent leader can't steer a draw now and be repaid with a term later. *)
 Import util shell.
+From Stdlib Require Import Ascii.
+
+(** ---- A signed transaction (step 5: decode_tx in Soma) ----
+    Its fields [agent; nonce; type; args...], or [] when it's over the byte
+    cap, not bounded JSON (depth 4), not a transaction's JSON, its nonce
+    isn't 1 to 17 digits, or its signature doesn't verify against the
+    genesis key of its agent. The same on every node, given one genesis.
+    The shell only reads the JSON's members and checks the signature. *)
+Fixpoint digits_only (fuel : nat) (s : string) (i : nat) : bool :=
+  match fuel with
+  | 0 => true
+  | Succ f =>
+      match char_at s i with
+      | None => true
+      | Some c => let n := nat_of_ascii c in if (48 <=? n) && (n <=? 57) then digits_only f s (Succ i) else false
+      end
+  end.
+
+nonce_ok (s : string) : bool := negb (seq s "") && (slen s <? 18) && digits_only (slen s) s 0.
+
+(** within the byte cap, and bounded JSON; the caps are decimal strings *)
+tx_shape_ok (cap items raw : string) : bool :=
+  if num cap <? slen raw then false else shallow_json "4" items raw.
+
+(** the parts once read: a nonce that isn't digits is refused before the
+    signature is checked *)
+tx_decision (parts : option (string * (string * (list string * string))))
+    (verified : string -> string -> list string -> string -> bool) : list string :=
+  match parts with
+  | None => []
+  | Some (agent, rest) =>
+      let (nonce, more) := rest in
+      let (fields, sg) := more in
+      if nonce_ok nonce then (if verified agent nonce fields sg then agent :: nonce :: fields else []) else []
+  end.
+
+decode_tx (raw : string) : list string :=
+  if tx_shape_ok (tx_byte_cap tt) (tx_item_cap tt) raw then tx_decision (tx_parts raw) tx_verify else [].
 
 Inductive status := Pending | Merged | Cleared | Rejected | Withdrawn.
 Scheme Boolean Equality for status.
