@@ -1016,9 +1016,8 @@ let node_open packed home flags =
     | [] -> ()
   in
   go flags;
-  let scripted = !backend = "scripted" || String.length !backend > 9 && String.sub !backend 0 9 = "scripted:" in
-  if scripted && String.length !backend > 9 then agent_events := !agent_events @ [ [ "agent"; "behavior"; String.sub !backend 9 (String.length !backend - 9) ] ];
-  let backend_kind = if scripted then "scripted" else "llm" in
+  (* Soma reads the raw --backend string (backend_kind_name, backend_behavior_event) *)
+  agent_events := !agent_events @ [ [ "backend_behavior_of"; !backend ] ];
   (* state *)
   let queue = Queue.create () in
   let push ev = Queue.add ev queue in
@@ -1267,7 +1266,7 @@ let node_open packed home flags =
      node.soma's genesis_events, from the file's text *)
   feed [ "genesis"; read_file (Filename.concat home "genesis.json") ];
   feed [ "me"; me ];
-  feed [ "agent"; "backend"; backend_kind ];
+  feed [ "backend_kind_of"; !backend ];
   List.iter feed !agent_events;
   List.iter (fun (n, body) -> feed ["applied_body"; n; body]) (List.rev !pending_applied);
   let replayed = ref 0 in

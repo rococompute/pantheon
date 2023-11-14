@@ -2453,6 +2453,19 @@ genesis_events (tokens : option (list string)) : option (list (list string)) :=
       end
   end.
 
+(** --backend. "scripted" and "scripted:" plus a suffix are the scripted
+    kind. Only a suffix longer than the nine-character prefix is a behavior,
+    and it is fed after the other agent flags, as before. "scripted:" alone
+    is not that prefix, so it stays the llm kind. *)
+scripted_backend (raw : string) : bool :=
+  seq raw "scripted" || ((9 <? slen raw) && starts "scripted:" raw).
+
+backend_kind_name (raw : string) : string :=
+  if scripted_backend raw then "scripted" else "llm".
+
+backend_behavior_event (raw : string) : list (list string) :=
+  if (9 <? slen raw) && starts "scripted:" raw then [["agent", "behavior", drop_str 9 raw]] else [].
+
 genesis_refused_text : string := "genesis.json is not a genesis this node can start from".
 
 (** The shell's ["genesis", raw] boot event becomes the events above. *)
@@ -2466,6 +2479,8 @@ boot_expand (h : node_t) (evs : list (list string)) : list (list string) :=
         end
     | ["block_log_text", text] => map (fun l => ["block_log", l]) (log_lines text)
     | ["goal_text", text] => goal_events text
+    | ["backend_kind_of", raw] => [["agent", "backend", backend_kind_name raw]]
+    | ["backend_behavior_of", raw] => backend_behavior_event raw
     | _ => [ev]
     end) evs.
 

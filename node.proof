@@ -1066,3 +1066,13 @@ Proof.
   unfold check_apply_choice, check_apply_plan_of.
   rewrite H. reflexivity.
 Qed.
+
+(** --backend: scripted and a longer scripted: suffix, and scripted: alone
+    stays llm with no behavior. *)
+Example backend_flag_cases :
+  backend_kind_name "scripted" = "scripted" /\ backend_behavior_event "scripted" = [] /\
+  backend_kind_name "scripted:stay" = "scripted" /\
+  backend_behavior_event "scripted:stay" = [["agent", "behavior", "stay"]] /\
+  backend_kind_name "scripted:" = "llm" /\ backend_behavior_event "scripted:" = [] /\
+  backend_kind_name "llm" = "llm" /\ backend_behavior_event "scripted:a:b" = [["agent", "behavior", "a:b"]].
+Proof. repeat split; reflexivity. Qed.

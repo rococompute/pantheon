@@ -230,6 +230,12 @@ separate work; this status does not mark `.plan`.
 
 ## Done so far
 
+- Step 5, the --backend flag: the shell feeds the raw string. Soma's
+  `backend_kind_name` turns "scripted" and "scripted:" plus a suffix into
+  the scripted kind, and anything else, including "scripted:" alone, into
+  llm. `backend_behavior_event` keeps only a longer "scripted:" suffix,
+  after the other agent flags. `test/backend-flag.sh` checks those cases.
+
 - Step 5, connection counts: an accepted socket's `conn_offer` event
   carries its host and the hosts of the connections held at that moment;
   Soma's `conn_offer_counts` counts how many share the host and how many
