@@ -1,0 +1,35 @@
+(** The version in a merge commit's message. Fixed strings, no git. *)
+Import util shell market.
+From Stdlib Require ExtrOcamlNatInt.
+Extract Inlined Constant Nat.div => "(fun a b -> if b = 0 then 0 else a / b)".
+Extract Inlined Constant Nat.modulo => "(fun a b -> if b = 0 then a else a mod b)".
+Extract Inlined Constant Stdlib.Strings.String.length => "String.length".
+Extract Inlined Constant Stdlib.Strings.String.get =>
+  "(fun n s -> if n < String.length s then Some (String.unsafe_get s n) else None)".
+Extract Inlined Constant Stdlib.Strings.String.substring =>
+  "(fun n m s -> let l = String.length s in if n >= l then """" else String.sub s n (min m (l - n)))".
+
+check (label got expected : string) : string :=
+  append (if seq got expected then "ok " else "FAIL ") label.
+
+msg : string :=
+  append "Merge bid 3 for task 1 by ada" (append newline
+  (append newline (append "the spec" (append newline
+  (append newline (append "Pantheon-Version: 4" (append newline
+  (append "Pantheon-Bid: 3" (append newline "Pantheon-Tree: abc"))))))))).
+
+checks : list string := [
+  check "an empty message is version 0" (commit_version "") "0",
+  check "no version line is version 0" (commit_version "just a note") "0",
+  check "the version the merge commit writes" (commit_version msg) "4",
+  check "a later version replaces the earlier one"
+    (commit_version (append "Pantheon-Version: 2" (append newline "Pantheon-Version: 9"))) "9",
+  check "a non-numeric version is left alone"
+    (commit_version (append "Pantheon-Version: 2" (append newline "Pantheon-Version: no"))) "2",
+  check "an extra word is not the version line"
+    (commit_version "Pantheon-Version: 4 extra") "0",
+  check "two spaces are not the one space the line is written with"
+    (commit_version "Pantheon-Version:  4") "0"
+].
+
+main := print_lines checks.

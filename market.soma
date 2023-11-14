@@ -48,6 +48,34 @@ Fixpoint digits_only (fuel : nat) (s : string) (i : nat) : bool :=
 
 nonce_ok (s : string) : bool := negb (seq s "") && (slen s <? 18) && digits_only (slen s) s 0.
 
+(** OCaml's String.split_on_char ' ', including the empty piece after a
+    final space. *)
+space_char : string := " ".
+
+Fixpoint split_spaces_go (fuel : nat) (s : string) (i : nat) (acc : list string) : list string :=
+  match fuel with
+  | 0 => rev_onto (substr s i (slen s - i) :: acc) []
+  | Succ f => match find_str space_char s i with
+              | Some j => split_spaces_go f s (Succ j) (substr s i (j - i) :: acc)
+              | None => rev_onto (substr s i (slen s - i) :: acc) []
+              end
+  end.
+
+split_spaces (s : string) : list string := split_spaces_go (slen s + 1) s 0 [].
+
+(** The last Pantheon-Version in a commit message, or "0". A line is
+    exactly that word, a space, and 1 to 18 digits; anything else is kept
+    as the previous value, as int_of_string failing did. *)
+commit_version_line (acc l : string) : string :=
+  match split_spaces l with
+  | ["Pantheon-Version:", v] =>
+      if negb (seq v "") && (slen v <=? 18) && digits_only (slen v) v 0 then v else acc
+  | _ => acc
+  end.
+
+commit_version (body : string) : string :=
+  fold_left commit_version_line (split_lines body) "0".
+
 (** within the byte cap, and bounded JSON; the caps are decimal strings *)
 tx_shape_ok (cap items raw : string) : bool :=
   if num cap <? slen raw then false else shallow_json "4" items raw.
