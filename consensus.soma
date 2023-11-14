@@ -34,66 +34,6 @@ Record consensus_state := {
   log : list msg; once : list string; block_ms : nat
 }.
 
-with_me (c : consensus_state) (v : string) : consensus_state :=
-  {| me := v; nodes := nodes c; height := height c; round := round c; step := step c;
-     lockr := lockr c; lockv := lockv c; validr := validr c; validv := validv c;
-     log := log c; once := once c; block_ms := block_ms c |}.
-
-with_nodes (c : consensus_state) (v : list string) : consensus_state :=
-  {| me := me c; nodes := v; height := height c; round := round c; step := step c;
-     lockr := lockr c; lockv := lockv c; validr := validr c; validv := validv c;
-     log := log c; once := once c; block_ms := block_ms c |}.
-
-with_height (c : consensus_state) (v : nat) : consensus_state :=
-  {| me := me c; nodes := nodes c; height := v; round := round c; step := step c;
-     lockr := lockr c; lockv := lockv c; validr := validr c; validv := validv c;
-     log := log c; once := once c; block_ms := block_ms c |}.
-
-with_round (c : consensus_state) (v : nat) : consensus_state :=
-  {| me := me c; nodes := nodes c; height := height c; round := v; step := step c;
-     lockr := lockr c; lockv := lockv c; validr := validr c; validv := validv c;
-     log := log c; once := once c; block_ms := block_ms c |}.
-
-with_step (c : consensus_state) (v : nat) : consensus_state :=
-  {| me := me c; nodes := nodes c; height := height c; round := round c; step := v;
-     lockr := lockr c; lockv := lockv c; validr := validr c; validv := validv c;
-     log := log c; once := once c; block_ms := block_ms c |}.
-
-with_lockr (c : consensus_state) (v : nat) : consensus_state :=
-  {| me := me c; nodes := nodes c; height := height c; round := round c; step := step c;
-     lockr := v; lockv := lockv c; validr := validr c; validv := validv c;
-     log := log c; once := once c; block_ms := block_ms c |}.
-
-with_lockv (c : consensus_state) (v : list string) : consensus_state :=
-  {| me := me c; nodes := nodes c; height := height c; round := round c; step := step c;
-     lockr := lockr c; lockv := v; validr := validr c; validv := validv c;
-     log := log c; once := once c; block_ms := block_ms c |}.
-
-with_validr (c : consensus_state) (v : nat) : consensus_state :=
-  {| me := me c; nodes := nodes c; height := height c; round := round c; step := step c;
-     lockr := lockr c; lockv := lockv c; validr := v; validv := validv c;
-     log := log c; once := once c; block_ms := block_ms c |}.
-
-with_validv (c : consensus_state) (v : list string) : consensus_state :=
-  {| me := me c; nodes := nodes c; height := height c; round := round c; step := step c;
-     lockr := lockr c; lockv := lockv c; validr := validr c; validv := v;
-     log := log c; once := once c; block_ms := block_ms c |}.
-
-with_log (c : consensus_state) (v : list msg) : consensus_state :=
-  {| me := me c; nodes := nodes c; height := height c; round := round c; step := step c;
-     lockr := lockr c; lockv := lockv c; validr := validr c; validv := validv c;
-     log := v; once := once c; block_ms := block_ms c |}.
-
-with_once (c : consensus_state) (v : list string) : consensus_state :=
-  {| me := me c; nodes := nodes c; height := height c; round := round c; step := step c;
-     lockr := lockr c; lockv := lockv c; validr := validr c; validv := validv c;
-     log := log c; once := v; block_ms := block_ms c |}.
-
-with_block_ms (c : consensus_state) (v : nat) : consensus_state :=
-  {| me := me c; nodes := nodes c; height := height c; round := round c; step := step c;
-     lockr := lockr c; lockv := lockv c; validr := validr c; validv := validv c;
-     log := log c; once := once c; block_ms := v |}.
-
 new_consensus (me : string) (nodes : list string) (h : nat) : consensus_state :=
   {| me := me; nodes := nodes; height := h; round := 0; step := 0;
      lockr := 0; lockv := []; validr := 0; validv := []; log := []; once := []; block_ms := 1000 |}.
@@ -123,16 +63,16 @@ timer (name : string) (h r ms : nat) : list string := ["timer", name, show h, sh
 (** Sending a message records it as received from ourselves. *)
 send (c : consensus_state) (k : kind) (vround : nat) (id : string) (v : list string) : consensus_state * list (list string) :=
   let m := {| kd := k; frm := me c; mh := height c; mr := round c; vr := vround; vid := id; value := v |} in
-  (with_log c (m :: log c), [out m]).
+  ({| c with log := m :: log c |}, [out m]).
 
 vote (c : consensus_state) (k : kind) (id : string) (next : nat) : consensus_state * list (list string) :=
-  let (c', o) := send c k 0 id [] in (with_step c' next, o).
+  let (c', o) := send c k 0 id [] in ({| c' with step := next |}, o).
 
-mark (c : consensus_state) (flag : string) : consensus_state := with_once c (flag :: once c).
+mark (c : consensus_state) (flag : string) : consensus_state := {| c with once := flag :: once c |}.
 fired (c : consensus_state) (flag : string) : bool := mem flag (once c).
 
 start_round (c : consensus_state) (r : nat) (getv : list string) : consensus_state * list (list string) :=
-  let c := with_step (with_round c r) 0 in
+  let c := {| c with round := r; step := 0 |} in
   if seq (proposer c (height c) r) (me c) then
     let v := if validr c =? 0 then getv else validv c in
     send c Proposal (validr c) (hash_list v) v
@@ -143,8 +83,8 @@ start_round (c : consensus_state) (r : nat) (getv : list string) : consensus_sta
 decide (c : consensus_state) (v : list string) : consensus_state * list (list string) :=
   let h := height c in
   let c' := new_consensus (me c) (nodes c) (h + 1) in
-  let c' := with_block_ms c' (block_ms c) in
-  let c' := with_log c' (filter (fun m => h <? mh m) (log c)) in
+  let c' := {| c' with block_ms := block_ms c |} in
+  let c' := {| c' with log := filter (fun m => h <? mh m) (log c) |} in
   (c', [("decided" :: show h :: v), ["height", show (h + 1)], timer "commit" (h + 1) 0 (block_ms c)]).
 
 can_accept (c : consensus_state) (v : list string) : bool :=
@@ -195,8 +135,9 @@ r_lock (c : consensus_state) (valid : list string -> bool) : step_result :=
   match proposal c r with
   | Some p =>
       if (1 <=? step c) && negb (fired c flag) && (quorum c <=? senders c Prevote r (vid p)) && valid (value p) then
-        let c := with_validv (with_validr (mark c flag) (r + 1)) (value p) in
-        if step c =? 1 then Some (vote (with_lockv (with_lockr c (r + 1)) (value p)) Precommit (vid p) 2)
+        let c := mark c flag in
+        let c := {| c with validr := r + 1; validv := value p |} in
+        if step c =? 1 then Some (vote {| c with lockr := r + 1; lockv := value p |} Precommit (vid p) 2)
         else Some (c, [])
       else None
   | None => None
@@ -288,7 +229,7 @@ receive (c : consensus_state) (from : string) (fields : list string) : consensus
           else if (height c + 1 <? mh m) || (round c + 50 <? mr m) || negb (mem from (nodes c)) then (c, [])
           else if existsb (fun x => seq (vid x) id) same || (2 <=? length same) then (c, [])
           else if (kind_eq kd' Proposal || kind_eq kd' Done) && negb (seq id (hash_list v)) then (c, [])
-          else (with_log c (firstn 4000 (m :: log c)), [])
+          else ({| c with log := firstn 4000 (m :: log c) |}, [])
       end
   | _ => (c, [])
   end.

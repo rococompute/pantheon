@@ -76,20 +76,23 @@ step (n : node_state) (ev : list string) : node_state * list (list string) :=
   match ev with
   (* setup, before "start": genesis, then the blocks already on disk *)
   | "agents" :: names =>
-      (with_cons (with_mkt n (new_market names)) (with_nodes (cons n) names), [])
+      let c := cons n in
+      (with_cons (with_mkt n (new_market names)) {| c with nodes := names |}, [])
   | ["tip", a, t] => (with_mkt n (setf (mkt n) "tips" (put a t (tips (mkt n)))), [])
   | ["param", k, v] =>
-      if seq k "block_ms" then (with_cons n (with_block_ms (cons n) (num v)), [])
+      let c := cons n in
+      if seq k "block_ms" then (with_cons n {| c with block_ms := num v |}, [])
       else (with_mkt n (setf (mkt n) "params" (put k (num v) (params (mkt n)))), [])
   | ["repo", r, tree] => (with_mkt n (setf (mkt n) "repos" (put r tree (repos (mkt n)))), [])
-  | ["me", who] => (with_ag (with_cons n (with_me (cons n) who)) (setf (ag n) "me" who), [])
+  | ["me", who] => let c := cons n in (with_ag (with_cons n {| c with consensus.me := who |}) (setf (ag n) "me" who), [])
   | ["agent", "goal", line] => (set_agent n "goal" (goal (ag n) ++ [line] : Any), [])
   | ["agent", "deny", p] => (set_agent n "deny" (deny (ag n) ++ [p] : Any), [])
   | ["agent", "bid_window", v] => (set_agent n "bid_window" (num v : Any), [])
   | ["agent", k, v] => (set_agent n k (v : Any), [])
   | "replay" :: h :: txs =>
       let (n, o) := on_decided n (num h) txs in
-      (with_cons n (with_log (with_height (cons n) (num h + 1)) ([] : list msg)), o)
+      let c := cons n in
+      (with_cons n {| c with height := num h + 1; log := ([] : list msg) |}, o)
   | ["start"] =>
       let n := with_live n true in
       let h := height (cons n) in
