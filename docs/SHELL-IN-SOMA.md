@@ -226,6 +226,13 @@ separate work; this status does not mark `.plan`.
 
 ## Done so far
 
+- Step 5, part: the node's inbox of local transactions is read in Soma.
+  The shell only lists `inbox/*.json`, reads each file and removes it,
+  handing Soma an `inbox_file` event; `inbox_tx` turns a JSON list of
+  strings (through the JSON token binding) into the `local_tx` event, and
+  anything else is logged as malformed, as before. Left of step 5: a job's
+  output cap and kill, and its outcome on failure.
+
 - U-1, part: the node's effects that write (a log line, a timer, an
   event queued for the loop, a send to every peer, to the peer at an
   index or to a peer by name) are values of `node_op` in `node.soma`.

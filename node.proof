@@ -794,3 +794,16 @@ Proof.
   intros h out op H. unfold output_io in H. unfold perform_output.
   destruct (plan_output out); try discriminate H; injection H as <-; reflexivity.
 Qed.
+
+(** A local transaction from the inbox: a JSON list of strings, and the
+    shapes that are malformed. *)
+Example inbox_tx_shapes :
+  inbox_tx (Some ["L", "2", "S", "post", "S", "calc task"]) = Some ["post", "calc task"] /\
+  inbox_tx (Some ["L", "0"]) = Some [] /\
+  inbox_tx None = None /\
+  inbox_tx (Some ["A", "0"]) = None /\
+  inbox_tx (Some ["L", "2", "S", "a", "I", "3"]) = None /\
+  inbox_tx (Some ["L", "1", "S", "a", "S", "b"]) = None /\
+  inbox_tx (Some ["L", "2", "S", "a"]) = None /\
+  inbox_tx (Some ["S", "x"]) = None.
+Proof. repeat split; reflexivity. Qed.

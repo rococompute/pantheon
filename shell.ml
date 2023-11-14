@@ -1383,7 +1383,8 @@ let node_open packed home flags =
         Array.iter (fun f ->
             let p = Filename.concat d f in
             if Filename.check_suffix f ".json" then begin
-              (try push ("local_tx" :: json_strings (Yojson.Safe.from_file p)) with _ -> say "ignoring malformed %s" p);
+              (* node.soma's inbox_tx decides what the file becomes *)
+              push [ "inbox_file"; p; (try read_file p with _ -> "") ];
               Sys.remove p
             end)
           (Sys.readdir d)

@@ -1248,6 +1248,24 @@ Fixpoint queue_lines (h : node_t) (lines : list string) : bool :=
   | l :: r => io_push h ["peer_raw", l] && queue_lines h r
   end.
 
+(** A local transaction the operator drops in the node's inbox: a JSON list
+    of strings, read through the JSON token binding. Anything else (not
+    JSON, not a list, an element that isn't a string) is malformed and
+    becomes no event. *)
+Fixpoint inbox_strings (k : nat) (toks : list string) : option (list string) :=
+  match k, toks with
+  | 0, [] => Some []
+  | Succ j, "S" :: s :: rest =>
+      match inbox_strings j rest with Some r => Some (s :: r) | None => None end
+  | _, _ => None
+  end.
+
+inbox_tx (tokens : option (list string)) : option (list string) :=
+  match tokens with
+  | Some ("L" :: n :: rest) => inbox_strings (num n) rest
+  | _ => None
+  end.
+
 run_event (h : node_t) (st : node_state) (ev : list string) : node_state :=
   let ev := match ev with
             | ["peer_raw", raw] => peer_raw_event (node_line_item_cap tt) (node_identity h) raw
@@ -1276,6 +1294,14 @@ run_event (h : node_t) (st : node_state) (ev : list string) : node_state :=
       if buffer_over (num len) (num (node_line_limit h)) then
         if node_conn_close h cid then st else with_live st (live st)
       else st
+  | ["inbox_file", path, content] =>
+      match inbox_tx (node_json_tokens content) with
+      | Some fields =>
+          let tx := "local_tx" :: fields in
+          let (s, outs) := step st tx in
+          if carry_all h (cons s) (order_effects tx st s outs) then s else st
+      | None => if io_log h (append "ignoring malformed " path) then st else with_live st (live st)
+      end
   | ["peer_bytes", cid, chunk] =>
       let (lines, kept) := feed_chunks (node_conn_buffer h cid) chunk in
       if node_conn_store_buffer h cid kept && queue_lines h lines then
