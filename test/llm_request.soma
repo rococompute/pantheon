@@ -1,0 +1,122 @@
+(** Pure prompt assembly: fixed repository data, no node, sockets or timers. *)
+Import util shell market agent node.
+From Stdlib Require ExtrOcamlNatInt.
+Extract Inlined Constant Nat.div => "(fun a b -> if b = 0 then 0 else a / b)".
+Extract Inlined Constant Nat.modulo => "(fun a b -> if b = 0 then a else a mod b)".
+
+(** Strings run as OCaml's (ExtrOcamlNativeString), which leaves out the
+    operations that count in [nat]. With [nat] as OCaml ints they're
+    OCaml's own, each as total as its definition: offsets past the end give
+    [None] or an empty string. util.soma reads long text through them. *)
+Extract Inlined Constant Stdlib.Strings.String.length => "String.length".
+Extract Inlined Constant Stdlib.Strings.String.get =>
+  "(fun n s -> if n < String.length s then Some (String.unsafe_get s n) else None)".
+Extract Inlined Constant Stdlib.Strings.String.substring =>
+  "(fun n m s -> let l = String.length s in if n >= l then """" else String.sub s n (min m (l - n)))".
+
+
+fixture_plan : string := "2026-11-11
+# a note
+first open
++ completed earlier
+* finished today
+- dropped
+  second open  
+
+2026-11-12
+third open".
+
+fixture_plan_text : string := "<<<UNTRUSTED TOKEN plan of calc: open items>>>
+first open
+second open
+third open
+<<<END UNTRUSTED TOKEN>>>
+".
+
+fixture_repos : string := repos_text_of "TOKEN" [("calc", "a.txt
+b.txt
+"), ("web", "index.html")].
+fixture_plans : string := plan_text_of "TOKEN" [("calc", Some fixture_plan), ("web", None)].
+fixture_repo (r : string) (paths : list string) : string :=
+  repo_text_of "TOKEN" r (Some "a.txt
+b.txt")
+    (map (fun p => (p, lookup p [("a.txt", "hello"), ("empty", "")])) paths) 100 1000.
+
+assembled (prompt : string) (ctx : list string) : string :=
+  prompt_assemble "TOKEN" prompt ctx (fun _ => fixture_repos) (fun _ => fixture_plans) fixture_repo.
+
+fixture_template : string := "token={{F}}; again={{F}}
+{{PLAN}}{{REPO}}".
+fixture_expected : string := "token=TOKEN; again=TOKEN
+<<<UNTRUSTED TOKEN plan of calc: open items>>>
+first open
+second open
+third open
+<<<END UNTRUSTED TOKEN>>>
+<<<UNTRUSTED TOKEN files in calc>>>
+a.txt
+b.txt
+<<<END UNTRUSTED TOKEN>>>
+<<<UNTRUSTED TOKEN file a.txt>>>
+hello
+<<<END UNTRUSTED TOKEN>>>
+<<<UNTRUSTED TOKEN file missing>>>
+(no such file at the head)
+<<<END UNTRUSTED TOKEN>>>
+".
+
+fixture_task : task := {| tid := 1; spec := "repair {{F}} and {{PLAN}}";
+  poster := "claude"; posted_at := 2; topen := true; trepo := "calc"; tctx := ["a.txt", "missing"] |}.
+fixture_bid : bid := {| bidn := 7; btask := 1; bidder := "grok"; base := 0;
+  edits := [{| epath := "a.txt"; eold := "hello"; enew := "hello world" |},
+            {| epath := "new.txt"; eold := ""; enew := "literal {{F}}" |},
+            {| epath := "old.txt"; eold := ""; enew := "" |}];
+  note := "quote ""note"" and {{REPO}}"; bst := Pending; stale := false; why := ""; votes := [] |}.
+fixture_market : obj :=
+  let m := new_market ["claude", "codex", "grok", "muse"] in
+  let m := setf m "repos" ([("calc", "tree"), ("web", "tree2")] : list (string * string)) in
+  let m := setf m "tasks" [fixture_task] in
+  setf m "leader" "claude".
+fixture_agent : obj :=
+  let a := setf (new_agent "codex") "perspective" "Keep bytes." in
+  setf a "goal" ["Work through the plan."].
+
+role_prompts : list (string * string) := [
+  ("leader draft", assembled (draft_prompt fixture_agent fixture_market) []),
+  ("leader pick", assembled (pick_prompt fixture_agent fixture_market fixture_task [fixture_bid]) []),
+  ("bidder", assembled (patch_prompt fixture_agent fixture_market fixture_task) ["calc", "a.txt", "missing"]),
+  ("attestor", assembled (attest_prompt fixture_agent fixture_market (spec fixture_task) fixture_bid) [])
+].
+
+check_prompt (label got expected : string) : string :=
+  append (if seq got expected then "ok " else "FAIL ") label.
+
+checks : list string := [
+  check_prompt "patch selects governed checkout"
+    (match llm_checkout "patch" ["calc", "a.txt"] ["calc"] with Some r => r | None => "none" end) "calc",
+  check_prompt "unknown patch repository has no checkout"
+    (match llm_checkout "patch" ["other"] ["calc"] with Some r => r | None => "none" end) "none",
+  check_prompt "empty patch context has no checkout"
+    (match llm_checkout "patch" [] ["calc"] with Some r => r | None => "none" end) "none",
+  check_prompt "attest has no checkout"
+    (match llm_checkout "attest" ["calc"] ["calc"] with Some r => r | None => "none" end) "none",
+  check_prompt "pick has no checkout"
+    (match llm_checkout "pick" ["calc"] ["calc"] with Some r => r | None => "none" end) "none",
+  check_prompt "draft has no checkout"
+    (match llm_checkout "draft" ["calc"] ["calc"] with Some r => r | None => "none" end) "none",
+  check_prompt "markq has no checkout"
+    (match llm_checkout "markq" ["calc"] ["calc"] with Some r => r | None => "none" end) "none",
+  check_prompt "placeholder absent" (replace_all "plain" "{{F}}" "T") "plain",
+  check_prompt "placeholder repeated" (replace_all "{{F}} x {{F}}" "{{F}}" "T") "T x T",
+  check_prompt "placeholder adjacent" (replace_all "{{F}}{{F}}" "{{F}}" "T") "TT",
+  check_prompt "marked and unmarked plan"
+    (Stdlib.Strings.String.concat "|" (plan_open fixture_plan)) "first open|second open|third open",
+  check_prompt "fixed assembled prompt"
+    (assembled fixture_template ["calc", "a.txt", "missing"]) fixture_expected
+].
+role_checks : list string := map (fun p =>
+  check_prompt (append (fst p) " fully expanded")
+    (if contains "{{F}}" (snd p) || contains "{{PLAN}}" (snd p) ||
+        contains "{{REPO}}" (snd p) || contains "{{REPOS}}" (snd p) then "unexpanded" else "expanded")
+    "expanded") role_prompts.
+main := print_lines (checks ++ role_checks).

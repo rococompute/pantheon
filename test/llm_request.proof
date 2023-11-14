@@ -1,0 +1,27 @@
+Example llm_patch_checkout :
+  llm_checkout "patch" ["calc", "a.txt"] ["calc", "web"] = Some "calc".
+Proof. reflexivity. Qed.
+
+Example llm_unknown_checkout :
+  llm_checkout "patch" ["missing"] ["calc"] = None.
+Proof. reflexivity. Qed.
+
+Example llm_prompt_bytes :
+  assembled fixture_template ["calc", "a.txt", "missing"] = fixture_expected.
+Proof. reflexivity. Qed.
+
+Example llm_plan_marks :
+  plan_open fixture_plan = ["first open", "second open", "third open"].
+Proof. reflexivity. Qed.
+
+Example llm_replace_absent : replace_all "plain" "{{F}}" "T" = "plain".
+Proof. reflexivity. Qed.
+
+Example llm_replace_repeated : replace_all "{{F}} x {{F}}" "{{F}}" "T" = "T x T".
+Proof. reflexivity. Qed.
+
+Example llm_replace_adjacent : replace_all "{{F}}{{F}}" "{{F}}" "T" = "TT".
+Proof. reflexivity. Qed.
+
+Theorem llm_empty_context : forall kind names, llm_checkout kind [] names = None.
+Proof. reflexivity. Qed.

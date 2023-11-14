@@ -1112,11 +1112,21 @@ llm_repo_text (h : node_t) (token r : string) (paths : list string) : string :=
            (fun p => (p, node_head_file h r p)) (filter shell_safe_path paths))
   else repo_text_of token r None [] 0 0.
 
+(** Only patch requests for a governed repository receive a writable
+    tool checkout. Other requests may read code through their tools but
+    receive no checkout. The native binding only creates the chosen checkout;
+    its git directory stays outside the model's writable worktree. *)
+llm_checkout (kind : string) (ctx names : list string) : option string :=
+  match ctx with
+  | r :: _ => if seq kind "patch" && mem r names then Some r else None
+  | [] => None
+  end.
+
 llm_call (h : node_t) (id kind prompt : string) (ctx : list string) : bool :=
   let token := node_token tt in
   match node_llm_start h id kind prompt
     (prompt_assemble token prompt ctx (fun _ => llm_repos_text h token) (fun _ => llm_plan_text h token)
-       (llm_repo_text h token)) ctx with
+       (llm_repo_text h token)) ctx (llm_checkout kind ctx (node_repo_names h)) with
   | None => true
   (* the process couldn't start: its output is here at once *)
   | Some text => push_all h (reply_events h id kind prompt text ctx)

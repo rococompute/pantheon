@@ -211,7 +211,11 @@ For model requests, the native bindings that remain are `node_llm_budget`
 `node_head_file` (checkout metadata and contents), and `node_llm_start`
 (start the process/inbox request, returning raw output immediately on startup
 failure). Logs, event queues and the clock use `node_io`. Soma chooses the
-budget/hold/ask branch and formats every prompt and log line. The three
+budget/hold/ask branch, selects the optional tool checkout with
+`llm_checkout`, and formats every prompt and log line. Only patch requests
+whose context names a governed repository receive that checkout; the native
+model binding creates the selected checkout and keeps its git directory
+outside the writable worktree. The three
 remaining helper callbacks are `edit_once`, `contains` and `shell_safe_path`;
 they serve edit/command code and never assemble model prompts.
 

@@ -763,7 +763,7 @@ type node_handle = { h_events : unit -> string list list;
                      h_job_flood : string -> unit;
                      h_llm_budget : unit -> string * string;
                      h_llm_hold : string -> string -> string -> string list -> unit;
-                     h_llm_start : string -> string -> string -> string -> string list -> string option;
+                     h_llm_start : string -> string -> string -> string -> string list -> string option -> string option;
                      h_limit_set : float -> string -> float -> unit;
                      h_limit_clear : float -> unit;
                      h_repo_names : unit -> string list;
@@ -829,7 +829,7 @@ let node_job_flood id jid = (lookup_handle id).h_job_flood jid; true
 (* a model call's I/O: node.soma's perform_llm decides and builds the prompt *)
 let node_llm_budget id = (lookup_handle id).h_llm_budget ()
 let node_llm_hold id req kind prompt ctx = (lookup_handle id).h_llm_hold req kind prompt ctx; true
-let node_llm_start id req kind raw prompt ctx = (lookup_handle id).h_llm_start req kind raw prompt ctx
+let node_llm_start id req kind raw prompt ctx checkout = (lookup_handle id).h_llm_start req kind raw prompt ctx checkout
 (* a model's output: node.soma's reply_fields decides what it becomes.
    These bindings only report the cap, where the braces are, and yojson's
    value as tokens. The slice, the guards and the key paths are Soma. *)
@@ -1154,7 +1154,7 @@ let node_open packed home flags =
   (* the model process for a prompt Soma assembled from prompt0. Its output
      comes back raw as an llm_output event, or at once when the process
      couldn't start *)
-  let call_model id kind prompt0 prompt ctx =
+  let call_model id kind prompt0 prompt ctx checkout =
     let starting = ref true and immediate = ref None in
     let reply text =
       if !starting then immediate := Some text
@@ -1189,11 +1189,8 @@ let node_open packed home flags =
         end
     | b when String.length b > 4 && String.sub b 0 4 = "cmd:" ->
         let extra, clean, limit =
-          match kind, ctx with
-          | "patch", r :: _ when List.exists (fun (n, _, _, _) -> n = r) repos ->
-              (* the checkout is the model's; its repository stays outside it,
-                 readable by the model but not writable, and the node's own git
-                 (pantheon edits) uses that, never the checkout's .git *)
+          match checkout with
+          | Some r ->
               let wt = Filename.temp_dir "pantheon-work" "" in
               let gd = wt ^ ".git" in
               let gone () = remove_tree_later wt; remove_tree_later gd in
@@ -1203,9 +1200,7 @@ let node_open packed home flags =
                 ([ "PANTHEON_WORKTREE=" ^ wt; "PANTHEON_GITDIR=" ^ gd; "PANTHEON_REPO=" ^ r; "PANTHEON_BIN=" ^ self_exe ],
                  gone, 1800.)
               else ([], gone, 600.)
-          (* an answer: a model with tools may read the code a bid changes
-             first (Grok Build took 8 minutes over a pick) *)
-          | _ -> ([], ignore, 1200.)
+          | None -> ([], ignore, 1200.)
         in
         start_job ~limit (String.sub b 4 (String.length b - 4)) [] ~stdin_text:prompt ~env:(Array.append (Array.of_list extra) (model_env ())) ~on_done:reply ~clean
     | b -> push [ "llm_error"; id; "unknown backend " ^ b ]);
