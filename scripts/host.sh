@@ -12,6 +12,7 @@
 # Nothing listens beyond localhost, unless the host joins a network made
 # elsewhere (keygen, join): then its nodes listen on LISTEN, its tailnet address.
 #
+#   scripts/host.sh users              provision isolated accounts and inbox groups (root; HOST_DRY=DIR to preview)
 #   scripts/host.sh permissions        restrict existing node homes and secrets (HOST_DRY=DIR to preview)
 #   scripts/host.sh network            keys, the network and its genesis (once), for Pantheon at HEAD
 #   scripts/host.sh keygen             to join a network made elsewhere: this host's agents' keys, their
@@ -127,6 +128,57 @@ permissions_script() {
   done
   k=$(q "$P/inbox.json")
   printf '[ ! -f %s ] || chmod 0600 %s\n' "$k" "$k"
+}
+
+# Provision identities independently of migrating a running deployment. These
+# accounts are deliberately not used by the legacy user services yet.
+cmd_users() {
+  for a in $AGENTS; do
+    case $a in ''|*[!a-z0-9-]*|-*) die "unsafe agent name for a Unix account: $a" ;; esac
+    [ ${#a} -le 23 ] || die "agent name too long for a Unix account: $a"
+  done
+  if [ -n "${HOST_DRY:-}" ]; then
+    mkdir -p "$HOST_DRY"
+    users_script > "$HOST_DRY/users.sh"
+  else
+    [ "$(id -u)" = 0 ] || die "users requires root (or HOST_DRY=DIR to preview)"
+    users_script | sh -eu
+  fi
+}
+users_script() {
+  cat <<'ROOT'
+#!/bin/sh
+set -eu
+# Refuse to adopt an unrelated existing account or a symlinked home.
+account() {
+  name=$1 home=$2
+  if getent passwd "$name" >/dev/null; then
+    actual=$(getent passwd "$name" | cut -d: -f6)
+    [ "$actual" = "$home" ] || { echo "host: $name has unexpected home $actual" >&2; exit 1; }
+  else
+    useradd --user-group --create-home --home-dir "$home" --shell /bin/sh "$name"
+  fi
+  [ ! -L "$home" ] || { echo "host: symlinked home $home" >&2; exit 1; }
+  chown "$name" "$home"
+}
+account pantheon /var/lib/pantheon
+# Traversable so shared builds and repositories can live below it. Secrets
+# belong in net/AGENT (0700), inbox.json (0600), and .ssh (0700).
+chmod 0711 /var/lib/pantheon
+install -d -o pantheon -m 0700 /var/lib/pantheon/.ssh
+install -d -o root -m 0711 /var/lib/pantheon-diplomats
+install -d -o root -m 0711 /var/lib/pantheon-inbox
+ROOT
+  for a in $AGENTS; do
+    cat <<ROOT
+getent group inbox-$a >/dev/null || groupadd inbox-$a
+account pantheon-$a /var/lib/pantheon-diplomats/$a
+chmod 0700 /var/lib/pantheon-diplomats/$a
+usermod -a -G inbox-$a pantheon
+usermod -a -G inbox-$a pantheon-$a
+install -d -o pantheon -g inbox-$a -m 2770 /var/lib/pantheon-inbox/$a
+ROOT
+  done
 }
 
 cmd_network() {
@@ -488,7 +540,7 @@ cmd_logs() {
 
 c=${1:-}; [ $# -gt 0 ] && shift
 case $c in
-  permissions|network|keygen|join|start|vm|login|diplomats|watchdog|instructions|mirror|check|stop|status|logs) "cmd_$c" "$@" ;;
+  users|permissions|network|keygen|join|start|vm|login|diplomats|watchdog|instructions|mirror|check|stop|status|logs) "cmd_$c" "$@" ;;
   mirror-loop) cmd_mirror_loop ;;
   watchdog-loop) cmd_watchdog_loop ;;
   *) awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "$0"; [ -z "$c" ] || exit 1 ;;

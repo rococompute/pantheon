@@ -49,3 +49,21 @@ others. Its sibling git directory stays node-owned. A failed group assignment
 refuses the request. This is preparatory support, not enabled by host.sh yet:
 separate service users, readable repository objects, and diplomat-side Git
 metadata for pull/apply still need to land before switching the host to it.
+
+### Preparing separate host accounts (P-1, first step)
+
+`sudo scripts/host.sh users` provisions `pantheon` at `/var/lib/pantheon`
+(mode 0711 for future shared builds and repositories), and `pantheon-AGENT`
+at `/var/lib/pantheon-diplomats/AGENT` (0700). Each inbox at
+`/var/lib/pantheon-inbox/AGENT` is owned by `pantheon:inbox-AGENT` (2770);
+only the node account and that diplomat are added to its group. The node's
+`.ssh` is 0700. Existing accounts with different homes are refused.
+`HOST_DRY=DIR scripts/host.sh users` writes the same operations to
+`DIR/users.sh` without root or account changes.
+
+This command only prepares accounts. It does not migrate a running network,
+credentials, checkouts, instructions or services, and does not yet isolate
+existing diplomat sessions. Continue treating those sessions as having access
+to the node's secrets until the service and session migration lands. Future
+node homes under `net/AGENT` must stay 0700 and `inbox.json` 0600; the shared
+repositories must move outside those homes before the accounts can be used.
