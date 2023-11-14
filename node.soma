@@ -1640,6 +1640,25 @@ ci_outcome (t : string) (sandbox : bool) (memory : string) : bool * (string * st
     else ci_tail t in
   (ok, (why, if ok then "" else if down then "node" else "ci")).
 
+(** A check that failed before CI (applying the bid's edits): the bid's
+    when the check itself exited with its own code for that (1) or ended
+    some other way it reports (a signal), this node's when the check
+    couldn't run or exited with any other code. From the node's own
+    signals only, never what the bid's edits printed. *)
+check_apply_stage (t : string) : string :=
+  match ci_job_how t with
+  | None => "node"
+  | Some h =>
+      match ci_exit_code h with
+      | Some c => if c =? 1 then "apply" else "node"
+      | None => "apply"
+      end
+  end.
+
+perform_check_failed (h : node_t) (id t : string) : bool :=
+  io_log h (append "check of request " (append id (append " failed: " t))) &&
+  node_check_result h id false "" t (check_apply_stage t).
+
 perform_ci_done (h : node_t) (id tree memory runner t : string) : bool :=
   let (ok, rest) := ci_outcome t (seq runner "sandbox") memory in
   let (why, stage) := rest in
@@ -1675,6 +1694,8 @@ run_event (h : node_t) (st : node_state) (ev : list string) : node_state :=
       if buffer_over (num len) (num (node_line_limit h)) then
         if node_conn_close h cid then st else with_live st (live st)
       else st
+  | ["check_failed", id, t] =>
+      if perform_check_failed h id t then st else with_live st (live st)
   | ["ci_done", id, tree, memory, runner, t] =>
       if perform_ci_done h id tree memory runner t then st else with_live st (live st)
   | ["inbox_file", path, content] =>

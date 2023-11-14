@@ -1233,10 +1233,8 @@ let node_open packed home flags =
     if List.mem r !no_check || List.mem r my_excluded then (rm_out (); (try Sys.remove ef with _ -> ()); result false "" ("this node doesn't check " ^ r ^ (if List.mem r my_excluded then " (outside its scope: its genesis part excludes it)" else " (--no-check " ^ r ^ ")")) "node") else
     start_job self_exe [ "check"; rdir r; head; ef; out ] ~stdin_text:"" ~env:(Unix.environment ())
       ~on_done:(fun t ->
-        if String.length t > 0 && t.[0] = '!' then (say "check of request %s failed: %s" id t; result false "" t
-              (match job_how t with
-               | None -> "node"
-               | Some h -> (match exit_code h with Some c when c <> check_bid_failed -> "node" | _ -> "apply")))
+        (* whose a failed apply is: node.soma's check_apply_stage decides *)
+        if String.length t > 0 && t.[0] = '!' then push [ "check_failed"; id; t ]
         else
           let tree = if byz = "bad-tree" then (say "FAULT INJECTION: naming a wrong tree"; sha256 ("lie" ^ id)) |> fun x -> String.sub x 0 40 else String.trim t in
           if ci = "" then result true tree "" ""
