@@ -458,3 +458,42 @@ decode_commit_certificate (fields : list string) : option commit_certificate :=
       end
   | _ => None
   end.
+
+(** M-3 block framing prerequisite. A certificate is part of the voted block,
+    before its transactions, with an explicit field count. Signed fields and
+    transaction strings are never split on delimiters. This opt-in envelope
+    is not yet used by build_block/block_ok or live persistence. *)
+frame_commit_block (cert : commit_certificate) (txs : list string) : option (list string) :=
+  match encode_commit_certificate cert with
+  | None => None
+  | Some fields => Some (["heartbeat-v1", show (length fields)] ++ fields ++ txs)
+  end.
+
+unframe_commit_block (block : list string) : option (commit_certificate * list string) :=
+  match block with
+  | "heartbeat-v1" :: size :: rest =>
+      match num_opt size with
+      | None => None
+      | Some n => if n <=? length rest then
+          match decode_commit_certificate (firstn n rest) with
+          | None => None | Some cert => Some (cert, skipn n rest) end
+        else None
+      end
+  | _ => None
+  end.
+
+(** Adapter for certified_commit_window/commit_certified_roster_fields.
+    The caller MUST supply committed blocks, indexed by their own heights.
+    Certificate h is read only from block h+1, never from a peer/local cache.
+    Decoding is not verification: the existing certified window authenticates
+    every returned witness against block h and roster_of h. *)
+chain_commit_at (block_at : nat -> option (list string)) (h : nat)
+    : option commit_certificate :=
+  if h =? 0 then None else
+  match block_at (S h) with
+  | None => None
+  | Some block => match unframe_commit_block block with
+      | None => None
+      | Some (cert, _) => if certificate_height cert =? h then Some cert else None
+      end
+  end.

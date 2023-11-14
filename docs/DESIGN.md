@@ -278,3 +278,21 @@ agreement, and consumers must still call `verify_height_certificate`.
 `test/commit-wire.sh` checks exact deterministic results. Integrating these
 fields with block framing, signature retention, committed-chain lookups and
 roster dispatch remains pending; this codec enables no live removal.
+
+M-3's opt-in block envelope is `frame_commit_block` /
+`unframe_commit_block`: `heartbeat-v1`, a certificate field count, the
+`commit-v1` fields, then transaction strings. The count separates evidence
+from transactions without altering signed strings. `chain_commit_at block_at h`
+reads only the certificate carried by committed block h+1 and refuses a
+certificate naming another height, missing carriers and height zero. Pass
+this adapter to `certified_commit_window` or
+`commit_certified_roster_fields` with a committed-block lookup; the existing
+verifier still authenticates evidence against the actual block and roster
+at h. `test/commit-carrier.sh` checks framing, malformed carriers, missing
+history and verification through that adapter, including a signer removed
+at the carrier height but present at the certified height.
+
+This is a framing and lookup prerequisite, not a live format migration:
+block construction/validation, signature retention, persistence/replay and
+roster dispatch still need to adopt it together. Existing live blocks are
+unchanged and no removal path is enabled by the envelope alone.
