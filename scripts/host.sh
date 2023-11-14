@@ -13,6 +13,7 @@
 # elsewhere (keygen, join): then its nodes listen on LISTEN, its tailnet address.
 #
 #   scripts/host.sh users              provision isolated accounts and inbox groups (root; HOST_DRY=DIR to preview)
+#   scripts/host.sh node-state         transfer a stopped network's node homes and contents to pantheon (root; HOST_DRY=DIR to preview)
 #   scripts/host.sh credentials        transfer stopped node keys and inbox credentials to pantheon (root; HOST_DRY=DIR to preview)
 #   scripts/host.sh permissions        restrict existing node homes and secrets (HOST_DRY=DIR to preview)
 #   scripts/host.sh network            keys, the network and its genesis (once), for Pantheon at HEAD
@@ -181,6 +182,43 @@ credentials_script() {
   done
   for secret in /var/lib/pantheon/inbox.json $(for a in $AGENTS; do printf '/var/lib/pantheon/net/%s/key.json ' "$a"; done); do
     printf '[ ! -f "$R"%s ] || { chown pantheon "$R"%s; chmod 0600 "$R"%s; }\n' "$(q "$secret")" "$(q "$secret")" "$(q "$secret")"
+  done
+}
+
+# Ownership migration is explicit: never recursively adopt a live network.
+# Preflight every tree before changing any tree, including hidden entries.
+cmd_node_state() {
+  valid_agent_names
+  if [ -n "${HOST_DRY:-}" ]; then
+    mkdir -p "$HOST_DRY"
+    node_state_script > "$HOST_DRY/node-state.sh"
+  else
+    [ "$(id -u)" = 0 ] || die "node-state requires root (or HOST_DRY=DIR to preview)"
+    node_state_script | sh -eu
+  fi
+}
+node_state_script() {
+  printf '#!/bin/sh\nset -eu\nR=${HOST_ROOT:-}\n'
+  path_guard
+  for a in $AGENTS; do
+    printf 'reject_links "$R"%s\n' "$(q "/var/lib/pantheon/net/$a")"
+  done
+  cat <<'ROOT'
+# find includes every hidden entry and fails closed on unreadable trees.
+audit_tree() {
+  [ -d "$1" ] || { echo "host: missing node home $1" >&2; exit 1; }
+  links=$(find "$1" -type l -print) || exit 1
+  [ -z "$links" ] || { echo "host: symlink in node home $1" >&2; exit 1; }
+  aliases=$(find "$1" -type f -links +1 -print) || exit 1
+  [ -z "$aliases" ] || { echo "host: hardlinked file in node home $1; copy it before migration" >&2; exit 1; }
+}
+ROOT
+  for a in $AGENTS; do
+    printf 'audit_tree "$R"%s\n' "$(q "/var/lib/pantheon/net/$a")"
+  done
+  for a in $AGENTS; do
+    printf 'chown -R pantheon "$R"%s\n' "$(q "/var/lib/pantheon/net/$a")"
+    printf 'chmod 0700 "$R"%s\n' "$(q "/var/lib/pantheon/net/$a")"
   done
 }
 
@@ -978,6 +1016,7 @@ cmd_logs() {
 
 c=${1:-}; [ $# -gt 0 ] && shift
 case $c in
+  node-state) cmd_node_state "$@" ;;
   users|services|sessions|permissions|credentials|network|keygen|join|start|vm|login|diplomats|watchdog|instructions|mirror|check|stop|status|logs) "cmd_$c" "$@" ;;
   mirror-loop) cmd_mirror_loop ;;
   watchdog-loop) cmd_watchdog_loop ;;

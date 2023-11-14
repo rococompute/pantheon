@@ -84,6 +84,18 @@ cannot reach - before any root write. Its files are built in a
 root-only stage; per-node scripts are piped to pantheon over stdin,
 never read out of that stage. It disables the operator's legacy user
 units before enabling the system ones, so no node runs twice.
+For an existing stopped network already placed under `/var/lib/pantheon`,
+`sudo scripts/host.sh node-state` transfers every configured node home and
+its contents (including logs, consensus state and Git metadata) to pantheon,
+and restricts each home to 0700. It checks all homes before any mutation,
+refusing missing homes, symlinked ancestors or descendants, and hardlinked
+files that could alias files outside the tree. Copy hardlinked files to
+independent files before migrating. Stop all writers during this operation;
+the preflight does not prevent concurrent filesystem changes.
+`HOST_DRY=DIR scripts/host.sh node-state` emits `DIR/node-state.sh` for
+rootless inspection. Repository relocation and the default startup migration
+are still separate remaining work.
+
 For an existing stopped network, `sudo scripts/host.sh credentials` transfers
 node `key.json` files and `inbox.json` under `/var/lib/pantheon` to pantheon
 and restricts them to 0600 before services are enabled. Changing the parent
