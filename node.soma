@@ -646,9 +646,9 @@ prompt_assemble (token prompt : string) (ctx : list string) (repos plan : unit -
 (** ---- What a model call's output becomes (step 5) ----
     A reply is held for a usage limit, fails, or becomes an llm_reply
     event with its JSON's fields; when the model says when its limit
-    resets, the hold lasts that long. The shell only parses the JSON
-    (node_reply_fields), reads a run of digits as a float, and keeps the
-    limit's state. *)
+    resets, the hold lasts that long. The shell reads a run of digits as
+    a float, keeps the limit's state, and for the JSON only reports the
+    output cap, the brace offsets and yojson's tokens. *)
 limit_words : list string :=
   ["usage limit", "rate limit", "rate-limit", "ratelimit", "limit reached", "limit exceeded", "quota",
    "too many requests", "hit your limit", "out of credits", "credit balance", "resource_exhausted",
@@ -814,11 +814,97 @@ reply_outcome_of (text : string) (fields : string -> option (list string)) : rep
     | None => if is_limit text then ReplyHold text else ReplyError (reply_no_json_text text)
     end.
 
+(** One JSON value while it is flattened. [FramePairs] and [FrameElems]
+    still have [left] children to walk, left to right, under [prefix]. *)
+Inductive reply_frame :=
+| FrameValue (prefix : string)
+| FramePairs (left : nat) (prefix : string)
+| FrameElems (left : nat) (prefix : string) (index : nat).
+
+(** Tokens from the yojson binding, in order: "A" count, then each key and
+    its value; "L" count, then each element; "S" text; "B" "true" or
+    "false"; "U"; "I" digits; "F" the binding's "%.0f" text. The same
+    key, value, ... list the old walk produced, dotted names and list
+    indices included. A list index is always ".<n>", even at the root. *)
+Fixpoint flatten_walk (fuel : nat) (stack : list reply_frame) (toks acc : list string) : list string :=
+  match fuel, stack with
+  | Succ f, FrameValue prefix :: stack =>
+      match toks with
+      | "A" :: ns :: rest => flatten_walk f (FramePairs (num ns) prefix :: stack) rest acc
+      | "L" :: ns :: rest => flatten_walk f (FrameElems (num ns) prefix 0 :: stack) rest acc
+      | "S" :: s :: rest => flatten_walk f stack rest (s :: prefix :: acc)
+      | "B" :: b :: rest => flatten_walk f stack rest (b :: prefix :: acc)
+      | "U" :: rest => flatten_walk f stack rest ("null" :: prefix :: acc)
+      | "I" :: s :: rest => flatten_walk f stack rest (s :: prefix :: acc)
+      | "F" :: s :: rest => flatten_walk f stack rest (s :: prefix :: acc)
+      | _ => flatten_walk f stack [] acc
+      end
+  | Succ f, FramePairs n prefix :: stack =>
+      match n, toks with
+      | 0, _ => flatten_walk f stack toks acc
+      | Succ n', k :: rest =>
+          let p := if seq prefix "" then k else append prefix (append "." k) in
+          flatten_walk f (FrameValue p :: FramePairs n' prefix :: stack) rest acc
+      | _, [] => rev_onto acc []
+      end
+  | Succ f, FrameElems n prefix i :: stack =>
+      match n with
+      | 0 => flatten_walk f stack toks acc
+      | Succ n' =>
+          let p := append prefix (append "." (show i)) in
+          flatten_walk f (FrameValue p :: FrameElems n' prefix (Succ i) :: stack) toks acc
+      end
+  | _, _ => rev_onto acc []
+  end.
+
+(** Two steps a token, plus the frame that opens each container. *)
+flatten_reply (toks : list string) : list string :=
+  flatten_walk (length toks + length toks + length toks + 1) (FrameValue "" :: []) toks [].
+
+(** The object's text, from the first "{" through the last "}", when the
+    reply is within the job's output cap and that slice passes the old
+    shallow_json guard (depth 4, 4096 items). The cap and the two offsets
+    are decimal strings: an output is up to 4 MB, and that length is not
+    a unary nat. Missing braces, a close that is not after the open, and
+    a slice that is too deep or too wide are no object. *)
+json_in_reply (text limit : string) (open_at close_at : option string) : option string :=
+  if num limit <? slen text then None
+  else match open_at, close_at with
+       | Some a, Some b =>
+           let i := num a in
+           let j := num b in
+           if i <? j then
+             let raw := substr text i (j - i + 1) in
+             if shallow_json "4" "4096" raw then Some raw else None
+           else None
+       | _, _ => None
+       end.
+
+(** [tokens] is yojson on the slice (none: it did not parse). Empty
+    objects flatten to an empty field list, which is still a reply. *)
+reply_fields_of (text limit : string) (open_at close_at : option string)
+    (tokens : string -> option (list string)) : option (list string) :=
+  match json_in_reply text limit open_at close_at with
+  | None => None
+  | Some raw =>
+      match tokens raw with
+      | None => None
+      | Some toks => Some (flatten_reply toks)
+      end
+  end.
+
+(** Over the cap, the braces are not even looked up: the same short
+    circuit as before, and no walk of a multi-megabyte output. *)
+reply_fields (text : string) : option (list string) :=
+  let limit := node_job_output_limit tt in
+  if num limit <? slen text then None
+  else reply_fields_of text limit (node_reply_open text) (node_reply_close text) node_json_tokens.
+
 (** The outcome carried out: a limit is noted (its wait, reason and doubled
     backoff, the log line) and the raw request held; otherwise the backoff
     goes back to 15 minutes and the reply or error is the event. *)
 reply_events (h : node_t) (id kind prompt0 text : string) (ctx : list string) : list (list string) :=
-  match reply_outcome_of text node_reply_fields with
+  match reply_outcome_of text reply_fields with
   | ReplyHold body =>
       let now := node_clock tt in
       let (backoff, _) := node_release_state h in

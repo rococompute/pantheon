@@ -168,6 +168,21 @@ worth a note in this file rather than a workaround.
 
 ## Done so far
 
+- Step 5, part: a model reply's JSON is decided in Soma. `json_in_reply`
+  takes the job-output cap and the byte offsets of the first `{` and the
+  last `}` as decimal strings (the cap is about 4 MB, so it is not a unary
+  nat) and keeps the old guards: too long, a missing brace, the close not
+  after the open, or `shallow_json` at depth 4 and 4096 items, and there
+  is no object. `flatten_reply` turns the yojson binding's tokens into the
+  old key, value, ... list (dotted names, list indices, left to right).
+  The shell only reports the cap, finds the two bytes, and tokenizes;
+  its `json_in_reply` and `flatten_reply` are gone. `node.proof` checks
+  slices, nesting, absent objects and the flattened fields, and proves a
+  reply with no object or past the cap never becomes a reply event, and
+  that a parsed object becomes a reply with those fields. Left of step 5:
+  lines into events (`on_line`, `decode_tx`, the line and connection
+  limits).
+
 - Step 5, part: what a model call's output becomes is decided in Soma.
   A finished model job comes back raw as an `llm_output` event (or at once
   from `node_llm_start` when the process couldn't start), and `node_tick`
