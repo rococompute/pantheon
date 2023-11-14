@@ -3,6 +3,24 @@
     effect appears only when consensus changed (as [empty_node]'s has not),
     decided outputs come before it, and the rest come after. *)
 
+Example feed_chunks_splits_lines_and_keeps_the_partial :
+  feed_chunks [] "one
+tw" = (["one"], ["tw"]) /\
+  feed_chunks ["tw"] "o
+three
+" = (["two", "three"], []) /\
+  feed_chunks [] "a
+b
+c
+" = (["a", "b", "c"], []) /\
+  feed_chunks [] "" = ([], [""]) /\
+  feed_chunks ["ab"] "cd" = ([], ["ab", "cd"]) /\
+  feed_chunks [] "
+" = ([""], []) /\
+  feed_chunks [] "no newline at all" = ([], ["no newline at all"]) /\
+  chunks_len ["ab", "cde"] = 5 /\ chunks_len [] = 0.
+Proof. repeat split; reflexivity. Qed.
+
 Example connection_admission_and_line_cap_edges :
   admit_decision_of 15 63 = AdmitNew /\ admit_decision_of 16 0 = AdmitRefuse /\
   admit_decision_of 0 64 = AdmitEvict /\ admit_decision_of 16 64 = AdmitRefuse /\

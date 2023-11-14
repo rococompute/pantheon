@@ -1220,6 +1220,34 @@ oldest_conn (l : list (string * float)) : string :=
 
 buffer_over (len limit : nat) : bool := limit <? len.
 
+
+(** ---- Step 5, bytes into lines, in Soma ----
+    A connection's buffer is its read chunks, in order, never joined
+    until a newline arrives in the newest one: then the completed
+    lines are joined once (as the shell's Buffer.contents did), and
+    the trailing partial line stays as one chunk. So how the bytes
+    were split into reads changes nothing, and a long line costs its
+    length once, not once per read. [feed_chunks] returns the complete
+    lines and the chunks to keep; [chunks_len] is their byte count,
+    for [buffer_over]. *)
+feed_chunks (chunks : list string) (chunk : string) : list string * list string :=
+  match find_str newline chunk 0 with
+  | None => ([], chunks ++ [chunk])
+  | Some _ =>
+      let parts := split_lines (Stdlib.Strings.String.concat "" (chunks ++ [chunk])) in
+      (firstn (length parts - 1) parts,
+       match last_n 1 parts with [rest] => if seq rest "" then [] else [rest] | _ => [] end)
+  end.
+
+Fixpoint chunks_len (chunks : list string) : nat :=
+  match chunks with [] => 0 | c :: r => slen c + chunks_len r end.
+
+Fixpoint queue_lines (h : node_t) (lines : list string) : bool :=
+  match lines with
+  | [] => true
+  | l :: r => io_push h ["peer_raw", l] && queue_lines h r
+  end.
+
 run_event (h : node_t) (st : node_state) (ev : list string) : node_state :=
   let ev := match ev with
             | ["peer_raw", raw] => peer_raw_event (node_line_item_cap tt) (node_identity h) raw
@@ -1247,6 +1275,13 @@ run_event (h : node_t) (st : node_state) (ev : list string) : node_state :=
   | ["conn_buffer", cid, len] =>
       if buffer_over (num len) (num (node_line_limit h)) then
         if node_conn_close h cid then st else with_live st (live st)
+      else st
+  | ["peer_bytes", cid, chunk] =>
+      let (lines, kept) := feed_chunks (node_conn_buffer h cid) chunk in
+      if node_conn_store_buffer h cid kept && queue_lines h lines then
+        if buffer_over (chunks_len kept) (num (node_line_limit h)) then
+          if node_conn_close h cid then st else with_live st (live st)
+        else st
       else st
   | _ =>
       let (s, outs) := step st ev in
