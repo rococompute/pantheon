@@ -230,6 +230,19 @@ separate work; this status does not mark `.plan`.
 
 ## Done so far
 
+- Step 5, a peer line's members: `from`, `sig` and `fields` are read in
+  Soma (`peer_line_parts`, under `node_line_parts` over the
+  `node_json_tokens` binding) with Yojson.Safe.Util's old rules: the
+  first matching key wins, and a missing member, one of another kind, a
+  non-string in `fields` or a non-object is no event. One walk over the
+  top-level members skips each value with one shared fuel (every step
+  uses a token), so a wide object is linear work, as the old member
+  reads were. The shape scan still runs first and the signature check
+  still comes after the own/refused drop. The OCaml `node_line_parts`
+  binding is gone. `test/peer-members.sh` checks real lines, including
+  20000 unrelated keys before the three that count, and
+  `test/peer_members.proof` fixed token streams.
+
 - Step 5, a reply's braces: where a model reply's JSON object starts and
   ends (the first `{` and the last `}`, by byte offset) is found in Soma by
   `reply_open_at` and `reply_close_at`, one tail-recursive `char_at` scan

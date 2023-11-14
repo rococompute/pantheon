@@ -1,0 +1,49 @@
+(** A peer line's members, read in Soma (node.soma's peer_line_parts and
+    node_line_parts) from real yojson tokens, with no sockets, running node
+    or timing. *)
+Import util shell node.
+From Stdlib Require ExtrOcamlNatInt.
+Extract Inlined Constant Nat.div => "(fun a b -> if b = 0 then 0 else a / b)".
+Extract Inlined Constant Nat.modulo => "(fun a b -> if b = 0 then a else a mod b)".
+Extract Inlined Constant Stdlib.Strings.String.length => "String.length".
+Extract Inlined Constant Stdlib.Strings.String.get =>
+  "(fun n s -> if n < String.length s then Some (String.unsafe_get s n) else None)".
+Extract Inlined Constant Stdlib.Strings.String.substring =>
+  "(fun n m s -> let l = String.length s in if n >= l then """" else String.sub s n (min m (l - n)))".
+
+parts_eq (a b : option (string * (string * list string))) : bool :=
+  match a, b with
+  | None, None => true
+  | Some (f, (s, l)), Some (g, (t, m)) => seq f g && seq s t && eq_strs l m
+  | _, _ => false
+  end.
+
+check (label raw : string) (expected : option (string * (string * list string))) : string :=
+  append (if parts_eq (node_line_parts raw) expected then "ok " else "FAIL ") label.
+
+(** n unrelated members before the three that count: one walk, linear. *)
+wide (n : nat) : string :=
+  append "{"
+    (append (Stdlib.Strings.String.concat ""
+               (map (fun i => append """k" (append (show i) """:[""x"",{""y"":1}],")) (List.seq 0 n)))
+       """from"":""p"",""sig"":""s"",""fields"":[""tx"",""r""]}").
+
+main := print_lines [
+  check "members in order" "{""from"":""p"",""sig"":""s"",""fields"":[""a"",""b""]}"
+    (Some ("p", ("s", ["a", "b"]))),
+  check "any key order" "{""fields"":[],""sig"":""s"",""from"":""p""}" (Some ("p", ("s", []))),
+  check "first repeated key wins" "{""from"":""p"",""from"":""q"",""sig"":""s"",""fields"":[""x""],""fields"":1}"
+    (Some ("p", ("s", ["x"]))),
+  check "first repeated key wins even when wrong" "{""from"":1,""from"":""q"",""sig"":""s"",""fields"":[]}" None,
+  check "nested values skipped" "{""x"":{""from"":""no"",""y"":[[1,null],true]},""from"":""p"",""sig"":""s"",""fields"":[]}"
+    (Some ("p", ("s", []))),
+  check "a key named like a token" "{""A"":""L"",""S"":null,""from"":""p"",""sig"":""s"",""fields"":[]}"
+    (Some ("p", ("s", []))),
+  check "missing sig" "{""from"":""p"",""fields"":[]}" None,
+  check "null from" "{""from"":null,""sig"":""s"",""fields"":[]}" None,
+  check "fields not strings" "{""from"":""p"",""sig"":""s"",""fields"":[""a"",2]}" None,
+  check "fields not a list" "{""from"":""p"",""sig"":""s"",""fields"":""a""}" None,
+  check "not an object" "[""from"",""p""]" None,
+  check "not JSON" "{bad}" None,
+  check "wide object" (wide 20000) (Some ("p", ("s", ["tx", "r"])))
+].

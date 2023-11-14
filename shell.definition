@@ -78,10 +78,10 @@ node_mark_served : string -> string -> string -> float -> bool.
 node_peer_exists : string -> string -> bool.
 (** Verify a peer line's signature; Soma asks only for lines that are
     neither this node's own nor an already-refused transaction. *)
-(** Raw Yojson members, the item's cap as decimal text, and metadata reads.
-    Soma scans each raw line before invoking the JSON library, then drops
+(** The item's cap as decimal text, and metadata reads. Soma scans each
+    raw line before invoking the JSON library (node_json_tokens), reads
+    its members itself (node.soma's node_line_parts), then drops
     own/refused lines before invoking node_verify_line. *)
-node_line_parts : string -> option (string * (string * list string)).
 node_line_item_cap : unit -> string.
 node_identity : string -> string.
 node_seen_refused : string -> string -> bool.

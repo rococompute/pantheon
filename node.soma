@@ -1486,6 +1486,89 @@ peer_wire_fields (me : string) (refused : string -> bool)
       "peer_line" :: self :: seen :: from :: sig :: fields
   end.
 
+(** A peer line's members, read in Soma from the yojson binding's tokens
+    with Yojson.Safe.Util's old rules: the first key that matches wins, and
+    a missing member, a member of another kind or a non-object is None.
+    One walk over the top level's members, skipping each value with one
+    shared fuel (every step uses a token), so a wide object costs linear
+    work, never a recount per member. A member's value is kept as the
+    token tail where it starts, read after the walk. *)
+peer_first (k key : string) (rest : list string) (cur : option (list string)) : option (list string) :=
+  match cur with
+  | Some _ => cur
+  | None => if seq key k then Some rest else None
+  end.
+
+Fixpoint peer_members_go (fuel left : nat) (pending : list bool) (toks : list string)
+    (from sg fields : option (list string))
+    : option (option (list string) * (option (list string) * option (list string))) :=
+  match fuel with
+  | 0 => None
+  | Succ f =>
+      match pending with
+      | true :: p =>
+          match toks with
+          | _ :: rest => peer_members_go f left p rest from sg fields
+          | [] => None
+          end
+      | false :: p =>
+          match toks with
+          | "A" :: ns :: rest =>
+              peer_members_go f left (flat_map (fun _ => [true, false]) (List.seq 0 (num ns)) ++ p) rest from sg fields
+          | "L" :: ns :: rest =>
+              peer_members_go f left (map (fun _ => false) (List.seq 0 (num ns)) ++ p) rest from sg fields
+          | "U" :: rest => peer_members_go f left p rest from sg fields
+          | _ :: _ :: rest => peer_members_go f left p rest from sg fields
+          | _ => None
+          end
+      | [] =>
+          match left, toks with
+          | 0, _ => Some (from, (sg, fields))
+          | Succ l, key :: rest =>
+              peer_members_go f l [false] rest
+                (peer_first "from" key rest from) (peer_first "sig" key rest sg)
+                (peer_first "fields" key rest fields)
+          | Succ _, [] => None
+          end
+      end
+  end.
+
+(** A JSON list of strings, tail recursive (a block's list can be long). *)
+Fixpoint peer_strings_go (n : nat) (toks acc : list string) : option (list string) :=
+  match n, toks with
+  | 0, _ => Some (rev_onto acc [])
+  | Succ j, "S" :: s :: rest => peer_strings_go j rest (s :: acc)
+  | _, _ => None
+  end.
+
+peer_string_list (toks : list string) : option (list string) :=
+  match toks with
+  | "L" :: n :: rest => peer_strings_go (num n) rest []
+  | _ => None
+  end.
+
+peer_line_parts (toks : list string) : option (string * (string * list string)) :=
+  match toks with
+  | "A" :: ns :: rest =>
+      match peer_members_go (Succ (length rest)) (num ns) [] rest None None None with
+      | Some (Some ("S" :: from :: _), (Some ("S" :: sig :: _), Some fv)) =>
+          match peer_string_list fv with
+          | Some fields => Some (from, (sig, fields))
+          | None => None
+          end
+      | _ => None
+      end
+  | _ => None
+  end.
+
+(** What the shell's Yojson member reads gave: the line through the JSON
+    token binding, then its members in Soma. *)
+node_line_parts (raw : string) : option (string * (string * list string)) :=
+  match node_json_tokens raw with
+  | Some toks => peer_line_parts toks
+  | None => None
+  end.
+
 peer_raw_event (items me raw : string)
     (parts : string -> option (string * (string * list string)))
     (refused : string -> bool) : list string :=

@@ -947,16 +947,9 @@ let node_signed_restore id slot vid fields = (lookup_handle id).h_signed_restore
 let node_fail msg : bool = fail "%s" msg
 let node_remember_broadcast id height kind fields alt = (lookup_handle id).h_remember_broadcast height kind fields alt; true
 let node_peer_count id = (lookup_handle id).h_peer_count ()
-(* Raw Yojson member reads and node metadata. Soma gates the parse and
-   decides whether to verify and which event the fields carry. *)
-let node_line_parts raw =
-  try
-    let open Yojson.Safe.Util in
-    let j = Yojson.Safe.from_string raw in
-    let from = to_string (member "from" j) and sg = to_string (member "sig" j) in
-    let fields = json_strings (member "fields" j) in
-    Some (from, (sg, fields))
-  with _ -> None
+(* Node metadata for peer lines. Soma gates the parse, reads the members
+   from node_json_tokens' tokens (node.soma's node_line_parts), and decides
+   whether to verify and which event the fields carry. *)
 let node_line_item_cap () = string_of_int max_int
 let node_identity id = (lookup_handle id).h_identity
 let node_seen_refused id raw = (lookup_handle id).h_seen_refused raw
