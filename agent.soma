@@ -392,7 +392,10 @@ answered (a m : obj) (id : string) (kv : list string) : obj * list (list string)
   | Some ("mcheck" :: b :: _) =>
       if seq (kv_at kv "ok") "error" then abstain a kv
       else if seq (kv_at kv "ok") "true" then flush (enqueue a ["merge", b, kv_at kv "tree"]) m
-      else flush (enqueue a ["reject", b, append "its edits don't apply to the head: " (kv_at kv "why")]) m
+      else if seq (kv_at kv "stage") "node" then abstain a kv
+      else flush (enqueue a ["reject", b,
+             (if seq (kv_at kv "stage") "ci" then append "CI failed on the merged tree: " (kv_at kv "why")
+              else append "its edits don't apply to the head: " (kv_at kv "why"))]) m
   | Some data => flush (on_answer a m data kv) m
   | None => (a, [])
   end.

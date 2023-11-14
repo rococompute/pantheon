@@ -248,6 +248,27 @@ scenario_ci() {
   echo "ok ci: $(merged ci claude) merges, $n CI runs passed in $img"
 }
 
+# A bid that applies cleanly but whose merged tree fails CI: the leader's
+# rejection must say CI failed, not that the edits don't apply. A fake
+# ci-sandbox runs the CI command in the checkout directly, so no docker
+# image is needed, and no merge can land to make a later bid stop applying.
+scenario_cifail() {
+  init cifail 28200 term_blocks=60 max_merges=1 bid_cooldown=2 attest_window=200 || return 1
+  fake=$ROOT/cifail/fake-ci
+  cat > "$fake" <<'F'
+#!/bin/sh
+cd "$2" || exit 2
+eval "$3"
+F
+  chmod +x "$fake"
+  for a in $AGENTS; do node cifail "$a" -- --ci-sandbox "$fake" --ci 'echo "calc is broken"; exit 1' --ci-memory 1g; done
+  wait_for cifail claude 180 "a rejection for CI" sh -c "grep -q 'CI failed on the merged tree' $ROOT/cifail/claude/status.txt" || { stop cifail; return 1; }
+  sleep 2; stop cifail
+  if grep -q "edits don't apply" "$ROOT/cifail/claude/status.txt"; then echo "FAIL cifail: a CI failure was worded as don't apply"; return 1; fi
+  agree cifail claude codex grok muse && agree_files cifail claude codex grok muse || return 1
+  echo "ok cifail: a bid that applies was rejected for failing CI, in those words, and no node diverged"
+}
+
 # one agent's model is compromised (votes no on everything) or dead (silent)
 scenario_bad_model() {
   behavior=$1 port=$2
@@ -469,6 +490,7 @@ run() {
     bad-tree) scenario_bad_tree ;;
     network) scenario_network ;;
     ci) scenario_ci ;;
+    cifail) scenario_cifail ;;
     policy) scenario_policy ;;
     model) scenario_model ;;
     stuck) scenario_stuck ;;
@@ -480,7 +502,7 @@ run() {
   esac
 }
 
-ALL="happy crash equivocate double-vote silent bad-sig withhold bad-tree deny silent-model policy model stuck limit limit-cli prune epoch network ci"
+ALL="happy crash equivocate double-vote silent bad-sig withhold bad-tree deny silent-model policy model stuck limit limit-cli prune epoch network ci cifail"
 want=${*:-$ALL}
 pids=""
 for s in $want; do (run "$s" > "$ROOT/$s.result" 2>&1; echo $? > "$ROOT/$s.code") & pids="$pids $!"; done
