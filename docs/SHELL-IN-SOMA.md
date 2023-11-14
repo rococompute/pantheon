@@ -168,6 +168,19 @@ worth a note in this file rather than a workaround.
 
 ## Done so far
 
+- Step 4, status and submission: `status_output` assembles the status file
+  from raw checkout heads, divergence records and limit metadata; the only
+  shell operations read those values, convert a timestamp to local time,
+  and atomically write the text. `submission_plan` selects the ordinary
+  signed transaction and the one-time future-nonce fault's 600 extras,
+  including logging, queue/send ordering and the flood marker. Signing,
+  retry-table insertion and socket writes are small bindings; silent-mode
+  suppression is selected in Soma. Both cases use `perform_output` during
+  startup/replay and runtime, and their old `handle` branches are gone.
+  `node.proof` checks exact status bytes, limit boundaries, log truncation,
+  dispatch, flood ordering/count/range and silent sends. Remaining step 4
+  cases are broadcast, merge, llm and check; the helper record is unchanged.
+
 - Step 4, peer catch-up: `behind` now selects `CatchupPeer` in the shared
   Soma dispatcher. `catchup_plan` names the served-table write and bounded
   block reads in order; `catchup_send` selects an authenticated peer send

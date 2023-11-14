@@ -802,7 +802,16 @@ type node_handle = { h_events : unit -> string list list; h_perform : string lis
                      h_last_served : string -> string -> float option;
                      h_mark_served : string -> string -> float -> unit;
                      h_peer_exists : string -> bool;
-                     h_peer_send : string -> string list -> unit }
+                     h_peer_send : string -> string list -> unit;
+                     h_checkout_heads : unit -> (string * string) list;
+                     h_divergences : unit -> (string * string) list;
+                     h_limit_info : unit -> float * (string * (string * string));
+                     h_write_status : string -> unit;
+                     h_encode_tx : string -> string list -> string;
+                     h_track_tx : string -> unit;
+                     h_nonce_flooded : unit -> bool;
+                     h_mark_nonce_flood : unit -> unit;
+                     h_send_all : string list -> unit }
 let node_handles : (string, node_handle) Hashtbl.t = Hashtbl.create 4
 let node_counter = ref 0
 let lookup_handle id = try Hashtbl.find node_handles id with Not_found -> fail "unknown node handle %s" id
@@ -827,6 +836,17 @@ let node_last_served id who h = (lookup_handle id).h_last_served who h
 let node_mark_served id who h now = (lookup_handle id).h_mark_served who h now; true
 let node_peer_exists id who = (lookup_handle id).h_peer_exists who
 let node_peer_send id who fields = (lookup_handle id).h_peer_send who fields; true
+let node_checkout_heads id = (lookup_handle id).h_checkout_heads ()
+let node_divergences id = (lookup_handle id).h_divergences ()
+let node_limit_info id = (lookup_handle id).h_limit_info ()
+let node_local_time until =
+  let tm = Unix.localtime until in Printf.sprintf "%02d:%02d" tm.Unix.tm_hour tm.Unix.tm_min
+let node_write_status id text = (lookup_handle id).h_write_status text; true
+let node_encode_tx id nonce fields = (lookup_handle id).h_encode_tx nonce fields
+let node_track_tx id raw = (lookup_handle id).h_track_tx raw; true
+let node_nonce_flooded id = (lookup_handle id).h_nonce_flooded ()
+let node_mark_nonce_flood id = (lookup_handle id).h_mark_nonce_flood (); true
+let node_send_all id fields = (lookup_handle id).h_send_all fields; true
 let rec forever f s = forever f (f s)
 
 let node_open plan_open packed json_fn home flags =
@@ -1309,35 +1329,8 @@ let node_open plan_open packed json_fn home flags =
              (match f with _ :: h :: _ -> mine := (int_of_string h, f) :: !mine | _ -> ());
              send_consensus f
          | None -> ())
-    | "status" :: ls ->
-        let heads = List.map (fun (n, _, _, _) -> Printf.sprintf "checkout %s %s" n (git_out (rdir n) [ "rev-parse"; "--short"; "HEAD" ])) repos in
-        let bad = List.map (fun (r, why) -> Printf.sprintf "DIVERGED %s at merge %s" r why) !diverged in
-        let lim = if Unix.gettimeofday () < !limited_until then
-            [ Printf.sprintf "LIMIT %s until %s, %d model requests held: %s" !backend
-                (let tm = Unix.localtime !limited_until in Printf.sprintf "%02d:%02d" tm.Unix.tm_hour tm.Unix.tm_min)
-                (List.length !held) !limit_reason ] else [] in
-        write_file (Filename.concat home "status.txt") (String.concat "\n" (ls @ heads @ bad @ lim) ^ "\n")
     | "merge" :: r :: v :: tree :: bid :: task :: bidder :: spec :: edits ->
         apply_merge r (int_of_string v) tree bid task bidder spec (triples_of edits)
-    | "submit" :: nonce :: fields ->
-        let raw = encode_tx key me nonce fields in
-        my_txs := (Unix.gettimeofday (), raw) :: !my_txs;
-        say "sending %s" (String.concat " " (List.map (fun f -> if String.length f > 60 then String.sub f 0 60 ^ "..." else f) fields));
-        push [ "tx"; raw ];
-        broadcast_fields [ "tx"; raw ];
-        if byz = "future-nonce" && not !nonce_flood_sent then begin
-          (* docs/SECURITY-REVIEW-2.md P-5: 600 signed transactions at nonces
-             past the pool's window, sent again with this node's own *)
-          nonce_flood_sent := true;
-          say "FAULT INJECTION: flooding 600 future-nonce transactions";
-          let n = int_of_string nonce in
-          for k = 4 to 603 do
-            let raw = encode_tx key me (string_of_int (n + k)) [ "withdraw"; "0" ] in
-            my_txs := (Unix.gettimeofday (), raw) :: !my_txs;
-            push [ "tx"; raw ];
-            broadcast_fields [ "tx"; raw ]
-          done
-        end
     | "llm" :: id :: kind :: prompt :: ctx ->
         incr calls;
         if !calls > !max_calls then push [ "llm_error"; id; Printf.sprintf "model call budget of %d used up: restart with a higher --max-llm-calls" !max_calls ]
@@ -1620,6 +1613,15 @@ let node_open plan_open packed json_fn home flags =
       h_last_served = (fun who h -> Hashtbl.find_opt served (who, int_of_string h));
       h_mark_served = (fun who h now -> Hashtbl.replace served (who, int_of_string h) now);
       h_peer_exists = (fun who -> List.exists (fun p -> p.name = who) peers);
-      h_peer_send = (fun who fields -> List.iter (fun p -> if p.name = who then send_to p (wire fields)) peers) };
+      h_peer_send = (fun who fields -> List.iter (fun p -> if p.name = who then send_to p (wire fields)) peers);
+      h_checkout_heads = (fun () -> List.map (fun (n, _, _, _) -> (n, git_out (rdir n) [ "rev-parse"; "--short"; "HEAD" ])) repos);
+      h_divergences = (fun () -> !diverged);
+      h_limit_info = (fun () -> (!limited_until, (!backend, (string_of_int (List.length !held), !limit_reason))));
+      h_write_status = (fun text -> write_file (Filename.concat home "status.txt") text);
+      h_encode_tx = encode_tx key me;
+      h_track_tx = (fun raw -> my_txs := (Unix.gettimeofday (), raw) :: !my_txs);
+      h_nonce_flooded = (fun () -> !nonce_flood_sent);
+      h_mark_nonce_flood = (fun () -> nonce_flood_sent := true);
+      h_send_all = (fun fields -> let line = wire fields in List.iter (fun p -> send_to p line) peers) };
   handle_id
 
