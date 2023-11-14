@@ -131,6 +131,21 @@ safe_path (p : string) : bool :=
   && negb (contains "//" w) && negb (contains "/./" w) && negb (contains "/.git/" w) && negb (contains "/.GIT/" w)
   && negb (git_meta_component p).
 
+(** The shell's path policy, moved without changing its accepted paths.
+    Unlike the market's [safe_path], it permits ".." inside a filename,
+    rejects NUL, and rejects every ASCII case spelling of a .git component. *)
+Fixpoint shell_path_chars (p : string) : bool :=
+  match p with
+  | SNil => true
+  | SCons c r => negb (nat_of_ascii c =? 0) && negb (nat_of_ascii c =? 92) && shell_path_chars r
+  end.
+
+shell_safe_path (p : string) : bool :=
+  let w := append "/" (append p "/") in
+  negb (seq p "") && negb (starts "/" p) && shell_path_chars p
+  && negb (contains "//" w) && negb (contains "/./" w) && negb (contains "/../" w)
+  && negb (contains "/.git/" (lower w)) && negb (git_meta_component p).
+
 (** one character a spec, note or reason may hold: printable, a tab or a
     newline, or a byte of a UTF-8 character; not NUL, DEL or another control
     character (docs/SECURITY-REVIEW-2.md P-17) *)

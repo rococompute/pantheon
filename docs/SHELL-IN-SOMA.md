@@ -71,6 +71,17 @@ worth a note in this file rather than a workaround.
   (`flatten_reply`, `json_in_reply`, `shallow_json`), then
   `chain_len`/`iterate`. I/O stays in the shell.
 
+- Shell path validation: the OCaml `safe_path` logic is deleted and all its
+  callers use `shell_safe_path` in `util.soma`, passed through `run` and
+  stored in a ref like the edit helpers. The existing Soma `safe_path`
+  agrees on the edits script's cases, but differs on other paths: it rejects
+  filenames containing `..`, permits NUL, and misses mixed-case `.git`.
+  `shell_safe_path` preserves the shell's exact policy without changing the
+  market's policy: only whole components are forbidden, ASCII case is ignored
+  for git metadata, and NUL and backslash are refused.
+  Next: the JSON helpers (`flatten_reply`, `json_in_reply`, `shallow_json`),
+  then `chain_len`/`iterate`. I/O stays in the shell.
+
 ## How a bid is judged
 
 - `soma build main.soma` builds, and `test/edits.sh` and `test/e2e.sh` pass

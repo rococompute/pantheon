@@ -155,15 +155,9 @@ let lines p = if Sys.file_exists p then String.split_on_char '\n' (read_file p) 
 (* A .plan's open items are computed in Soma: [plan_open] in util.soma,
    handed to [run] (and on to [node]) as an argument (docs/SHELL-IN-SOMA.md). *)
 
-(* a path an edit may touch: also checked by the market, checked again here.
-   Nothing in a .git directory: writing there means running code. Nor a
-   .gitattributes or .gitmodules in any component, in any case: they change
-   how git reads every later edit. *)
-let safe_path p =
-  p <> "" && p.[0] <> '/' && not (String.contains p '\\') && not (String.contains p '\000')
-  && List.for_all (fun x -> x <> "" && x <> "." && x <> ".."
-                            && not (List.mem (String.lowercase_ascii x) [ ".git"; ".gitattributes"; ".gitmodules" ]))
-       (String.split_on_char '/' p)
+(* Path validation is Soma's [shell_safe_path], installed by [run]. *)
+let soma_safe_path : (string -> bool) ref = ref (fun _ -> failwith "safe_path: not set by run")
+let safe_path p = !soma_safe_path p
 
 (* ---------- processes and git ---------- *)
 
@@ -721,7 +715,8 @@ let json_in_reply text =
       else (try Some (Yojson.Safe.from_string raw) with _ -> None)
   | _ -> None
 
-let rec run init step checkpoint restore plan_open replace_all edit_once contains =
+let rec run init step checkpoint restore plan_open replace_all edit_once contains safe_path =
+  soma_safe_path := safe_path;
   soma_edit_once := edit_once;
   soma_contains := contains;
   let argv = Array.to_list Sys.argv |> List.tl in
