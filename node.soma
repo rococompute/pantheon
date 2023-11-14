@@ -200,6 +200,7 @@ Inductive output_request :=
 | CatchupPeer (who first : string)
 | WriteStatus (lines : list string)
 | SubmitTransaction (nonce : string) (fields : list string)
+| Broadcast (fields : list string)
 | LegacyOutput (out : list string).
 
 plan_output (out : list string) : output_request :=
@@ -212,6 +213,7 @@ plan_output (out : list string) : output_request :=
   | ["behind", who, first] => CatchupPeer who first
   | "status" :: lines => WriteStatus lines
   | "submit" :: nonce :: fields => SubmitTransaction nonce fields
+  | "broadcast" :: fields => Broadcast fields
   | _ => LegacyOutput out
   end.
 
@@ -222,7 +224,11 @@ Inductive output_action :=
 | RememberPeer (who first : string) (now : float)
 | ReadPeerBlock (who : string) (height : nat)
 | PublishTransaction (nonce : string) (fields : list string) (message : option string)
-| MarkNonceFlood.
+| MarkNonceFlood
+| RememberVote (slot vid : string) (fields : list string)
+| RememberBroadcast (height kind : string) (fields alt : list string)
+| SendPeer (index : string) (fields : list string)
+| SendEveryone (fields : list string).
 
 Fixpoint draw_link (n : nat) (secret : string) : string :=
   match n with
@@ -305,6 +311,85 @@ submission_plan (byz : string) (flooded : bool) (nonce : string) (fields : list 
 submission_send (byz raw : string) : option (list string) :=
   if seq byz "silent" then None else Some ["tx", raw].
 
+(** A vote is guarded only when it names a kind, height, round, valid-round
+    and value id. [done] is a block, not a vote, so it is never guarded. *)
+broadcast_subject (fields : list string) : option (string * string * string * string) :=
+  match fields with
+  | k :: ht :: r :: _ :: vid :: _ => if seq k "done" then None else Some (k, ht, r, vid)
+  | _ => None
+  end.
+
+broadcast_key (k ht r : string) : string :=
+  append k (append "/" (append ht (append "/" r))).
+
+broadcast_repeat_log (k slot : string) : string :=
+  append "already signed a " (append k (append " at " (append slot ": sending that one again"))).
+
+broadcast_refuse_log (k slot v : string) : string :=
+  append "refusing to sign a second " (append k (append " at " (append slot (append ": already signed " v)))).
+
+broadcast_counted (k : string) : bool := if seq k "prevote" then true else seq k "precommit".
+
+(** Equivocation and double-voting are per peer; silence sends nothing;
+    everything else is one message to every peer. *)
+broadcast_mode (byz : string) (fields : list string) : string :=
+  match fields with
+  | "proposal" :: _ :: _ :: _ :: _ :: _ =>
+      if seq byz "equivocate" then "each" else
+      if seq byz "silent" then "none" else "all"
+  | k :: _ :: _ :: _ :: _ :: _ =>
+      if seq byz "double-vote" && broadcast_counted k then "each" else
+      if seq byz "silent" then "none" else "all"
+  | _ => if seq byz "silent" then "none" else "all"
+  end.
+
+broadcast_alt (byz : string) (fields : list string) : list string :=
+  if seq byz "equivocate" then
+    match fields with
+    | "proposal" :: h :: r :: vr :: _ =>
+        ["proposal", h, r, vr, hash_list ["equivocation", h, r], "equivocation", h, r]
+    | _ => fields
+    end
+  else
+    match fields with
+    | k :: h :: r :: vr :: _ :: rest => k :: h :: r :: vr :: "" :: rest
+    | _ => fields
+    end.
+
+broadcast_deliver (byz : string) (peers : nat) (fields : list string) : list output_action :=
+  let mode := broadcast_mode byz fields in
+  let alt := if seq mode "each" then broadcast_alt byz fields else fields in
+  let noted := match fields with
+    | _ :: ht :: _ => if seq mode "none" then [] else [RememberBroadcast ht mode fields alt]
+    | _ => [] end in
+  let sent :=
+    if seq mode "none" then []
+    else if seq mode "each" then
+      map (fun i => SendPeer (show i) (if i =? 0 then fields else alt)) (List.seq 0 peers)
+    else [SendEveryone fields] in
+  noted ++ sent.
+
+(** An honest node never signs two values for one kind, height and round.
+    A different ask resends the stored vote, or refuses when there is none. *)
+broadcast_plan (byz : string) (peers : nat) (fields : list string)
+    (subject : option (string * string * string * string))
+    (prior_vid : option string) (prior_msg : option (list string)) : list output_action :=
+  match subject with
+  | None => broadcast_deliver byz peers fields
+  | Some (k, ht, r, vid) =>
+      let slot := broadcast_key k ht r in
+      match prior_vid with
+      | None => RememberVote slot vid fields :: broadcast_deliver byz peers fields
+      | Some v =>
+          if negb (seq v vid) && seq byz "" then
+            match prior_msg with
+            | Some saved => LogAction (broadcast_repeat_log k slot) :: broadcast_deliver byz peers saved
+            | None => [LogAction (broadcast_refuse_log k slot v)]
+            end
+          else broadcast_deliver byz peers fields
+      end
+  end.
+
 carry_output_action (h : node_t) (action : output_action) : bool :=
   match action with
   | LogAction text => node_log h text
@@ -319,6 +404,10 @@ carry_output_action (h : node_t) (action : output_action) : bool :=
       node_push h ["tx", raw] &&
       (match submission_send (fst (node_draw h)) raw with
        | None => true | Some fields => node_send_all h fields end)
+  | RememberVote slot vid fields => node_remember_vote h slot vid fields
+  | RememberBroadcast height kind fields alt => node_remember_broadcast h height kind fields alt
+  | SendPeer index fields => node_send_peer h index fields
+  | SendEveryone fields => node_send_all h fields
   | ReadPeerBlock who k =>
       match catchup_send who k (node_block h (show k)) with
       | None => true
@@ -361,6 +450,16 @@ perform_output (h : node_t) (out : list string) : bool :=
       node_write_status h (status_output lines heads bad limited backend clock held reason)
   | SubmitTransaction nonce fields =>
       carry_output_actions h (submission_plan (fst (node_draw h)) (node_nonce_flooded h) nonce fields)
+  | Broadcast fields =>
+      let (byz, _) := node_draw h in
+      let n := num (node_peer_count h) in
+      match broadcast_subject fields with
+      | None => carry_output_actions h (broadcast_plan byz n fields None None None)
+      | Some (k, ht, r, vid) =>
+          let slot := broadcast_key k ht r in
+          carry_output_actions h (broadcast_plan byz n fields (Some (k, ht, r, vid))
+            (node_signed_vote h slot) (node_signed_body h slot))
+      end
   | LegacyOutput fields => perform h fields
   end.
 
