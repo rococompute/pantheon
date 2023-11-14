@@ -1224,7 +1224,7 @@ let node_open packed home flags =
        what the check or the bid's CI printed (docs/SECURITY-REVIEW-2.md P-6) *)
     (* a repository this node doesn't check: node.soma makes it a result
        that is this node's own (check_unchecked) *)
-    if List.mem r !no_check || List.mem r my_excluded then (rm_out (); (try Sys.remove ef with _ -> ()); push [ "check_unchecked"; id; "this node doesn't check " ^ r ^ (if List.mem r my_excluded then " (outside its scope: its genesis part excludes it)" else " (--no-check " ^ r ^ ")") ]) else
+    if List.mem r !no_check || List.mem r my_excluded then (rm_out (); (try Sys.remove ef with _ -> ()); push [ "check_unchecked_repo"; id; r; string_of_bool (List.mem r my_excluded) ]) else
     start_job self_exe [ "check"; rdir r; head; ef; out ] ~stdin_text:"" ~env:(Unix.environment ())
       ~on_done:(fun t ->
         (* a failure, the trimmed tree, or a CI run: node.soma's check_apply_events *)

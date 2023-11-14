@@ -1250,6 +1250,16 @@ check_result_event (id : string) (ok : bool) (tree why stage : string) : list st
     genesis scope): a failure that is this node's own, so it abstains. *)
 check_unchecked_event (id why : string) : list string := check_result_event id false "" why "node".
 
+(** The shell reports only the repository and scope membership. The reason
+    and the resulting abstention event are selected here. *)
+check_unchecked_reason (repo : string) (excluded : bool) : string :=
+  append "this node doesn't check " (append repo
+    (if excluded then " (outside its scope: its genesis part excludes it)"
+     else append " (--no-check " (append repo ")"))).
+
+check_unchecked_repo_event (id repo : string) (excluded : bool) : list string :=
+  check_unchecked_event id (check_unchecked_reason repo excluded).
+
 push_check_result (h : node_t) (id : string) (ok : bool) (tree why stage : string) : bool :=
   io_push h (check_result_event id ok tree why stage).
 
@@ -1325,6 +1335,8 @@ job_output_events (h : node_t) (st : node_state) (ev : list string) : node_state
           (st, flat_map (model_output_events h) (node_job_complete h id result))
       end
   | ["check_unchecked", id, why] => (st, [check_unchecked_event id why])
+  | ["check_unchecked_repo", id, repo, excluded] =>
+      (st, [check_unchecked_repo_event id repo (seq excluded "true")])
   | _ => (st, model_output_events h ev)
   end.
 

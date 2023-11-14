@@ -230,6 +230,14 @@ separate work; this status does not mark `.plan`.
 
 ## Done so far
 
+- Step 5, unchecked repository reasons: the shell reports a raw
+  `check_unchecked_repo` fact with the repository and scope membership.
+  Soma's `check_unchecked_reason` chooses the scope or `--no-check`
+  explanation and `check_unchecked_repo_event` constructs the abstention.
+  `test/check-unchecked-reason.sh` checks exact reasons, result fields and
+  the live fact interpreter on deterministic inputs. The native check
+  eligibility gate and process orchestration remain; this is partial work.
+
 - Step 5, held-request event construction: taking held requests returns raw
   typed tuples through the storage bindings. Soma's `held_request_event`
   and `held_one_events` construct `llm_release` events, preserving prompt
