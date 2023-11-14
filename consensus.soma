@@ -47,10 +47,6 @@ with_lockv (c : consensus_state) (v : list string) : consensus_state :=
   {| me := me c; nodes := nodes c; height := height c; round := round c; step := step c;
      lockr := lockr c; lockv := v; validr := validr c; validv := validv c; log := log c; once := once c; block_ms := block_ms c |}.
 
-with_validv (c : consensus_state) (v : list string) : consensus_state :=
-  {| me := me c; nodes := nodes c; height := height c; round := round c; step := step c;
-     lockr := lockr c; lockv := lockv c; validr := validr c; validv := v; log := log c; once := once c; block_ms := block_ms c |}.
-
 faulty (c : consensus_state) : nat := (length (nodes c) - 1) / 3.
 quorum (c : consensus_state) : nat := length (nodes c) - faulty c.
 weak (c : consensus_state) : nat := faulty c + 1.
@@ -149,7 +145,7 @@ r_lock (c : consensus_state) (valid : list string -> bool) : step_result :=
   | Some p =>
       if (1 <=? step c) && negb (fired c flag) && (quorum c <=? senders c Prevote r (vid p)) && valid (value p) then
         let c := mark c flag in
-        let c := with_validv ({| c with validr := r + 1 |}) (value p) in
+        let c := {| c with validr := r + 1; validv := value p |} in
         if step c =? 1 then Some (vote (with_lockv (with_lockr c (r + 1)) (value p)) Precommit (vid p) 2)
         else Some (c, [])
       else None
