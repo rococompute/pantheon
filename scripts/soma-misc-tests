@@ -1,0 +1,34 @@
+#!/bin/sh
+# Run from a built Soma checkout. BIN follows test-suite's convention and
+# must name the candidate toolchain, never the installed host toolchain.
+# All matching tests run, including untracked/new tests in a bid's tree.
+set -eu
+root=$(pwd -P)
+BIN=${BIN:-$root/_build/install/default/bin}
+BIN=$(cd "$BIN" && pwd -P)
+[ -x "$BIN/soma" ] || { echo "soma-misc-tests: no candidate soma in $BIN" >&2; exit 1; }
+export BIN
+export PATH="$BIN:$PATH"
+limit=${SOMA_TEST_TIMEOUT:-120}
+scratch=$(mktemp -d)
+trap 'rm -rf "$scratch"' EXIT
+trap 'exit 130' INT
+trap 'exit 143' HUP TERM
+count=0
+for script in "$root"/test-suite/misc/soma_*.sh; do
+  [ -f "$script" ] || continue
+  count=$((count + 1))
+  # A fresh cache per test and per invocation, even when the caller already
+  # has SOMA_CACHE set. Do not let one test's warmed cache mask another's bug.
+  cache=$scratch/$count
+  mkdir "$cache"
+  echo "soma-misc-tests: ${script##*/}"
+  status=0
+  SOMA_CACHE="$cache" timeout "$limit" bash "$script" || status=$?
+  if [ "$status" -ne 0 ]; then
+    echo "soma-misc-tests: ${script##*/} failed (exit $status)" >&2
+    exit "$status"
+  fi
+done
+[ "$count" -gt 0 ] || { echo 'soma-misc-tests: no soma_*.sh tests found' >&2; exit 1; }
+echo "soma-misc-tests: passed $count tests"
