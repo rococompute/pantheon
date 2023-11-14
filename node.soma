@@ -195,6 +195,7 @@ Inductive output_request :=
 | WriteLog (text : string)
 | RevealLink (term : string)
 | DecidedBlock (height : string) (txs : list string)
+| SetHeight (height : string)
 | LegacyOutput (out : list string).
 
 plan_output (out : list string) : output_request :=
@@ -203,6 +204,7 @@ plan_output (out : list string) : output_request :=
   | ["log", text] => WriteLog text
   | ["reveal", t] => RevealLink t
   | "decided" :: h :: txs => DecidedBlock h txs
+  | ["height", h] => SetHeight h
   | _ => LegacyOutput out
   end.
 
@@ -255,6 +257,7 @@ perform_output (h : node_t) (out : list string) : bool :=
       carry_output_actions h (reveal_plan byz limit secret term)
   | DecidedBlock height txs =>
       carry_output_actions h (decided_plan height txs (node_block h height))
+  | SetHeight height => node_height h height
   | LegacyOutput fields => perform h fields
   end.
 

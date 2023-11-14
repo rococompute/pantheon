@@ -784,7 +784,8 @@ type node_handle = { h_events : unit -> string list list; h_perform : string lis
                      h_timer : string -> string list -> unit; h_log : string -> unit;
                      h_push : string list -> unit; h_draw : string * (string * string);
                      h_block : string -> string list option;
-                     h_store : string -> string list -> unit }
+                     h_store : string -> string list -> unit;
+                     h_height : string -> unit }
 let node_handles : (string, node_handle) Hashtbl.t = Hashtbl.create 4
 let node_counter = ref 0
 let lookup_handle id = try Hashtbl.find node_handles id with Not_found -> fail "unknown node handle %s" id
@@ -801,6 +802,7 @@ let node_push id ev = (lookup_handle id).h_push ev; true
 let node_draw id = (lookup_handle id).h_draw
 let node_block id height = (lookup_handle id).h_block height
 let node_store id height txs = (lookup_handle id).h_store height txs; true
+let node_height id h = (lookup_handle id).h_height h; true
 let rec forever f s = forever f (f s)
 
 let node_open plan_open packed json_fn home flags =
@@ -1280,9 +1282,6 @@ let node_open plan_open packed json_fn home flags =
              (match f with _ :: h :: _ -> mine := (int_of_string h, f) :: !mine | _ -> ());
              send_consensus f
          | None -> ())
-    | [ "height"; h ] ->
-        height := int_of_string h;
-        mine := List.filter (fun (mh, _) -> mh >= !height) !mine
     | [ "behind"; who; h ] ->
         let h = int_of_string h and now = Unix.gettimeofday () in
         (match Hashtbl.find_opt served (who, h) with
@@ -1598,6 +1597,9 @@ let node_open plan_open packed json_fn home flags =
       h_block = (fun h -> Hashtbl.find_opt blocks (int_of_string h));
       h_store = (fun h txs -> let h = int_of_string h in
         Hashtbl.replace blocks h txs;
-        append_line_synced blocks_path (Yojson.Safe.to_string (`Assoc [ ("h", `Int h); ("txs", strings_json txs) ]))) };
+        append_line_synced blocks_path (Yojson.Safe.to_string (`Assoc [ ("h", `Int h); ("txs", strings_json txs) ])));
+      h_height = (fun h -> let h = int_of_string h in
+        height := h;
+        mine := List.filter (fun (mh, _) -> mh >= h) !mine) };
   handle_id
 
