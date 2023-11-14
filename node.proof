@@ -34,6 +34,17 @@ c
   chunks_len ["ab", "cde"] = 5 /\ chunks_len [] = 0.
 Proof. repeat split; reflexivity. Qed.
 
+Example peer_buffers_live_in_node_state :
+  peer_buffer empty_node "7" = [] /\
+  pbufs (peer_remember empty_node "7" ["tw"]) = [("7", ["tw"])] /\
+  peer_buffer (peer_remember (peer_remember empty_node "7" ["tw"]) "8" ["x"]) "7" = ["tw"] /\
+  peer_buffer (peer_remember (peer_remember empty_node "7" ["tw"]) "7" ["three"]) "7" = ["three"] /\
+  pbufs (peer_remember (peer_remember empty_node "7" ["tw"]) "7" []) = [] /\
+  peer_buffer (peer_forget (peer_remember empty_node "7" ["tw"]) "7") "7" = [] /\
+  pbufs (peer_forget (peer_remember (peer_remember empty_node "7" ["tw"]) "8" ["x"]) "8") =
+    [("7", ["tw"])].
+Proof. repeat split; reflexivity. Qed.
+
 Example connection_admission_and_line_cap_edges :
   admit_decision_of 15 63 = AdmitNew /\ admit_decision_of 16 0 = AdmitRefuse /\
   admit_decision_of 0 64 = AdmitEvict /\ admit_decision_of 16 64 = AdmitRefuse /\

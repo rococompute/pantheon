@@ -4,22 +4,39 @@
 Import util shell consensus market agent.
 From Stdlib Require Import Ascii.
 
-Record node_state := { cons : consensus_state; mkt : obj; ag : obj; pool : list string; live : bool }.
+Record node_state := { cons : consensus_state; mkt : obj; ag : obj; pool : list string; live : bool;
+                       pbufs : list (string * list string) }.
 
 with_cons (c : node_state) (v : consensus_state) : node_state :=
-  {| cons := v; mkt := mkt c; ag := ag c; pool := pool c; live := live c |}.
+  {| cons := v; mkt := mkt c; ag := ag c; pool := pool c; live := live c; pbufs := pbufs c |}.
 
 with_mkt (c : node_state) (v : obj) : node_state :=
-  {| cons := cons c; mkt := v; ag := ag c; pool := pool c; live := live c |}.
+  {| cons := cons c; mkt := v; ag := ag c; pool := pool c; live := live c; pbufs := pbufs c |}.
 
 with_ag (c : node_state) (v : obj) : node_state :=
-  {| cons := cons c; mkt := mkt c; ag := v; pool := pool c; live := live c |}.
+  {| cons := cons c; mkt := mkt c; ag := v; pool := pool c; live := live c; pbufs := pbufs c |}.
 
 with_pool (c : node_state) (v : list string) : node_state :=
-  {| cons := cons c; mkt := mkt c; ag := ag c; pool := v; live := live c |}.
+  {| cons := cons c; mkt := mkt c; ag := ag c; pool := v; live := live c; pbufs := pbufs c |}.
 
 with_live (c : node_state) (v : bool) : node_state :=
-  {| cons := cons c; mkt := mkt c; ag := ag c; pool := pool c; live := v |}.
+  {| cons := cons c; mkt := mkt c; ag := ag c; pool := pool c; live := v; pbufs := pbufs c |}.
+
+with_pbufs (c : node_state) (v : list (string * list string)) : node_state :=
+  {| cons := cons c; mkt := mkt c; ag := ag c; pool := pool c; live := live c; pbufs := v |}.
+
+(** A peer connection's buffered read chunks live here, keyed by the
+    connection id the shell names: the shell only reads the bytes. *)
+peer_buffer (c : node_state) (cid : string) : list string := get_or [] cid (pbufs c).
+
+peer_forget (c : node_state) (cid : string) : node_state :=
+  with_pbufs c (filter (fun kv => negb (seq cid (fst kv))) (pbufs c)).
+
+peer_remember (c : node_state) (cid : string) (kept : list string) : node_state :=
+  match kept with
+  | [] => peer_forget c cid
+  | _ => with_pbufs c (put cid kept (pbufs c))
+  end.
 
 (** A snapshot from a completed height may remain if the process crashed
     after syncing blocks.log. Never roll the replayed chain back. *)
@@ -27,7 +44,8 @@ restore_cons (n : node_state) (c : consensus_state) : node_state :=
   if height c =? height (cons n) then with_cons n c else n.
 
 empty_node : node_state :=
-  {| cons := new_consensus "" [] 1; mkt := new_market []; ag := new_agent ""; pool := []; live := false |}.
+  {| cons := new_consensus "" [] 1; mkt := new_market []; ag := new_agent ""; pool := []; live := false;
+     pbufs := [] |}.
 
 (** How far ahead of an agent's next nonce the pool looks, and how many of
     one agent's transactions it keeps (docs/SECURITY-REVIEW-2.md P-5). A block
@@ -1700,13 +1718,15 @@ run_event (h : node_t) (st : node_state) (ev : list string) : node_state :=
       | AdmitRefuse => if node_conn_admit h oid "refuse" "" then st else with_live st (live st)
       | AdmitNew => if node_conn_admit h oid "new" "" then st else with_live st (live st)
       | AdmitEvict =>
-          if node_conn_admit h oid "evict" (oldest_conn (node_conns h))
-          then st else with_live st (live st)
+          let target := oldest_conn (node_conns h) in
+          if node_conn_admit h oid "evict" target
+          then peer_forget st target else with_live st (live st)
       end
   | ["conn_buffer", cid, len] =>
       if buffer_over (num len) (num (node_line_limit h)) then
-        if node_conn_close h cid then st else with_live st (live st)
+        if node_conn_close h cid then peer_forget st cid else with_live st (live st)
       else st
+  | ["peer_closed", cid] => peer_forget st cid
   | ["check_failed", id, t] =>
       if perform_check_failed h id t then st else with_live st (live st)
   | ["ci_done", id, tree, memory, runner, t] =>
@@ -1720,12 +1740,13 @@ run_event (h : node_t) (st : node_state) (ev : list string) : node_state :=
       | None => if io_log h (append "ignoring malformed " path) then st else with_live st (live st)
       end
   | ["peer_bytes", cid, chunk] =>
-      let parsed := peer_feed (node_conn_buffer h cid) chunk (node_line_limit h) in
-      if node_conn_store_buffer h cid (peer_kept parsed) && queue_lines h (peer_lines parsed) then
+      let parsed := peer_feed (peer_buffer st cid) chunk (node_line_limit h) in
+      let st := peer_remember st cid (peer_kept parsed) in
+      if queue_lines h (peer_lines parsed) then
         if peer_over parsed then
-          if node_conn_close h cid then st else with_live st (live st)
+          if node_conn_close h cid then peer_forget st cid else with_live st (live st)
         else st
-      else st
+      else with_live st (live st)
   | ["job_bytes", id, chunk] =>
       let (kept, over) := job_feed (node_job_buffer h id) chunk
                             (num (node_job_output_limit tt)) (num job_keep_text) in
