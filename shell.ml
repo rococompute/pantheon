@@ -63,16 +63,8 @@ let tx_bytes agent nonce fields =
   String.concat "\x00" [ "tx"; !chain_id; agent; nonce; Yojson.Safe.to_string (strings_json fields) ]
 
 
-(* A signed transaction's I/O: market.soma's decode_tx decides (the caps,
-   the bounded scan, the nonce, the signature's verdict). *)
-let tx_parts raw =
-  try
-    let j = Yojson.Safe.from_string raw in
-    let open Yojson.Safe.Util in
-    let agent = to_string (member "agent" j) and nonce = to_string (member "nonce" j) in
-    let fields = json_strings (member "fields" j) and sg = to_string (member "sig" j) in
-    Some (agent, (nonce, (fields, sg)))
-  with _ -> None
+(* A signed transaction's signature I/O: market.soma reads JSON tokens
+   and decides the caps, bounded scan, members, nonce and verdict. *)
 let tx_verify agent nonce fields sg =
   match Hashtbl.find_opt pubkeys agent with
   | Some key -> (try verify key (tx_bytes agent nonce fields) sg with _ -> false)
