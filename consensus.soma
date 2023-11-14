@@ -268,10 +268,9 @@ kind_of (s : string) : option kind :=
 receive (c : consensus_state) (from : string) (fields : list string) : consensus_state * list (list string) :=
   match fields with
   | k :: h :: r :: vround :: id :: v =>
-      match kind_of k with
-      | None => (c, [])
-      | Some kd' =>
-          let m := {| kd := kd'; frm := from; mh := num h; mr := num r; vr := num vround; vid := id; value := v |} in
+      match kind_of k, num_opt h, num_opt r, num_opt vround with
+      | Some kd', Some h', Some r', Some vr' =>
+          let m := {| kd := kd'; frm := from; mh := h'; mr := r'; vr := vr'; vid := id; value := v |} in
           let same := filter (fun x => kind_eq (kd x) kd' && seq (frm x) from && (mh x =? mh m) && (mr x =? mr m)) (log c) in
           if mh m <? height c then
             (if kind_eq kd' Done then (c, []) else (c, [["behind", from, show (mh m)]]))
@@ -279,6 +278,7 @@ receive (c : consensus_state) (from : string) (fields : list string) : consensus
           else if existsb (fun x => seq (vid x) id) same || (2 <=? length same) then (c, [])
           else if (kind_eq kd' Proposal || kind_eq kd' Done) && negb (seq id (hash_list v)) then (c, [])
           else (with_log c (firstn 4000 (m :: log c)), [])
+      | _, _, _, _ => (c, [])
       end
   | _ => (c, [])
   end.
@@ -287,11 +287,15 @@ receive (c : consensus_state) (from : string) (fields : list string) : consensus
 timeout (c : consensus_state) (fields : list string) (getv : list string) : consensus_state * list (list string) :=
   match fields with
   | name :: h :: r :: _ =>
-      let same := (num h =? height c) && (num r =? round c) in
-      if seq name "propose" && same && (step c =? 0) then vote c Prevote "" 1
-      else if seq name "prevote" && same && (step c =? 1) then vote c Precommit "" 2
-      else if seq name "precommit" && same then start_round c (round c + 1) getv
-      else if seq name "commit" && (num h =? height c) && (round c =? 0) && (step c =? 0) then start_round c 0 getv
-      else (c, [])
+      match num_opt h, num_opt r with
+      | Some h', Some r' =>
+          let same := (h' =? height c) && (r' =? round c) in
+          if seq name "propose" && same && (step c =? 0) then vote c Prevote "" 1
+          else if seq name "prevote" && same && (step c =? 1) then vote c Precommit "" 2
+          else if seq name "precommit" && same then start_round c (round c + 1) getv
+          else if seq name "commit" && (h' =? height c) && (round c =? 0) && (step c =? 0) then start_round c 0 getv
+          else (c, [])
+      | _, _ => (c, [])
+      end
   | _ => (c, [])
   end.

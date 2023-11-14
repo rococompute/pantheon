@@ -1,5 +1,5 @@
 (** Helpers that the consensus, the market and the agent share. *)
-From Stdlib Require Import Ascii.
+From Stdlib Require Import Ascii DecimalString.
 
 (** An object is a record whose fields are looked up by name, each an [Any].
     It keeps the state machines short: reading a field casts it to the type
@@ -44,6 +44,13 @@ Fixpoint digits (s : string) (acc : nat) : nat :=
 
 (** a decimal number; anything that isn't one reads as some number, never fails *)
 num (s : string) : nat := digits s 0.
+
+(** A nonempty decimal number from an untrusted message. *)
+num_opt (s : string) : option nat :=
+  match s with
+  | SNil => None
+  | _ => match NilEmpty.uint_of_string s with Some n => Some (Nat.of_uint n) | None => None end
+  end.
 
 show (n : nat) : string := to_string n.
 
