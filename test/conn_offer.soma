@@ -1,0 +1,38 @@
+(** Fixed connection-offer counts and decisions. No running node, no sockets. *)
+Import util shell node.
+From Stdlib Require ExtrOcamlNatInt.
+Extract Inlined Constant Nat.div => "(fun a b -> if b = 0 then 0 else a / b)".
+Extract Inlined Constant Nat.modulo => "(fun a b -> if b = 0 then a else a mod b)".
+Extract Inlined Constant Stdlib.Strings.String.length => "String.length".
+Extract Inlined Constant Stdlib.Strings.String.get =>
+  "(fun n s -> if n < String.length s then Some (String.unsafe_get s n) else None)".
+Extract Inlined Constant Stdlib.Strings.String.substring =>
+  "(fun n m s -> let l = String.length s in if n >= l then """" else String.sub s n (min m (l - n)))".
+
+check (label : string) (ok : bool) : string := append (if ok then "ok " else "FAIL ") label.
+
+is_new (d : admit_decision) : bool := match d with AdmitNew => true | _ => false end.
+is_refuse (d : admit_decision) : bool := match d with AdmitRefuse => true | _ => false end.
+is_evict (d : admit_decision) : bool := match d with AdmitEvict => true | _ => false end.
+
+counts_are (host : string) (hosts : list string) (same total : nat) : bool :=
+  let (s, t) := conn_offer_counts host hosts in (s =? same) && (t =? total).
+
+checks : list string := [
+  check "no connections" (counts_are "1.2.3.4" [] 0 0 && is_new (conn_offer_decision "1.2.3.4" [])),
+  check "same host counted, others not"
+    (counts_are "a" ["a", "b", "a", "c"] 2 4),
+  check "fifteen from one host is admitted"
+    (is_new (conn_offer_decision "a" (repeat "a" 15))),
+  check "sixteenth from one host is refused"
+    (is_refuse (conn_offer_decision "a" (repeat "a" 16))),
+  check "sixty-three in all is admitted"
+    (is_new (conn_offer_decision "z" (repeat "b" 63))),
+  check "sixty-four in all evicts"
+    (is_evict (conn_offer_decision "z" (repeat "b" 64))),
+  check "the host cap comes before the total cap"
+    (is_refuse (conn_offer_decision "a" (repeat "a" 16 ++ repeat "b" 48))),
+  check "a host that is a prefix is a different host"
+    (counts_are "10.0.0.1" ["10.0.0.11", "10.0.0.1"] 1 2)
+].
+main := print_lines checks.

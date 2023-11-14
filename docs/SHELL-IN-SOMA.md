@@ -230,6 +230,15 @@ separate work; this status does not mark `.plan`.
 
 ## Done so far
 
+- Step 5, connection counts: an accepted socket's `conn_offer` event
+  carries its host and the hosts of the connections held at that moment;
+  Soma's `conn_offer_counts` counts how many share the host and how many
+  there are, and `conn_offer_decision` hands those to `admit_decision_of`.
+  The shell no longer counts connections: it lists hosts, holds the
+  socket, and carries the mode out. The counts are taken at accept time,
+  as before. `test/conn-offer.sh` checks fixed host lists at and past
+  both caps, with no running node.
+
 - Step 5, a check's result event: `check_result_event` chooses the
   `check_result` event's fields in Soma (ok "true", "error" for a failure
   at this node's own stage "node", "false" for the bid's), and

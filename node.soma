@@ -1715,6 +1715,17 @@ oldest_conn (l : list (string * float)) : string :=
 
 buffer_over (len limit : nat) : bool := limit <? len.
 
+(** An offered socket's counts, from the host it came from and the hosts
+    of the connections held when it was accepted (the shell lists them; it
+    no longer counts): how many share its host, and how many there are.
+    At most 64 connections are held, so these are small numbers. *)
+conn_offer_counts (host : string) (hosts : list string) : nat * nat :=
+  (length (filter (fun x => seq x host) hosts), length hosts).
+
+(** The event the offer becomes: what [admit_decision_of] decides on. *)
+conn_offer_decision (host : string) (hosts : list string) : admit_decision :=
+  let (same, total) := conn_offer_counts host hosts in admit_decision_of same total.
+
 
 (** ---- Step 5, bytes into lines, in Soma ----
     A connection's buffer is its read chunks, in order, never joined
@@ -1922,8 +1933,8 @@ run_event (h : node_t) (st : node_state) (ev : list string) : node_state :=
         let (s, outs) := step st (line_event from fields) in
         if carry_all h (cons s) (order_effects (line_event from fields) st s outs) then s else st
       else st
-  | ["conn_offer", oid, same, total] =>
-      match admit_decision_of (num same) (num total) with
+  | "conn_offer" :: oid :: host :: hosts =>
+      match conn_offer_decision host hosts with
       | AdmitRefuse => if node_conn_admit h oid "refuse" "" then st else with_live st (live st)
       | AdmitNew => if node_conn_admit h oid "new" "" then st else with_live st (live st)
       | AdmitEvict =>

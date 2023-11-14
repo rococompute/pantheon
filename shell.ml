@@ -1357,9 +1357,9 @@ let node_open packed home flags =
               let oid = !conn_counter in
               incr conn_counter;
               pending_conns := (oid, c, host) :: !pending_conns;
-              push [ "conn_offer"; string_of_int oid;
-                     string_of_int (List.length (List.filter (fun x -> x.host = host) !conns));
-                     string_of_int (List.length !conns) ])
+              (* the hosts of the connections held now: Soma counts them
+                 (node.soma's conn_offer_counts) and decides *)
+              push ("conn_offer" :: string_of_int oid :: host :: List.map (fun x -> x.host) !conns))
       r;
     let buf = Bytes.create 65536 in
     conns := List.filter (fun c ->

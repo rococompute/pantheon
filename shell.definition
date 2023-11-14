@@ -170,7 +170,9 @@ node_token : unit -> string.
 node_float_text : float -> string.
 
 (** Connection admission and the buffered-line cap are Soma's
-    (node.soma admit_decision_of, buffer_over): an offered socket the
+    (node.soma admit_decision_of, buffer_over; the per-host and total
+    counts are conn_offer_counts, over the hosts the shell lists in the
+    conn_offer event): an offered socket the
     shell is holding, admitted in the mode Soma names (closing the
     named connection when evicting), the live connections and their
     last-activity times, closing one, and the line byte cap as a
