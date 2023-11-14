@@ -201,6 +201,7 @@ Inductive output_request :=
 | WriteStatus (lines : list string)
 | SubmitTransaction (nonce : string) (fields : list string)
 | Broadcast (fields : list string)
+| CheckRequest (id repo head : string) (edits : list string)
 | LegacyOutput (out : list string).
 
 plan_output (out : list string) : output_request :=
@@ -214,6 +215,7 @@ plan_output (out : list string) : output_request :=
   | "status" :: lines => WriteStatus lines
   | "submit" :: nonce :: fields => SubmitTransaction nonce fields
   | "broadcast" :: fields => Broadcast fields
+  | "check" :: id :: r :: head :: edits => CheckRequest id r head edits
   | _ => LegacyOutput out
   end.
 
@@ -460,6 +462,7 @@ perform_output (h : node_t) (out : list string) : bool :=
           carry_output_actions h (broadcast_plan byz n fields (Some (k, ht, r, vid))
             (node_signed_vote h slot) (node_signed_body h slot))
       end
+  | CheckRequest id r head edits => node_run_check h id r head edits
   | LegacyOutput fields => perform h fields
   end.
 

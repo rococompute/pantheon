@@ -78,6 +78,9 @@ node_nonce_flooded : string -> bool.
 node_mark_nonce_flood : string -> bool.
 node_send_all : string -> list string -> bool.
 
+(** The CI check job; Soma selects it, the shell runs the process. *)
+node_run_check : string -> string -> string -> string -> list string -> bool.
+
 (** Vote table, resend memory and socket writes. Soma chooses the message. *)
 node_signed_vote : string -> string -> option string.
 node_signed_body : string -> string -> option (list string).
