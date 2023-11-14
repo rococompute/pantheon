@@ -230,6 +230,17 @@ separate work; this status does not mark `.plan`.
 
 ## Done so far
 
+- Step 5, local inbox acquisition: Soma's `poll_inbox` decides the strict
+  one-second interval and exact `.json` suffix, preserves directory order,
+  maps read failures to empty text, and interprets a typed plan that queues
+  `inbox_file` before removing each file. The timestamp is stored before
+  listing and the shared turn clock is reused; dial/resend still precede
+  inbox work, which precedes timers and select. Native bindings only read
+  metadata, stamp, list, read and remove. New `test/inbox-poll.sh` checks
+  fixed inputs without a running node. The replay-count getter also reads
+  the count after Soma boot replay, fixing the existing crash test's
+  missing replay announcement (the old handle captured zero at creation).
+
 - Step 5, transaction members: `tx_parts` and `tx_parts_of` in
   market.soma read agent, nonce, fields and signature from the shared JSON
   token binding. Each of the four member lookups spends one token budget

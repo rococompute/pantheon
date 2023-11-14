@@ -1998,6 +1998,47 @@ select_wait (now : float) (queue_empty : bool) (timers : list (float * list stri
     if PrimFloat.ltb gap 0%float then 0%float else gap
   else 0%float.
 
+(** Local inbox acquisition. The selected names stay in readdir order;
+    stamp before listing, and enqueue each fact before removing its file. *)
+inbox_poll_due (now last : float) : bool :=
+  PrimFloat.ltb 1%float (PrimFloat.sub now last).
+
+inbox_json_name (name : string) : bool :=
+  let n := slen name in
+  (5 <=? n) && seq (substr name (n - 5) 5) ".json".
+
+inbox_paths (directory : string) (names : list string) : list string :=
+  map (fun name => append directory (append "/" name)) (filter inbox_json_name names).
+
+Inductive inbox_file_action :=
+| InboxQueue (path content : string)
+| InboxRemove (path : string).
+
+inbox_file_plan (path : string) (read : option string) : list inbox_file_action :=
+  [InboxQueue path (match read with Some text => text | None => "" end), InboxRemove path].
+
+Fixpoint perform_inbox_actions (h : node_t) (actions : list inbox_file_action) : bool :=
+  match actions with
+  | [] => true
+  | InboxQueue path content :: rest =>
+      io_push h ["inbox_file", path, content] && perform_inbox_actions h rest
+  | InboxRemove path :: rest => fs_remove path && perform_inbox_actions h rest
+  end.
+
+Fixpoint read_inbox_paths (h : node_t) (paths : list string) : bool :=
+  match paths with
+  | [] => true
+  | path :: rest =>
+      perform_inbox_actions h (inbox_file_plan path (fs_read_text path)) && read_inbox_paths h rest
+  end.
+
+poll_inbox (h : node_t) : bool :=
+  let (last, directory) := node_inbox_state h in
+  let now := node_turn_now h in
+  if inbox_poll_due now last then
+    node_inbox_stamp h now && read_inbox_paths h (inbox_paths directory (fs_dir_entries directory))
+  else true.
+
 (** Stop overdue jobs, keep the timers that have not fired, and queue the
     due ones. Dial, resend and the inbox have already run, so their events
     stay ahead of these, and both run before select. *)
@@ -2012,7 +2053,7 @@ clock_arm (h : node_t) : bool :=
     deadlines and due timers, then one select. *)
 node_tick (h : node_t) (st : node_state) : node_state :=
   let st := run_events h st (release_held h) in
-  if node_poll_prep h && clock_arm h then
+  if node_poll_prep h && poll_inbox h && clock_arm h then
     run_events h st (job_outputs h (events h (select_wait (node_turn_now h) (node_queue_empty h) (node_timers h))))
   else st.
 
