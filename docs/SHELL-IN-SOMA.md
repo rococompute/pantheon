@@ -230,6 +230,22 @@ separate work; this status does not mark `.plan`.
 
 ## Done so far
 
+- Step 5, part: job deadlines and which timers fire are Soma's.
+  `job_should_expire` is the old strict test (elapsed greater than the
+  limit, and not already stopped). `timers_due` keeps a deadline at or
+  before the turn's clock and leaves the rest in list order; `sort_timers`
+  orders the due ones as the shell's sort did (earliest deadline, then the
+  event list, equal events in the stored order). `select_wait` is the old
+  fifth-of-a-second cap, the gap to the next timer, or no wait when the
+  queue already has an event. `node_tick` dials, resends and reads the
+  inbox, arms that clock, then selects. The shell samples one clock
+  reading for the turn, stores the timers and jobs, and signals only the
+  job Soma names. Select and reading bytes stay in the shell.
+  `test/clock-arm.sh` checks these on fixed inputs, with no running node.
+  `node.proof` checks the same edges and proves the due timers are exactly
+  the partition, that a stopped job is not stopped again, and that a
+  queued event does not wait. Step 5 is not marked complete.
+
 - Step 4, llm: Codex output selection is Soma's `codex_reply_of`: a
   process failure wins over the output file, a successful file read keeps
   its exact bytes (including empty), and a missing file gives the existing

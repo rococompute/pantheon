@@ -1,0 +1,66 @@
+(** Job deadlines, timer order and the select wait. No running node. *)
+Import util shell node.
+From Stdlib Require ExtrOcamlNatInt.
+Extract Inlined Constant Nat.div => "(fun a b -> if b = 0 then 0 else a / b)".
+Extract Inlined Constant Nat.modulo => "(fun a b -> if b = 0 then a else a mod b)".
+
+Extract Inlined Constant Stdlib.Strings.String.length => "String.length".
+Extract Inlined Constant Stdlib.Strings.String.get =>
+  "(fun n s -> if n < String.length s then Some (String.unsafe_get s n) else None)".
+Extract Inlined Constant Stdlib.Strings.String.substring =>
+  "(fun n m s -> let l = String.length s in if n >= l then """" else String.sub s n (min m (l - n)))".
+
+check (label : string) (ok : bool) : string := append (if ok then "ok " else "FAIL ") label.
+
+float_eq (a b : float) : bool := negb (PrimFloat.ltb a b) && negb (PrimFloat.ltb b a).
+
+Fixpoint eq_evs (a b : list (list string)) : bool :=
+  match a, b with
+  | [], [] => true
+  | x :: r, y :: s => eq_strs x y && eq_evs r s
+  | _, _ => false
+  end.
+
+soon : float := PrimFloat.add 100%float 0.125%float.
+late : float := PrimFloat.add 100%float 0.5%float.
+
+stored : list (float * list string) :=
+  [(10%float, ["timeout", "b"]), (10%float, ["timeout", "a"]), (12%float, ["later"]),
+   (10%float, ["timeout"]), (9%float, ["early"]), (10%float, ["timeout", "a"])].
+
+due_pair : list (float * list string) * list (float * list string) := timers_due 10%float stored.
+
+checks : list string := [
+  check "at the limit is not overdue" (negb (job_should_expire 10%float 0%float 10%float false)),
+  check "past the limit is overdue" (job_should_expire 11%float 0%float 10%float false),
+  check "already stopped is not overdue again" (negb (job_should_expire 11%float 0%float 10%float true)),
+  check "before the limit is not overdue" (negb (job_should_expire 9%float 0%float 10%float false)),
+  check "clock behind the start is not overdue" (negb (job_should_expire 0%float 5%float 10%float false)),
+  check "deadline at now is due and a later one stays" (
+    eq_evs (timer_events (fst (timers_due 10%float [(10%float, ["now"]), (11%float, ["later"]), (9%float, ["early"])])))
+      [["now"], ["early"]] &&
+    eq_evs (timer_events (snd (timers_due 10%float [(10%float, ["now"]), (11%float, ["later"]), (9%float, ["early"])])))
+      [["later"]]),
+  check "empty timer list" (eq_evs (timer_events (fst (timers_due 1%float []))) [] &&
+    eq_evs (timer_events (snd (timers_due 1%float []))) []),
+  check "due and later keep stored order" (
+    eq_evs (timer_events (fst due_pair))
+      [["timeout", "b"], ["timeout", "a"], ["timeout"], ["early"], ["timeout", "a"]] &&
+    eq_evs (timer_events (snd due_pair)) [["later"]]),
+  check "earliest deadline, then event order, equal events stay in stored order" (
+    eq_evs (timer_events (sort_timers (fst due_pair)))
+      [["early"], ["timeout"], ["timeout", "a"], ["timeout", "a"], ["timeout", "b"]]),
+  check "shorter event comes before a longer prefix" (
+    match strs_ord ["timeout"] ["timeout", "commit"] with OrdLt => true | _ => false end &&
+    match str_ord "a" "b" with OrdLt => true | _ => false end &&
+    match str_ord "aa" "aa" with OrdEq => true | _ => false end &&
+    match str_ord "" "a" with OrdLt => true | _ => false end),
+  check "empty queue and no timers waits the cap" (float_eq (select_wait 100%float true []) select_cap),
+  check "a queued event does not wait" (float_eq (select_wait 100%float false [(101%float, ["t"])]) 0%float),
+  check "a timer past the cap still waits the cap" (float_eq (select_wait 100%float true [(101%float, ["t"])]) select_cap),
+  check "a sooner timer waits that gap" (float_eq (select_wait 100%float true [(soon, ["soon"])]) 0.125%float),
+  check "a deadline already past waits nothing" (float_eq (select_wait 100%float true [(99%float, ["past"])]) 0%float),
+  check "two timers, the sooner gap wins" (float_eq (select_wait 100%float true [(late, ["late"]), (soon, ["soon"])]) 0.125%float)
+].
+
+main := print_lines checks.
