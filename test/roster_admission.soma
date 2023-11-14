@@ -1,0 +1,61 @@
+(** Admission consumes agreed records, never local observations. This tests
+    the typed transaction boundary; live certificate transport is pending. *)
+Import util shell market.
+From Stdlib Require ExtrOcamlNatInt.
+
+check (b : bool) (s : string) : string := append (if b then "ok " else "FAIL ") s.
+Fixpoint same (xs ys : list string) : bool :=
+  match xs, ys with [] , [] => true | x :: xs, y :: ys => seq x y && same xs ys | _, _ => false end.
+g7 : list string := ["a", "b", "c", "d", "e", "f", "g"].
+g4 : list string := ["a", "b", "c", "d"].
+certs : list (list string) := [["a", "b", "c"], ["a", "b", "c"], ["a", "b", "c"]].
+policy (g : list string) (minimum delay absent : nat) : roster_policy :=
+  {| roster_genesis := g; roster_minimum := minimum; roster_delay := delay; roster_absent_blocks := absent |}.
+p7 : roster_policy := policy g7 4 1 3.
+p4 : roster_policy := policy g4 3 1 3.
+request (p : roster_policy) (cs : list (string * bool * nat)) (pcs : list (list string))
+    (h : nat) (sender : string) (fields : list string) : option (list (string * bool * nat)) :=
+  commit_roster_fields p cs pcs h "a" sender fields.
+accepted (r : option (list (string * bool * nat))) : bool := match r with Some _ => true | _ => false end.
+result (r : option (list (string * bool * nat))) : list (string * bool * nat) := match r with Some cs => cs | None => [] end.
+left7 : list (string * bool * nat) := result (request p7 [] certs 10 "a" ["roster", "leave", "g"]).
+left4 : list (string * bool * nat) := result (request p4 [] certs 10 "a" ["roster", "leave", "d"]).
+joined4 : list (string * bool * nat) := result (request p4 left4 [] 12 "d" ["roster", "join", "d"]).
+
+main := print_lines [
+ check (accepted (request p7 [] certs 10 "a" ["roster", "leave", "g"])) "leave at threshold",
+ check (negb (accepted (request p7 [] (firstn 2 certs) 10 "a" ["roster", "leave", "g"]))) "threshold minus one waits",
+ check (negb (accepted (request p7 [] (["g"] :: certs) 10 "a" ["roster", "leave", "g"]))) "latest heartbeat resets",
+ check (negb (accepted (request p7 [] [] 10 "a" ["roster", "leave", "g"]))) "no history cannot remove",
+ check (negb (accepted (request (policy g7 4 1 0) [] certs 10 "a" ["roster", "leave", "g"]))) "zero absence threshold disabled",
+ check (negb (accepted (request p7 [] certs 10 "b" ["roster", "leave", "g"]))) "only leader removes",
+ check (negb (roster_intent_allowed p7 [] certs 10 "outsider" "outsider" (LeaveRoster "g"))) "outsider cannot remove even as leader",
+ check (negb (accepted (request (policy g4 4 1 3) [] certs 10 "a" ["roster", "leave", "d"]))) "minimum roster enforced",
+ check (negb (accepted (request (policy ["a"] 0 1 1) [] [[]] 10 "a" ["roster", "leave", "a"]))) "minimum zero still keeps one",
+ check (negb (accepted (request (policy g7 6 1 3) left7 certs 10 "a" ["roster", "leave", "f"]))) "pending removals share minimum",
+ check (negb (accepted (request p7 left7 certs 10 "a" ["roster", "leave", "g"]))) "duplicate pending removal refused",
+ check (negb (accepted (request (policy g7 4 0 3) left7 certs 10 "a" ["roster", "leave", "f"]))) "earlier activation refused",
+ check (negb (accepted (request p7 left7 certs 12 "a" ["roster", "leave", "g"]))) "cannot remove already removed member",
+ check (negb (accepted (request p4 [] [] 10 "d" ["roster", "join", "d"]))) "cannot join while still active",
+ check (negb (accepted (request p4 left4 [] 11 "d" ["roster", "join", "d"]))) "cannot join before pending removal",
+ check (negb (accepted (request p4 left4 [] 12 "outsider" ["roster", "join", "outsider"]))) "non-genesis join refused",
+ check (negb (accepted (request p4 left4 [] 12 "a" ["roster", "join", "d"]))) "cannot join on another member's behalf",
+ check (accepted (request p4 left4 [] 12 "d" ["roster", "join", "d"])) "removed member joins itself",
+ check (negb (accepted (request p4 joined4 [] 13 "d" ["roster", "join", "d"]))) "duplicate pending join refused",
+ check (negb (accepted (request p4 [] certs 10 "a" ["roster", "leave", "d", "extra"]))) "exact leave arity",
+ check (negb (accepted (request p4 left4 [] 12 "d" ["roster", "join"]))) "exact join arity",
+ check (negb (accepted (request p4 [] certs 10 "a" ["roster", "kick", "d"]))) "unknown operation refused",
+ check (same (roster_at g7 left7 10) g7) "seven unchanged at commit",
+ check (same (roster_at g7 left7 11) g7) "seven until effective height",
+ check (same (roster_at g7 left7 12) ["a", "b", "c", "d", "e", "f"]) "six at effective height",
+ check ((quorum_at g7 left7 11 =? 5) && (quorum_at g7 left7 12 =? 5) &&
+        (reject_quorum_at g7 left7 11 =? 3) && (reject_quorum_at g7 left7 12 =? 2)) "seven to six thresholds",
+ check ((quorum_at g4 left4 11 =? 3) && (quorum_at g4 left4 12 =? 3) &&
+        (reject_quorum_at g4 left4 11 =? 2) && (reject_quorum_at g4 left4 12 =? 1)) "four to three thresholds",
+ check (same (roster_at g4 (result (request (policy g4 3 0 3) [] certs 10 "a" ["roster", "leave", "d"])) 11) ["a", "b", "c"])
+       "zero delay takes next height",
+ check (same (roster_at g4 joined4 13) ["a", "b", "c"]) "rejoin waits for effective height",
+ check (same (roster_at g4 joined4 14) g4) "rejoin restores four",
+ check ((quorum_at g4 joined4 14 =? 3) && (reject_quorum_at g4 joined4 14 =? 2)) "rejoin thresholds",
+ check ((length joined4 =? 2) && (length left4 =? 1)) "admitted schedule appends exactly once"
+].

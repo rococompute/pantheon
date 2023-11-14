@@ -187,3 +187,19 @@ two each, for eight), or one machine must be allowed to halt the market.
 - **Prometheus metrics and deploy units.** The Go version's systemd units
   (`reference/go/deploy/` up to commit `4a6eab3`) apply with small changes.
 - **Binary files.** Edits are text. A binary change is reported as skipped.
+
+M-3 transaction admission is available as the typed, pure
+`commit_roster_fields` boundary. It reuses the delayed schedule above and accepts
+exactly `roster leave NAME` from the current term leader, or `roster join NAME`
+from that genesis member itself. Leaves require the configured consecutive
+agreed absences; the projected roster includes queued changes and must retain
+at least `max 1 min_roster` members. Duplicate pending operations and an
+activation earlier than an already scheduled change are refused. A join waits
+until removal has taken effect and cannot add a name outside genesis. Tests
+cover admission, 7-to-6 and 4-to-3 thresholds, and a delayed rejoin.
+
+The caller must authenticate the sender, supply a previously validated schedule
+and **agreed** previous-block certificates, then commit the admitted transaction
+through consensus. This helper is not yet dispatched by `market.apply`: live
+certificate transport and roster switching remain pending. No local connection
+view or arbitrary transaction may populate the agreed heartbeat history.

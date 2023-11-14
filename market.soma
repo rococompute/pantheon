@@ -418,6 +418,63 @@ quorum_at (genesis : list string) (changes : list (string * bool * nat)) (h : na
 reject_quorum_at (genesis : list string) (changes : list (string * bool * nat)) (h : nat) : nat :=
   reject_quorum (length (roster_at genesis changes h)).
 
+(** Admission for committed membership transactions. The caller supplies only
+    agreed, newest-first previous-block certificates, an authenticated sender,
+    and a schedule already validated in commit order. No local peer view is
+    evidence. This pure boundary does not yet publish or consume wire records. *)
+Record roster_policy := {
+  roster_genesis : list string;
+  roster_minimum : nat;
+  roster_delay : nat;
+  roster_absent_blocks : nat
+}.
+Inductive roster_intent := LeaveRoster (target : string) | JoinRoster (target : string).
+
+roster_intent_of (fields : list string) : option roster_intent :=
+  match fields with
+  | ["roster", "leave", target] => Some (LeaveRoster target)
+  | ["roster", "join", target] => Some (JoinRoster target)
+  | _ => None
+  end.
+
+roster_intent_allowed (policy : roster_policy) (changes : list (string * bool * nat))
+    (certificates : list (list string)) (h : nat) (term_leader sender : string)
+    (intent : roster_intent) : bool :=
+  let g := roster_genesis policy in
+  let now := roster_at g changes h in
+  let e := effective_height h (roster_delay policy) in
+  let projected := roster_at g changes e in
+  let target := match intent with LeaveRoster a | JoinRoster a => a end in
+  (mem target g && mem sender g) &&
+  forallb (fun ch => let '(_, _, previous) := ch in previous <=? e) changes &&
+  match intent with
+  | LeaveRoster a =>
+      seq sender term_leader && mem sender now && mem a now && mem a projected &&
+      removal_due (roster_absent_blocks policy) a certificates &&
+      (Nat.max 1 (roster_minimum policy) <=? length (apply_change projected a false))
+  | JoinRoster a => seq sender a && negb (mem a now) && negb (mem a projected)
+  end.
+
+admit_roster_intent (policy : roster_policy) (changes : list (string * bool * nat))
+    (certificates : list (list string)) (h : nat) (term_leader sender : string)
+    (intent : roster_intent) : option (string * bool * nat) :=
+  if roster_intent_allowed policy changes certificates h term_leader sender intent then
+    let e := effective_height h (roster_delay policy) in
+    Some (match intent with LeaveRoster a => (a, false, e) | JoinRoster a => (a, true, e) end)
+  else None.
+
+(** Append exactly one admitted transaction. Duplicate pending leaves/joins
+    are refused by the projected roster; earlier activation is refused so
+    a second removal cannot invalidate a later change's minimum check. *)
+commit_roster_fields (policy : roster_policy) (changes : list (string * bool * nat))
+    (certificates : list (list string)) (h : nat) (term_leader sender : string)
+    (fields : list string) : option (list (string * bool * nat)) :=
+  match roster_intent_of fields with
+  | None => None
+  | Some intent => match admit_roster_intent policy changes certificates h term_leader sender intent with
+                   | None => None | Some change => Some (changes ++ [change]) end
+  end.
+
 (** the roster a merge's quorums count: the agents whose scope has the bid's
     repository (all of them unless genesis excludes some) *)
 merge_n (m : obj) (p : proposal) : nat :=

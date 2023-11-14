@@ -867,3 +867,68 @@ Example roster_four_to_three_and_back :
    reject_quorum_at ["a1", "a2", "a3", "a4"] [("a4", false, 10), ("a4", true, 20)] 20) = (3, 2) /\
   roster_at ["a1", "a2", "a3"] [("a2", true, 5)] 6 = ["a1", "a2", "a3"].
 Proof. repeat split; reflexivity. Qed.
+
+(** M-3 admission checks, reusing the merged delayed schedule. *)
+Theorem admitted_roster_intent_is_authorized : forall p cs certs h l s intent change,
+  admit_roster_intent p cs certs h l s intent = Some change ->
+  roster_intent_allowed p cs certs h l s intent = true.
+Proof.
+  intros p cs certs h l s intent change H. unfold admit_roster_intent in H.
+  destruct (roster_intent_allowed p cs certs h l s intent) eqn:E; [reflexivity|discriminate H].
+Qed.
+
+Theorem admitted_roster_intent_keeps_commit_roster : forall p cs certs h l s intent change,
+  admit_roster_intent p cs certs h l s intent = Some change ->
+  roster_at (roster_genesis p) (cs ++ [change]) h = roster_at (roster_genesis p) cs h.
+Proof.
+  intros p cs certs h l s intent change H. unfold admit_roster_intent in H.
+  destruct (roster_intent_allowed p cs certs h l s intent); [|discriminate H].
+  destruct intent; inversion H; subst change; apply roster_unchanged_at_commit.
+Qed.
+
+Theorem admitted_roster_intent_keeps_commit_quorums : forall p cs certs h l s intent change,
+  admit_roster_intent p cs certs h l s intent = Some change ->
+  quorum_at (roster_genesis p) (cs ++ [change]) h = quorum_at (roster_genesis p) cs h /\
+  reject_quorum_at (roster_genesis p) (cs ++ [change]) h = reject_quorum_at (roster_genesis p) cs h.
+Proof.
+  intros p cs certs h l s intent change H. unfold quorum_at, reject_quorum_at.
+  rewrite (admitted_roster_intent_keeps_commit_roster p cs certs h l s intent change H).
+  split; reflexivity.
+Qed.
+
+Theorem admitted_leave_respects_minimum : forall p cs certs h l s a change,
+  admit_roster_intent p cs certs h l s (LeaveRoster a) = Some change ->
+  Nat.max 1 (roster_minimum p) <= length (apply_change
+    (roster_at (roster_genesis p) cs (effective_height h (roster_delay p))) a false).
+Proof.
+  intros p cs certs h l s a change H.
+  apply admitted_roster_intent_is_authorized in H.
+  unfold roster_intent_allowed in H. cbv zeta iota in H.
+  apply Bool.andb_true_iff in H. destruct H as [_ H].
+  apply Bool.andb_true_iff in H. destruct H as [_ H].
+  apply Nat.leb_le. exact H.
+Qed.
+
+Theorem admitted_join_is_self_signed : forall p cs certs h l s a change,
+  admit_roster_intent p cs certs h l s (JoinRoster a) = Some change -> s = a.
+Proof.
+  intros p cs certs h l s a change H.
+  apply admitted_roster_intent_is_authorized in H.
+  unfold roster_intent_allowed in H. cbv zeta iota in H.
+  apply Bool.andb_true_iff in H. destruct H as [_ H].
+  apply Bool.andb_true_iff in H. destruct H as [H _].
+  apply Bool.andb_true_iff in H. destruct H as [H _].
+  unfold seq in H. apply Stdlib.Strings.String.eqb_eq. exact H.
+Qed.
+
+Theorem admitted_target_is_genesis_member : forall p cs certs h l s intent change,
+  admit_roster_intent p cs certs h l s intent = Some change ->
+  mem (match intent with LeaveRoster a | JoinRoster a => a end) (roster_genesis p) = true.
+Proof.
+  intros p cs certs h l s intent change H.
+  apply admitted_roster_intent_is_authorized in H.
+  unfold roster_intent_allowed in H. cbv zeta in H.
+  apply Bool.andb_true_iff in H. destruct H as [H _].
+  apply Bool.andb_true_iff in H. destruct H as [H _].
+  apply Bool.andb_true_iff in H. exact (proj1 H).
+Qed.
