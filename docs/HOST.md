@@ -141,4 +141,6 @@ or their ancestors, including absent leaves below a symlinked directory. This
 also applies to the scripts emitted by `HOST_DRY=DIR`; inspect those scripts
 before deployment. Run setup with the network stopped and no concurrent
 changes to its directories: the preflight is not a filesystem race barrier.
-The same holds for `services` and `sessions`.
+The same holds for `services` and `sessions`: both check destination ancestors,
+including the system unit and sysctl directories, before privileged writes.
+`services` also checks the node account’s `.ssh` destination before installing it.

@@ -309,17 +309,19 @@ cmd_services() {
 
 services_script() {
   printf '#!/bin/sh\nset -eu\nR=${HOST_ROOT:-}\n'
+  path_guard
   cat <<'ROOT'
-# Refuse symlinked or missing destinations before any root write: a
-# node-owned symlink must never be followed by root.
-refuse_link() { [ ! -L "$1" ] || { echo "host: refusing symlinked path $1" >&2; exit 1; }; }
+# Check ancestors as well as leaves before any root write.
+refuse_link() { reject_links "$1"; }
+refuse_link "$R/etc/systemd/system"
+refuse_link "$R/var/lib/pantheon/.ssh"
 refuse_link "$R/var/lib/pantheon"
 refuse_link "$R/var/lib/pantheon/inbox.json"
 refuse_link "$R/var/lib/pantheon/goal.txt"
 ROOT
   for a in $AGENTS; do
-    printf '[ -d "$R/var/lib/pantheon/net/%s" ] || { echo "host: no node home for %s under /var/lib/pantheon/net (make the network there first)" >&2; exit 1; }\n' "$a" "$a"
     printf 'refuse_link "$R/var/lib/pantheon/net/%s"\n' "$a"
+    printf '[ -d "$R/var/lib/pantheon/net/%s" ] || { echo "host: no node home for %s under /var/lib/pantheon/net (make the network there first)" >&2; exit 1; }\n' "$a" "$a"
     for f in key.json run.sh backend.sh; do
       printf 'refuse_link "$R/var/lib/pantheon/net/%s/%s"\n' "$a" "$f"
     done
@@ -438,8 +440,9 @@ cmd_sessions() {
 
 sessions_script() {
   printf '#!/bin/sh\nset -eu\nR=${HOST_ROOT:-}\n'
+  path_guard
   cat <<'ROOT'
-refuse_link() { [ ! -L "$1" ] || { echo "host: refusing symlinked path $1" >&2; exit 1; }; }
+refuse_link() { reject_links "$1"; }
 refuse() { echo "host: $*" >&2; exit 1; }
 ROOT
   for path in "$DIPS" "$INBOXES" "$SVC" "$SVC/.ci-lock" "$DIPS/sessions" /etc/sysctl.d/60-pantheon-tiocsti.conf; do
