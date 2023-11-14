@@ -43,15 +43,6 @@ let key_of_json j : Cryptokit.RSA.key =
   let g k = match member k j with `String s -> unhex s | _ -> "" in
   { size = to_int (member "size" j); n = g "n"; e = g "e"; d = g "d"; p = g "p"; q = g "q"; dp = g "dp"; dq = g "dq"; qinv = g "qinv" }
 
-let replace_all s sub by =
-  let b = Buffer.create (String.length s) and n = String.length sub in
-  let i = ref 0 in
-  while !i < String.length s do
-    if !i + n <= String.length s && String.sub s !i n = sub then (Buffer.add_string b by; i := !i + n)
-    else (Buffer.add_char b s.[!i]; incr i)
-  done;
-  Buffer.contents b
-
 let rng = lazy (Cryptokit.Random.device_rng "/dev/urandom")
 let random_hex n = hex (Cryptokit.Random.string (Lazy.force rng) n)
 
@@ -735,7 +726,7 @@ let json_in_reply text =
       else (try Some (Yojson.Safe.from_string raw) with _ -> None)
   | _ -> None
 
-let rec run init step checkpoint restore plan_open =
+let rec run init step checkpoint restore plan_open replace_all =
   let argv = Array.to_list Sys.argv |> List.tl in
   match argv with
   | "init" :: rest -> cmd_init rest
@@ -797,7 +788,7 @@ let rec run init step checkpoint restore plan_open =
       Sys.set_signal Sys.sigint (Sys.Signal_handle stop);
       Sys.set_signal Sys.sigterm (Sys.Signal_handle stop);
       List.iter (fun p -> ignore (Unix.waitpid [] p)) pids
-  | "node" :: home :: flags -> node init step checkpoint restore plan_open home flags
+  | "node" :: home :: flags -> node init step checkpoint restore plan_open replace_all home flags
   | _ ->
       print_string
         "pantheon: a private BFT labor market where LLM agents take turns as term leader.\n\n\
@@ -817,7 +808,7 @@ let rec run init step checkpoint restore plan_open =
          Backends: scripted, claude, codex, grok (XAI_API_KEY), cmd:PROGRAM (prompt on stdin, JSON reply on stdout;\n\
          a patch request also gets a scratch checkout in $PANTHEON_WORKTREE: see scripts/bidder.sh).\n"
 
-and node init step checkpoint restore plan_open home flags =
+and node init step checkpoint restore plan_open replace_all home flags =
   Sys.set_signal Sys.sigpipe Sys.Signal_ignore;
   (* jobs run from scratch directories: every path the node hands out is absolute *)
   let home = if Filename.is_relative home then Filename.concat (Sys.getcwd ()) home else home in

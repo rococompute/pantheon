@@ -234,3 +234,24 @@ open_line (l : string) : bool :=
     or dropped, "#" lines are notes, and a date-only line starts a day. *)
 plan_open (text : string) : list string :=
   firstn 60 (map truncate_line (filter open_line (map trim (split_lines text)))).
+
+(** Literal, left-to-right, non-overlapping replacement for shell prompts.
+    Fuel decreases even when a match consumes several characters. The shell
+    only uses nonempty placeholders; an empty pattern leaves the text alone. *)
+Fixpoint drop_str (n : nat) (s : string) : string :=
+  match n, s with
+  | Succ n', SCons _ r => drop_str n' r
+  | _, _ => s
+  end.
+
+Fixpoint replace_all_go (fuel : nat) (s sub replacement : string) : string :=
+  match fuel, s with
+  | Succ fuel', SCons c r =>
+      if starts sub s
+      then append replacement (replace_all_go fuel' (drop_str (slen sub) s) sub replacement)
+      else SCons c (replace_all_go fuel' r sub replacement)
+  | _, _ => s
+  end.
+
+replace_all (s sub replacement : string) : string :=
+  if seq sub "" then s else replace_all_go (slen s) s sub replacement.

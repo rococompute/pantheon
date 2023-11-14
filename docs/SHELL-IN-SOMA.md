@@ -40,11 +40,20 @@ worth a note in this file rather than a workaround.
   passed in `main.soma`) and hands it to `node`, so the `pantheon plan`
   command and the node loop's plan prompts both use the Soma version.
   Still in `shell.ml` from piece 1, next in roughly this order:
-  `replace_all`, the edit matching (`matches_at`, `positions`,
+  the edit matching (`matches_at`, `positions`,
   `replace_at`, and `apply_edits`' pure logic), `safe_path`'s OCaml copy
   (Soma already has one in `util.soma`), the JSON helpers
   (`flatten_reply`, `json_in_reply`, `shallow_json`), and
   `chain_len`/`iterate` (over the `sha256` binding).
+
+- `replace_all`: now in `util.soma`, with `drop_str` and a bounded scan.
+  The OCaml implementation is deleted; `main.soma` passes the Soma helper
+  through `shell.definition`'s `run` argument to the node's prompt expansion.
+  Replacement remains literal, left-to-right and non-overlapping; inserted
+  text is not scanned again. All shell patterns are nonempty (an empty
+  pattern now leaves the text alone, rather than looping forever).
+  Next: edit matching (`matches_at`, `positions`, `replace_at`, and
+  `apply_edits`' pure logic). I/O stays in the shell.
 
 ## How a bid is judged
 
