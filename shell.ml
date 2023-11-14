@@ -63,28 +63,12 @@ let tx_bytes agent nonce fields =
 
 let all_digits s = s <> "" && String.length s < 18 && String.for_all (fun c -> c >= '0' && c <= '9') s
 
-(* JSON nested at most [max] deep, by one cheap pass that skips strings.
-   Messages and transactions are flat (an object of strings and one list of
-   strings), and they're parsed before their signature can be checked: a
-   peer with no key could otherwise send a line of "[[[[..." that takes
-   gigabytes to parse. *)
-(* Optional structural budget bounds object fields and array entries before
-   allocating a JSON tree. Colons, commas and containers each spend one. *)
+(* Soma's bounded JSON scan, installed by [run]. Decimal limits keep
+   extracted nat abstract at the OCaml boundary. *)
+let soma_shallow_json : (string -> string -> string -> bool) ref =
+  ref (fun _ _ _ -> failwith "shallow_json: not set by run")
 let shallow_json ?(max = 4) ?(max_items = max_int) s =
-  let items = ref 0 in
-  let spend () = incr items; !items <= max_items in
-  let depth = ref 0 and ok = ref true and in_str = ref false and esc = ref false in
-  String.iter (fun c ->
-      if !ok then
-        if !in_str then (if !esc then esc := false else if c = '\\' then esc := true else if c = '"' then in_str := false)
-        else match c with
-          | '"' -> in_str := true
-          | '[' | '{' -> incr depth; if !depth > max || not (spend ()) then ok := false
-          | ':' | ',' -> if not (spend ()) then ok := false
-          | ']' | '}' -> decr depth
-          | _ -> ())
-    s;
-  !ok
+  !soma_shallow_json (string_of_int max) (string_of_int max_items) s
 
 let decode_tx raw =
   if String.length raw > max_tx_bytes || not (shallow_json raw) then []
@@ -715,7 +699,8 @@ let json_in_reply text =
       else (try Some (Yojson.Safe.from_string raw) with _ -> None)
   | _ -> None
 
-let rec run init step checkpoint restore plan_open replace_all edit_once contains safe_path =
+let rec run init step checkpoint restore plan_open replace_all edit_once contains safe_path shallow_json =
+  soma_shallow_json := shallow_json;
   soma_safe_path := safe_path;
   soma_edit_once := edit_once;
   soma_contains := contains;
