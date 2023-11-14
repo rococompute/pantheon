@@ -69,3 +69,23 @@ Example shallow_json_caps : shallow_json "1" "10" "[1,2]" = true /\ shallow_json
   /\ shallow_json "4" "2" "[1,2,3]" = false /\ shallow_json "1" "10" "[""[[""]" = true
   /\ shallow_json "1" "10" "[""\""[[""]" = true /\ shallow_json "1" "10" "" = true.
 Proof. repeat split; reflexivity. Qed.
+
+(** The actual product sent to node_open: project each callback and use it
+    on pure inputs, including failures and asymmetric contains arguments. *)
+Example packed_node_helpers_work :
+  let '(edit, has, path, replace) := pack_helpers node_helpers in
+  edit "abc" "b" "X" = Some "aXc" /\
+  edit "aaa" "aa" "X" = None /\
+  edit "abc" "z" "X" = None /\
+  has "bc" "abc" = true /\ has "abc" "bc" = false /\
+  path "src/a..b" = true /\ path "../escape" = false /\
+  path "sub/.GiT/config" = false /\
+  replace "aaa" "aa" "b" = "ba" /\ replace "abc" "" "X" = "abc".
+Proof. repeat split; reflexivity. Qed.
+
+Example helper_record_agrees :
+  helper_edit_once node_helpers = edit_once /\
+  helper_contains node_helpers = contains /\
+  helper_safe_path node_helpers = shell_safe_path /\
+  helper_replace_all node_helpers = replace_all.
+Proof. repeat split; reflexivity. Qed.

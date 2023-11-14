@@ -21,12 +21,12 @@ argv : unit -> list string.
 read_plan : string -> string.
 print_lines : list string -> unit.
 print_text : string -> unit.
-cmd_init : (string -> string -> bool) -> (string -> bool) -> list string -> unit.
+cmd_init : ((((string -> string -> string -> option string) * (string -> string -> bool)) * (string -> bool)) * (string -> string -> string -> string)) -> list string -> unit.
 cmd_keygen : list string -> unit.
-cmd_genesis : (string -> string -> bool) -> (string -> bool) -> string -> string -> unit.
-cmd_edits : (string -> string -> string -> option string) -> (string -> string -> bool) -> (string -> bool) -> string -> list string -> unit.
-cmd_apply_edits : (string -> string -> string -> option string) -> (string -> string -> bool) -> (string -> bool) -> string -> string -> unit.
-cmd_check : (string -> string -> string -> option string) -> (string -> string -> bool) -> (string -> bool) -> string -> string -> string -> string -> unit.
+cmd_genesis : ((((string -> string -> string -> option string) * (string -> string -> bool)) * (string -> bool)) * (string -> string -> string -> string)) -> string -> string -> unit.
+cmd_edits : ((((string -> string -> string -> option string) * (string -> string -> bool)) * (string -> bool)) * (string -> string -> string -> string)) -> string -> list string -> unit.
+cmd_apply_edits : ((((string -> string -> string -> option string) * (string -> string -> bool)) * (string -> bool)) * (string -> string -> string -> string)) -> string -> string -> unit.
+cmd_check : ((((string -> string -> string -> option string) * (string -> string -> bool)) * (string -> bool)) * (string -> string -> string -> string)) -> string -> string -> string -> string -> unit.
 cmd_status : string -> unit.
 cmd_tx : string -> list string -> unit.
 cmd_up : string -> list string -> unit.
@@ -35,8 +35,9 @@ cmd_up : string -> list string -> unit.
     handle's setup, one select turn, one output, the snapshot, the refused
     set, the state the setup reached, and the endless repetition. The handle
     is a string naming the shell's side of the node. Existing Soma helpers
-    are passed to node_open once, as they were to the old cmd_node. *)
-node_open : forall {S C : Type}, S -> (S -> list string -> S * list (list string)) -> (S -> C) -> (S -> C -> S) -> (string -> list string) -> (string -> string -> string -> string) -> (string -> string -> string -> option string) -> (string -> string -> bool) -> (string -> bool) -> (string -> string -> string -> bool) -> string -> list string -> string.
+    are passed once as util.soma's shell_helpers record, packed as a product
+    (edit_once, contains, shell_safe_path, replace_all) at the binding boundary. *)
+node_open : forall {S C : Type}, S -> (S -> list string -> S * list (list string)) -> (S -> C) -> (S -> C -> S) -> (string -> list string) -> ((((string -> string -> string -> option string) * (string -> string -> bool)) * (string -> bool)) * (string -> string -> string -> string)) -> (string -> string -> string -> bool) -> string -> list string -> string.
 events : string -> list (list string).
 perform : string -> list string -> bool.
 save_snapshot : forall {C : Type}, string -> C -> bool.

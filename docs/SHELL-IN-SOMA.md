@@ -135,6 +135,20 @@ worth a note in this file rather than a workaround.
 
 ## Done so far
 
+- The helper callbacks (step 3) are one typed `shell_helpers` record in
+  `util.soma`. `node_open` receives it once; the binding transports its four
+  fields as a product (`pack_helpers`), since `.definition` accepts products
+  but not Soma record types. `shell.ml` unpacks it into a named OCaml record
+  and threads it through callers, including the standalone commands; the
+  edit, contains and path refs are gone. All four fields still have callers:
+  edit application and diff replay use `edit_once`, URL resolution and prompt
+  handling use `contains`, path checks use `shell_safe_path`, and prompt
+  expansion uses `replace_all`. `util.proof` checks the record projections
+  and calls all four functions from the packed value on pure inputs. The
+  separate JSON scan callback still serves `decode_tx`; its existing wiring
+  is outside this step. Next: step 4 above.
+
+
 - Command selection now lives in `main.soma`: `argv` excludes the executable
   name, and Soma preserves the command tails and the existing usage behavior.
   `run` is deleted. Command implementations are bindings in `shell.definition`;

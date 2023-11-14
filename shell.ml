@@ -63,7 +63,7 @@ let tx_bytes agent nonce fields =
 
 let all_digits s = s <> "" && String.length s < 18 && String.for_all (fun c -> c >= '0' && c <= '9') s
 
-(* Soma's bounded JSON scan, installed by [cmd_node]. Decimal limits keep
+(* Soma's bounded JSON scan, installed by [node_open]. Decimal limits keep
    extracted nat abstract at the OCaml boundary. *)
 let soma_shallow_json : (string -> string -> string -> bool) ref =
   ref (fun _ _ _ -> failwith "shallow_json: not set by command")
@@ -137,11 +137,22 @@ let read_json p = try Yojson.Safe.from_file p with _ -> fail "cannot read %s: is
 let lines p = if Sys.file_exists p then String.split_on_char '\n' (read_file p) |> List.filter (( <> ) "") else []
 
 (* A .plan's open items are computed in Soma: [plan_open] in util.soma,
-   handed to [cmd_node] as an argument (docs/SHELL-IN-SOMA.md). *)
+   handed to [node_open] as an argument (docs/SHELL-IN-SOMA.md). *)
 
-(* Path validation is Soma's [shell_safe_path], installed by [cmd_node]. *)
-let soma_safe_path : (string -> bool) ref = ref (fun _ -> failwith "safe_path: not set by command")
-let safe_path p = !soma_safe_path p
+(* Soma's record crosses the binding as a product, then is named here.
+   Callers carry it explicitly; no command installs global callbacks. *)
+type helpers = {
+  edit_once : string -> string -> string -> string option;
+  contains : string -> string -> bool;
+  safe_path : string -> bool;
+  replace_all : string -> string -> string -> string;
+}
+let unpack_helpers (((edit_once, contains), safe_path), replace_all) =
+  { edit_once; contains; safe_path; replace_all }
+let safe_path h p = h.safe_path p
+let edit_once h s old by = h.edit_once s old by
+(* Soma takes the pattern first; shell callers take the text first. *)
+let contains h s sub = h.contains sub s
 
 (* ---------- processes and git ---------- *)
 
@@ -197,16 +208,6 @@ let clone url dir commit =
 
 (* ---------- edits ---------- *)
 
-(* The edit matching is Soma's, in util.soma: [edit_once] (a text with its
-   one occurrence of old replaced, None when old is missing or ambiguous)
-   and [contains] (pattern first). Commands install the existing helpers from
-   their arguments (docs/SHELL-IN-SOMA.md). *)
-let soma_edit_once : (string -> string -> string -> string option) ref = ref (fun _ _ _ -> failwith "edit_once: not set by command")
-let soma_contains : (string -> string -> bool) ref = ref (fun _ _ -> failwith "contains: not set by command")
-let edit_once s old by = !soma_edit_once s old by
-(* every caller's pattern is nonempty *)
-let contains s sub = !soma_contains sub s
-
 (* no part of the path is a symlink: a write can't leave the checkout *)
 let no_symlink dir p =
   let rec go cur = function
@@ -229,12 +230,12 @@ let rec triples_of = function p :: o :: n :: r -> (p, o, n) :: triples_of r | _ 
 (* Apply edits, in order, to the files under dir. An edit replaces the one
    place its old text appears; with old "" it writes the whole file, and with
    new "" too it deletes the file. *)
-let apply_edits dir edits =
+let apply_edits helpers dir edits =
   let rec go = function
     | [] -> Ok ()
     | (p, o, n) :: rest ->
         let f = Filename.concat dir p in
-        if not (safe_path p) then Error ("unsafe path " ^ p)
+        if not (safe_path helpers p) then Error ("unsafe path " ^ p)
         else if not (no_symlink dir p) then Error (p ^ " goes through a symlink")
         else if Sys.file_exists f && Sys.is_directory f then Error (p ^ " is a directory")
         else if o = "" && n = "" then (if Sys.file_exists f then (Sys.remove f; go rest) else Error (p ^ ": nothing to delete"))
@@ -242,16 +243,16 @@ let apply_edits dir edits =
         else if not (Sys.file_exists f) then Error (p ^ ": no such file to edit")
         else
           let c = read_file f in
-          match edit_once c o n with
+          match edit_once helpers c o n with
           | Some t -> write_keep_mode f t; go rest
-          | None when not (contains c o) -> Error (p ^ ": the old text isn't in the file")
+          | None when not (contains helpers c o) -> Error (p ^ ": the old text isn't in the file")
           | None -> Error (p ^ ": the old text appears more than once, so give more of it")
   in
   try go edits with e -> Error (Printexc.to_string e)
 
 (* A modified file as edits, one per hunk of git's diff, when replaying them
    on the old content gives the new; otherwise one whole-file write. *)
-let hunk_edits g p before now =
+let hunk_edits helpers g p before now =
   let whole = [ (p, "", now) ] in
   let ok, d = g [ "diff"; "--cached"; "-U3"; "--no-color"; "--no-ext-diff"; "--no-textconv"; "HEAD"; "--"; p ] in
   if not ok then whole
@@ -277,7 +278,7 @@ let hunk_edits g p before now =
     let es = List.rev_map (fun (o, n) -> (p, o, n)) !hunks in
     if !bad || es = [] || List.exists (fun (_, o, _) -> o = "") es then whole
     else
-      let step acc (_, o, n) = match acc with Some c -> edit_once c o n | None -> None in
+      let step acc (_, o, n) = match acc with Some c -> edit_once helpers c o n | None -> None in
       if List.fold_left step (Some before) es = Some now then es else whole
   end
 
@@ -299,7 +300,7 @@ let hunk_edits g p before now =
      [git hash-object -w --no-filters] into that snapshot, and changed
      files are staged there with [update-index --cacheinfo], never with
      [git add] on a repository the model can configure. *)
-let edits_of_checkout dir =
+let edits_of_checkout helpers dir =
   let abs_dir = if Filename.is_relative dir then Filename.concat (Sys.getcwd ()) dir else dir in
   let read_opt p = try Some (read_file p) with _ -> None in
   let has_prefix s pre = String.length s >= String.length pre && String.sub s 0 (String.length pre) = pre in
@@ -406,7 +407,7 @@ let edits_of_checkout dir =
               List.iter
                 (fun p ->
                   if List.exists (fun x -> String.lowercase_ascii x = ".git") (String.split_on_char '/' p) then ()
-                  else if not (safe_path p) then skipped := p :: !skipped
+                  else if not (safe_path helpers p) then skipped := p :: !skipped
                   else
                     let f = Filename.concat abs_dir p in
                     let head_entry = Hashtbl.find_opt head_tbl p in
@@ -434,7 +435,7 @@ let edits_of_checkout dir =
                                else if now = "" then
                                  edits := !edits @ [ (p, Option.value ~default:"" (blob ("HEAD:" ^ p)), "") ]
                                else if fst (sgit [ "update-index"; "--add"; "--cacheinfo"; mode; hash; p ]) then
-                                 edits := !edits @ hunk_edits sgit p (Option.value ~default:"" (blob ("HEAD:" ^ p))) now
+                                 edits := !edits @ hunk_edits helpers sgit p (Option.value ~default:"" (blob ("HEAD:" ^ p))) now
                                else edits := !edits @ [ (p, "", now) ]))
                 paths;
               Ok (!edits, List.rev !skipped)
@@ -450,13 +451,13 @@ let edits_json edits note =
 (* the tree a bid's edits give on a checkout's HEAD, in a fresh clone. An
    error says whose it is: `Node (this node's checkout or git) or `Bid (the
    edits don't apply), decided here, never read back from the message *)
-let check_tree repo head_tree edits out =
+let check_tree helpers repo head_tree edits out =
   let commit = git_out repo [ "rev-parse"; "HEAD" ] and tree = git_out repo [ "rev-parse"; "HEAD^{tree}" ] in
   if tree <> head_tree then Error (`Node, Printf.sprintf "node problem: this node's checkout %s is at tree %s, not the market's head %s" repo tree head_tree)
   else if not (fst (capture "git" [ "clone"; "--quiet"; "--shared"; "--no-checkout"; repo; out ])) then Error (`Node, "node problem: cloning the checkout failed")
   else if not (git_ok out [ "checkout"; "-q"; "--detach"; commit ]) then Error (`Node, "node problem: checking out the head failed")
   else
-    match apply_edits out edits with
+    match apply_edits helpers out edits with
     | Error e -> Error (`Bid, e)
     | Ok () -> if git_ok out [ "add"; "-A"; "-f" ] then Ok (git_out out [ "write-tree" ]) else Error (`Node, "node problem: git add failed")
 
@@ -532,8 +533,8 @@ let cmd_keygen args =
   say "wrote %s. Add it to the network as NETWORK/parts/%s.json (a pull request is a good way), then, once every agent's part is in, run: pantheon genesis %s NETWORK" pub !name !home
 
 (* relative repository URLs are relative to the network directory *)
-let repo_url net url =
-  if contains url "://" || (url <> "" && url.[0] = '/') || (String.length url > 4 && String.sub url 0 4 = "git@") then url
+let repo_url helpers net url =
+  if contains helpers url "://" || (url <> "" && url.[0] = '/') || (String.length url > 4 && String.sub url 0 4 = "git@") then url
   else Filename.concat net url
 
 let repo_dir home name = Filename.concat (Filename.concat home "repos") name
@@ -552,7 +553,7 @@ let ensure_repo home name url commit =
 
 (* genesis.json, from NETWORK/network.json and NETWORK/parts/*.json: every
    agent builds the same bytes from the same files, so they compare one hash *)
-let build_genesis home net =
+let build_genesis helpers home net =
   let open Yojson.Safe.Util in
   let netj = read_json (Filename.concat net "network.json") in
   let pdir = Filename.concat net "parts" in
@@ -582,8 +583,8 @@ let build_genesis home net =
                           `Assoc [ ("name", member "name" j); ("addr", member "addr" j); ("pubkey", member "pubkey" j); ("tip", member "tip" j) ]) raw_parts in
   let repos = List.map (fun r ->
       let name = to_string (member "name" r) and url = to_string (member "url" r) and commit = to_string (member "commit" r) in
-      if not (safe_path name) || String.contains name '/' then fail "bad repository name %s" name;
-      let dir = ensure_repo home name (repo_url net url) commit in
+      if not (safe_path helpers name) || String.contains name '/' then fail "bad repository name %s" name;
+      let dir = ensure_repo home name (repo_url helpers net url) commit in
       let tree = git_out dir [ "rev-parse"; commit ^ "^{tree}" ] in
       `Assoc [ ("name", `String name); ("url", `String url); ("commit", `String commit); ("tree", `String tree) ])
       (to_list (member "repos" netj)) in
@@ -605,9 +606,8 @@ let build_genesis home net =
   say "wrote %s: chain %s, genesis hash %s. Every agent should get the same hash" gp id (sha256 text)
 
 (* A whole network on one machine, for trying Pantheon and for tests. *)
-let cmd_init contains safe_path args =
-  soma_contains := contains;
-  soma_safe_path := safe_path;
+let cmd_init packed args =
+  let helpers = unpack_helpers packed in
   let dir = ref "" and repos = ref [] and port = ref 26700 and params = ref [] and block_ms = ref 500 in
   let rec go = function
     | "--repo" :: kv :: r -> repos := !repos @ [ kv_arg "--repo" kv ]; go r
@@ -637,13 +637,12 @@ let cmd_init contains safe_path args =
       let pub = make_keys (Filename.concat !dir n) n (Printf.sprintf "127.0.0.1:%d" (!port + i)) in
       write_file (Filename.concat (Filename.concat net "parts") (n ^ ".json")) (read_file pub))
     agents_default;
-  List.iter (fun n -> build_genesis (Filename.concat !dir n) net) agents_default;
+  List.iter (fun n -> build_genesis helpers (Filename.concat !dir n) net) agents_default;
   say "made a 4-agent network in %s. Run it with: %s up %s" !dir self_exe !dir
 
-let cmd_genesis contains safe_path home net =
-  soma_contains := contains;
-  soma_safe_path := safe_path;
-  build_genesis home net
+let cmd_genesis packed home net =
+  let helpers = unpack_helpers packed in
+  build_genesis helpers home net
 
 (* ---------- the node ---------- *)
 
@@ -706,30 +705,24 @@ let json_in_reply text =
       else (try Some (Yojson.Safe.from_string raw) with _ -> None)
   | _ -> None
 
-let cmd_edits edit_once contains safe_path dir rest =
-  soma_edit_once := edit_once;
-  soma_contains := contains;
-  soma_safe_path := safe_path;
+let cmd_edits packed dir rest =
+  let helpers = unpack_helpers packed in
       (* for a model with tools: what it changed in its checkout, as the reply a patch request wants *)
-      (match edits_of_checkout dir with
+      (match edits_of_checkout helpers dir with
        | Error e -> fail "%s" e
        | Ok (es, skipped) ->
            let note = String.concat " " rest ^ (if skipped = [] then "" else " (skipped, can't be edits: " ^ String.concat ", " skipped ^ ")") in
            print_endline (Yojson.Safe.to_string (edits_json es (String.trim note))))
 
-let cmd_apply_edits edit_once contains safe_path dir file =
-  soma_edit_once := edit_once;
-  soma_contains := contains;
-  soma_safe_path := safe_path;
-      (match apply_edits dir (triples_of (json_strings (Yojson.Safe.from_file file))) with
+let cmd_apply_edits packed dir file =
+  let helpers = unpack_helpers packed in
+      (match apply_edits helpers dir (triples_of (json_strings (Yojson.Safe.from_file file))) with
        | Ok () -> say "applied"
        | Error e -> fail "%s" e)
 
-let cmd_check edit_once contains safe_path repo head file out =
-  soma_edit_once := edit_once;
-  soma_contains := contains;
-  soma_safe_path := safe_path;
-      (match check_tree repo head (triples_of (json_strings (Yojson.Safe.from_file file))) out with
+let cmd_check packed repo head file out =
+  let helpers = unpack_helpers packed in
+      (match check_tree helpers repo head (triples_of (json_strings (Yojson.Safe.from_file file))) out with
        | Ok t -> print_string t
        | Error (`Bid, e) -> print_string e; exit check_bid_failed
        | Error (`Node, e) -> print_string e; exit 3)
@@ -794,11 +787,10 @@ let note_refused id raw = (lookup_handle id).h_refuse raw; true
 let take_state id = Obj.obj (lookup_handle id).h_state
 let rec forever f s = forever f (f s)
 
-let node_open init step checkpoint restore plan_open replace_all edit_fn contains_fn path_fn json_fn home flags =
+let node_open init step checkpoint restore plan_open packed json_fn home flags =
+  let helpers = unpack_helpers packed in
+  let replace_all = helpers.replace_all in
   soma_shallow_json := json_fn;
-  soma_safe_path := path_fn;
-  soma_edit_once := edit_fn;
-  soma_contains := contains_fn;
   Sys.set_signal Sys.sigpipe Sys.Signal_ignore;
   (* jobs run from scratch directories: every path the node hands out is absolute *)
   let home = if Filename.is_relative home then Filename.concat (Sys.getcwd ()) home else home in
@@ -883,7 +875,7 @@ let node_open init step checkpoint restore plan_open replace_all edit_fn contain
                 (try to_list (member "repos" gen) with _ -> []) in
   let net_dir = Filename.concat home "network" in
   List.iter (fun (n, url, commit, tree) ->
-      let dir = ensure_repo home n (repo_url net_dir url) commit in
+      let dir = ensure_repo home n (repo_url helpers net_dir url) commit in
       if git_out dir [ "rev-parse"; commit ^ "^{tree}" ] <> tree then fail "genesis says repository %s's commit %s has tree %s; this clone disagrees" n commit tree)
     repos;
   let rdir n = repo_dir home n in
@@ -1011,7 +1003,7 @@ let node_open init step checkpoint restore plan_open replace_all edit_fn contain
       let budget = ref (200 * 1024) in
       fence_text token ("files in " ^ r) (listing r 300)
       ^ String.concat "" (List.map (fun p ->
-            if not (safe_path p) then ""
+            if not (safe_path helpers p) then ""
             else
               let ok, c = git (rdir r) [ "show"; "HEAD:" ^ p ] in
               let c = if not ok then "(no such file at the head)" else c in
@@ -1036,7 +1028,7 @@ let node_open init step checkpoint restore plan_open replace_all edit_fn contain
     let alnum c = (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') in
     let rec go i = i + m <= n && ((String.sub t i m = w && (i = 0 || not (alnum t.[i - 1])) && (i + m = n || not (alnum t.[i + m]))) || go (i + 1)) in
     go 0 in
-  let is_limit text = let t = String.lowercase_ascii text in List.exists (fun w -> contains t w) limit_words || has_number t "429" in
+  let is_limit text = let t = String.lowercase_ascii text in List.exists (fun w -> contains helpers t w) limit_words || has_number t "429" in
   (* seconds until the limit resets, if the message says *)
   let reset_in text =
     let t = String.lowercase_ascii text and now = Unix.gettimeofday () in
@@ -1068,9 +1060,9 @@ let node_open init step checkpoint restore plan_open replace_all edit_fn contain
     let prompt = prompt0 in
     let token = random_hex 8 in
     let prompt = replace_all prompt "{{F}}" token in
-    let prompt = if contains prompt "{{REPOS}}" then replace_all prompt "{{REPOS}}" (repos_text token) else prompt in
-    let prompt = if contains prompt "{{PLAN}}" then replace_all prompt "{{PLAN}}" (plan_text token) else prompt in
-    let prompt = match ctx with r :: paths when contains prompt "{{REPO}}" -> replace_all prompt "{{REPO}}" (repo_text token r paths) | _ -> prompt in
+    let prompt = if contains helpers prompt "{{REPOS}}" then replace_all prompt "{{REPOS}}" (repos_text token) else prompt in
+    let prompt = if contains helpers prompt "{{PLAN}}" then replace_all prompt "{{PLAN}}" (plan_text token) else prompt in
+    let prompt = match ctx with r :: paths when contains helpers prompt "{{REPO}}" -> replace_all prompt "{{REPO}}" (repo_text token r paths) | _ -> prompt in
     let reply text =
       let failed = String.length text > 0 && text.[0] = '!' in
       if (failed || json_in_reply text = None) && is_limit text then begin
@@ -1213,7 +1205,7 @@ let node_open init step checkpoint restore plan_open replace_all edit_fn contain
                 let why =
                   if ok then ""
                   else if docker_down then "node problem: " ^ (if !ci_sandbox <> "" then "ci-sandbox: " else "docker: ") ^ t
-                  else if contains how "printed more than" then "CI " ^ how ^ ": a check has to print less than that"
+                  else if contains helpers how "printed more than" then "CI " ^ how ^ ": a check has to print less than that"
                   else if how = "exit 137" then "CI went over its memory budget (" ^ !ci_memory ^ ", no swap): the build needs less memory than that to merge"
                   else if how = "exit 124" then "CI went over its time budget: the build has to finish within the limit its CI command gives"
                   else begin
@@ -1242,7 +1234,7 @@ let node_open init step checkpoint restore plan_open replace_all edit_fn contain
       let diverge why = say "DIVERGED: repository %s, merge %d: %s. Stopped taking merges for it." r v why; diverged := (r, Printf.sprintf "%d: %s" v why) :: !diverged in
       ignore (git dir [ "reset"; "-q"; "--hard"; "HEAD" ]);
       ignore (git dir [ "clean"; "-q"; "-f"; "-d"; "-x" ]);
-      match apply_edits dir edits with
+      match apply_edits helpers dir edits with
       | Error e -> diverge e
       | Ok () ->
           let date = Printf.sprintf "@%d +0000" (1_700_000_000 + v) in
