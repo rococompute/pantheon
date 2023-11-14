@@ -230,6 +230,13 @@ separate work; this status does not mark `.plan`.
 
 ## Done so far
 
+- Step 4, llm: Codex output selection is Soma's `codex_reply_of`: a
+  process failure wins over the output file, a successful file read keeps
+  its exact bytes (including empty), and a missing file gives the existing
+  error. The shell reports the process result and file-read facts before
+  cleanup; immediate startup failures and completed jobs use the same
+  `model_output_events` path. `test/llm-codex.sh` checks eight pure results.
+
 - Step 4, llm (part): grok's reply is read in Soma. The shell hands back
   curl's raw output like any backend's; `model_reply_events` takes
   `choices.0.message.content` from the yojson binding's tokens

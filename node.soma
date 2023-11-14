@@ -1153,12 +1153,23 @@ job_result (status : job_status) (timeout : option string) (flooded : bool) (max
   else append "!process failed (" (append (job_failure_reason status timeout flooded max_mb)
          (append "): " (job_failure_tail out))).
 
+(** Codex writes its answer to a separate file. Process failures win over
+    that file, including a stale or empty file; a failed read is an error.
+    The reader is lazy so a failed job never needs the file's contents. *)
+codex_reply_of (text : string) (read : unit -> option string) : string :=
+  if starts "!" text then text
+  else match read tt with Some out => out | None => "!codex wrote no reply" end.
+
 (** A finished job's callback still runs before its cleanup (Codex reads
     its output file there). Generated model replies are interpreted before
     the turn's events run, at the finished job's original queue position. *)
 model_output_events (h : node_t) (ev : list string) : list (list string) :=
   match ev with
   | "llm_output" :: id :: kind :: prompt0 :: text :: ctx => model_reply_events h id kind prompt0 text ctx
+  | "codex_output" :: id :: kind :: prompt0 :: text :: "1" :: out :: ctx =>
+      model_reply_events h id kind prompt0 (codex_reply_of text (fun _ => Some out)) ctx
+  | "codex_output" :: id :: kind :: prompt0 :: text :: "0" :: ctx =>
+      model_reply_events h id kind prompt0 (codex_reply_of text (fun _ => None)) ctx
   | _ => [ev]
   end.
 
@@ -1308,7 +1319,7 @@ llm_begin (h : node_t) (id kind prompt input : string) (ctx clean launch env : l
   match node_llm_start h id kind prompt input ctx clean launch env with
   | None => true
   (* the process couldn't start: its output is here at once *)
-  | Some text => push_all h (model_reply_events h id kind prompt text ctx)
+  | Some ev => push_all h (model_output_events h ev)
   end.
 
 llm_call (h : node_t) (id kind prompt : string) (ctx : list string) : bool :=
