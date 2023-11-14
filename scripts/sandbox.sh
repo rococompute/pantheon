@@ -288,7 +288,8 @@ cmd_start() {
     printf '%s\n' "$CI_MEMORY" | put ci-memory
     # Pantheon's build within a cloud agent's default command time (2 minutes):
     # a change that makes it slower fails CI, as a broken one does
-    printf '%s\n' "${PANTHEON_CI:-timeout 120 soma build main.soma && timeout 120 test/edits.sh}" | put ci/pantheon
+    pantheon_ci=$(python3 "$here/deploy/ci-command.py" "$here" "${PANTHEON_CI:-timeout 120 soma build main.soma && timeout 120 test/edits.sh && sh test/ci-policy.sh}")
+    printf '%s\n' "$pantheon_ci" | put ci/pantheon
     # Soma's CI is a full build: on three agents (SOMA_CI_AGENTS), so whichever
     # bids, two attestors run it, and two rejecting a broken build keep it out.
     # On two, a bidder that was one of them left a single check, which one
