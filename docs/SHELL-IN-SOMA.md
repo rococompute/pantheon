@@ -168,6 +168,15 @@ worth a note in this file rather than a workaround.
 
 ## Done so far
 
+- Step 5, part: when held model requests go back is decided in Soma.
+  `node_tick` asks `release_held` first each turn: pure `release_plan_of`
+  releases none while the limit lasts, while a probe is out or when none
+  are held, one (the probe) while the backoff is up, and all otherwise,
+  with the same messages; they run as `llm_release` events first among the
+  turn's events, oldest first, as before. The shell only keeps the held
+  requests and hands over the oldest one or all of them. Left of step 5:
+  lines into events, and a job's output (reply JSON, is_limit, reset_in).
+
 - Step 4, llm (the last case): `perform_llm` decides the call budget and
   the rate-limit hold (`llm_gate_of`) and writes their log lines, and
   `prompt_assemble` fills `{{F}}`, `{{REPOS}}`, `{{PLAN}}` and `{{REPO}}`

@@ -68,6 +68,13 @@ node_peer_send : string -> string -> list string -> bool.
 node_checkout_heads : string -> list (string * string).
 node_divergences : string -> list (string * string).
 node_limit_info : string -> float * (string * (string * string)).
+(** Held model requests for node.soma's release_held: the limit backoff in
+    seconds and whether one released request is out to probe the limit;
+    taking the oldest held request (it becomes the probe) or all of them,
+    oldest first, each as an llm_release event. *)
+node_release_state : string -> float * bool.
+node_release_one : string -> list string.
+node_release_all : string -> list (list string).
 node_local_time : float -> string.
 node_write_status : string -> string -> bool.
 (** Signing, retry-table access and socket writes; Soma selects submissions. *)

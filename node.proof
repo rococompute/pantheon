@@ -431,3 +431,18 @@ Example llm_incremental_context :
       (shell_fence "T" "file c" "")) /\
   repo_read_text "T" 4 6 (fun p => (p, Some "unused")) [] = "".
 Proof. split; reflexivity. Qed.
+
+(** Held model requests' release: when, how many, and what is said. *)
+Example release_plan_cases :
+  release_plan_of 0 true false true = ReleaseNone /\
+  release_plan_of 2 false false true = ReleaseNone /\
+  release_plan_of 2 true true true = ReleaseNone /\
+  release_plan_of 2 true false true = ReleaseOne /\
+  release_plan_of 2 true false false = ReleaseAll /\
+  release_plan_of 1 true false false = ReleaseAll.
+Proof. repeat split; reflexivity. Qed.
+
+Example release_texts :
+  release_one_text "claude" "3" = "the limit's wait is over: asking claude one held request first (3 held)" /\
+  release_all_text "claude" "3" = "claude answers again: asking its 3 held requests".
+Proof. split; reflexivity. Qed.
