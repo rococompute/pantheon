@@ -377,3 +377,43 @@ Proof.
   apply filter_In in H. destruct H as [_ H].
   unfold seq in H. rewrite Stdlib.Strings.String.eqb_refl in H. discriminate.
 Qed.
+
+(** A leader never merges its own bid (docs/PROOFS.md, item 8): a merge
+    naming a bid its sender made fails, with a reason, and leaves the whole
+    market as it was, an already pending proposal included. *)
+Theorem self_merge_makes_no_proposal : forall (m : obj) (a i tree : string) (b : bid),
+  bid_by m (num i) = Some b -> bidder b = a ->
+  exists why, why <> "" /\ apply m a ["merge", i, tree] = (m, [], why).
+Proof.
+  intros m a i tree b Hb Ha. subst a.
+  assert (Hs : seq (bidder b) (bidder b) = true)
+    by (unfold seq; apply Stdlib.Strings.String.eqb_refl).
+  assert (Ho : forall x : bool, (x || true) = true) by (intros [|]; reflexivity).
+  unfold apply. cbn beta iota zeta.
+  rewrite Hb, Hs, Ho.
+  repeat match goal with |- context [if ?c then _ else _] => destruct c eqn:? end.
+  all: match goal with |- exists w, _ /\ (_, _, ?r) = _ => exists r end;
+       split; [apply Stdlib.Strings.String.eqb_neq; reflexivity|reflexivity].
+Qed.
+
+(** And every merge that goes through names an existing bid made by
+    someone else, sent by the term leader. *)
+Theorem merge_needs_leader_and_others_bid : forall (m m' : obj) (a i tree : string) (outs : list (list string)),
+  apply m a ["merge", i, tree] = (m', outs, "") ->
+  exists b, bid_by m (num i) = Some b /\ bidder b <> a /\ is_leader m a = true.
+Proof.
+  intros m m' a i tree outs H.
+  unfold apply in H. cbn beta iota zeta in H.
+  Ltac why_differs H :=
+    apply (f_equal (fun p => Stdlib.Strings.String.eqb (snd p) "")) in H;
+    cbn in H; discriminate H.
+  destruct (bid_by m (num i)) as [b|] eqn:Hb; [|why_differs H].
+  destruct (is_leader m a) eqn:Hl; [|why_differs H].
+  destruct (seq (bidder b) a) eqn:He.
+  - assert (Ho : forall x : bool, (x || true) = true) by (intros [|]; reflexivity).
+    rewrite Ho in H.
+    repeat match type of H with context [if ?c then _ else _] => destruct c eqn:? end;
+      why_differs H.
+  - exists b. split; [reflexivity|]. split; [|reflexivity].
+    unfold seq in He. apply Stdlib.Strings.String.eqb_neq in He. exact He.
+Qed.
