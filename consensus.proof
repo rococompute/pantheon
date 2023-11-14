@@ -47,6 +47,6 @@ Proof.
       end ].
   all: inversion Hr; subst;
     cbn [height lockr new_consensus with_me with_nodes with_height with_round
-      set_step with_lockr with_lockv with_validr with_validv set_log with_once
+      set_step with_lockr with_lockv with_validr with_validv set_log set_once
       with_block_ms] in *; auto; lia.
 Qed.

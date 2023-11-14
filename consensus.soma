@@ -71,10 +71,6 @@ with_validv (c : consensus_state) (v : list string) : consensus_state :=
   {| me := me c; nodes := nodes c; height := height c; round := round c; step := step c;
      lockr := lockr c; lockv := lockv c; validr := validr c; validv := v; log := log c; once := once c; block_ms := block_ms c |}.
 
-with_once (c : consensus_state) (v : list string) : consensus_state :=
-  {| me := me c; nodes := nodes c; height := height c; round := round c; step := step c;
-     lockr := lockr c; lockv := lockv c; validr := validr c; validv := validv c; log := log c; once := v; block_ms := block_ms c |}.
-
 with_block_ms (c : consensus_state) (v : nat) : consensus_state :=
   {| me := me c; nodes := nodes c; height := height c; round := round c; step := step c;
      lockr := lockr c; lockv := lockv c; validr := validr c; validv := validv c; log := log c; once := once c; block_ms := v |}.
@@ -109,7 +105,7 @@ send (c : consensus_state) (k : kind) (vround : nat) (id : string) (v : list str
 vote (c : consensus_state) (k : kind) (id : string) (next : nat) : consensus_state * list (list string) :=
   let (c', o) := send c k 0 id [] in ({| c' with step := next |}, o).
 
-mark (c : consensus_state) (flag : string) : consensus_state := with_once c (flag :: once c).
+mark (c : consensus_state) (flag : string) : consensus_state := {| c with once := flag :: once c |}.
 fired (c : consensus_state) (flag : string) : bool := mem flag (once c).
 
 start_round (c : consensus_state) (r : nat) (getv : list string) : consensus_state * list (list string) :=
