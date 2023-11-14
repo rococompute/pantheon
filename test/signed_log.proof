@@ -1,0 +1,22 @@
+(** signed.log lines, checked in Soma's kernel on fixed inputs. *)
+Example signed_log_fixed_lines :
+  signed_log_entry (fun _ => Some ["L", "1", "S", "x"]) "s  [""x""]" = SignedVote "s" "" ["x"] /\
+  signed_log_entry (fun _ => Some ["L", "1", "S", "x"]) "s abc [""x""]" = SignedCut "s" "its value id is cut" /\
+  signed_log_entry (fun _ => None) "s  [" = SignedCut "s" "its vote doesn't parse" /\
+  signed_log_entry (fun _ => Some ["L", "1", "I", "1"]) "s  [1]" = SignedCut "s" "its vote doesn't parse" /\
+  signed_log_entry (fun _ => None) "s" = SignedSkip /\
+  signed_log_entry (fun _ => None) "s x" = SignedCut "s" "no vote in it" /\
+  signed_cut_text "s" "w" = "signed.log: skipping s, a line cut short (w): that vote was never sent" /\
+  signed_needs_snapshot true true = true /\ signed_needs_snapshot true false = false /\
+  signed_needs_snapshot false true = false.
+Proof. repeat split; reflexivity. Qed.
+
+(** A line with no space is never a vote and never said. *)
+Theorem signed_no_space_is_skipped : forall tokens line,
+  find_str " " line 0 = None -> signed_log_entry tokens line = SignedSkip.
+Proof. intros tokens line H. unfold signed_log_entry. rewrite H. reflexivity. Qed.
+
+(** Without a snapshot to restore, any vote read refuses the start. *)
+Theorem signed_votes_need_a_snapshot : forall found,
+  signed_needs_snapshot true found = found.
+Proof. intros found. reflexivity. Qed.
