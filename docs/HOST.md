@@ -59,7 +59,14 @@ at `/var/lib/pantheon-diplomats/AGENT` (0700). Each inbox at
 only the node account and that diplomat are added to its group. The node's
 `.ssh` is 0700. Existing accounts with different homes are refused.
 `HOST_DRY=DIR scripts/host.sh users` writes the same operations to
-`DIR/users.sh` without root or account changes.
+`DIR/users.sh` without root or account changes. It also writes, last,
+`/etc/sudoers.d/pantheon` (0440, checked with `visudo -cf` when visudo
+is there): the operator may act as `pantheon` and each `pantheon-AGENT`
+through sudo - `sudo -iu pantheon-AGENT` is how a diplomat's session
+will be started as its own user once the sessions migrate. The operator
+is `HOST_OPERATOR`, or who ran sudo (`SUDO_USER`), never root by
+default: a root default is refused unless `HOST_OPERATOR=root` is set
+on purpose.
 
 This command only prepares accounts. It does not migrate a running network,
 credentials, checkouts, instructions or services, and does not yet isolate
