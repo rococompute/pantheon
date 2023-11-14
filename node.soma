@@ -202,6 +202,7 @@ Inductive output_request :=
 | SubmitTransaction (nonce : string) (fields : list string)
 | Broadcast (fields : list string)
 | CheckRequest (id repo head : string) (edits : list string)
+| MergeRequest (r v tree bid task bidder spec : string) (edits : list string)
 | LegacyOutput (out : list string).
 
 plan_output (out : list string) : output_request :=
@@ -216,6 +217,8 @@ plan_output (out : list string) : output_request :=
   | "submit" :: nonce :: fields => SubmitTransaction nonce fields
   | "broadcast" :: fields => Broadcast fields
   | "check" :: id :: r :: head :: edits => CheckRequest id r head edits
+  | "merge" :: r :: v :: tree :: bid :: task :: bidder :: spec :: edits =>
+      MergeRequest r v tree bid task bidder spec edits
   | _ => LegacyOutput out
   end.
 
@@ -423,6 +426,117 @@ Fixpoint carry_output_actions (h : node_t) (actions : list output_action) : bool
   | action :: rest => carry_output_action h action && carry_output_actions h rest
   end.
 
+(** A decided merge: the same edits on this node's checkout, committed the
+    same way on every node. A repository this node doesn't have is said, a
+    version already applied or a diverged checkout is passed over, and a
+    checkout that doesn't reach the attested tree has diverged: that's
+    loud, and it takes no more merges. The shell only resets, reads,
+    writes, removes and commits. *)
+Inductive merge_gate := MergeUnknown | MergeSkip | MergeApply.
+
+merge_gate_of (applied : option string) (v : string) (diverged : bool) : merge_gate :=
+  match applied with
+  | None => MergeUnknown
+  | Some a => if num v <=? num a then MergeSkip else if diverged then MergeSkip else MergeApply
+  end.
+
+Fixpoint merge_triples (edits : list string) : list (string * string * string) :=
+  match edits with
+  | p :: o :: n :: rest => (p, o, n) :: merge_triples rest
+  | _ => []
+  end.
+
+(** An edit replaces the one place its old text appears; with old "" it
+    writes the whole file, and with new "" too it deletes the file. [kind]
+    is the shell's look at the path: "symlink" (it goes through one),
+    "dir", "file" or "none". *)
+Inductive edit_plan :=
+| EditWrite (path text : string)
+| EditRemove (path : string)
+| EditRead (path : string)
+| EditFail (why : string).
+
+merge_edit_plan (p o n kind : string) : edit_plan :=
+  if negb (shell_safe_path p) then EditFail (append "unsafe path " p)
+  else if seq kind "symlink" then EditFail (append p " goes through a symlink")
+  else if seq kind "dir" then EditFail (append p " is a directory")
+  else if seq o "" && seq n "" then
+    (if seq kind "file" then EditRemove p else EditFail (append p ": nothing to delete"))
+  else if seq o "" then EditWrite p n
+  else if seq kind "none" then EditFail (append p ": no such file to edit")
+  else EditRead p.
+
+merge_edit_apply (p o n c : string) : edit_plan :=
+  match edit_once c o n with
+  | Some t => EditWrite p t
+  | None =>
+      if contains o c then EditFail (append p ": the old text appears more than once, so give more of it")
+      else EditFail (append p ": the old text isn't in the file")
+  end.
+
+merge_diverged_text (r v why : string) : string :=
+  append "DIVERGED: repository " (append r (append ", merge " (append (show (num v))
+    (append ": " (append why ". Stopped taking merges for it."))))).
+
+merge_tree_check (tree : string) (committed : option (string * string)) : option string :=
+  match committed with
+  | None => Some "git commit failed"
+  | Some (got, _) =>
+      if seq got tree then None
+      else Some (append "got tree " (append got (append ", attested " tree)))
+  end.
+
+(** The edits in order; the first that can't be made stops them, with why. *)
+Fixpoint merge_apply_edits (h : node_t) (r : string) (es : list (string * string * string)) : option string :=
+  match es with
+  | [] => None
+  | (p, o, n) :: rest =>
+      let first := if shell_safe_path p then merge_edit_plan p o n (node_merge_probe h r p)
+                   else EditFail (append "unsafe path " p) in
+      let plan := match first with
+                  | EditRead q =>
+                      match node_merge_read h r q with
+                      | Some c => merge_edit_apply q o n c
+                      | None => EditFail (append q ": couldn't be read")
+                      end
+                  | other => other
+                  end in
+      match plan with
+      | EditWrite q text =>
+          let failed := node_merge_write h r q text in
+          if seq failed "" then merge_apply_edits h r rest else Some failed
+      | EditRemove q =>
+          let failed := node_merge_remove h r q in
+          if seq failed "" then merge_apply_edits h r rest else Some failed
+      | EditFail why => Some why
+      | EditRead q => Some (append q ": couldn't be read")
+      end
+  end.
+
+merge_diverge (h : node_t) (r v why : string) : bool :=
+  node_log h (merge_diverged_text r v why) &&
+  node_merge_note_diverged h r (append (show (num v)) (append ": " why)).
+
+perform_merge (h : node_t) (r v tree bid task bidder spec : string) (edits : list string) : bool :=
+  match merge_gate_of (node_merge_applied h r) v (node_merge_diverged h r) with
+  | MergeUnknown => node_log h (append "a merge for repository " (append r ", which this node doesn't have"))
+  | MergeSkip => true
+  | MergeApply =>
+      node_merge_reset h r &&
+      (match merge_apply_edits h r (merge_triples edits) with
+       | Some why => merge_diverge h r v why
+       | None =>
+           let committed := node_merge_commit h r v tree bid task bidder spec in
+           match merge_tree_check tree committed with
+           | Some why => merge_diverge h r v why
+           | None =>
+               let short := match committed with Some (_, s) => s | None => "" end in
+               node_merge_set_applied h r v &&
+               node_log h (append "merged bid " (append bid (append " into " (append r (append ": " short)))))
+           end
+       end)
+  end.
+
 perform_output (h : node_t) (out : list string) : bool :=
   match plan_output out with
   | SetTimer ms ev => node_timer h ms ev
@@ -463,6 +577,7 @@ perform_output (h : node_t) (out : list string) : bool :=
             (node_signed_vote h slot) (node_signed_body h slot))
       end
   | CheckRequest id r head edits => node_run_check h id r head edits
+  | MergeRequest r v tree bid task bidder spec edits => perform_merge h r v tree bid task bidder spec edits
   | LegacyOutput fields => perform h fields
   end.
 

@@ -80,6 +80,23 @@ node_send_all : string -> list string -> bool.
 
 (** The CI check job; Soma selects it, the shell runs the process. *)
 node_run_check : string -> string -> string -> string -> list string -> bool.
+(** A decided merge's I/O; node.soma's perform_merge decides. The version
+    applied to a repository (none: this node doesn't have it), whether its
+    checkout diverged, a hard reset and clean of it, a path's kind there
+    ("symlink", "dir", "file" or "none"), reading, writing (keeping the mode)
+    and removing a file ("" or what went wrong), the commit (its tree and
+    short id, or none when git commit failed), and recording the version
+    applied or a divergence. *)
+node_merge_applied : string -> string -> option string.
+node_merge_diverged : string -> string -> bool.
+node_merge_reset : string -> string -> bool.
+node_merge_probe : string -> string -> string -> string.
+node_merge_read : string -> string -> string -> option string.
+node_merge_write : string -> string -> string -> string -> string.
+node_merge_remove : string -> string -> string -> string.
+node_merge_commit : string -> string -> string -> string -> string -> string -> string -> string -> option (string * string).
+node_merge_set_applied : string -> string -> string -> bool.
+node_merge_note_diverged : string -> string -> string -> bool.
 
 (** Vote table, resend memory and socket writes. Soma chooses the message. *)
 node_signed_vote : string -> string -> option string.
