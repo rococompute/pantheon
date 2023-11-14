@@ -743,7 +743,6 @@ let argv () = Array.to_list Sys.argv |> List.tl
 type node_handle = { h_events : float -> string list list;
                      h_job_complete : string -> string -> string list list;
                      h_job_flood : string -> unit;
-                     h_check_result : string -> bool -> string -> string -> string -> unit;
                      h_ci_launch : string -> string -> string -> string -> string list list;
                      h_llm_budget : unit -> string * string;
                      h_llm_hold : string -> string -> string -> string list -> unit;
@@ -831,7 +830,7 @@ let node_job_expire id jid = (lookup_handle id).h_job_expire jid; true
 let node_queue_empty id = (lookup_handle id).h_queue_empty ()
 let node_job_complete id job result = (lookup_handle id).h_job_complete job result
 let node_job_flood id jid = (lookup_handle id).h_job_flood jid; true
-let node_check_result id req ok tree why stage = (lookup_handle id).h_check_result req ok tree why stage; true
+let node_plain_text s = plain_text s
 let node_ci_launch id req out tree ci = (lookup_handle id).h_ci_launch req out tree ci
 (* a model call's I/O: node.soma's perform_llm decides and builds the prompt *)
 let node_llm_budget id = (lookup_handle id).h_llm_budget ()
@@ -1208,11 +1207,7 @@ let node_open packed home flags =
   (* A check for an attestor: the bid's edits on the head, in a fresh clone,
      give a tree; then the repository's CI, if this node has one, runs on it in
      a container with no network, a read-only root and nobody's uid. *)
-  (* a check's result event; why is the bid's own output, so no control
-     character of it goes on to a rejection's reason *)
-  let push_check_result id ok tree why stage =
-    let why = plain_text why in
-    push [ "check_result"; id; "ok"; (if ok then "true" else if stage = "node" then "error" else "false"); "tree"; tree; "why"; why; "stage"; stage ] in
+  (* a check's result event is node.soma's check_result_event *)
   let run_check id r head edits =
     let out = Filename.temp_dir "pantheon-check" "" in
     let ef = Filename.temp_file "pantheon-edits" ".json" in
@@ -1228,8 +1223,9 @@ let node_open packed home flags =
     (* whose a failure is comes from stage alone, which the node decides from
        its own signals (exit codes, a job that never started), never from
        what the check or the bid's CI printed (docs/SECURITY-REVIEW-2.md P-6) *)
-    let result ok tree why stage = push_check_result id ok tree why stage in
-    if List.mem r !no_check || List.mem r my_excluded then (rm_out (); (try Sys.remove ef with _ -> ()); result false "" ("this node doesn't check " ^ r ^ (if List.mem r my_excluded then " (outside its scope: its genesis part excludes it)" else " (--no-check " ^ r ^ ")")) "node") else
+    (* a repository this node doesn't check: node.soma makes it a result
+       that is this node's own (check_unchecked) *)
+    if List.mem r !no_check || List.mem r my_excluded then (rm_out (); (try Sys.remove ef with _ -> ()); push [ "check_unchecked"; id; "this node doesn't check " ^ r ^ (if List.mem r my_excluded then " (outside its scope: its genesis part excludes it)" else " (--no-check " ^ r ^ ")") ]) else
     start_job self_exe [ "check"; rdir r; head; ef; out ] ~stdin_text:"" ~env:(Unix.environment ())
       ~on_done:(fun t ->
         (* a failure, the trimmed tree, or a CI run: node.soma's check_apply_events *)
@@ -1462,7 +1458,6 @@ let node_open packed home flags =
             let evs = ref [] in
             while not (Queue.is_empty queue) do evs := Queue.pop queue :: !evs done;
             List.rev !evs);
-      h_check_result = push_check_result;
       h_ci_launch = launch_ci;
       h_job_flood = (fun jid ->
         match List.find_opt (fun j -> j.jid = jid) !jobs with

@@ -1234,7 +1234,26 @@ check_apply_plan_of (byz ci raw : string) : check_apply_plan :=
   if starts "!" raw then CheckApplyFailed
   else CheckApplyTree (negb (seq ci "")) (seq byz "bad-tree") (ocaml_trim raw).
 
-(** The success event [push_check_result] used to queue, with an empty why. *)
+(** A check's result event, chosen here (step 5): ok is "true", "error"
+    when the failure is this node's own (stage "node": the agent abstains)
+    or "false" (the bid's). why is the bid's own output, so its control
+    characters become spaces (node_plain_text, the bytes the market's
+    plain_text accepts, docs/SECURITY-REVIEW-2.md P-17) before it can reach
+    a rejection's reason. *)
+check_ok_text (ok : bool) (stage : string) : string :=
+  if ok then "true" else if seq stage "node" then "error" else "false".
+
+check_result_event (id : string) (ok : bool) (tree why stage : string) : list string :=
+  ["check_result", id, "ok", check_ok_text ok stage, "tree", tree, "why", node_plain_text why, "stage", stage].
+
+(** A repository this node doesn't check (--no-check, or outside its
+    genesis scope): a failure that is this node's own, so it abstains. *)
+check_unchecked_event (id why : string) : list string := check_result_event id false "" why "node".
+
+push_check_result (h : node_t) (id : string) (ok : bool) (tree why stage : string) : bool :=
+  io_push h (check_result_event id ok tree why stage).
+
+(** The success event the shell's push_check_result used to queue, with an empty why. *)
 check_result_ready (id tree : string) : list string :=
   ["check_result", id, "ok", "true", "tree", tree, "why", "", "stage", ""].
 
@@ -1305,6 +1324,7 @@ job_output_events (h : node_t) (st : node_state) (ev : list string) : node_state
                           (show (num (node_job_output_limit tt) / num "1048576")) out in
           (st, flat_map (model_output_events h) (node_job_complete h id result))
       end
+  | ["check_unchecked", id, why] => (st, [check_unchecked_event id why])
   | _ => (st, model_output_events h ev)
   end.
 
@@ -1877,14 +1897,14 @@ check_apply_stage (t : string) : string :=
 
 perform_check_failed (h : node_t) (id t : string) : bool :=
   io_log h (append "check of request " (append id (append " failed: " t))) &&
-  node_check_result h id false "" t (check_apply_stage t).
+  push_check_result h id false "" t (check_apply_stage t).
 
 perform_ci_done (h : node_t) (id tree memory runner t : string) : bool :=
   let (ok, rest) := ci_outcome t (seq runner "sandbox") memory in
   let (why, stage) := rest in
   io_log h (append "CI for request " (append id (append ": " (if ok then "passed" else "failed")))) &&
   (if ok then true else io_log h (append "CI for request " (append id (append " said: " (replace_all t newline " "))))) &&
-  node_check_result h id ok tree why stage.
+  push_check_result h id ok tree why stage.
 
 run_event (h : node_t) (st : node_state) (ev : list string) : node_state :=
   let ev := match ev with

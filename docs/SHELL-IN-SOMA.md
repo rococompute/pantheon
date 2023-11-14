@@ -230,6 +230,18 @@ separate work; this status does not mark `.plan`.
 
 ## Done so far
 
+- Step 5, a check's result event: `check_result_event` chooses the
+  `check_result` event's fields in Soma (ok "true", "error" for a failure
+  at this node's own stage "node", "false" for the bid's), and
+  `push_check_result` queues it through the node's queue operation. The
+  shell's `push_check_result` and the `node_check_result` binding are gone:
+  a repository this node doesn't check comes back as a raw
+  `check_unchecked` fact that Soma makes this node's own failure. Turning
+  control characters into spaces stays a byte map binding
+  (`node_plain_text`), so a large failed check's output never becomes a
+  list of characters. `test/check-result-event.sh` checks the fields and
+  the sanitizing through the binding.
+
 - Step 5, a check's output: the shell queues the raw output as
   `check_apply_out` (request, checkout, CI command, text). Soma's
   `check_apply_plan_of` keeps the old split: an output that starts with
