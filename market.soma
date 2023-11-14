@@ -516,6 +516,19 @@ commit_certified_roster_fields (verify : string -> string -> list string -> bool
       else None
   end.
 
+(** Admission from the one committed block lookup: derive certificate h
+    from its earlier carrier h+1, bounded on the roster at h, then let the
+    existing certified boundary authenticate it against actual block h.
+    Joins remain independent of certificate availability. *)
+commit_chain_roster_fields (verify : string -> string -> list string -> bool)
+    (policy : roster_policy) (changes : list (string * bool * nat))
+    (block_at : nat -> option (list string))
+    (h : nat) (term_leader sender : string) (fields : list string)
+    : option (list (string * bool * nat)) :=
+  commit_certified_roster_fields verify policy changes block_at
+    (prior_chain_commit_at (roster_at (roster_genesis policy) changes) block_at h)
+    h term_leader sender fields.
+
 (** the roster a merge's quorums count: the agents whose scope has the bid's
     repository (all of them unless genesis excludes some) *)
 merge_roster (m : obj) (p : proposal) : list string :=

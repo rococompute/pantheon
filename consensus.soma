@@ -497,3 +497,44 @@ chain_commit_at (block_at : nat -> option (list string)) (h : nat)
       | Some (cert, _) => if certificate_height cert =? h then Some cert else None
       end
   end.
+
+(** A certificate has three header fields and seven per witness. Bound the
+    declared certificate section before copying or decoding it; transaction
+    strings after that section are not part of this limit. This reuses the
+    committed block envelope and codec rather than defining another format. *)
+bounded_commit_block (limit : nat) (block : list string)
+    : option (commit_certificate * list string) :=
+  match block with
+  | tag :: size :: _ =>
+      if seq tag "heartbeat-v1" then
+        match num_opt size with
+        | Some n => if n <=? 3 + 7 * limit then unframe_commit_block block else None
+        | None => None
+        end
+      else None
+  | _ => None
+  end.
+
+(** At the start of candidate height [before], only earlier carriers count.
+    Check this before consulting the chain lookup. The lookup must read the
+    unique committed block at its index, never a peer cache. The certificate
+    belongs to h and its bound uses roster_of h, not its carrier's roster.
+    Structural decoding still does not authenticate any participation. *)
+prior_chain_commit_at (roster_of : nat -> list string)
+    (block_at : nat -> option (list string)) (before h : nat)
+    : option commit_certificate :=
+  if (0 <? h) && (S h <? before) then
+    match block_at (S h) with
+    | None => None
+    | Some block => match bounded_commit_block (length (roster_of h)) block with
+        | None => None
+        | Some (cert, _) => if certificate_height cert =? h then Some cert else None
+        end
+    end
+  else None.
+
+certified_chain_window (verify : string -> string -> list string -> bool)
+    (roster_of : nat -> list string) (block_at : nat -> option (list string))
+    (before count : nat) : option (list (list string)) :=
+  certified_commit_window verify roster_of block_at
+    (prior_chain_commit_at roster_of block_at before) (before - 2) count.
