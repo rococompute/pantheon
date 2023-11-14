@@ -1,0 +1,126 @@
+(** M-3 part: the market follows the roster at its height, run as extracted
+    code on fixed inputs through settle, maybe_draw and maybe_end_term
+    themselves, with votes and reveals cast before a removal took effect.
+    No node, no timing. *)
+Import util shell market.
+From Stdlib Require ExtrOcamlNatInt.
+
+check (label : string) (ok : bool) : string := append (if ok then "ok " else "FAIL ") label.
+
+seven : list string := ["a1", "a2", "a3", "a4", "a5", "a6", "a7"].
+four : list string := ["a1", "a2", "a3", "a4"].
+
+base (ags : list string) : obj :=
+  let m := new_market ags in
+  let m := setf m "leader" "a1" in
+  let m := setf m "h" 10 in
+  let m := setf m "repos" ([("calc", "tree0")] : list (string * string)) in
+  setf m "awaiting" false.
+
+bidder_of (m : obj) : string :=
+  match task_by m 1 with
+  | Some t => match bidders_for m t with a :: _ => a | [] => "" end
+  | None => ""
+  end.
+
+(** at height 10: a1 leads, posts a task, its first bidder bids, a1 proposes the merge *)
+proposed (ags : list string) : obj :=
+  let '(m, _, _) := apply (base ags) "a1" ["post", "calc", "roster task"] in
+  let '(m, _, _) := apply m (bidder_of m) ["bid", "1", "0", "roster bid", "f.txt", "", "x"] in
+  let '(m, _, _) := apply m "a1" ["merge", "1", "tree1"] in m.
+
+attestors (ags : list string) : list string :=
+  let m := proposed ags in filter (fun a => negb (seq a "a1") && negb (seq a (bidder_of m))) ags.
+
+vote (m : obj) (a : string) (yes : bool) : obj :=
+  fst (fst (apply m a (if yes then ["attest", "1", "yes", "tree1"] else ["attest", "1", "no"]))).
+
+at_h (m : obj) (h : nat) : obj := setf m "h" h.
+with_changes (m : obj) (cs : list (string * bool * nat)) : obj := setf m "roster_changes" cs.
+settled (m : obj) : obj := fst (settle m).
+status_of (m : obj) : string := match bid_by m 1 with Some b => status_name (bst b) | None => "none" end.
+yes_of (m : obj) : nat := match pending m with Some p => counted_approvals m p | None => 99 end.
+noes_of (m : obj) : nat := match pending m with Some p => counted_noes m p | None => 99 end.
+quorums (m : obj) : nat * nat :=
+  match pending m with Some p => (merge_quorum m p, reject_quorum (merge_n m p)) | None => (0, 0) end.
+pair_is (x : nat * nat) (a b : nat) : bool := (fst x =? a) && (snd x =? b).
+
+(** 7 to 6: the attestor r leaves at height 12 (committed at 10, delay 1) *)
+atts7 : list string := attestors seven.
+r7 : string := nth 4 atts7 "".
+m7 : obj := with_changes (proposed seven) [(r7, false, effective_height 10 1)].
+no7 : obj := vote (vote m7 r7 false) (nth 0 atts7 "") false.
+yes7 : obj := vote (vote (vote m7 r7 true) (nth 0 atts7 "") true) (nth 1 atts7 "") true.
+
+(** 4 to 3, and back: attestor y leaves at 12 and rejoins at 20 *)
+atts4 : list string := attestors four.
+x4 : string := nth 0 atts4 "".
+y4 : string := nth 1 atts4 "".
+m4 : obj := with_changes (proposed four) [(y4, false, 12)].
+c4 : obj := with_changes (proposed four) [(y4, false, 12), (y4, true, 20)].
+rejoin_votes : obj := vote (vote (at_h c4 15) y4 true) x4 true.
+
+(** the leader leaves at 12 with its merge pending *)
+lead_gone : obj := at_h (with_changes (proposed seven) [("a1", false, 12)]) 12.
+
+(** a draw at 100 after a7 left at 12: reveals of a3 to a7, then a2 too *)
+draw_state (who : list string) (cs : list (string * bool * nat)) : obj :=
+  let m := setf (base seven) "leader" "" in
+  let m := setf (setf (setf m "awaiting" true) "asince" 0) "h" 100 in
+  with_changes (setf m "reveals" (map (fun a => (a, append "v-" a)) who)) cs.
+leave_a7 : list (string * bool * nat) := [("a7", false, 12)].
+six_in : obj := draw_state ["a2", "a3", "a4", "a5", "a6", "a7"] leave_a7.
+
+(** whether maybe_draw draws, its condition word for word, and whom it
+    records as holding back: a draw itself hashes the reveals into a 48-bit
+    number, which a program run here can't compute (test/n_agents.soma) *)
+draws (m : obj) : bool :=
+  awaiting m && draw_ready (length (roster_now m)) (length (revealed m)) (asince m + param m "reveal_window" <=? mheight m).
+silent (m : obj) : list string := filter (fun a => negb (mem a (revealed m))) (roster_now m).
+
+main := print_lines [
+  check "a stable roster counts as before: approvals, quorums, scope"
+    ((match pending (proposed seven) with Some p => counted_approvals (proposed seven) p =? approvals p 0 60 | None => false end)
+     && pair_is (quorums (proposed seven)) 5 3 && (length (scope (proposed seven) "calc") =? 7)),
+  check "7 to 6: quorums 5/3 at 11, 5/2 at 12"
+    (pair_is (quorums (at_h m7 11)) 5 3 && pair_is (quorums (at_h m7 12)) 5 2),
+  check "7 to 6: the removed agent leaves scope, so bidder choice, at 12"
+    (mem r7 (scope (at_h m7 11) "calc") && negb (mem r7 (scope (at_h m7 12) "calc")) && (length (scope (at_h m7 12) "calc") =? 6)),
+  check "7 to 6: two no votes, one the removed agent's, don't reject at 11"
+    (seq (status_of (settled (at_h no7 11))) "pending" && (noes_of (at_h no7 11) =? 2)),
+  check "7 to 6: at 12 the removed agent's no doesn't count: one no of two needed"
+    (seq (status_of (settled (at_h no7 12))) "pending" && (noes_of (at_h no7 12) =? 1)),
+  check "7 to 6: a second no on the roster rejects at 12"
+    (seq (status_of (vote (at_h no7 12) (nth 1 atts7 "") false)) "rejected"),
+  check "7 to 6: approvals 4 at 11, 3 at 12 without the removed agent's yes"
+    ((yes_of (at_h yes7 11) =? 4) && (yes_of (at_h yes7 12) =? 3) && seq (status_of (settled (at_h yes7 12))) "pending"),
+  check "7 to 6: four approvals on the roster stay pending, five merge"
+    (seq (status_of (vote (at_h yes7 12) (nth 2 atts7 "") true)) "pending" &&
+     seq (status_of (vote (vote (at_h yes7 12) (nth 2 atts7 "") true) (nth 3 atts7 "") true)) "merged"),
+  check "4 to 3: quorums 3/2 at 11, 3/1 at 12"
+    (pair_is (quorums (at_h m4 11)) 3 2 && pair_is (quorums (at_h m4 12)) 3 1),
+  check "4 to 3: the removed agent's no doesn't count at 12; one no on the roster rejects"
+    (seq (status_of (settled (at_h (vote m4 y4 false) 11))) "pending" &&
+     seq (status_of (settled (at_h (vote m4 y4 false) 12))) "pending" &&
+     seq (status_of (vote (at_h (vote m4 y4 false) 12) x4 false)) "rejected"),
+  check "rejoin: three at 15, four again at 20, quorums 3/1 then 3/2"
+    ((length (roster_now (at_h c4 15)) =? 3) && (length (roster_now (at_h c4 20)) =? 4) &&
+     mem y4 (roster_now (at_h c4 20)) && pair_is (quorums (at_h c4 15)) 3 1 && pair_is (quorums (at_h c4 20)) 3 2),
+  check "rejoin: a yes while removed doesn't count at 15, and counts once back at 20"
+    ((yes_of rejoin_votes =? 2) && seq (status_of rejoin_votes) "pending" &&
+     seq (status_of (settled (at_h rejoin_votes 20))) "merged"),
+  check "a removed leader's term ends though its merge is pending; at 11 it still leads"
+    (awaiting (maybe_end_term lead_gone) && seq (leader (maybe_end_term lead_gone)) "" &&
+     (pending_bid_id (maybe_end_term lead_gone) =? 1) &&
+     seq (leader (maybe_end_term (at_h lead_gone 11))) "a1" && negb (is_leader lead_gone "a1")),
+  check "a removed leader's proposal no longer counts as an approval"
+    ((yes_of lead_gone =? 0) && (yes_of (at_h lead_gone 11) =? 1)),
+  check "draw: five reveals of seven draw while all seven are on the roster"
+    (draws (draw_state ["a3", "a4", "a5", "a6", "a7"] [])),
+  check "draw: after a7 left, its reveal doesn't count: four of six wait"
+    (negb (draws (draw_state ["a3", "a4", "a5", "a6", "a7"] leave_a7)) &&
+     awaiting (maybe_draw (draw_state ["a3", "a4", "a5", "a6", "a7"] leave_a7))),
+  check "draw: five of six draw, never a7, and only a1 is held back"
+    (draws six_in && (length (eligible six_in) =? 5) && negb (mem "a7" (eligible six_in)) &&
+     (length (silent six_in) =? 1) && mem "a1" (silent six_in))
+].
