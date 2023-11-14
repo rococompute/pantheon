@@ -172,8 +172,10 @@ worth a note in this file rather than a workaround.
   the rate-limit hold (`llm_gate_of`) and writes their log lines, and
   `prompt_assemble` fills `{{F}}`, `{{REPOS}}`, `{{PLAN}}` and `{{REPO}}`
   with Soma's `replace_all`, `plan_open`, `listing_text`, `plan_text_of`
-  and `repo_text_of` (the 64 KB per file and 200 KB budget included). The
-  shell only counts calls, lists a checkout's files, reads a file at its
+  and `repo_text_of` (the 64 KB per file and 200 KB budget included).
+  `repo_read_text` reads and truncates each context file before reading the
+  next, so prompt assembly doesn't first retain every full context blob.
+  The shell only counts calls, lists a checkout's files, reads a file at its
   head, makes a fence token and runs the model process. A request held
   for a limit is kept raw and comes back as an `llm_release` event, so
   Soma assembles its prompt again when it is asked, as before. `perform`

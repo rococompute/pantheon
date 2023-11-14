@@ -420,3 +420,14 @@ Example llm_prompt_assembly :
   prompt_assemble "T" "{{REPOS}}" [] (fun _ => "{{F}}") (fun _ => "P") (fun r _ => r) = "{{F}}" /\
   prompt_assemble "T" "plain" ["calc"] (fun _ => "R") (fun _ => "P") (fun r _ => r) = "plain".
 Proof. repeat split; reflexivity. Qed.
+
+(** The incremental reader preserves ordering, missing files, and the
+    exhausted-budget note, including an empty file after exhaustion. *)
+Example llm_incremental_context :
+  repo_read_text "T" 4 6
+    (fun p => (p, lookup p [("a", "abcdef"), ("c", "")])) ["a", "b", "c"] =
+  append (shell_fence "T" "file a" (append "abcd" (append newline "(cut here: the file goes on)")))
+    (append (shell_fence "T" "file b" (append newline "(cut here: the file goes on)"))
+      (shell_fence "T" "file c" "")) /\
+  repo_read_text "T" 4 6 (fun p => (p, Some "unused")) [] = "".
+Proof. split; reflexivity. Qed.

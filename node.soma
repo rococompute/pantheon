@@ -602,15 +602,23 @@ plan_text_of (token : string) (plans : list (string * option string)) : string :
 
 (** a task's files, each cut at [cap] and all of them within [budget]
     characters, the cut ones included with their note; None: no such file *)
-Fixpoint repo_files_text (token : string) (cap budget : nat) (files : list (string * option string)) : string :=
+(** Read and truncate one file before reading the next. In particular, do
+    not build a list retaining every full context blob before budgeting. *)
+Fixpoint repo_read_text {A : Type} (token : string) (cap budget : nat)
+    (read : A -> string * option string) (files : list A) : string :=
   match files with
   | [] => ""
-  | (p, got) :: rest =>
+  | file :: rest =>
+      let (p, got) := read file in
       let c := match got with Some t => t | None => "(no such file at the head)" end in
       let lim := Nat.min budget cap in
       let c := if lim <? slen c then append (substr c 0 lim) (append newline "(cut here: the file goes on)") else c in
-      append (shell_fence token (append "file " p) c) (repo_files_text token cap (budget - slen c) rest)
+      append (shell_fence token (append "file " p) c)
+        (repo_read_text token cap (budget - slen c) read rest)
   end.
+
+repo_files_text (token : string) (cap budget : nat) (files : list (string * option string)) : string :=
+  repo_read_text token cap budget (fun file => file) files.
 
 (** None: no such repository *)
 repo_text_of (token r : string) (listing : option string) (files : list (string * option string))
@@ -642,8 +650,9 @@ llm_plan_text (h : node_t) (token : string) : string :=
 
 llm_repo_text (h : node_t) (token r : string) (paths : list string) : string :=
   if mem r (node_repo_names h)
-  then repo_text_of token r (Some (node_ls_files h r))
-         (map (fun p => (p, node_head_file h r p)) (filter shell_safe_path paths)) (64 * 1024) (200 * 1024)
+  then append (shell_fence token (append "files in " r) (listing_text (node_ls_files h r) 300))
+         (repo_read_text token (64 * 1024) (200 * 1024)
+           (fun p => (p, node_head_file h r p)) (filter shell_safe_path paths))
   else repo_text_of token r None [] 0 0.
 
 llm_call (h : node_t) (id kind prompt : string) (ctx : list string) : bool :=
