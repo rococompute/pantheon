@@ -25,3 +25,27 @@ Proof.
   rewrite H.
   We conclude that 4 - (4 - 1) / 3 = 3 /\ (4 - 1) / 3 + 1 = 2.
 Qed.
+
+(** Within one height, only r_lock can change the lock round, and it sets
+    it to the current round plus one. Decisions advance the height. *)
+Theorem lockr_changes_only_in_r_lock :
+  forall (c : consensus_state) (valid : list string -> bool)
+    (getv : list string) (c' : consensus_state) (outs : list (list string)),
+    rule c valid getv = Some (c', outs) -> height c' = height c ->
+    lockr c' = lockr c \/ lockr c' = round c + 1.
+Proof.
+  intros c valid getv c' outs Hr Hh.
+  unfold rule, orelse, r_fresh, r_reproposal, r_prevote_timer,
+    r_lock, r_nil, r_precommit_timer, r_decide, r_catch_up, r_skip in Hr.
+  unfold vote, send, mark, start_round, decide in Hr.
+  repeat first
+    [ progress cbn beta iota zeta in Hr
+    | match type of Hr with
+      | context [if ?b then _ else _] => destruct b eqn:?
+      | context [match ?x with Some _ => _ | None => _ end] =>
+          match type of x with option msg => destruct x eqn:? end
+      end ].
+  all: inversion Hr; subst; cbn [height lockr with_log with_step with_round with_once
+    with_validv with_validr with_lockv with_lockr with_block_ms new_consensus]
+    in *; auto; lia.
+Qed.
