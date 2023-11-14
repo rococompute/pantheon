@@ -74,3 +74,12 @@ existing diplomat sessions. Continue treating those sessions as having access
 to the node's secrets until the service and session migration lands. Future
 node homes under `net/AGENT` must stay 0700 and `inbox.json` 0600; the shared
 repositories must move outside those homes before the accounts can be used.
+
+The `users` and `permissions` setup commands preflight their destination paths
+before changing accounts or modes. They refuse symlinks in the destinations
+or their ancestors, including absent leaves below a symlinked directory. This
+also applies to the scripts emitted by `HOST_DRY=DIR`; inspect those scripts
+before deployment. Run setup with the network stopped and no concurrent
+changes to its directories: the preflight is not a filesystem race barrier.
+This hardens provisioning; the legacy service and diplomat session commands
+still need migration to the separate accounts described in P-1.
