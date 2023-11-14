@@ -45,5 +45,8 @@ Proof.
       | context [match ?x with Some _ => _ | None => _ end] =>
           match type of x with option msg => destruct x eqn:? end
       end ].
-  all: inversion Hr; subst; cbn [height lockr new_consensus] in *; auto; lia.
+  all: inversion Hr; subst;
+    cbn [height lockr new_consensus with_me with_nodes with_height with_round
+      with_step with_lockr with_lockv with_validr with_validv with_log with_once
+      with_block_ms] in *; auto; lia.
 Qed.
