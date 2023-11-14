@@ -471,6 +471,18 @@ ROOT
     for p in "$SVC/inbox.json" "$SVC/.ssh"; do
       printf 'if runuser -u %s -- test -r %s; then refuse %s; fi\n' "$u" "$(q "$p")" "$(q "$u can read $p: make it pantheon's alone")"
     done
+    # Directory read permission reveals names; search permission alone can
+    # expose a known private filename. Check both, as the session user,
+    # even on repeat provisioning after permissions have drifted.
+    for b in $AGENTS; do
+      [ "$a" != "$b" ] || continue
+      for p in "$INBOXES/$b" "$DIPS/$b"; do
+        for access in -r -x; do
+          printf 'if runuser -u %s -- test %s %s; then refuse %s; fi\n' "$u" "$access" "$(q "$p")" "$(q "$u can access $b's private path $p ($access): run scripts/host.sh users and review permissions before sessions")"
+        done
+      done
+    done
+    printf 'if runuser -u %s -- test -x %s; then refuse %s; fi\n' "$u" "$(q "$SVC/.ssh")" "$(q "$u can traverse pantheon's .ssh: make it pantheon's alone")"
   done
   cat <<'ROOT'
 stage=$(mktemp -d)
