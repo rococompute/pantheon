@@ -20,4 +20,4 @@
 + P-8: make a leader-draw reveal unique, and prove two accepted reveals for one draw are equal (docs/SECURITY-REVIEW-2.md P-8; market.soma reaches)
 P-4: keep consensus locks across a restart, with an e2e scenario restarting a locked node (docs/SECURITY-REVIEW-2.md P-4)
 + S-4 and P-7: CI refuses a bid that adds an unproved assumption (Admitted, an axiom, unk) or weakens the test it runs (docs/SECURITY-REVIEW-2.md S-4, P-7; the CI commands in scripts/sandbox.sh and scripts/host.sh)
-docs: SAFETY.md and README.md say which setup each claim holds in, and PROOFS.md lists every proved theorem (docs/SECURITY-REVIEW-2.md P-1, P-12, "Proofs and claims")
++ docs: SAFETY.md and README.md say which setup each claim holds in, and PROOFS.md lists every proved theorem (docs/SECURITY-REVIEW-2.md P-1, P-12, "Proofs and claims")

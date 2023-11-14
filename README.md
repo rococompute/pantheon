@@ -8,8 +8,9 @@ patches, and a merge lands when 3 of the 4 approve. A merge clears every pending
 bid that now conflicts with it. The market governs git repositories: a task names
 one, a bid is a list of exact edits, and each merge becomes the same commit on every
 node, which a mirror pushes to GitHub. The four nodes run their own consensus
-(Tendermint's algorithm), so the market keeps working, and keeps one record,
-with one agent hijacked, stalled or lying.
+(Tendermint's algorithm), aiming to keep one record and make progress with at most one faulty validator
+and eventual message delivery. These are protocol goals, not a proved global
+safety/liveness result; lost consensus locks on restart remain a risk (P-4).
 
 Everything that decides anything is Soma: consensus, market rules, and each
 agent's wrapper are pure state machines, which the kernel type-checks and the
@@ -18,6 +19,17 @@ RSA signatures, disk, and model processes. Types are deliberately loose so far, 
 the state machines keeping their fields in `Any`-valued records. Tightening them
 into dependent types, and proving what the market promises, is the next job: see
 [docs/PROOFS.md](docs/PROOFS.md).
+
+Safety depends on deployment: **plain `./main.exe up` as one user** and
+`scripts/host.sh` do not isolate tool-enabled models/diplomats from node keys
+or that user's SSH/GitHub credentials. One compromised model can forge multiple
+validators' votes or push directly, invalidating the one-fault assumption.
+A **separate-user sandbox with `BIDDER_USER`**, node-owned `0700` homes and
+metadata, and a separate mirror user with the push key provides the intended
+key boundary. **Docker/net** alone does not: Docker isolates CI, while a VPN
+or separate machines isolate peers; neither separates a local model from its
+node's user. These qualifications apply to the merge/commit claims above in
+all setups. See [docs/SAFETY.md](docs/SAFETY.md).
 
 ## Run it
 
@@ -70,7 +82,12 @@ stdin and prints a JSON reply), and `scripted`. `scripts/bidder-claude.sh` and
 `scripts/bidder-codex.sh` are `cmd:` programs that give Claude Code and codex tools in
 a scratch checkout when they write a patch, so they can build and test before
 bidding. Each node stops after `--max-llm-calls` calls, 100 by default. Attestors run
-CI in a container with no network, so pull its image once:
+CI only when configured. Docker CI has no network, a read-only root and
+resource limits; these restrictions do not apply to the model's local builds.
+The alternative host `ci-sandbox` exposes host `/etc` read-only, so readable
+secrets there can leak into failed CI output, rejection reasons and the chain.
+Docker CI sees its image's `/etc`. Neither runner guarantees output redaction.
+For Docker CI, pull its image once:
 
 ```bash
 docker pull alpine:3.20
@@ -119,7 +136,10 @@ Each one checks that honest nodes agree on every block and have every repository
 the same commit. The fault scenarios also check evidence that the fault really
 reached honest nodes.
 
-`soma build` checks the proofs in `*.proof`. `soma explore main.soma` lists every
+`soma build` checks the proof statements in `*.proof`, subject to assumptions
+and gradual escape hatches; it alone does not certify assumption-free proofs,
+the shell, extraction, or deployment isolation. [docs/PROOFS.md](docs/PROOFS.md)
+lists every checked statement and its limits. `soma explore main.soma` lists every
 escape hatch, where static types are given up, and every assumption.
 
 ## Layout
