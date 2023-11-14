@@ -51,6 +51,9 @@ note_refused : string -> string -> bool.
 boot_events : string -> list (list string).
 boot_snapshot : forall {C : Type}, string -> option C.
 replay_count : string -> string.
+(** Remember one replayed block in the catch-up table, without appending it
+    to blocks.log again. Soma parsed the line and checked it is the next height. *)
+node_remember_block : string -> string -> list string -> bool.
 (** The node's operations (node.soma's node_op, U-1), carried out: one
     operation in its wire form (node.soma's io_wire): "log" TEXT, "timer"
     MS EVENT..., "push" EVENT..., "send_all" FIELDS..., "send_peer" INDEX

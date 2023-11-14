@@ -1,0 +1,50 @@
+(** A blocks.log line becomes the next replay, or nothing. Fixed tokens. *)
+Import util shell market agent node.
+From Stdlib Require ExtrOcamlNatInt.
+Extract Inlined Constant Nat.div => "(fun a b -> if b = 0 then 0 else a / b)".
+Extract Inlined Constant Nat.modulo => "(fun a b -> if b = 0 then a else a mod b)".
+Extract Inlined Constant Stdlib.Strings.String.length => "String.length".
+Extract Inlined Constant Stdlib.Strings.String.get =>
+  "(fun n s -> if n < String.length s then Some (String.unsafe_get s n) else None)".
+Extract Inlined Constant Stdlib.Strings.String.substring =>
+  "(fun n m s -> let l = String.length s in if n >= l then """" else String.sub s n (min m (l - n)))".
+
+check (label got expected : string) : string :=
+  append (if seq got expected then "ok " else "FAIL ") label.
+
+joined (l : list string) : string := Stdlib.Strings.String.concat "|" l.
+
+replay_text (o : option (string * list string)) : string :=
+  match o with None => "none" | Some (h, txs) => append h (append "|" (joined txs)) end.
+
+(** {"h":1,"txs":["aa","bb"]} *)
+one : list string := ["A", "2", "h", "I", "1", "txs", "L", "2", "S", "aa", "S", "bb"].
+(** {"h":2,"txs":[]} *)
+two : list string := ["A", "2", "h", "I", "2", "txs", "L", "0"].
+(** {"h":"1","txs":[]} a string height is not the int the log writes *)
+strh : list string := ["A", "2", "h", "S", "1", "txs", "L", "0"].
+(** {"h":1,"txs":[3]} a transaction that is not a string *)
+badtx : list string := ["A", "2", "h", "I", "1", "txs", "L", "1", "I", "3"].
+(** {"txs":[]} no height *)
+noh : list string := ["A", "1", "txs", "L", "0"].
+
+checks : list string := [
+  check "the next height replays its transactions in order"
+    (replay_text (block_log_replay (Some one) "1")) "1|aa|bb",
+  check "a later height waits until the chain reaches it"
+    (replay_text (block_log_replay (Some two) "1")) "none",
+  check "height 2 is the next block once 1 has been replayed"
+    (replay_text (block_log_replay (Some two) "2")) "2|",
+  check "an empty transaction list is a real block"
+    (replay_text (block_log_replay (Some two) "2")) "2|",
+  check "a string where the height belongs is skipped"
+    (replay_text (block_log_replay (Some strh) "1")) "none",
+  check "a transaction that is not a string is skipped"
+    (replay_text (block_log_replay (Some badtx) "1")) "none",
+  check "a line with no height is skipped"
+    (replay_text (block_log_replay (Some noh) "1")) "none",
+  check "a line that is not JSON is skipped"
+    (replay_text (block_log_replay None "1")) "none"
+].
+
+main := print_lines checks.
