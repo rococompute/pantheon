@@ -375,7 +375,8 @@ reject_quorum (n : nat) : nat := faults n + 1.
     goes ahead at n - f reveals once reveal_window has passed (at all n at
     once). For n = 4 (f = 1): 3 approvals, 2 no votes, 3 reveals, as before
     n was a parameter. settle and maybe_draw decide with these; market.proof
-    checks them at n = 1, 4, 7 and 8 around each threshold. *)
+    checks them at n = 1 to 8 around each threshold, and proves for every n
+    that each decision turns exactly at its threshold. *)
 approved_at (n yes : nat) : bool := quorum n <=? yes.
 rejected_at (n no : nat) : bool := reject_quorum n <=? no.
 draw_ready (n revealed : nat) (window_passed : bool) : bool :=
