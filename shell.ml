@@ -136,8 +136,8 @@ let load_consensus path =
 let read_json p = try Yojson.Safe.from_file p with _ -> fail "cannot read %s: is this a home made by `pantheon init`?" p
 let lines p = if Sys.file_exists p then String.split_on_char '\n' (read_file p) |> List.filter (( <> ) "") else []
 
-(* A .plan's open items are computed in Soma: [plan_open] in util.soma,
-   handed to [node_open] as an argument (docs/SHELL-IN-SOMA.md). *)
+(* A .plan's open items are computed in Soma ([plan_open] in util.soma), and
+   so are the prompts that quote them (node.soma's perform_llm). *)
 
 (* Soma's record crosses the binding as a product, then is named here.
    Callers carry it explicitly; no command installs global callbacks. *)
@@ -145,10 +145,9 @@ type helpers = {
   edit_once : string -> string -> string -> string option;
   contains : string -> string -> bool;
   safe_path : string -> bool;
-  replace_all : string -> string -> string -> string;
 }
-let unpack_helpers (((edit_once, contains), safe_path), replace_all) =
-  { edit_once; contains; safe_path; replace_all }
+let unpack_helpers ((edit_once, contains), safe_path) =
+  { edit_once; contains; safe_path }
 let safe_path h p = h.safe_path p
 let edit_once h s old by = h.edit_once s old by
 (* Soma takes the pattern first; shell callers take the text first. *)
@@ -791,7 +790,13 @@ let argv () = Array.to_list Sys.argv |> List.tl
 
 (* The Soma node loop's handle: node_open registers the closures its setup
    built, and the loop drives them by this name (docs/SHELL-IN-SOMA.md 2). *)
-type node_handle = { h_events : unit -> string list list; h_perform : string list -> unit;
+type node_handle = { h_events : unit -> string list list;
+                     h_llm_budget : unit -> string * string;
+                     h_llm_hold : string -> string -> string -> string list -> unit;
+                     h_llm_start : string -> string -> string -> string -> string list -> unit;
+                     h_repo_names : unit -> string list;
+                     h_ls_files : string -> string;
+                     h_head_file : string -> string -> string option;
                      h_save : Obj.t -> unit; h_refuse : string -> unit; h_boot : string list list; h_snapshot : Obj.t option; h_replayed : string;
                      h_timer : string -> string list -> unit; h_log : string -> unit;
                      h_push : string list -> unit; h_draw : string * (string * string);
@@ -833,7 +838,15 @@ let node_handles : (string, node_handle) Hashtbl.t = Hashtbl.create 4
 let node_counter = ref 0
 let lookup_handle id = try Hashtbl.find node_handles id with Not_found -> fail "unknown node handle %s" id
 let events id = (lookup_handle id).h_events ()
-let perform id out = (lookup_handle id).h_perform out; true
+(* a model call's I/O: node.soma's perform_llm decides and builds the prompt *)
+let node_llm_budget id = (lookup_handle id).h_llm_budget ()
+let node_llm_hold id req kind prompt ctx = (lookup_handle id).h_llm_hold req kind prompt ctx; true
+let node_llm_start id req kind raw prompt ctx = (lookup_handle id).h_llm_start req kind raw prompt ctx; true
+let node_repo_names id = (lookup_handle id).h_repo_names ()
+let node_ls_files id r = (lookup_handle id).h_ls_files r
+let node_head_file id r p = (lookup_handle id).h_head_file r p
+let node_token () = random_hex 8
+let node_float_text f = Printf.sprintf "%.0f" f
 let save_snapshot id snap = (lookup_handle id).h_save (Obj.repr snap); true
 let note_refused id raw = (lookup_handle id).h_refuse raw; true
 let boot_events id = (lookup_handle id).h_boot
@@ -884,9 +897,8 @@ let node_merge_set_applied id r v = (lookup_handle id).h_merge_set_applied r v; 
 let node_merge_note_diverged id r entry = (lookup_handle id).h_merge_note_diverged r entry; true
 let rec forever f s = forever f (f s)
 
-let node_open plan_open packed json_fn home flags =
+let node_open packed json_fn home flags =
   let helpers = unpack_helpers packed in
-  let replace_all = helpers.replace_all in
   soma_shallow_json := json_fn;
   Sys.set_signal Sys.sigpipe Sys.Signal_ignore;
   (* jobs run from scratch directories: every path the node hands out is absolute *)
@@ -1057,40 +1069,9 @@ let node_open plan_open packed json_fn home flags =
   let model_env () =
     Unix.environment () |> Array.to_list |> List.filter (fun kv -> not (String.length kv > 9 && String.sub kv 0 9 = "PANTHEON_")) |> Array.of_list
   in
-  (* What a prompt asks for from the checkouts. The fence token is fresh and
-     random, and Soma's fences defang "{{", so nothing quoted can close one. *)
-  let fence_text token label body = Printf.sprintf "<<<UNTRUSTED %s %s>>>\n%s\n<<<END UNTRUSTED %s>>>\n" token label body token in
-  let listing n cap =
-    let fs = List.filter (( <> ) "") (String.split_on_char '\n' (git_out (rdir n) [ "ls-files" ])) in
-    let shown = List.filteri (fun i _ -> i < cap) fs in
-    String.concat "\n" shown ^ (if List.length fs > cap then Printf.sprintf "\n(and %d more)" (List.length fs - cap) else "")
-  in
-  let repos_text token = String.concat "" (List.map (fun (n, _, _, _) -> fence_text token ("files in " ^ n) (listing n 200)) repos) in
-  (* Each repository's .plan, at its head: only the open items go in a prompt,
-     the file itself stays in the repository (docs/PLAN.md) *)
-  let plan_text token =
-    let parts = List.filter_map (fun (n, _, _, _) ->
-        let ok, c = git (rdir n) [ "show"; "HEAD:.plan" ] in
-        if not ok then None
-        else match plan_open c with
-          | [] -> Some (fence_text token ("plan of " ^ n ^ ": open items") "(none: every item is done or dropped)")
-          | items -> Some (fence_text token ("plan of " ^ n ^ ": open items") (String.concat "\n" items))) repos in
-    if parts = [] then "(no repository has a .plan)\n" else String.concat "" parts
-  in
-  let repo_text token r paths =
-    if not (List.exists (fun (n, _, _, _) -> n = r) repos) then "(no repository " ^ r ^ ")\n"
-    else
-      let budget = ref (200 * 1024) in
-      fence_text token ("files in " ^ r) (listing r 300)
-      ^ String.concat "" (List.map (fun p ->
-            if not (safe_path helpers p) then ""
-            else
-              let ok, c = git (rdir r) [ "show"; "HEAD:" ^ p ] in
-              let c = if not ok then "(no such file at the head)" else c in
-              let c = if String.length c > min !budget (64 * 1024) then String.sub c 0 (min !budget (64 * 1024)) ^ "\n(cut here: the file goes on)" else c in
-              budget := max 0 (!budget - String.length c);
-              fence_text token ("file " ^ p) c) paths)
-  in
+  (* What a prompt asks for from the checkouts is assembled in Soma
+     (node.soma's perform_llm): the shell lists files and reads them at a
+     checkout's head. *)
   (* a model call: a scratch directory, no keys in reach; built-in backends
      have no tools, and a cmd: backend asked for a patch gets a fresh checkout *)
   (* A model's subscription or rate limit: its calls are held, not failed, until
@@ -1135,19 +1116,15 @@ let node_open plan_open packed json_fn home flags =
     limit_reason := String.sub text 0 (min 300 (String.length text));
     probing := false;
     say "LIMIT: %s says it has hit its limit, so its model calls are held for %.0f minutes: %s" !backend (wait /. 60.) !limit_reason in
-  let hold f = held := f :: !held in
-  let rec call_model id kind prompt0 ctx =
-    let prompt = prompt0 in
-    let token = random_hex 8 in
-    let prompt = replace_all prompt "{{F}}" token in
-    let prompt = if contains helpers prompt "{{REPOS}}" then replace_all prompt "{{REPOS}}" (repos_text token) else prompt in
-    let prompt = if contains helpers prompt "{{PLAN}}" then replace_all prompt "{{PLAN}}" (plan_text token) else prompt in
-    let prompt = match ctx with r :: paths when contains helpers prompt "{{REPO}}" -> replace_all prompt "{{REPO}}" (repo_text token r paths) | _ -> prompt in
+  (* a held request, raw: Soma assembles its prompt again when it's asked *)
+  let hold id kind prompt0 ctx = held := (id, kind, prompt0, ctx) :: !held in
+  (* the model process for a prompt Soma assembled from prompt0 *)
+  let call_model id kind prompt0 prompt ctx =
     let reply text =
       let failed = String.length text > 0 && text.[0] = '!' in
       if (failed || json_in_reply text = None) && is_limit text then begin
         note_limit (if failed then String.sub text 1 (String.length text - 1) else text);
-        hold (fun () -> call_model id kind prompt0 ctx)
+        hold id kind prompt0 ctx
       end
       else if failed then (limit_backoff := 900.; probing := false; push [ "llm_error"; id; String.sub text 1 (String.length text - 1) ])
       else begin
@@ -1318,18 +1295,6 @@ let node_open plan_open packed json_fn home flags =
     if not (git_ok ~extra:who ~stdin:msg dir [ "commit"; "-q"; "--allow-empty"; "--no-verify"; "--cleanup=verbatim"; "-F"; "-" ]) then None
     else Some (git_out dir [ "rev-parse"; "HEAD^{tree}" ], git_out dir [ "rev-parse"; "--short"; "HEAD" ])
   in
-  let handle out =
-    match out with
-    | "llm" :: id :: kind :: prompt :: ctx ->
-        incr calls;
-        if !calls > !max_calls then push [ "llm_error"; id; Printf.sprintf "model call budget of %d used up: restart with a higher --max-llm-calls" !max_calls ]
-        else if Unix.gettimeofday () < !limited_until then begin
-          say "holding request %s (a %s): %s is limited for %.0f more minutes" id kind !backend ((!limited_until -. Unix.gettimeofday ()) /. 60.);
-          hold (fun () -> call_model id kind prompt ctx)
-        end
-        else (say "asking %s for a %s (request %s, call %d of %d)" !backend kind id !calls !max_calls; call_model id kind prompt ctx)
-    | _ -> ()
-  in
   let debug = (try Sys.getenv "PANTHEON_DEBUG" with Not_found -> "") <> "" in
   let brief l = String.concat " " (List.map (fun f -> if String.length f > 16 then String.sub f 0 16 else f) (List.filteri (fun i _ -> i < 7) l)) in
   let checkpoint_path = Filename.concat home "consensus.state" in
@@ -1416,14 +1381,17 @@ let node_open plan_open packed json_fn home flags =
     end;
     (* after a limit's wait, one held request first: only when it comes back
        without the limit (which resets the backoff) do the rest go *)
+    (* they go back to Soma first among this turn's events, as llm_release *)
+    let released = ref [] in
+    let release (id, kind, prompt0, ctx) = released := ("llm_release" :: id :: kind :: prompt0 :: ctx) :: !released in
     if !held <> [] && now >= !limited_until && not !probing then begin
       let hs = List.rev !held in
       if !limit_backoff > 900. then begin
         say "the limit's wait is over: asking %s one held request first (%d held)" !backend (List.length hs);
-        held := List.rev (List.tl hs); probing := true; (List.hd hs) ()
+        held := List.rev (List.tl hs); probing := true; release (List.hd hs)
       end else begin
         say "%s answers again: asking its %d held requests" !backend (List.length hs);
-        held := []; List.iter (fun f -> f ()) hs
+        held := []; List.iter release hs
       end
     end;
     if now -. !last_inbox > 1. then begin
@@ -1576,12 +1544,18 @@ let node_open plan_open packed json_fn home flags =
     let evs = ref [] in
     while not (Queue.is_empty queue) do evs := Queue.pop queue :: !evs done;
     if debug then List.iter (fun ev -> say "event: %s" (brief ev)) (List.rev !evs);
-    List.rev !evs
+    List.rev_append !released (List.rev !evs)
   in
   let handle_id = string_of_int !node_counter in
   incr node_counter;
   Hashtbl.replace node_handles handle_id
-    { h_events = collect_events; h_perform = handle;
+    { h_events = collect_events;
+      h_llm_budget = (fun () -> incr calls; (string_of_int !calls, string_of_int !max_calls));
+      h_llm_hold = hold;
+      h_llm_start = call_model;
+      h_repo_names = (fun () -> List.map (fun (n, _, _, _) -> n) repos);
+      h_ls_files = (fun r -> git_out (rdir r) [ "ls-files" ]);
+      h_head_file = (fun r p -> let ok, c = git (rdir r) [ "show"; "HEAD:" ^ p ] in if ok then Some c else None);
       h_save = (fun snap -> let c = Obj.obj snap in
                 match !saved with Some p when p == c || p = c -> () | _ -> save_consensus checkpoint_path c; saved := Some c);
       h_refuse = (fun raw -> if Hashtbl.length refused < 10000 then Hashtbl.replace refused raw ());

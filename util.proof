@@ -27,6 +27,32 @@ Example replace_all_is_literal : replace_all "{{F}} x {{F}}" "{{F}}" "T" = "T x 
   /\ replace_all "abc" "{{F}}" "x" = "abc" /\ replace_all "ab" "b" "{{b}}" = "a{{b}}".
 Proof. repeat split; reflexivity. Qed.
 
+(** The prompt's placeholders: overlapping matches go left to right without
+    overlap, an empty pattern changes nothing, an absent one changes
+    nothing, and the inserted text isn't scanned again. *)
+Example replace_all_overlapping_empty_absent :
+  replace_all "aaaa" "aa" "b" = "bb" /\ replace_all "aaaaa" "aa" "b" = "bba"
+  /\ replace_all "{{REPOS}}" "{{REPO}}" "x" = "{{REPOS}}"
+  /\ replace_all "" "" "x" = "" /\ replace_all "" "a" "x" = ""
+  /\ replace_all "x {{F}}" "" "T" = "x {{F}}"
+  /\ replace_all "no placeholder here" "{{PLAN}}" "P" = "no placeholder here"
+  /\ replace_all "{{F}}{{F}}" "{{F}}" "{{F}}" = "{{F}}{{F}}".
+Proof. repeat split; reflexivity. Qed.
+
+Theorem replace_all_empty_pattern : forall s r, replace_all s "" r = s.
+Proof. intros s r. reflexivity. Qed.
+
+(** A plan's open items: open lines in order, trimmed; marked done ("* ", "+ "),
+    dropped (-), notes (#), dates and blank lines left out. *)
+Example plan_open_open_marked_dropped :
+  plan_open (append "# a note" (append newline (append "2026-11-10" (append newline
+    (append "first open" (append newline (append "+ marked done" (append newline
+    (append "* done today" (append newline (append "- dropped" (append newline
+    (append "  second open  " (append newline (append "" (append newline "-"))))))))))))))))
+  = ["first open", "second open"]
+  /\ plan_open "" = [] /\ plan_open "+done" = ["+done"].
+Proof. repeat split; reflexivity. Qed.
+
 (** overlapping places count: "aa" is twice in "aaa", so an edit of it is ambiguous *)
 Example positions_two_at_most : positions "abab" "ab" = 0 :: 2 :: [] /\ positions "aaa" "aa" = 0 :: 1 :: []
   /\ positions "ababab" "ab" = 0 :: 2 :: [] /\ positions "abc" "c" = [2] /\ positions "abc" "x" = []
@@ -73,19 +99,17 @@ Proof. repeat split; reflexivity. Qed.
 (** The actual product sent to node_open: project each callback and use it
     on pure inputs, including failures and asymmetric contains arguments. *)
 Example packed_node_helpers_work :
-  let '(edit, has, path, replace) := pack_helpers node_helpers in
+  let '(edit, has, path) := pack_helpers node_helpers in
   edit "abc" "b" "X" = Some "aXc" /\
   edit "aaa" "aa" "X" = None /\
   edit "abc" "z" "X" = None /\
   has "bc" "abc" = true /\ has "abc" "bc" = false /\
   path "src/a..b" = true /\ path "../escape" = false /\
-  path "sub/.GiT/config" = false /\
-  replace "aaa" "aa" "b" = "ba" /\ replace "abc" "" "X" = "abc".
+  path "sub/.GiT/config" = false.
 Proof. repeat split; reflexivity. Qed.
 
 Example helper_record_agrees :
   helper_edit_once node_helpers = edit_once /\
   helper_contains node_helpers = contains /\
-  helper_safe_path node_helpers = shell_safe_path /\
-  helper_replace_all node_helpers = replace_all.
+  helper_safe_path node_helpers = shell_safe_path.
 Proof. repeat split; reflexivity. Qed.
