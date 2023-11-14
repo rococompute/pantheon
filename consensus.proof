@@ -225,3 +225,41 @@ Proof.
   - split; [rewrite E; apply le_n | left; exact E].
   - split; [apply (r_lock_change_moves_forward c c' Hinv E) | right; exact E].
 Qed.
+
+(** Toward one precommit per round (docs/PROOFS.md, item 2): each rule
+    that broadcasts a precommit does so only from the prevote step, and
+    moves to the precommit step. *)
+Lemma r_lock_broadcast_precommit_step :
+  forall (c : consensus_state) (valid : list string -> bool) (c' : consensus_state)
+    (outs : list (list string)) (x : list string),
+    r_lock c valid = Some (c', outs) -> In x outs ->
+    nth 0 x "" = "broadcast" -> nth 1 x "" = "precommit" -> step c = 1 /\ step c' = 2.
+Proof.
+  intros c valid c' outs x H Hin Hb Hpc.
+  unfold r_lock, vote, send, mark in H.
+  repeat first
+    [ progress cbn beta iota zeta in H
+    | match type of H with
+      | context [if ?b then _ else _] => destruct b eqn:?
+      | context [match ?y with Some _ => _ | None => _ end] =>
+          match type of y with option msg => destruct y eqn:? end
+      end ].
+  all: inversion H; subst;
+    cbn [step set_round set_step set_lockr set_lockv set_validr set_validv
+      set_log set_once set_block_ms In] in *.
+  all: try contradiction.
+  all: split; [apply Nat.eqb_eq; assumption | reflexivity].
+Qed.
+
+Lemma r_nil_broadcast_precommit_step :
+  forall (c c' : consensus_state) (outs : list (list string)) (x : list string),
+    r_nil c = Some (c', outs) -> In x outs ->
+    nth 0 x "" = "broadcast" -> nth 1 x "" = "precommit" -> step c = 1 /\ step c' = 2.
+Proof.
+  intros c c' outs x H Hin Hb Hpc.
+  unfold r_nil, vote, send in H.
+  destruct ((step c =? 1) && _) eqn:Hg; [|discriminate H].
+  apply andb_split in Hg. destruct Hg as [Hs _]. apply Nat.eqb_eq in Hs.
+  cbn beta iota zeta in H. inversion H; subst.
+  cbn [step set_step set_log]. split; [exact Hs | reflexivity].
+Qed.
