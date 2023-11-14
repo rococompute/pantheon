@@ -34,6 +34,12 @@ if [ -z "$branch" ]; then
   branch=$(git ls-remote --symref "$remote" HEAD 2>/dev/null | sed -n 's|^ref: refs/heads/\(.*\)	HEAD$|\1|p')
   [ -n "$branch" ] || die "can't tell $remote's default branch (can this machine read it?): name the branch: scripts/publish.sh REPO REMOTE BRANCH"
 fi
+# A local working checkout must stay untouched when dirty or conflicting.
+checkout=false
+if [ -d "$remote" ] && [ "$(git -C "$remote" rev-parse --is-bare-repository 2>/dev/null)" = false ]; then
+  checkout=true
+  [ -z "$(git -C "$remote" status --porcelain --untracked-files=all)" ] || die "$remote: uncommitted changes; checkout left unchanged"
+fi
 scratch=${PUBLISH_DIR:-$(cd "$repo/../.." && pwd)/publish}/$name.git
 [ -d "$scratch" ] || git init -q --bare "$scratch" || die "can't make $scratch"
 g() { git -C "$scratch" "$@"; }
@@ -41,7 +47,13 @@ head=$(git -C "$repo" rev-parse HEAD) || die "$repo has no commits"
 short=$(git -C "$repo" rev-parse --short HEAD)
 g fetch -q "$repo" "+HEAD:refs/market/head" || die "can't read the market's head from $repo"
 push() { # COMMIT WHAT
-  out=$(g push -q "$remote" "$1:refs/heads/$branch" 2>&1) && return 0
+  if $checkout; then
+    # updateInstead updates the checked-out branch and its work tree together,
+    # and refuses if the index or work tree changed since the check above.
+    out=$(g push -q --receive-pack='git -c receive.denyCurrentBranch=updateInstead receive-pack' "$remote" "$1:refs/heads/$branch" 2>&1) && return 0
+  else
+    out=$(g push -q "$remote" "$1:refs/heads/$branch" 2>&1) && return 0
+  fi
   case $out in
     *"non-fast-forward"*|*"fetch first"*|*rejected*) say "$branch on $remote moved while publishing; the next publish tries again: $out" ;;
     *) say "can't push to $remote: $out. This machine needs a key that can write $branch there (gh auth login with SSH adds this machine's key; or a deploy key with write access)" ;;
@@ -66,6 +78,10 @@ if mt=$(g merge-tree --write-tree "$d" "$head" 2>/dev/null); then
   msg=$(printf "Merge the market's head into %s\n\n%s\n\nPantheon-Head: %s\n" "$branch" "$(g log -1 --format=%s "$head")" "$head")
   c=$(printf '%s\n' "$msg" | g -c user.name="Pantheon mirror" -c user.email="pantheon-mirror@localhost" commit-tree "$tree" -p "$d" -p "$head") || die "can't write the merge commit"
   push "$c"; say "$name: $branch on $remote had commits the market doesn't; merged the market's head, $short, into it"; exit 0
+fi
+if $checkout; then
+  say "$remote: the market's head conflicts with $branch; checkout left unchanged"
+  exit 2
 fi
 out=$(g push -q --force "$remote" "$head:refs/heads/pantheon/unmerged" 2>&1) || die "the market's head conflicts with $branch on $remote, and pushing it to pantheon/unmerged failed too: $out"
 echo "publish: $name: the market's head ($short) conflicts with $branch on $remote, which has commits the market doesn't. It's on pantheon/unmerged: merge that into $branch by hand (git merge origin/pantheon/unmerged), and publishing goes on from there." >&2

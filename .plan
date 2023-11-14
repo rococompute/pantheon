@@ -9,7 +9,7 @@
 
 2026-11-09
 + P-2: the node's git runs a clean filter a model writes into PANTHEON_GITDIR's config when node and model are one user: read the checkout without running anything its config names (docs/SECURITY-REVIEW-2.md P-2; shell.ml edits_of_checkout; a test/edits.sh case with the hostile config in PANTHEON_GITDIR itself)
-sandbox fetch publishes the market's merges to each local checkout's default branch, not pantheon/merged: fast-forward, merge as publish.sh does, leave a dirty or conflicting checkout alone and say so (scripts/sandbox.sh cmd_fetch, scripts/publish.sh, docs/SANDBOX.md; a test/publish.sh case against a non-bare checkout)
++ sandbox fetch publishes the market's merges to each local checkout's default branch, not pantheon/merged: fast-forward, merge as publish.sh does, leave a dirty or conflicting checkout alone and say so (scripts/sandbox.sh cmd_fetch, scripts/publish.sh, docs/SANDBOX.md; a test/publish.sh case against a non-bare checkout)
 P-10: make the node's own path absolute at startup, so `./main.exe` works (docs/SECURITY-REVIEW-2.md P-10)
 P-9: genesis requires exactly four parts, with unique names and unique keys (docs/SECURITY-REVIEW-2.md P-9)
 P-17: refuse NUL and control characters in specs, notes and reasons; give git the merge commit's message on stdin (docs/SECURITY-REVIEW-2.md P-17)

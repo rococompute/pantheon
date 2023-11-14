@@ -112,15 +112,18 @@ headless.
 ```bash
 scripts/sandbox.sh status          # each node's chain, tasks, bids and heads
 scripts/sandbox.sh logs claude     # a node's log
-scripts/sandbox.sh fetch           # each repository's head as the branch pantheon/merged of your checkout
+scripts/sandbox.sh fetch           # publish each repository's head to your checkout's default branch
 scripts/sandbox.sh shell claude    # a shell in the VM, as Lima's user (sudo works)
 ```
 
-`fetch` only fast-forwards `pantheon/merged` in your local checkout: the
-sandbox's network has no GitHub remote. Merge it into your default branch
-right after (`git merge pantheon/merged`), so the market's work doesn't sit on
-a branch nobody looks at; a network with a GitHub remote does this itself
-(`scripts/mirror.sh` publishes to the default branch).
+`fetch` publishes to each local checkout's default branch (the branch its
+HEAD names), using `scripts/publish.sh`: it fast-forwards when possible,
+or creates a merge commit containing both local commits and the market's
+work. A checkout with uncommitted changes (including untracked files), or
+one whose commits conflict with the market, is left unchanged, with a
+message naming the checkout and the reason. Conflicts are checked in a
+scratch repository, so no merge is left in progress. No `pantheon/merged`
+branch is created. The sandbox's network has no GitHub remote.
 
 ## A cloud agent's budget
 

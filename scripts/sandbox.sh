@@ -384,17 +384,23 @@ cmd_epoch() {
   say "epoch ready. Start it: GOAL_FILE=... scripts/sandbox.sh start"
 }
 
-# Each governed repository's head on one node, as the branch pantheon/merged
-# of your checkout. Fast-forward only, like scripts/mirror.sh.
+# Publish through the same scratch merge logic as the network's mirror.
 cmd_fetch() {
   a=${1:-$(echo $AGENTS | cut -d' ' -f1)}; v=$(vm "$a")
   export GIT_SSH_COMMAND="ssh -F $HOME/.lima/$v/ssh.config"
+  tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
   for r in pantheon:$here soma:$SOMA_CHECKOUT; do
     name=${r%%:*} dst=${r#*:}
-    git -C "$dst" fetch -q --upload-pack "sudo -u pantheon git-upload-pack" "lima-$v:$HOMEDIR/repos/$name" "HEAD:refs/heads/pantheon/merged" \
-      && say "$name: pantheon/merged is $(git -C "$dst" log -1 --format='%h %s' pantheon/merged)" \
-      || say "$name: couldn't fast-forward pantheon/merged from $a (see above)"
+    git init -q --bare "$tmp/$name.git"
+    if git -C "$tmp/$name.git" fetch -q --upload-pack "sudo -u pantheon git-upload-pack" "lima-$v:$HOMEDIR/repos/$name" HEAD; then
+      git -C "$tmp/$name.git" update-ref HEAD FETCH_HEAD
+      PUBLISH_DIR="$tmp/publish" sh "$here/scripts/publish.sh" "$tmp/$name.git" "$dst" \
+        || say "$dst: couldn't publish from $a (see above)"
+    else
+      say "$dst: couldn't fetch from $a (see above)"
+    fi
   done
+  rm -rf "$tmp"; trap - EXIT
 }
 
 c=${1:-}; [ $# -gt 0 ] && shift
