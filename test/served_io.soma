@@ -1,0 +1,95 @@
+(** Fixed answers through the served I/O boundary and the actual native
+    float formatter/parser used by the production operation. No clock race. *)
+Import util shell node.
+From Stdlib Require ExtrOcamlNatInt.
+check (label : string) (ok : bool) : string := append (if ok then "ok " else "FAIL ") label.
+float_eq (a b : float) : bool := negb (PrimFloat.ltb a b) && negb (PrimFloat.ltb b a).
+Fixpoint wires_eq (a b : list (list string)) : bool := match a,b with
+  | [],[] => true | x::xs,y::ys => eq_strs x y && wires_eq xs ys | _,_ => false end.
+Fixpoint nats_eq (a b : list nat) : bool := match a,b with
+  | [],[] => true | x::xs,y::ys => (x =? y) && nats_eq xs ys | _,_ => false end.
+write (now : float) : node_op := IoMarkServed "peer" "3" (node_float_wire now).
+read_wire : list string := ["served_at","peer","3"].
+Fixpoint scripted_effects (program : list node_op) (answers : list (list string * (bool * float)))
+    : bool * list (list string) :=
+  match program,answers with
+  | [],[] => (true,[])
+  | op::rest,(expected,answer)::more =>
+      let wire := io_wire op in
+      if eq_strs wire expected && fst answer then
+        let (ok,trace) := scripted_effects rest more in (ok,wire::trace)
+      else (false,[wire])
+  | _,_ => (false,[])
+  end.
+Record script_result := { script_ok : bool; script_trace : list (list string); script_reads : list nat }.
+scripted_catchup (current : string) (has_peer silent : bool)
+    (answers : list (list string * (bool * float))) : script_result :=
+  match answers with
+  | (clock,now)::(read,answer)::more =>
+      if eq_strs clock ["clock"] && eq_strs read read_wire then
+        let actions := catchup_plan "peer" "3" current (snd now) (served_result answer) has_peer silent in
+        let writes := flat_map (fun a => match action_io a with Some op => [op] | None => [] end) actions in
+        let reads := flat_map (fun a => match a with ReadPeerBlock _ height => [height] | _ => [] end) actions in
+        let (ok,trace) := scripted_effects writes more in
+        {| script_ok := ok; script_trace := [clock,read]++trace;
+           script_reads := if ok then reads else [] |}
+      else {| script_ok := false; script_trace := []; script_reads := [] |}
+  | _ => {| script_ok := false; script_trace := []; script_reads := [] |}
+  end.
+script_is (current : string) (has_peer silent : bool)
+    (answers : list (list string * (bool * float))) (ok : bool)
+    (trace : list (list string)) (reads : list nat) : bool :=
+  let result := scripted_catchup current has_peer silent answers in
+  Bool.eqb (script_ok result) ok && wires_eq (script_trace result) trace && nats_eq (script_reads result) reads.
+prefix (now : float) (last : bool * float) : list (list string * (bool * float)) :=
+  [(["clock"],(true,now)),(read_wire,last)].
+transport (t : float) : float := node_float_of_digits (node_float_wire t).
+not_due (now previous : float) : bool := negb (catchup_due now (Some (transport previous))).
+due (now previous : float) : bool := catchup_due now (Some (transport previous)).
+roundtrip (s : string) : bool := let f := node_float_of_digits s in float_eq f (transport f).
+wire_roundtrip (op : node_op) : bool := match io_of_wire (io_wire op) with
+  Some parsed => eq_strs (io_wire parsed) (io_wire op) | None => false end.
+checks : list string := [
+ check "read wire" (eq_strs (io_wire (IoServedAt "peer" "3")) read_wire),
+ check "lossless quarter wire" (eq_strs (io_wire (write 100.25%float)) ["mark_served","peer","3","100.25"]),
+ check "zero timestamp is present" (match served_result (true,0%float) with Some f => float_eq f 0%float | _ => false end),
+ check "missing timestamp is absent" (match served_result (false,100.25%float) with None => true | _ => false end),
+ check "marker names roundtrip" (wire_roundtrip (IoMarkServed "served_at" "mark_served" "100.25") && wire_roundtrip (IoServedAt "" "")),
+ check "malformed read arity" (match io_of_wire ["served_at","peer"] with None => true | _ => false end),
+ check "malformed write arity" (match io_of_wire ["mark_served","peer","3"] with None => true | _ => false end),
+ check "no premature retry after rounding down" (not_due 102%float 100.25%float),
+ check "quarter boundary equality" (due 102.25%float 100.25%float),
+ check "quarter just before boundary" (not_due 102.249999%float 100.25%float),
+ check "quarter just after boundary" (due 102.250001%float 100.25%float),
+ check "no late retry after rounding up" (due 102.75%float 100.75%float),
+ check "three quarter just before boundary" (not_due 102.749999%float 100.75%float),
+ check "high precision epoch timestamp" (roundtrip "1700000000.1234567"),
+ check "production codec finite range" (forallb roundtrip ["0","-0","0.1","-0.1","100.25","100.75","1.0000000000000002","9007199254740991","1e-300","1e300","4.9406564584124654e-324","1.7976931348623157e308"]),
+ check "negative zero retained" (seq (node_float_wire (node_float_of_digits "-0")) "-0"),
+ check "display formatting preserved" (seq (node_float_text 100.25%float) "100" && seq (node_float_text 100.75%float) "101"),
+ check "missing read writes before block reads" (script_is "5" true false
+   (prefix 100.25%float (false,0%float) ++ [(io_wire (write 100.25%float),(true,0%float))])
+   true [["clock"],read_wire,io_wire (write 100.25%float)] [3,4]),
+ check "present read suppresses all effects" (script_is "5" true false (prefix 102%float (true,100.25%float)) true [["clock"],read_wire] []),
+ check "exact fractional boundary issues write" (script_is "5" true false
+   (prefix 102.25%float (true,100.25%float) ++ [(io_wire (write 102.25%float),(true,0%float))])
+   true [["clock"],read_wire,io_wire (write 102.25%float)] [3,4]),
+ check "failed write prevents block reads" (script_is "5" true false
+   (prefix 100.25%float (false,0%float) ++ [(io_wire (write 100.25%float),(false,0%float))])
+   false [["clock"],read_wire,io_wire (write 100.25%float)] []),
+ check "silent still remembers timestamp" (script_is "5" true true
+   (prefix 100.25%float (false,0%float) ++ [(io_wire (write 100.25%float),(true,0%float))])
+   true [["clock"],read_wire,io_wire (write 100.25%float)] []),
+ check "absent peer still remembers timestamp" (script_is "5" false false
+   (prefix 100.25%float (false,0%float) ++ [(io_wire (write 100.25%float),(true,0%float))])
+   true [["clock"],read_wire,io_wire (write 100.25%float)] []),
+ check "empty range still remembers timestamp" (script_is "3" true false
+   (prefix 100.25%float (false,0%float) ++ [(io_wire (write 100.25%float),(true,0%float))])
+   true [["clock"],read_wire,io_wire (write 100.25%float)] []),
+ check "missing script reply refuses" (script_is "5" true false [] false [] []),
+ check "unexpected reply refuses" (script_is "5" true false [(["wrong"],(true,100.25%float)),(read_wire,(false,0%float))] false [] []),
+ check "height and peer are independent wire keys" (negb (eq_strs (io_wire (IoServedAt "peer" "3")) (io_wire (IoServedAt "other" "3"))) &&
+   negb (eq_strs (io_wire (IoServedAt "peer" "3")) (io_wire (IoServedAt "peer" "4")))),
+ check "remember action uses production codec" (match action_io (RememberPeer "peer" "3" 100.25%float) with Some op => eq_strs (io_wire op) ["mark_served","peer","3","100.25"] | None => false end)
+].
+main := print_lines checks.

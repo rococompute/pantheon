@@ -318,7 +318,9 @@ Inductive node_op :=
 | IoJobExpire (job : string)
 | IoPeerExists (who : string)
 | IoNonceFlooded
-| IoIsDiverged (repo : string).
+| IoIsDiverged (repo : string)
+| IoServedAt (who first : string)
+| IoMarkServed (who first timestamp : string).
 
 (** Two arbitrary lists on one wire: tagged field/value pairs, then the
     alternate-list marker. A marker occurring as a value is never a tag.
@@ -361,6 +363,8 @@ io_wire (op : node_op) : list string :=
   | IoPeerExists who => ["peer_exists", who]
   | IoNonceFlooded => ["nonce_flooded"]
   | IoIsDiverged repo => ["is_diverged", repo]
+  | IoServedAt who first => ["served_at", who, first]
+  | IoMarkServed who first timestamp => ["mark_served", who, first, timestamp]
   end.
 
 io_of_wire (w : list string) : option node_op :=
@@ -393,6 +397,8 @@ io_of_wire (w : list string) : option node_op :=
   | ["peer_exists", who] => Some (IoPeerExists who)
   | ["nonce_flooded"] => Some IoNonceFlooded
   | ["is_diverged", repo] => Some (IoIsDiverged repo)
+  | ["served_at", who, first] => Some (IoServedAt who first)
+  | ["mark_served", who, first, timestamp] => Some (IoMarkServed who first timestamp)
   | _ => None
   end.
 
@@ -416,6 +422,13 @@ io_read_bool (h : node_t) (op : node_op) : bool := fst (node_io h (io_wire op)).
     time; the first only says the read happened. *)
 io_now (h : node_t) : float := snd (node_io h (io_wire IoClock)).
 
+(** A missing served record uses false as presence, not effect failure.
+    The raw timestamp result is never passed through display formatting. *)
+served_result (answer : bool * float) : option float :=
+  if fst answer then Some (snd answer) else None.
+io_served_at (h : node_t) (who first : string) : option float :=
+  served_result (node_io h (io_wire (IoServedAt who first))).
+
 io_log (h : node_t) (text : string) : bool := io_do h (IoLog text).
 
 io_push (h : node_t) (ev : list string) : bool := io_do h (IoQueue ev).
@@ -430,6 +443,7 @@ action_io (action : output_action) : option node_op :=
   | StoreAction height txs => Some (IoStore height txs)
   | RememberVote slot vid fields => Some (IoSignVote slot vid fields)
   | RememberBroadcast height kind fields alternate => Some (IoRememberBroadcast height kind fields alternate)
+  | RememberPeer who first now => Some (IoMarkServed who first (node_float_wire now))
   | MarkNonceFlood => Some IoMarkNonceFlood
   | _ => None
   end.
@@ -608,7 +622,7 @@ carry_output_action (h : node_t) (action : output_action) : bool :=
   | LogAction text => io_do h (IoLog text)
   | QueueAction ev => io_do h (IoQueue ev)
   | StoreAction height txs => io_do h (IoStore height txs)
-  | RememberPeer who first now => node_mark_served h who first now
+  | RememberPeer who first now => io_do h (IoMarkServed who first (node_float_wire now))
   | MarkNonceFlood => io_do h IoMarkNonceFlood
   | PublishTransaction nonce fields message =>
       let raw := node_encode_tx h nonce fields in
@@ -1602,7 +1616,7 @@ perform_output (h : node_t) (out : list string) : bool :=
   | SetHeight height => io_do h (IoSetHeight height)
   | CatchupPeer who first =>
       let now := io_now h in
-      let last := node_last_served h who first in
+      let last := io_served_at h who first in
       let (byz, _) := node_draw h in
       carry_output_actions h (catchup_plan who first (node_current_height h)
                                now last (io_read_bool h (IoPeerExists who)) (seq byz "silent"))

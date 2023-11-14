@@ -854,7 +854,7 @@ Proof.
   intros op. destruct op as [text | ms event | event | fields | index fields |
     who fields | height txs | height | text | slot vid fields | raw | |
     id repo head edits | repo version | repo entry | | height kind fields alternate |
-    offer mode target | conn | job | job | who | | repo]; try reflexivity.
+    offer mode target | conn | job | job | who | | repo | who first | who first timestamp]; try reflexivity.
   change (match resend_parts (resend_fields fields ++ ("alternate" :: alternate)) with
     | Some (original, alt) => Some (IoRememberBroadcast height kind original alt)
     | None => None end = Some (IoRememberBroadcast height kind fields alternate)).
@@ -1124,3 +1124,12 @@ Proof.
   intros codes tag raw He Hs Ht. unfold job_wait_status, job_status_of.
   rewrite He, Hs, Ht. reflexivity.
 Qed.
+
+Theorem served_result_presence : forall now,
+  served_result (true, now) = Some now /\ served_result (false, now) = None.
+Proof. intros; split; reflexivity. Qed.
+
+Theorem remember_peer_is_served_operation : forall h who first now,
+  carry_output_action h (RememberPeer who first now) =
+    io_do h (IoMarkServed who first (node_float_wire now)).
+Proof. reflexivity. Qed.
