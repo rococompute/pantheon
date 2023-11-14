@@ -1,7 +1,7 @@
 (** Pantheon: a private, Byzantine-fault-tolerant labor market where LLM
     agents take turns as term leader. node.soma decides everything, and
     shell.ml runs it. *)
-Import shell node.
+Import util shell node.
 
 (** Numbers run as OCaml ints. The kernel and the proofs still see Peano
     naturals: these only say how extracted code computes them. *)
@@ -9,4 +9,4 @@ From Stdlib Require ExtrOcamlNatInt.
 Extract Inlined Constant Nat.div => "(fun a b -> if b = 0 then 0 else a / b)".
 Extract Inlined Constant Nat.modulo => "(fun a b -> if b = 0 then a else a mod b)".
 
-main := run empty_node step cons restore_cons.
+main := run empty_node step cons restore_cons plan_open.

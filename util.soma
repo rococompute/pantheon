@@ -154,3 +154,83 @@ Fixpoint flat (l : list (string * string)) : list string :=
   match l with [] => [] | (a, b) :: r => a :: b :: flat r end.
 
 last_n {A : Type} (n : nat) (l : list A) : list A := skipn (length l - n) l.
+
+(** ---- .plan parsing, moved from shell.ml (docs/SHELL-IN-SOMA.md) ---- *)
+
+blank_char (c : ascii) : bool :=
+  let n := nat_of_ascii c in (n =? 32) || (n =? 9) || (n =? 13) || (n =? 10).
+
+Fixpoint ltrim (s : string) : string :=
+  match s with
+  | SNil => SNil
+  | SCons c r => if blank_char c then ltrim r else s
+  end.
+
+Fixpoint srev (s : string) : string :=
+  match s with SNil => SNil | SCons c r => append (srev r) (SCons c SNil) end.
+
+trim (s : string) : string := srev (ltrim (srev (ltrim s))).
+
+Fixpoint rev_chars (l : list ascii) (acc : list ascii) : list ascii :=
+  match l with [] => acc | c :: r => rev_chars r (c :: acc) end.
+
+Fixpoint str_of_chars (l : list ascii) : string :=
+  match l with [] => SNil | c :: r => SCons c (str_of_chars r) end.
+
+Fixpoint split_lines_go (s : string) (cur : list ascii) (acc : list string) : list string :=
+  match s with
+  | SNil => acc ++ [str_of_chars (rev_chars cur [])]
+  | SCons c r => if nat_of_ascii c =? 10
+                 then split_lines_go r [] (acc ++ [str_of_chars (rev_chars cur [])])
+                 else split_lines_go r (c :: cur) acc
+  end.
+
+split_lines (s : string) : list string := split_lines_go s [] [].
+
+Fixpoint slen (s : string) : nat :=
+  match s with SNil => 0 | SCons _ r => 1 + slen r end.
+
+Fixpoint all_date_chars (s : string) : bool :=
+  match s with
+  | SNil => true
+  | SCons c r => let n := nat_of_ascii c in
+                 (((48 <=? n) && (n <=? 57)) || (n =? 45)) && all_date_chars r
+  end.
+
+Fixpoint nth_char (n : nat) (s : string) : nat :=
+  match n, s with
+  | 0, SCons c _ => nat_of_ascii c
+  | Succ n', SCons _ r => nth_char n' r
+  | _, _ => 256
+  end.
+
+is_date_line (l : string) : bool :=
+  (slen l =? 10) && all_date_chars l && (nth_char 4 l =? 45) && (nth_char 7 l =? 45).
+
+marked_line (l : string) : bool :=
+  match l with
+  | SCons c (SCons d _) =>
+      ((nat_of_ascii c =? 42) || (nat_of_ascii c =? 43) || (nat_of_ascii c =? 45))
+      && ((nat_of_ascii d =? 32) || (nat_of_ascii d =? 9))
+  | _ => false
+  end.
+
+Fixpoint take_str (n : nat) (s : string) : string :=
+  match n, s with
+  | 0, _ => SNil
+  | _, SNil => SNil
+  | Succ n', SCons c r => SCons c (take_str n' r)
+  end.
+
+truncate_line (l : string) : string :=
+  if 400 <? slen l then append (take_str 400 l) "..." else l.
+
+open_line (l : string) : bool :=
+  negb (seq l "") && negb (starts "#" l) && negb (is_date_line l)
+  && negb (marked_line l) && negb (seq l "*") && negb (seq l "+") && negb (seq l "-").
+
+(** A .plan's open items, in order, at most 60 of them, each cut at 400
+    characters: an unmarked line is open; "* ", "+ " and "- " mark one done
+    or dropped, "#" lines are notes, and a date-only line starts a day. *)
+plan_open (text : string) : list string :=
+  firstn 60 (map truncate_line (filter open_line (map trim (split_lines text)))).
