@@ -1,0 +1,80 @@
+(** Model the existing chain-bound signature callback deterministically.
+    Production will use node_verify_line; this is not a new cryptosystem. *)
+Import util shell market consensus.
+From Stdlib Require ExtrOcamlNatInt.
+
+check (b : bool) (s : string) : string := append (if b then "ok " else "FAIL ") s.
+Fixpoint same (a b : list string) : bool := match a, b with
+  | [], [] => true | x :: xs, y :: ys => seq x y && same xs ys | _, _ => false end.
+body : list string := ["previous transaction"].
+block_id : string := hash_list body.
+flds (h r : nat) (id : string) : list string := ["precommit", show h, show r, "0", id].
+seal (chain a : string) (fields : list string) : string := hash_list (chain :: a :: fields).
+verify (a sg : string) (fields : list string) : bool := seq sg (seal "chain-A" a fields).
+signed (a : string) (fields : list string) : signed_precommit :=
+  {| commit_signer := a; commit_signature := seal "chain-A" a fields; commit_fields := fields |}.
+votes (h : nat) (names : list string) : list signed_precommit := map (fun a => signed a (flds h 2 block_id)) names.
+g4 : list string := ["a", "b", "c", "d"].
+g7 : list string := ["a", "b", "c", "d", "e", "f", "g"].
+c4 : consensus_state := new_consensus "a" g4 10.
+good : list signed_precommit := votes 10 ["d", "b", "a"].
+accepted (c : consensus_state) (vs : list signed_precommit) : bool :=
+  match validate_commit_evidence verify c 2 body vs with Some _ => true | _ => false end.
+names (vs : list signed_precommit) : list string :=
+  match validate_commit_evidence verify c4 2 body vs with Some ns => ns | _ => [] end.
+reject_one (a : string) (fields : list string) : bool :=
+  negb (accepted c4 (signed a fields :: votes 10 ["a", "b"])).
+old7 : consensus_state := new_consensus "a" (roster_at g7 [("g", false, 11)] 10) 10.
+wrong7 : consensus_state := new_consensus "a" (roster_at g7 [("g", false, 11)] 11) 10.
+old4 : consensus_state := new_consensus "a" (roster_at g4 [("d", false, 11)] 10) 10.
+wrong4 : consensus_state := new_consensus "a" (roster_at g4 [("d", false, 11)] 11) 10.
+c_at (h : nat) : consensus_state := new_consensus "a" g4 h.
+recorded (h : nat) (rs : list heartbeat_record) : option (list heartbeat_record) :=
+  append_commit_evidence verify (c_at h) 2 body (votes h ["a", "b", "d"]) rs.
+records (x : option (list heartbeat_record)) : list heartbeat_record := match x with Some rs => rs | None => [] end.
+refused (x : option (list heartbeat_record)) : bool := match x with None => true | _ => false end.
+first : list heartbeat_record := records (recorded 1 []).
+second : list heartbeat_record := records (recorded 2 first).
+
+main := print_lines [
+ check (accepted c4 good) "genuine callback evidence",
+ check (same (names good) ["a", "b", "d"]) "canonical previous-roster order",
+ check (same (names good) (names (rev good))) "arrival order does not affect names",
+ check (negb (accepted c4 (votes 10 ["a", "b"]))) "too few distinct signers",
+ check (negb (accepted c4 (votes 10 ["a", "a", "b"]))) "duplicate cannot pad quorum",
+ check (negb (accepted c4 (votes 10 ["a", "b", "d", "a"]))) "duplicate even with a quorum refused",
+ check (negb (accepted c4 (votes 10 ["a", "b", "c", "d", "a"]))) "oversized certificate refused",
+ check (reject_one "outsider" (flds 10 2 block_id)) "outsider with a valid token refused",
+ check (negb (accepted c4 ({| commit_signer := "d"; commit_signature := "bad";
+           commit_fields := flds 10 2 block_id |} :: votes 10 ["a", "b"]))) "bad signature refused",
+ check (negb (accepted c4 ({| commit_signer := "d"; commit_signature := seal "chain-B" "d" (flds 10 2 block_id);
+           commit_fields := flds 10 2 block_id |} :: votes 10 ["a", "b"]))) "cross-chain signature refused",
+ check (match validate_commit_evidence (fun _ _ _ => false) c4 2 body good with None => true | _ => false end)
+       "no signature verification means no evidence",
+ check (match validate_commit_evidence verify c4 2 ["other block"] good with None => true | _ => false end)
+       "wrong previous block refused",
+ check (reject_one "d" (flds 9 2 block_id)) "wrong height refused",
+ check (reject_one "d" (flds 10 3 block_id)) "wrong round refused",
+ check (reject_one "d" (flds 10 2 "")) "nil vote refused",
+ check (reject_one "d" ["prevote", "10", "2", "0", block_id]) "prevote is not a precommit",
+ check (reject_one "d" (flds 10 2 block_id ++ ["payload"])) "vote payload refused",
+ check (reject_one "d" ["precommit", "10", "2", "1", block_id]) "invalid valid-round refused",
+ check (reject_one "d" ["precommit", "1x", "2", "0", block_id]) "malformed number refused",
+ check (accepted c4 (signed "d" ["precommit", "010", "02", "00", block_id] :: votes 10 ["a", "b"]))
+       "exact signed numeric spelling retained",
+ check (negb (accepted (new_consensus "a" [] 10) [])) "empty previous roster refused",
+ check (negb (accepted (c_at 0) (votes 0 ["a", "b", "d"]))) "height zero has no certificate",
+ check (accepted old7 (votes 10 ["a", "b", "c", "d", "g"])) "seven-before-six uses previous roster",
+ check (negb (accepted wrong7 (votes 10 ["a", "b", "c", "d", "g"]))) "current six roster cannot reinterpret old certificate",
+ check (accepted old4 good) "four-before-three uses previous roster",
+ check (negb (accepted wrong4 good)) "current three roster cannot reinterpret old certificate",
+ check (match first with [r] => (heartbeat_height r =? 1) && seq (heartbeat_value r) block_id &&
+         same (heartbeat_signers r) ["a", "b", "d"] | _ => false end) "first heartbeat records height and value",
+ check (match second with r :: [old] => (heartbeat_height r =? 2) && (heartbeat_height old =? 1) &&
+         seq (heartbeat_value old) block_id | _ => false end) "second heartbeat preserves prefix",
+ check (refused (recorded 3 first)) "missing intermediate heartbeat refused",
+ check (refused (recorded 1 first)) "repeated heartbeat refused",
+ check (refused (recorded 2 [])) "empty history cannot start at height two",
+ check (refused (append_commit_evidence verify (c_at 2) 2 body (votes 2 ["a", "b"]) first))
+       "invalid certificate cannot advance history"
+].

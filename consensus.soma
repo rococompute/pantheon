@@ -273,3 +273,114 @@ removal_candidates (roster : list string) (absent_blocks : nat)
     (certificates : list (list string)) : list string :=
   filter (fun a => (0 <? absent_blocks) && (absent_blocks <=? missed_blocks a certificates))
     (nodup_s roster).
+
+(** M-3 portable evidence, not a claimed signer list. Keep the exact signed
+    fields: signatures authenticate their bytes, including numeric spelling.
+    [verify] has node_verify_line's interface, already bound to this chain and
+    its genesis keys. [c] is the PREVIOUS height's consensus roster; its value
+    is the actual previous block. Transport/persistence are not wired yet. *)
+Record signed_precommit := {
+  commit_signer : string;
+  commit_signature : string;
+  commit_fields : list string
+}.
+
+precommit_shape (c : consensus_state) (r : nat) (id : string)
+    (vote : signed_precommit) : bool :=
+  match commit_fields vote with
+  | ["precommit", ht, rd, valid_round, value_id] =>
+      match num_opt ht, num_opt rd, num_opt valid_round with
+      | Some h, Some round, Some vr =>
+          mem (commit_signer vote) (nodes c) && (h =? height c) && (round =? r) &&
+          (vr =? 0) && seq value_id id
+      | _, _, _ => false
+      end
+  | _ => false
+  end.
+
+(** Canonical genesis/roster order, independent of certificate arrival order.
+    Every included name is distinct, even before checking the certificate. *)
+commit_names (c : consensus_state) (votes : list signed_precommit) : list string :=
+  filter (fun a => mem a (map commit_signer votes)) (nodup_s (nodes c)).
+
+commit_evidence_ok (verify : string -> string -> list string -> bool)
+    (c : consensus_state) (r : nat) (previous_block : list string)
+    (votes : list signed_precommit) : bool :=
+  let id := hash_list previous_block in
+  (0 <? height c) && (0 <? length (nodes c)) && negb (seq id "") &&
+  (length votes <=? length (nodes c)) &&
+  (length (nodup_s (map commit_signer votes)) =? length votes) &&
+  (quorum c <=? length (commit_names c votes)) &&
+  forallb (fun vote => precommit_shape c r id vote &&
+      verify (commit_signer vote) (commit_signature vote) (commit_fields vote)) votes.
+
+validate_commit_evidence (verify : string -> string -> list string -> bool)
+    (c : consensus_state) (r : nat) (previous_block : list string)
+    (votes : list signed_precommit) : option (list string) :=
+  if commit_evidence_ok verify c r previous_block votes then Some (commit_names c votes) else None.
+
+Record heartbeat_record := {
+  heartbeat_height : nat;
+  heartbeat_value : string;
+  heartbeat_signers : list string
+}.
+
+(** One record per consecutive height, starting at 1. No optional heartbeat
+    entries may bridge gaps or replay an old certificate. The input prefix
+    must already be validated AND agreed on chain; a local log is not one. *)
+heartbeat_follows (h : nat) (records : list heartbeat_record) : bool :=
+  match records with [] => h =? 1 | latest :: _ => h =? S (heartbeat_height latest) end.
+
+append_commit_evidence (verify : string -> string -> list string -> bool)
+    (c : consensus_state) (r : nat) (previous_block : list string)
+    (votes : list signed_precommit) (records : list heartbeat_record)
+    : option (list heartbeat_record) :=
+  if heartbeat_follows (height c) records then
+    match validate_commit_evidence verify c r previous_block votes with
+    | None => None
+    | Some names => Some ({| heartbeat_height := height c;
+          heartbeat_value := hash_list previous_block; heartbeat_signers := names |} :: records)
+    end
+  else None.
+
+(** Certified, bounded history from chain lookups. [agreed_at h] must read
+    the certificate for h committed in block h+1, never a local vote cache.
+    [block_at] reads the actual block at h. This boundary checks their height,
+    value, signatures and roster; no peer availability view is an input. *)
+Record commit_certificate := {
+  certificate_height : nat;
+  certificate_round : nat;
+  certificate_votes : list signed_precommit
+}.
+
+consensus_at_height (who : string) (roster_of : nat -> list string) (h : nat) : consensus_state :=
+  new_consensus who (roster_of h) h.
+
+verify_height_certificate (verify : string -> string -> list string -> bool)
+    (roster_of : nat -> list string) (block_at : nat -> option (list string))
+    (h : nat) (cert : commit_certificate) : option (list string) :=
+  if certificate_height cert =? h then
+    match block_at h with
+    | None => None
+    | Some block => validate_commit_evidence verify (consensus_at_height "" roster_of h)
+                      (certificate_round cert) block (certificate_votes cert)
+    end
+  else None.
+
+Fixpoint certified_commit_window (verify : string -> string -> list string -> bool)
+    (roster_of : nat -> list string) (block_at : nat -> option (list string))
+    (agreed_at : nat -> option commit_certificate) (latest count : nat) {struct count}
+    : option (list (list string)) :=
+  match count with
+  | 0 => Some []
+  | S rest =>
+      if latest =? 0 then None else
+      match agreed_at latest with
+      | None => None
+      | Some cert => match verify_height_certificate verify roster_of block_at latest cert with
+          | None => None
+          | Some names => match certified_commit_window verify roster_of block_at agreed_at (latest - 1) rest with
+              | None => None | Some older => Some (names :: older) end
+          end
+      end
+  end.

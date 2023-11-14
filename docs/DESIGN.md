@@ -203,3 +203,41 @@ and **agreed** previous-block certificates, then commit the admitted transaction
 through consensus. This helper is not yet dispatched by `market.apply`: live
 certificate transport and roster switching remain pending. No local connection
 view or arbitrary transaction may populate the agreed heartbeat history.
+
+M-3 portable certificate validation is provided by
+`consensus.validate_commit_evidence`. Each witness carries a signer, signature
+and the exact signed peer-message fields. The verifier callback has
+`node_verify_line`'s interface (bound to the chain ID and genesis keys). Votes
+must be precommits for the actual previous block's hash, height and one round,
+from distinct members of **that previous height's roster**. A certificate needs
+that roster's quorum, cannot exceed its size, and yields canonical roster-order
+signer names. Exact signed bytes are retained, including numeric spelling.
+
+`append_commit_evidence` starts the history at height 1, requires each next
+height, and preserves the validated prefix. Callers must supply an already
+validated, agreed prefix and the actual previous block. Missing or replayed
+records cannot advance this boundary. These helpers do not prove that an
+omitted member never voted. Live code must retain/transport signed witnesses,
+commit the complete certificate in the next block, validate it during replay,
+and connect membership admission and roster activation. A local certificate
+must not be treated as agreed history. No live removal path is enabled here.
+
+The certified admission bridge is `market.commit_certified_roster_fields`.
+`consensus.verify_height_certificate` constructs the consensus state from
+`roster_of h`, so a certificate is always checked against its own height's
+roster. `certified_commit_window` reads exactly the configured number of
+consecutive certificates, in descending height order, from an **agreed chain
+record lookup**, and checks each against the actual block lookup and signature
+verifier. Missing records/blocks, stale heights or invalid votes refuse the
+whole window. At the start of block h, it uses certificates through h-2,
+already recorded in blocks through h-1; the current candidate cannot replace
+older heartbeat choices with a different valid subset. Rejoins need no absence
+history, but retain the signed-sender/genesis/pending-change admission rules.
+
+The two lookups must be adapters over committed blocks; a local certificate
+cache or peer-supplied history does not meet their contract. Wire encoding,
+these chain adapters, live dispatch and roster activation remain unimplemented.
+The bridge is pure and enables no live removals. The new per-height quorum,
+window-length and certified commit-height theorems accompany 26 fixed bridge
+checks and the 32 signed-witness checks. This extends the earlier validation
+prerequisite without adding another signature primitive.

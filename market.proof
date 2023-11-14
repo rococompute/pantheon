@@ -932,3 +932,39 @@ Proof.
   apply Bool.andb_true_iff in H. destruct H as [H _].
   apply Bool.andb_true_iff in H. exact (proj1 H).
 Qed.
+
+Theorem admitted_fields_keep_commit_height_roster : forall p cs records h l s fields next,
+  commit_roster_fields p cs records h l s fields = Some next ->
+  roster_at (roster_genesis p) next h = roster_at (roster_genesis p) cs h.
+Proof.
+  intros p cs records h l s fields next H. unfold commit_roster_fields in H.
+  destruct (roster_intent_of fields) as [intent|]; [|discriminate H].
+  destruct (admit_roster_intent p cs records h l s intent) as [change|] eqn:E; [|discriminate H].
+  inversion H; subst next.
+  exact (admitted_roster_intent_keeps_commit_roster p cs records h l s intent change E).
+Qed.
+
+Theorem certified_admission_keeps_commit_height_roster : forall verify p cs block_at agreed_at h l s fields next,
+  commit_certified_roster_fields verify p cs block_at agreed_at h l s fields = Some next ->
+  roster_at (roster_genesis p) next h = roster_at (roster_genesis p) cs h.
+Proof.
+  intros verify p cs block_at agreed_at h l s fields next H.
+  unfold commit_certified_roster_fields in H.
+  destruct (roster_intent_of fields) as [intent|]; [|discriminate H].
+  destruct intent.
+  - destruct (2 <=? h); [|discriminate H].
+    destruct (certified_commit_window verify (roster_at (roster_genesis p) cs)
+      block_at agreed_at (h - 2) (roster_absent_blocks p)) as [records|]; [|discriminate H].
+    exact (admitted_fields_keep_commit_height_roster p cs records h l s fields next H).
+  - exact (admitted_fields_keep_commit_height_roster p cs [] h l s fields next H).
+Qed.
+
+Theorem certified_admission_keeps_commit_height_quorums : forall verify p cs block_at agreed_at h l s fields next,
+  commit_certified_roster_fields verify p cs block_at agreed_at h l s fields = Some next ->
+  quorum_at (roster_genesis p) next h = quorum_at (roster_genesis p) cs h /\
+  reject_quorum_at (roster_genesis p) next h = reject_quorum_at (roster_genesis p) cs h.
+Proof.
+  intros verify p cs block_at agreed_at h l s fields next H. unfold quorum_at, reject_quorum_at.
+  rewrite (certified_admission_keeps_commit_height_roster verify p cs block_at agreed_at h l s fields next H).
+  split; reflexivity.
+Qed.

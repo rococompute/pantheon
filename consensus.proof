@@ -547,3 +547,148 @@ Proof.
   intros roster limit history. unfold removal_candidates.
   apply NoDup_filter. apply nodup_s_NoDup.
 Qed.
+
+(** Portable commit certificates: proof obligations of the verifier boundary
+    are explicit. These do not assert that an omitted member never voted. *)
+Theorem commit_names_distinct : forall c votes, NoDup (commit_names c votes).
+Proof. intros c votes. unfold commit_names. apply NoDup_filter. apply nodup_s_NoDup. Qed.
+
+Theorem valid_commit_has_previous_roster_quorum : forall verify c r block votes names,
+  validate_commit_evidence verify c r block votes = Some names ->
+  NoDup names /\ quorum c <= length names.
+Proof.
+  intros verify c r block votes names H. unfold validate_commit_evidence in H.
+  destruct (commit_evidence_ok verify c r block votes) eqn:E; [|discriminate H].
+  inversion H; subst names. split; [apply commit_names_distinct|].
+  unfold commit_evidence_ok in E. apply andb_split in E. destruct E as [E _].
+  apply andb_split in E. destruct E as [_ E]. apply Nat.leb_le in E. exact E.
+Qed.
+
+Theorem valid_commit_authenticates_every_vote : forall verify c r block votes names vote,
+  validate_commit_evidence verify c r block votes = Some names -> In vote votes ->
+  precommit_shape c r (hash_list block) vote = true /\
+  verify (commit_signer vote) (commit_signature vote) (commit_fields vote) = true.
+Proof.
+  intros verify c r block votes names vote H Hin. unfold validate_commit_evidence in H.
+  destruct (commit_evidence_ok verify c r block votes) eqn:E; [|discriminate H].
+  unfold commit_evidence_ok in E. apply andb_split in E. destruct E as [_ E].
+  apply forallb_forall with (x := vote) in E; [|exact Hin].
+  apply andb_split in E. exact E.
+Qed.
+
+Theorem valid_commit_name_has_signed_witness : forall verify c r block votes names a,
+  validate_commit_evidence verify c r block votes = Some names -> In a names ->
+  In a (nodes c) /\ exists vote, In vote votes /\ commit_signer vote = a /\
+    precommit_shape c r (hash_list block) vote = true /\
+    verify a (commit_signature vote) (commit_fields vote) = true.
+Proof.
+  intros verify c r block votes names a H Hin.
+  assert (names = commit_names c votes) as En.
+  { unfold validate_commit_evidence in H.
+    destruct (commit_evidence_ok verify c r block votes); inversion H; reflexivity. }
+  rewrite En in Hin. unfold commit_names in Hin. apply filter_In in Hin.
+  destruct Hin as [Hroster Hmem]. split.
+  - apply (proj1 (nodup_s_In a (nodes c))). exact Hroster.
+  - apply mem_In in Hmem. apply in_map_iff in Hmem.
+    destruct Hmem as [vote [Ea Hv]]. exists vote. split; [exact Hv|]. split; [exact Ea|].
+    pose proof (valid_commit_authenticates_every_vote verify c r block votes names vote H Hv) as E.
+    destruct E as [Es Ev]. split; [exact Es|]. rewrite <- Ea. exact Ev.
+Qed.
+
+Theorem appended_commit_has_no_height_gap : forall verify c r block votes records next,
+  append_commit_evidence verify c r block votes records = Some next ->
+  match records with [] => height c = 1 | latest :: _ => height c = S (heartbeat_height latest) end.
+Proof.
+  intros verify c r block votes records next H. unfold append_commit_evidence in H.
+  destruct (heartbeat_follows (height c) records) eqn:E; [|discriminate H].
+  unfold heartbeat_follows in E. destruct records; apply Nat.eqb_eq; exact E.
+Qed.
+
+Theorem appended_commit_preserves_prefix : forall verify c r block votes records next,
+  append_commit_evidence verify c r block votes records = Some next ->
+  exists names, validate_commit_evidence verify c r block votes = Some names /\
+    next = {| heartbeat_height := height c; heartbeat_value := hash_list block;
+              heartbeat_signers := names |} :: records.
+Proof.
+  intros verify c r block votes records next H. unfold append_commit_evidence in H.
+  destruct (heartbeat_follows (height c) records); [|discriminate H].
+  destruct (validate_commit_evidence verify c r block votes) as [names|] eqn:E; [|discriminate H].
+  exists names. inversion H. split; reflexivity.
+Qed.
+
+Theorem precommit_shape_binds_height_round_and_value : forall c r id a sg ht rd vr value_id,
+  precommit_shape c r id {| commit_signer := a; commit_signature := sg;
+    commit_fields := ["precommit", ht, rd, vr, value_id] |} = true ->
+  num_opt ht = Some (height c) /\ num_opt rd = Some r /\ num_opt vr = Some 0 /\
+  value_id = id /\ mem a (nodes c) = true.
+Proof.
+  intros c r id a sg ht rd vr value_id H.
+  change ((match num_opt ht, num_opt rd, num_opt vr with
+    | Some h, Some round, Some valid =>
+      mem a (nodes c) && (h =? height c) && (round =? r) && (valid =? 0) && seq value_id id
+    | _, _, _ => false end) = true) in H.
+  destruct (num_opt ht) as [h|] eqn:Eh; [|discriminate H].
+  destruct (num_opt rd) as [round|] eqn:Er; [|discriminate H].
+  destruct (num_opt vr) as [valid|] eqn:Ev; [|discriminate H].
+  apply andb_split in H. destruct H as [H Hid].
+  apply andb_split in H. destruct H as [H Hv].
+  apply andb_split in H. destruct H as [H Hr].
+  apply andb_split in H. destruct H as [Hm Hh].
+  apply Nat.eqb_eq in Hh. apply Nat.eqb_eq in Hr. apply Nat.eqb_eq in Hv.
+  unfold seq in Hid. apply Stdlib.Strings.String.eqb_eq in Hid.
+  subst h round valid. repeat split; assumption.
+Qed.
+
+Theorem consensus_quorums_at_the_selected_height : forall who roster_of h,
+  nodes (consensus_at_height who roster_of h) = roster_of h /\
+  height (consensus_at_height who roster_of h) = h /\
+  quorum (consensus_at_height who roster_of h) =
+    length (roster_of h) - (length (roster_of h) - 1) / 3 /\
+  weak (consensus_at_height who roster_of h) = (length (roster_of h) - 1) / 3 + 1.
+Proof. intros; repeat split; reflexivity. Qed.
+
+Theorem certified_height_has_that_rosters_quorum : forall verify roster_of block_at h cert names,
+  verify_height_certificate verify roster_of block_at h cert = Some names ->
+  certificate_height cert = h /\ NoDup names /\
+  length (roster_of h) - (length (roster_of h) - 1) / 3 <= length names.
+Proof.
+  intros verify roster_of block_at h cert names H. unfold verify_height_certificate in H.
+  destruct (certificate_height cert =? h) eqn:E; [|discriminate H].
+  destruct (block_at h) as [block|]; [|discriminate H].
+  apply Nat.eqb_eq in E. split; [exact E|].
+  exact (valid_commit_has_previous_roster_quorum verify (consensus_at_height "" roster_of h)
+    (certificate_round cert) block (certificate_votes cert) names H).
+Qed.
+
+Theorem certified_window_has_exact_length : forall verify roster_of block_at agreed_at latest count records,
+  certified_commit_window verify roster_of block_at agreed_at latest count = Some records ->
+  length records = count.
+Proof.
+  intros verify roster_of block_at agreed_at latest count. revert latest.
+  induction count as [|count IH]; intros latest records H.
+  - cbn [certified_commit_window] in H. inversion H. reflexivity.
+  - cbn [certified_commit_window] in H.
+    destruct (latest =? 0); [discriminate H|].
+    destruct (agreed_at latest) as [cert|]; [|discriminate H].
+    destruct (verify_height_certificate verify roster_of block_at latest cert) as [names|]; [|discriminate H].
+    destruct (certified_commit_window verify roster_of block_at agreed_at (latest - 1) count) as [older|] eqn:E;
+      [|discriminate H].
+    inversion H; subst records. cbn [length]. rewrite (IH (latest - 1) older E). reflexivity.
+Qed.
+
+Theorem certified_window_head_has_a_certificate : forall verify roster_of block_at agreed_at latest count names older,
+  certified_commit_window verify roster_of block_at agreed_at latest (S count) = Some (names :: older) ->
+  exists cert, agreed_at latest = Some cert /\
+    verify_height_certificate verify roster_of block_at latest cert = Some names /\
+    certified_commit_window verify roster_of block_at agreed_at (latest - 1) count = Some older.
+Proof.
+  intros verify roster_of block_at agreed_at latest count names older H.
+  cbn [certified_commit_window] in H.
+  destruct (latest =? 0); [discriminate H|].
+  destruct (agreed_at latest) as [cert|] eqn:Ecert; [|discriminate H].
+  destruct (verify_height_certificate verify roster_of block_at latest cert) as [ns|] eqn:Evalid;
+    [|discriminate H].
+  destruct (certified_commit_window verify roster_of block_at agreed_at (latest - 1) count) as [rs|] eqn:Erest;
+    [|discriminate H].
+  inversion H; subst ns rs. exists cert. repeat split; assumption.
+Qed.
