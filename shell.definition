@@ -33,14 +33,24 @@ cmd_up : string -> list string -> unit.
 
 (** The node loop is Soma (node.soma's run_node): the shell binds only the
     handle's setup, one select turn, one output, the snapshot, the refused
-    set, the state the setup reached, and the endless repetition. The handle
+    set, startup data, and the endless repetition. The handle
     is a string naming the shell's side of the node. Existing Soma helpers
     are passed once as util.soma's shell_helpers record, packed as a product
     (edit_once, contains, shell_safe_path, replace_all) at the binding boundary. *)
-node_open : forall {S C : Type}, S -> (S -> list string -> S * list (list string)) -> (S -> C) -> (S -> C -> S) -> (string -> list string) -> ((((string -> string -> string -> option string) * (string -> string -> bool)) * (string -> bool)) * (string -> string -> string -> string)) -> (string -> string -> string -> bool) -> string -> list string -> string.
+node_open : (string -> list string) -> ((((string -> string -> string -> option string) * (string -> string -> bool)) * (string -> bool)) * (string -> string -> string -> string)) -> (string -> string -> string -> bool) -> string -> list string -> string.
 events : string -> list (list string).
 perform : string -> list string -> bool.
 save_snapshot : forall {C : Type}, string -> C -> bool.
 note_refused : string -> string -> bool.
-take_state : forall {S : Type}, string -> S.
+(** Startup is data, interpreted by Soma before entering the event loop. *)
+boot_events : string -> list (list string).
+boot_snapshot : forall {C : Type}, string -> option C.
+replay_count : string -> string.
+(** Small I/O bindings; output tags and decisions live in Soma. *)
+node_timer : string -> string -> list string -> bool.
+node_log : string -> string -> bool.
+node_push : string -> list string -> bool.
+node_draw : string -> string * (string * string).
+node_block : string -> string -> option (list string).
+node_store : string -> string -> list string -> bool.
 forever : forall {A : Type}, (A -> A) -> A -> unit.

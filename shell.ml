@@ -780,7 +780,11 @@ let argv () = Array.to_list Sys.argv |> List.tl
 (* The Soma node loop's handle: node_open registers the closures its setup
    built, and the loop drives them by this name (docs/SHELL-IN-SOMA.md 2). *)
 type node_handle = { h_events : unit -> string list list; h_perform : string list -> unit;
-                     h_save : Obj.t -> unit; h_refuse : string -> unit; h_state : Obj.t }
+                     h_save : Obj.t -> unit; h_refuse : string -> unit; h_boot : string list list; h_snapshot : Obj.t option; h_replayed : string;
+                     h_timer : string -> string list -> unit; h_log : string -> unit;
+                     h_push : string list -> unit; h_draw : string * (string * string);
+                     h_block : string -> string list option;
+                     h_store : string -> string list -> unit }
 let node_handles : (string, node_handle) Hashtbl.t = Hashtbl.create 4
 let node_counter = ref 0
 let lookup_handle id = try Hashtbl.find node_handles id with Not_found -> fail "unknown node handle %s" id
@@ -788,10 +792,18 @@ let events id = (lookup_handle id).h_events ()
 let perform id out = (lookup_handle id).h_perform out; true
 let save_snapshot id snap = (lookup_handle id).h_save (Obj.repr snap); true
 let note_refused id raw = (lookup_handle id).h_refuse raw; true
-let take_state id = Obj.obj (lookup_handle id).h_state
+let boot_events id = (lookup_handle id).h_boot
+let boot_snapshot id = Option.map Obj.obj (lookup_handle id).h_snapshot
+let replay_count id = (lookup_handle id).h_replayed
+let node_timer id ms ev = (lookup_handle id).h_timer ms ev; true
+let node_log id text = (lookup_handle id).h_log text; true
+let node_push id ev = (lookup_handle id).h_push ev; true
+let node_draw id = (lookup_handle id).h_draw
+let node_block id height = (lookup_handle id).h_block height
+let node_store id height txs = (lookup_handle id).h_store height txs; true
 let rec forever f s = forever f (f s)
 
-let node_open init step checkpoint restore plan_open packed json_fn home flags =
+let node_open plan_open packed json_fn home flags =
   let helpers = unpack_helpers packed in
   let replace_all = helpers.replace_all in
   soma_shallow_json := json_fn;
@@ -845,7 +857,6 @@ let node_open init step checkpoint restore plan_open packed json_fn home flags =
   if scripted && String.length !backend > 9 then agent_events := !agent_events @ [ [ "agent"; "behavior"; String.sub !backend 9 (String.length !backend - 9) ] ];
   let backend_kind = if scripted then "scripted" else "llm" in
   (* state *)
-  let st = ref init in
   let queue = Queue.create () in
   let push ev = Queue.add ev queue in
   let height = ref 0 in
@@ -1272,13 +1283,6 @@ let node_open init step checkpoint restore plan_open packed json_fn home flags =
     | [ "height"; h ] ->
         height := int_of_string h;
         mine := List.filter (fun (mh, _) -> mh >= !height) !mine
-    | [ "timer"; name; h; r; ms ] -> timers := (Unix.gettimeofday () +. float_of_string ms /. 1000., [ "timeout"; name; h; r ]) :: !timers
-    | "decided" :: h :: txs ->
-        let h = int_of_string h in
-        if not (Hashtbl.mem blocks h) then begin
-          Hashtbl.replace blocks h txs;
-          append_line_synced blocks_path (Yojson.Safe.to_string (`Assoc [ ("h", `Int h); ("txs", strings_json txs) ]))
-        end
     | [ "behind"; who; h ] ->
         let h = int_of_string h and now = Unix.gettimeofday () in
         (match Hashtbl.find_opt served (who, h) with
@@ -1303,7 +1307,6 @@ let node_open init step checkpoint restore plan_open packed json_fn home flags =
         write_file (Filename.concat home "status.txt") (String.concat "\n" (ls @ heads @ bad @ lim) ^ "\n")
     | "merge" :: r :: v :: tree :: bid :: task :: bidder :: spec :: edits ->
         apply_merge r (int_of_string v) tree bid task bidder spec (triples_of edits)
-    | [ "log"; text ] -> say "%s" text
     | "submit" :: nonce :: fields ->
         let raw = encode_tx key me nonce fields in
         my_txs := (Unix.gettimeofday (), raw) :: !my_txs;
@@ -1332,44 +1335,22 @@ let node_open init step checkpoint restore plan_open packed json_fn home flags =
         end
         else (say "asking %s for a %s (request %s, call %d of %d)" !backend kind id !calls !max_calls; call_model id kind prompt ctx)
     | "check" :: id :: r :: head :: edits -> run_check id r head edits
-    | [ "reveal"; t ] ->
-        let t = int_of_string t in
-        if byz = "withhold" && t mod 2 = 1 then say "FAULT INJECTION: holding back my link for draw %d" t
-        else if t < chain_len then push [ "local_tx"; "reveal"; iterate (chain_len - t) secret ]
     | _ -> ()
   in
   let debug = (try Sys.getenv "PANTHEON_DEBUG" with Not_found -> "") <> "" in
   let brief l = String.concat " " (List.map (fun f -> if String.length f > 16 then String.sub f 0 16 else f) (List.filteri (fun i _ -> i < 7) l)) in
   let checkpoint_path = Filename.concat home "consensus.state" in
-  let participating = ref false and saved = ref None in
+  let saved = ref None in
   (* Transactions the core refused since the last decided block. Until a block
      changes the market, the pool only grows, so each stays refused: a peer
      resending them (docs/SECURITY-REVIEW-2.md P-5) costs a table lookup, not
      a signature check and a pass through the core. The core gives a refused
      transaction's state back unchanged, which is how the shell can tell. *)
   let refused = Hashtbl.create 1024 in
-  let feed ev =
-    if debug then say "event: %s" (brief ev);
-    let s, outs = step !st ev in
-    if debug then List.iter (fun o -> say "  out: %s" (brief o)) outs;
-    (match ev with [ "tx"; raw ] when s == !st && Hashtbl.length refused < 10000 -> Hashtbl.replace refused raw () | _ -> ());
-    if List.exists (function "decided" :: _ -> true | _ -> false) outs then Hashtbl.reset refused;
-    (* Persist before any vote or other externally visible effect. Decisions
-       reach blocks.log first; a stale snapshot is ignored after replay.
-       Only a changed snapshot is written: most events (a transaction for the
-       pool, a duplicate message) leave consensus as it was, and two fsyncs
-       for each let a peer resending refused transactions slow every node. *)
-    if !participating then begin
-      List.iter (function ("decided" :: _ as o) -> handle o | _ -> ()) outs;
-      let c = checkpoint s in
-      match !saved with
-      | Some p when p == c || p = c -> ()
-      | _ -> save_consensus checkpoint_path c; saved := Some c
-    end;
-    st := s;
-    List.iter handle outs
-  in
-  let drain () = while not (Queue.is_empty queue) do feed (Queue.pop queue) done in
+  (* Setup returns data. Soma runs these events and their outputs, so
+     startup and replay use exactly the same output interpreter as the loop. *)
+  let boot_rev = ref [] in
+  let feed ev = boot_rev := ev :: !boot_rev in
   (* genesis, then what's on disk *)
   feed ("agents" :: names);
   List.iter (fun a -> feed [ "tip"; to_string (member "name" a); to_string (member "tip" a) ]) agents;
@@ -1387,16 +1368,10 @@ let node_open init step checkpoint restore plan_open packed json_fn home flags =
         if h = !replayed + 1 then (Hashtbl.replace blocks h txs; feed ("replay" :: string_of_int h :: txs); replayed := h)
       with _ -> ())
     (lines blocks_path);
-  if !replayed > 0 then say "replayed %d blocks from disk" !replayed;
-  if Sys.file_exists checkpoint_path then begin
-    let saved = load_consensus checkpoint_path in
-    st := restore !st saved
-  end;
-  if not (Sys.file_exists checkpoint_path) && Hashtbl.length signed > 0 then
+  let boot_saved = if Sys.file_exists checkpoint_path then
+      Some (Obj.repr (load_consensus checkpoint_path)) else None in
+  if boot_saved = None && Hashtbl.length signed > 0 then
     fail "missing consensus.state with existing votes: start a new chain";
-  participating := true;
-  feed [ "start" ];
-  drain ();
   (* sockets *)
   let _, my_port = split_addr (addr_of_agent me) in
   let listener = Unix.socket ~cloexec:true PF_INET SOCK_STREAM 0 in
@@ -1615,6 +1590,14 @@ let node_open init step checkpoint restore plan_open packed json_fn home flags =
       h_save = (fun snap -> let c = Obj.obj snap in
                 match !saved with Some p when p == c || p = c -> () | _ -> save_consensus checkpoint_path c; saved := Some c);
       h_refuse = (fun raw -> if Hashtbl.length refused < 10000 then Hashtbl.replace refused raw ());
-      h_state = Obj.repr !st };
+      h_boot = List.rev !boot_rev; h_snapshot = boot_saved;
+      h_replayed = string_of_int !replayed;
+      h_timer = (fun ms ev -> timers := (Unix.gettimeofday () +. float_of_string ms /. 1000., ev) :: !timers);
+      h_log = (fun text -> say "%s" text); h_push = push;
+      h_draw = (byz, (string_of_int chain_len, secret));
+      h_block = (fun h -> Hashtbl.find_opt blocks (int_of_string h));
+      h_store = (fun h txs -> let h = int_of_string h in
+        Hashtbl.replace blocks h txs;
+        append_line_synced blocks_path (Yojson.Safe.to_string (`Assoc [ ("h", `Int h); ("txs", strings_json txs) ]))) };
   handle_id
 

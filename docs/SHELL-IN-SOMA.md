@@ -168,6 +168,22 @@ worth a note in this file rather than a workaround.
 
 ## Done so far
 
+- Step 4, partial: Soma handles `timer`, `log`, `reveal` and `decided`.
+  `plan_output` selects their small bindings; pure `reveal_plan` decides
+  when to withhold, queue a hash-chain link or do nothing, and
+  `decided_plan` requests exactly one store for an unseen height. OCaml
+  binds delay scheduling, logging, queue insertion, metadata/table reads
+  and the synced block store. `node.proof` checks concrete binding plans,
+  malformed outputs, withhold/bounds behavior, and duplicate decisions.
+  To use the same interpreter during startup and replay, `node_open` now
+  returns setup/replay events and the saved consensus as data; Soma runs
+  the events, restores only a matching-height snapshot, and starts the
+  node with decided outputs before its mandatory snapshot and votes after.
+  `startup_effects` checks this order without timing a live process. The
+  old `feed` loop and its state/step/checkpoint/restore callbacks are gone.
+  Remaining step 4 cases: broadcast, height, behind, status, merge, submit,
+  llm and check. Helpers stay in their record until those callers move.
+
 - The helper callbacks (step 3) are one typed `shell_helpers` record in
   `util.soma`. `node_open` receives it once; the binding transports its four
   fields as a product (`pack_helpers`), since `.definition` accepts products
