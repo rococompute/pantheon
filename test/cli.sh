@@ -30,6 +30,12 @@ expect 0 'genesis extra argument' genesis home network extra
 cmp -s "$T/usage" "$T/out" || fail 'wrong-arity genesis reached implementation'
 expect 0 'plan extra argument' plan file extra
 cmp -s "$T/usage" "$T/out" || fail 'wrong-arity plan reached implementation'
+expect 0 'status extra argument' status home extra
+cmp -s "$T/usage" "$T/out" || fail 'wrong-arity status reached implementation'
+expect 0 'tx requires at least one field' tx home
+cmp -s "$T/usage" "$T/out" || fail 'empty tx reached implementation'
+expect 1 'init without arguments reaches its own parser' init
+expect 1 'keygen without arguments reaches its own parser' keygen
 
 mkdir "$T/repo with spaces"
 git -C "$T/repo with spaces" init -q

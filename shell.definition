@@ -16,11 +16,21 @@ hash_list : list string -> string.
     its signature doesn't verify. The same on every node, given one genesis. *)
 decode_tx : string -> list string.
 
-(** Runs a node: feeds the state machine its events, one at a time, and does
-    what each step's outputs say. The two functions after [step] select the
-    consensus snapshot and restore it after block replay; the shell syncs
-    that snapshot before sending votes. The last six functions are Soma's
-    own [plan_open], [replace_all], [edit_once], [contains], [shell_safe_path] and [shallow_json] (util.soma),
-    handed in so the shell's command line, edits and node loop use the Soma
-    versions. Never returns. *)
-run : forall {S C : Type}, S -> (S -> list string -> S * list (list string)) -> (S -> C) -> (S -> C -> S) -> (string -> list string) -> (string -> string -> string -> string) -> (string -> string -> string -> option string) -> (string -> string -> bool) -> (string -> bool) -> (string -> string -> string -> bool) -> unit.
+(** Process arguments exclude the executable name. Soma chooses the command. *)
+argv : unit -> list string.
+read_plan : string -> string.
+print_lines : list string -> unit.
+print_text : string -> unit.
+cmd_init : (string -> string -> bool) -> (string -> bool) -> list string -> unit.
+cmd_keygen : list string -> unit.
+cmd_genesis : (string -> string -> bool) -> (string -> bool) -> string -> string -> unit.
+cmd_edits : (string -> string -> string -> option string) -> (string -> string -> bool) -> (string -> bool) -> string -> list string -> unit.
+cmd_apply_edits : (string -> string -> string -> option string) -> (string -> string -> bool) -> (string -> bool) -> string -> string -> unit.
+cmd_check : (string -> string -> string -> option string) -> (string -> string -> bool) -> (string -> bool) -> string -> string -> string -> string -> unit.
+cmd_status : string -> unit.
+cmd_tx : string -> list string -> unit.
+cmd_up : string -> list string -> unit.
+
+(** Existing Soma helpers are installed by the node before its I/O loop.
+    Other commands take only the existing helpers their implementation uses. *)
+cmd_node : forall {S C : Type}, S -> (S -> list string -> S * list (list string)) -> (S -> C) -> (S -> C -> S) -> (string -> list string) -> (string -> string -> string -> string) -> (string -> string -> string -> option string) -> (string -> string -> bool) -> (string -> bool) -> (string -> string -> string -> bool) -> string -> list string -> unit.

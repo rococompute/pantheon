@@ -1,6 +1,6 @@
 (** Pantheon: a private, Byzantine-fault-tolerant labor market where LLM
-    agents take turns as term leader. node.soma decides everything, and
-    shell.ml runs it. *)
+    agents take turns as term leader. Soma selects commands and node.soma decides the market;
+    shell.ml supplies command implementations and I/O. *)
 Import util shell node.
 
 (** Numbers run as OCaml ints. The kernel and the proofs still see Peano
@@ -19,4 +19,43 @@ Extract Inlined Constant Stdlib.Strings.String.get =>
 Extract Inlined Constant Stdlib.Strings.String.substring =>
   "(fun n m s -> let l = String.length s in if n >= l then """" else String.sub s n (min m (l - n)))".
 
-main := run empty_node step cons restore_cons plan_open replace_all edit_once contains shell_safe_path shallow_json.
+usage : string := "pantheon: a private BFT labor market where LLM agents take turns as term leader.
+
+  One machine:
+  pantheon init DIR --repo NAME=GIT-CHECKOUT [--repo ...] [--base-port P] [--block-ms N] [--param name=value]...
+  pantheon up DIR [--backends claude=claude,codex=codex,grok=grok,muse=scripted] [node flags]
+
+  One machine per agent (see docs/NETWORK.md):
+  pantheon keygen HOME --name NAME --addr HOST:PORT     then add HOME/public.json to NETWORK/parts/
+  pantheon genesis HOME NETWORK                         once all 4 parts are in
+
+  pantheon node HOME [--backend B] [--behavior honest|deny|silent] [--goal FILE] [--deny PATH] [--listen HOST]
+                     [--ci CMD] [--ci-repo NAME CMD] [--ci-image IMAGE | --ci-sandbox PROGRAM] [--ci-memory 8g] [--bid-window N] [--perspective TEXT] [--max-llm-calls N]
+  pantheon status HOME
+  pantheon tx HOME post REPO ""spec"" [CONTEXT-PATH...]   (or any market transaction's fields)
+  pantheon edits CHECKOUT [NOTE]     a checkout's changes as a patch reply (for models with tools)
+  pantheon plan [FILE]              a .plan's open items (default ./.plan; see docs/PLAN.md)
+  pantheon apply-edits DIR EDITS.json
+
+Backends: scripted, claude, codex, grok (XAI_API_KEY), cmd:PROGRAM (prompt on stdin, JSON reply on stdout;
+a patch request also gets a scratch checkout in $PANTHEON_WORKTREE: see scripts/bidder.sh).
+".
+
+dispatch (args : list string) : unit :=
+  match args with
+  | "init" :: rest => cmd_init contains shell_safe_path rest
+  | "keygen" :: rest => cmd_keygen rest
+  | ["genesis", home, net] => cmd_genesis contains shell_safe_path home net
+  | "edits" :: dir :: rest => cmd_edits edit_once contains shell_safe_path dir rest
+  | ["plan"] => print_lines (plan_open (read_plan ".plan"))
+  | ["plan", file] => print_lines (plan_open (read_plan file))
+  | ["apply-edits", dir, file] => cmd_apply_edits edit_once contains shell_safe_path dir file
+  | ["check", repo, head, file, out] => cmd_check edit_once contains shell_safe_path repo head file out
+  | ["status", home] => cmd_status home
+  | "tx" :: home :: field :: rest => cmd_tx home (field :: rest)
+  | "up" :: dir :: rest => cmd_up dir rest
+  | "node" :: home :: flags => cmd_node empty_node step cons restore_cons plan_open replace_all edit_once contains shell_safe_path shallow_json home flags
+  | _ => print_text usage
+  end.
+
+main := dispatch (argv tt).

@@ -1,6 +1,6 @@
 (* The shell: everything Pantheon does that isn't a decision. Soma's node.soma
    decides; this runs it. Sockets, timers, keys and signatures, the block log,
-   model processes and the command line are here, and nothing else is.
+   model processes and command implementations are here. Soma selects commands.
 
    Every peer message and every transaction is signed with RSA (PKCS#1 v1.5,
    SHA-256: what cryptokit, in Soma's OCaml switch, can do). *)
@@ -63,10 +63,10 @@ let tx_bytes agent nonce fields =
 
 let all_digits s = s <> "" && String.length s < 18 && String.for_all (fun c -> c >= '0' && c <= '9') s
 
-(* Soma's bounded JSON scan, installed by [run]. Decimal limits keep
+(* Soma's bounded JSON scan, installed by [cmd_node]. Decimal limits keep
    extracted nat abstract at the OCaml boundary. *)
 let soma_shallow_json : (string -> string -> string -> bool) ref =
-  ref (fun _ _ _ -> failwith "shallow_json: not set by run")
+  ref (fun _ _ _ -> failwith "shallow_json: not set by command")
 let shallow_json ?(max = 4) ?(max_items = max_int) s =
   !soma_shallow_json (string_of_int max) (string_of_int max_items) s
 
@@ -137,10 +137,10 @@ let read_json p = try Yojson.Safe.from_file p with _ -> fail "cannot read %s: is
 let lines p = if Sys.file_exists p then String.split_on_char '\n' (read_file p) |> List.filter (( <> ) "") else []
 
 (* A .plan's open items are computed in Soma: [plan_open] in util.soma,
-   handed to [run] (and on to [node]) as an argument (docs/SHELL-IN-SOMA.md). *)
+   handed to [cmd_node] as an argument (docs/SHELL-IN-SOMA.md). *)
 
-(* Path validation is Soma's [shell_safe_path], installed by [run]. *)
-let soma_safe_path : (string -> bool) ref = ref (fun _ -> failwith "safe_path: not set by run")
+(* Path validation is Soma's [shell_safe_path], installed by [cmd_node]. *)
+let soma_safe_path : (string -> bool) ref = ref (fun _ -> failwith "safe_path: not set by command")
 let safe_path p = !soma_safe_path p
 
 (* ---------- processes and git ---------- *)
@@ -199,10 +199,10 @@ let clone url dir commit =
 
 (* The edit matching is Soma's, in util.soma: [edit_once] (a text with its
    one occurrence of old replaced, None when old is missing or ambiguous)
-   and [contains] (pattern first). [run] sets these once, first thing, from
-   its arguments (docs/SHELL-IN-SOMA.md). *)
-let soma_edit_once : (string -> string -> string -> string option) ref = ref (fun _ _ _ -> failwith "edit_once: not set by run")
-let soma_contains : (string -> string -> bool) ref = ref (fun _ _ -> failwith "contains: not set by run")
+   and [contains] (pattern first). Commands install the existing helpers from
+   their arguments (docs/SHELL-IN-SOMA.md). *)
+let soma_edit_once : (string -> string -> string -> string option) ref = ref (fun _ _ _ -> failwith "edit_once: not set by command")
+let soma_contains : (string -> string -> bool) ref = ref (fun _ _ -> failwith "contains: not set by command")
 let edit_once s old by = !soma_edit_once s old by
 (* every caller's pattern is nonempty *)
 let contains s sub = !soma_contains sub s
@@ -605,7 +605,9 @@ let build_genesis home net =
   say "wrote %s: chain %s, genesis hash %s. Every agent should get the same hash" gp id (sha256 text)
 
 (* A whole network on one machine, for trying Pantheon and for tests. *)
-let cmd_init args =
+let cmd_init contains safe_path args =
+  soma_contains := contains;
+  soma_safe_path := safe_path;
   let dir = ref "" and repos = ref [] and port = ref 26700 and params = ref [] and block_ms = ref 500 in
   let rec go = function
     | "--repo" :: kv :: r -> repos := !repos @ [ kv_arg "--repo" kv ]; go r
@@ -637,6 +639,11 @@ let cmd_init args =
     agents_default;
   List.iter (fun n -> build_genesis (Filename.concat !dir n) net) agents_default;
   say "made a 4-agent network in %s. Run it with: %s up %s" !dir self_exe !dir
+
+let cmd_genesis contains safe_path home net =
+  soma_contains := contains;
+  soma_safe_path := safe_path;
+  build_genesis home net
 
 (* ---------- the node ---------- *)
 
@@ -699,47 +706,46 @@ let json_in_reply text =
       else (try Some (Yojson.Safe.from_string raw) with _ -> None)
   | _ -> None
 
-let rec run init step checkpoint restore plan_open replace_all edit_once contains safe_path shallow_json =
-  soma_shallow_json := shallow_json;
-  soma_safe_path := safe_path;
+let cmd_edits edit_once contains safe_path dir rest =
   soma_edit_once := edit_once;
   soma_contains := contains;
-  let argv = Array.to_list Sys.argv |> List.tl in
-  match argv with
-  | "init" :: rest -> cmd_init rest
-  | "keygen" :: rest -> cmd_keygen rest
-  | [ "genesis"; home; net ] -> build_genesis home net
-  | "edits" :: dir :: rest ->
+  soma_safe_path := safe_path;
       (* for a model with tools: what it changed in its checkout, as the reply a patch request wants *)
       (match edits_of_checkout dir with
        | Error e -> fail "%s" e
        | Ok (es, skipped) ->
            let note = String.concat " " rest ^ (if skipped = [] then "" else " (skipped, can't be edits: " ^ String.concat ", " skipped ^ ")") in
            print_endline (Yojson.Safe.to_string (edits_json es (String.trim note))))
-  | [ "plan" ] | [ "plan"; _ ] ->
-      (* a .plan's open items, one per line: what a leader drafts tasks from *)
-      let f = match argv with [ _; f ] -> f | _ -> ".plan" in
-      if not (Sys.file_exists f) then fail "no %s here: a repository's plan is .plan at its root (docs/PLAN.md)" f;
-      List.iter print_endline (plan_open (read_file f))
-  | [ "apply-edits"; dir; file ] ->
+
+let cmd_apply_edits edit_once contains safe_path dir file =
+  soma_edit_once := edit_once;
+  soma_contains := contains;
+  soma_safe_path := safe_path;
       (match apply_edits dir (triples_of (json_strings (Yojson.Safe.from_file file))) with
        | Ok () -> say "applied"
        | Error e -> fail "%s" e)
-  | [ "check"; repo; head; file; out ] ->
+
+let cmd_check edit_once contains safe_path repo head file out =
+  soma_edit_once := edit_once;
+  soma_contains := contains;
+  soma_safe_path := safe_path;
       (match check_tree repo head (triples_of (json_strings (Yojson.Safe.from_file file))) out with
        | Ok t -> print_string t
        | Error (`Bid, e) -> print_string e; exit check_bid_failed
        | Error (`Node, e) -> print_string e; exit 3)
-  | [ "status"; home ] ->
+
+let cmd_status home =
       let p = Filename.concat home "status.txt" in
       if Sys.file_exists p then print_string (read_file p)
       else fail "no status in %s yet: is its node running? Start it with `pantheon node %s` or `pantheon up DIR`" home home
-  | "tx" :: home :: fields when fields <> [] ->
+
+let cmd_tx home fields =
       let d = Filename.concat home "inbox" in
       mkdir_p d;
       write_file (Filename.concat d (Printf.sprintf "%.6f.json" (Unix.gettimeofday ()))) (Yojson.Safe.to_string (strings_json fields));
       say "queued for %s's agent: %s (it signs and sends it next; see `pantheon status %s`)" (Filename.basename home) (String.concat " " fields) home
-  | "up" :: dir :: rest ->
+
+let cmd_up dir rest =
       let self = self_exe in
       let backends = ref [] and pass = ref [] in
       let rec go = function
@@ -765,27 +771,20 @@ let rec run init step checkpoint restore plan_open replace_all edit_once contain
       Sys.set_signal Sys.sigint (Sys.Signal_handle stop);
       Sys.set_signal Sys.sigterm (Sys.Signal_handle stop);
       List.iter (fun p -> ignore (Unix.waitpid [] p)) pids
-  | "node" :: home :: flags -> node init step checkpoint restore plan_open replace_all home flags
-  | _ ->
-      print_string
-        "pantheon: a private BFT labor market where LLM agents take turns as term leader.\n\n\
-         \  One machine:\n\
-         \  pantheon init DIR --repo NAME=GIT-CHECKOUT [--repo ...] [--base-port P] [--block-ms N] [--param name=value]...\n\
-         \  pantheon up DIR [--backends claude=claude,codex=codex,grok=grok,muse=scripted] [node flags]\n\n\
-         \  One machine per agent (see docs/NETWORK.md):\n\
-         \  pantheon keygen HOME --name NAME --addr HOST:PORT     then add HOME/public.json to NETWORK/parts/\n\
-         \  pantheon genesis HOME NETWORK                         once all 4 parts are in\n\n\
-         \  pantheon node HOME [--backend B] [--behavior honest|deny|silent] [--goal FILE] [--deny PATH] [--listen HOST]\n\
-         \                     [--ci CMD] [--ci-repo NAME CMD] [--ci-image IMAGE | --ci-sandbox PROGRAM] [--ci-memory 8g] [--bid-window N] [--perspective TEXT] [--max-llm-calls N]\n\
-         \  pantheon status HOME\n\
-         \  pantheon tx HOME post REPO \"spec\" [CONTEXT-PATH...]   (or any market transaction's fields)\n\
-         \  pantheon edits CHECKOUT [NOTE]     a checkout's changes as a patch reply (for models with tools)\n\
-         \  pantheon plan [FILE]              a .plan's open items (default ./.plan; see docs/PLAN.md)\n\
-         \  pantheon apply-edits DIR EDITS.json\n\n\
-         Backends: scripted, claude, codex, grok (XAI_API_KEY), cmd:PROGRAM (prompt on stdin, JSON reply on stdout;\n\
-         a patch request also gets a scratch checkout in $PANTHEON_WORKTREE: see scripts/bidder.sh).\n"
 
-and node init step checkpoint restore plan_open replace_all home flags =
+let read_plan f =
+  if not (Sys.file_exists f) then fail "no %s here: a repository's plan is .plan at its root (docs/PLAN.md)" f;
+  read_file f
+
+let print_lines xs = List.iter print_endline xs
+let print_text s = print_string s
+let argv () = Array.to_list Sys.argv |> List.tl
+
+let cmd_node init step checkpoint restore plan_open replace_all edit_fn contains_fn path_fn json_fn home flags =
+  soma_shallow_json := json_fn;
+  soma_safe_path := path_fn;
+  soma_edit_once := edit_fn;
+  soma_contains := contains_fn;
   Sys.set_signal Sys.sigpipe Sys.Signal_ignore;
   (* jobs run from scratch directories: every path the node hands out is absolute *)
   let home = if Filename.is_relative home then Filename.concat (Sys.getcwd ()) home else home in

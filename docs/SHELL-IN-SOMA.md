@@ -117,6 +117,18 @@ worth a note in this file rather than a workaround.
 
 ## Done so far
 
+- Command selection now lives in `main.soma`: `argv` excludes the executable
+  name, and Soma preserves the command tails and the existing usage behavior.
+  `run` is deleted. Command implementations are bindings in `shell.definition`;
+  `plan` calls `plan_open` directly over `read_plan`. The existing helpers go
+  to `cmd_node`; commands that also use edit or path helpers receive those
+  same helpers, with no new Soma callback. `test/cli.sh` covers this boundary.
+  Next: step 2 above, the node loop in Soma.
+
+The following entries describe the earlier bottom-up moves and their wiring
+at the time; their `run` references are historical.
+
+
 - `plan_open` (piece 1, in part): now `plan_open` in `util.soma`, with its
   string helpers (`trim`, `split_lines`, `is_date_line`, `marked_line`,
   `truncate_line`). `shell.ml`'s OCaml version is deleted; `run` takes the
