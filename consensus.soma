@@ -256,3 +256,20 @@ timeout (c : consensus_state) (fields : list string) (getv : list string) : cons
       end
   | _ => (c, [])
   end.
+
+(** M-3 heartbeat validation prerequisite. Certificates must come from agreed
+    blocks, newest first, one per consecutive height. A local message log is
+    not such a history: different honest nodes may see different certificates.
+    These helpers do not change membership or authorize a removal themselves. *)
+Fixpoint missed_blocks (agent : string) (certificates : list (list string)) : nat :=
+  match certificates with
+  | [] => 0
+  | signers :: rest => if mem agent signers then 0 else Succ (missed_blocks agent rest)
+  end.
+
+(** Zero disables absence proposals. Only current members are candidates;
+    min_roster and the delayed, committed transaction still need checking. *)
+removal_candidates (roster : list string) (absent_blocks : nat)
+    (certificates : list (list string)) : list string :=
+  filter (fun a => (0 <? absent_blocks) && (absent_blocks <=? missed_blocks a certificates))
+    (nodup_s roster).

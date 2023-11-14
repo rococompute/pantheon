@@ -1,0 +1,14 @@
+(** Deterministic, agreed-history heartbeat accounting; newest block first. *)
+Import util shell consensus.
+
+main := print_lines
+  ([show (missed_blocks "d" [["a"], ["b"], ["d"]]),
+    show (missed_blocks "d" [["a"], ["b"], ["c"], ["d"]]),
+    show (missed_blocks "d" [["d"], ["a"], ["b"]]),
+    show (missed_blocks "d" [])] ++
+   ["kept"] ++ removal_candidates ["a", "b", "c", "d"] 3 [["a", "b", "c"], ["a", "b", "c"]] ++
+   ["remove"] ++ removal_candidates ["a", "b", "c", "d", "d"] 3
+      [["a", "b", "c"], ["a", "b", "c"], ["a", "b", "c"]] ++
+   ["reset"] ++ removal_candidates ["d"] 3 [["d"], [], [], []] ++
+   ["disabled"] ++ removal_candidates ["d"] 0 [[], [], []] ++
+   ["nonmember"] ++ removal_candidates ["a"] 3 [["a"], ["a"], ["a"]]).

@@ -516,3 +516,34 @@ Proof.
   split; [symmetry; exact H|]. split; [apply precommitters_distinct|].
   rewrite precommitters_count. exact Hq.
 Qed.
+
+(** An observed heartbeat resets consecutive absence, regardless of older
+    history. Missing a heartbeat extends exactly the immediately prior run. *)
+Theorem heartbeat_resets_absence : forall a signers history,
+  mem a signers = true -> missed_blocks a (signers :: history) = 0.
+Proof. intros a signers history H. cbn [missed_blocks]. rewrite H. reflexivity. Qed.
+
+Theorem missing_heartbeat_extends_absence : forall a signers history,
+  mem a signers = false ->
+  missed_blocks a (signers :: history) = S (missed_blocks a history).
+Proof. intros a signers history H. cbn [missed_blocks]. rewrite H. reflexivity. Qed.
+
+Theorem removal_candidate_is_absent_member : forall roster limit history a,
+  In a (removal_candidates roster limit history) ->
+  In a roster /\ 0 < limit /\ limit <= missed_blocks a history.
+Proof.
+  intros roster limit history a H. unfold removal_candidates in H.
+  apply filter_In in H. destruct H as [Hin H].
+  apply andb_split in H. destruct H as [Hpositive Habsent].
+  apply Nat.ltb_lt in Hpositive. apply Nat.leb_le in Habsent.
+  split.
+  - exact (proj1 (nodup_s_In a roster) Hin).
+  - split; assumption.
+Qed.
+
+Theorem removal_candidates_distinct : forall roster limit history,
+  NoDup (removal_candidates roster limit history).
+Proof.
+  intros roster limit history. unfold removal_candidates.
+  apply NoDup_filter. apply nodup_s_NoDup.
+Qed.
