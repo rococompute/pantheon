@@ -649,11 +649,8 @@ type peer = { name : string; addr : string; mutable out : Unix.file_descr option
 
 type conn = { cid : int; fd : Unix.file_descr; host : string; mutable last : float }
 
-(* inbound connections: peers are a handful, so these are generous *)
-let max_conns = 64
-let max_conns_per_host = 16
-(* a line's longest: a proposal of max_block_txs transactions, quoted *)
-let max_line = 2 * max_tx_bytes * 60
+(* inbound connections' caps (16 per host, 64 in all) and a buffered
+   line's longest are Soma's (node.soma admit_decision_of, peer_line_cap) *)
 
 type job = { jid : string; jfd : Unix.file_descr; jpid : int;
              jdone : string -> unit; jstarted : float; jlimit : float; jclean : unit -> unit }
@@ -756,7 +753,6 @@ type node_handle = { h_events : float -> string list list;
                      h_conn_admit : string -> string -> string -> unit;
                      h_conns : unit -> (string * float) list;
                      h_conn_close : string -> unit;
-                     h_line_limit : unit -> string;
                      h_poll_prep : unit -> unit;
                      h_inbox_state : unit -> float * string;
                      h_inbox_stamp : float -> unit;
@@ -919,7 +915,6 @@ let node_io id op =
 let node_conn_admit id oid mode target = (lookup_handle id).h_conn_admit oid mode target; true
 let node_conns id = (lookup_handle id).h_conns ()
 let node_conn_close id cid = (lookup_handle id).h_conn_close cid; true
-let node_line_limit id = (lookup_handle id).h_line_limit ()
 let node_draw id = (lookup_handle id).h_draw
 let node_block id height = (lookup_handle id).h_block height
 (* Reads/writes and authenticated socket sends; catch-up policy is Soma.
@@ -1506,7 +1501,6 @@ let node_open packed home flags =
         match List.find_opt (fun x -> string_of_int x.cid = cid) !conns with
         | Some x -> (try Unix.close x.fd with _ -> ()); conns := List.filter (fun y -> y != x) !conns
         | None -> ());
-      h_line_limit = (fun () -> string_of_int max_line);
       h_poll_prep = prep_turn;
       h_inbox_state = (fun () -> (!last_inbox, Filename.concat home "inbox"));
       h_inbox_stamp = (fun now -> last_inbox := now);

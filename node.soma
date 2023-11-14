@@ -1800,10 +1800,39 @@ Record peer_feed_result := {
   peer_over : bool
 }.
 
-peer_feed (chunks : list string) (chunk limit : string) : peer_feed_result :=
+peer_feed_n (chunks : list string) (chunk : string) (limit : nat) : peer_feed_result :=
   let (lines, kept) := feed_chunks chunks chunk in
   {| peer_lines := lines; peer_kept := kept;
-     peer_over := buffer_over (chunks_len kept) (num limit) |}.
+     peer_over := buffer_over (chunks_len kept) limit |}.
+
+peer_feed (chunks : list string) (chunk limit : string) : peer_feed_result :=
+  peer_feed_n chunks chunk (num limit).
+
+(** The longest line a peer may leave buffered: a proposal of 60
+    transactions at the transaction byte cap, each quoted (at most twice
+    its bytes). The cap arrives as a decimal string ([tx_byte_cap]); the
+    product is an OCaml int by extraction, never a unary literal. *)
+peer_line_cap (tx_cap : string) : nat := num tx_cap * 120.
+
+(** One peer read, whole: the chunks to keep, the events its complete
+    lines become (each a [peer_raw] fact, in order, which [run_event]
+    turns into a [peer_line] and then a [tx] or [msg]), and whether the
+    connection is closed for the cap. An empty read keeps the buffer and
+    makes no event; EOF is the shell's [peer_closed]. *)
+peer_read_events (chunks : list string) (chunk : string) (limit : nat)
+    : list string * (list (list string) * bool) :=
+  let r := peer_feed_n chunks chunk limit in
+  (peer_kept r, (map (fun l => ["peer_raw", l]) (peer_lines r), peer_over r)).
+
+(** How an offered socket is carried out: the mode the shell takes
+    ("refuse", "new" or "evict") and, when evicting, the connection to
+    close: the one [oldest_conn] names among the live ones. *)
+conn_admit_plan (d : admit_decision) (conns : list (string * float)) : string * string :=
+  match d with
+  | AdmitRefuse => ("refuse", "")
+  | AdmitNew => ("new", "")
+  | AdmitEvict => ("evict", oldest_conn conns)
+  end.
 
 Fixpoint queue_lines (h : node_t) (lines : list string) : bool :=
   match lines with
@@ -1955,14 +1984,12 @@ run_event (h : node_t) (st : node_state) (ev : list string) : node_state :=
         if carry_all h (cons s) (order_effects (line_event from fields) st s outs) then s else st
       else st
   | "conn_offer" :: oid :: host :: hosts =>
-      match conn_offer_decision host hosts with
-      | AdmitRefuse => if node_conn_admit h oid "refuse" "" then st else with_live st (live st)
-      | AdmitNew => if node_conn_admit h oid "new" "" then st else with_live st (live st)
-      | AdmitEvict =>
-          let target := oldest_conn (node_conns h) in
-          if node_conn_admit h oid "evict" target
-          then peer_forget st target else with_live st (live st)
-      end
+      let d := conn_offer_decision host hosts in
+      let conns := match d with AdmitEvict => node_conns h | _ => [] end in
+      let (mode, target) := conn_admit_plan d conns in
+      if node_conn_admit h oid mode target then
+        (if seq mode "evict" then peer_forget st target else st)
+      else with_live st (live st)
   | ["peer_closed", cid] => peer_forget st cid
   | ["check_failed", id, t] =>
       if perform_check_failed h id t then st else with_live st (live st)
@@ -1977,10 +2004,11 @@ run_event (h : node_t) (st : node_state) (ev : list string) : node_state :=
       | None => if io_log h (append "ignoring malformed " path) then st else with_live st (live st)
       end
   | ["peer_bytes", cid, chunk] =>
-      let parsed := peer_feed (peer_buffer st cid) chunk (node_line_limit h) in
-      let st := peer_remember st cid (peer_kept parsed) in
-      if queue_lines h (peer_lines parsed) then
-        if peer_over parsed then
+      let (kept, rest) := peer_read_events (peer_buffer st cid) chunk (peer_line_cap (tx_byte_cap tt)) in
+      let (evs, over) := rest in
+      let st := peer_remember st cid kept in
+      if push_all h evs then
+        if over then
           if node_conn_close h cid then peer_forget st cid else with_live st (live st)
         else st
       else with_live st (live st)

@@ -172,16 +172,16 @@ node_float_text : float -> string.
     counts are conn_offer_counts, over the hosts the shell lists in the
     conn_offer event): an offered socket the
     shell is holding, admitted in the mode Soma names (closing the
-    named connection when evicting), the live connections and their
-    last-activity times, closing one, and the line byte cap as a
-    decimal string. The shell only accepts, reads and closes sockets. *)
+    named connection when evicting, node.soma conn_admit_plan), the
+    live connections and their last-activity times, and closing one.
+    The line byte cap is Soma's too (node.soma peer_line_cap, from
+    tx_byte_cap). The shell only accepts, reads and closes sockets. *)
 node_conn_admit : string -> string -> string -> string -> bool.
 node_conns : string -> list (string * float).
 (** A connection's buffered read chunks live in Soma's node state:
     the shell only reads the bytes, Soma splits them into lines
     (node.soma feed_chunks) and keeps what is left. *)
 node_conn_close : string -> string -> bool.
-node_line_limit : string -> string.
 (** Sample the turn clock, dial and resend. Soma polls the inbox, decides which
     jobs are past their limit and which timers fire, replaces the timer
     list with the ones still waiting, and chooses the select wait. The

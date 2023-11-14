@@ -1,0 +1,126 @@
+(** Step 5: bytes read from peers into events, connection admission and
+    the buffered-line cap, checked on fixed inputs through the Soma
+    functions the node runs. No sockets, running node or timing. *)
+Import util shell node.
+From Stdlib Require ExtrOcamlNatInt.
+Extract Inlined Constant Nat.div => "(fun a b -> if b = 0 then 0 else a / b)".
+Extract Inlined Constant Nat.modulo => "(fun a b -> if b = 0 then a else a mod b)".
+Extract Inlined Constant Stdlib.Strings.String.length => "String.length".
+Extract Inlined Constant Stdlib.Strings.String.get =>
+  "(fun n s -> if n < String.length s then Some (String.unsafe_get s n) else None)".
+Extract Inlined Constant Stdlib.Strings.String.substring =>
+  "(fun n m s -> let l = String.length s in if n >= l then """" else String.sub s n (min m (l - n)))".
+
+(** [a], a newline, then [b] *)
+nl (a b : string) : string := append a (append newline b).
+
+check (label : string) (ok : bool) : string := append (if ok then "ok " else "FAIL ") label.
+
+Fixpoint eq_evs (a b : list (list string)) : bool :=
+  match a, b with
+  | [], [] => true
+  | x :: r, y :: s => eq_strs x y && eq_evs r s
+  | _, _ => false
+  end.
+
+(** One read: the kept chunks, the events and the close verdict, exactly. *)
+read_is (chunks : list string) (chunk : string) (limit : nat)
+    (kept : list string) (evs : list (list string)) (over : bool) : bool :=
+  let (k, rest) := peer_read_events chunks chunk limit in
+  let (e, o) := rest in
+  eq_strs k kept && eq_evs e evs && Bool.eqb o over.
+
+(** Two reads in a row, the second fed what the first kept. *)
+two_reads (a b : string) (limit : nat) (kept : list string) (evs : list (list string)) : bool :=
+  let (k1, r1) := peer_read_events [] a limit in
+  let (e1, _) := r1 in
+  let (k2, r2) := peer_read_events k1 b limit in
+  let (e2, o2) := r2 in
+  eq_strs k2 kept && eq_evs (e1 ++ e2) evs && negb o2.
+
+is_new (d : admit_decision) : bool := match d with AdmitNew => true | _ => false end.
+is_refuse (d : admit_decision) : bool := match d with AdmitRefuse => true | _ => false end.
+is_evict (d : admit_decision) : bool := match d with AdmitEvict => true | _ => false end.
+
+plan_is (d : admit_decision) (conns : list (string * float)) (mode target : string) : bool :=
+  let (m, t) := conn_admit_plan d conns in seq m mode && seq t target.
+
+conns4 : list (string * float) := [("1", 5%float), ("2", 3%float), ("3", 3%float), ("4", 9%float)].
+
+(** A raw peer line all the way to the event [step] gets: [peer_raw_event]
+    (shape, members, own/refused flags), then the drop or [line_event]. *)
+line_to_event (me raw : string) (refused : string -> bool) : list string :=
+  match peer_raw_event "100" me raw node_line_parts refused with
+  | "peer_line" :: self :: seen :: from :: sig :: fields =>
+      if line_dropped self seen then ["dropped"] else line_event from fields
+  | _ => []
+  end.
+
+forgot : bool :=
+  let st := peer_remember (peer_remember empty_node "7" ["ab"]) "8" ["cd"] in
+  let st := peer_forget st "7" in
+  eq_strs (peer_buffer st "7") [] && eq_strs (peer_buffer st "8") ["cd"].
+
+checks : list string := [
+  (* lines *)
+  check "a line split across reads"
+    (two_reads "abc" (nl "def" "x") 100 ["x"] [["peer_raw", "abcdef"]]),
+  check "a partial read keeps its bytes and makes no event"
+    (read_is [] "abc" 100 ["abc"] [] false),
+  check "several lines in one read"
+    (read_is [] (nl "a" (nl "b" (nl "c" ""))) 100 [] [["peer_raw", "a"], ["peer_raw", "b"], ["peer_raw", "c"]] false),
+  check "several lines and a partial in one read"
+    (read_is ["x"] (nl "y" (nl "z" "w")) 100 ["w"] [["peer_raw", "xy"], ["peer_raw", "z"]] false),
+  check "an empty read makes no event and keeps the bytes"
+    (let (k, rest) := peer_read_events ["ab"] "" 100 in
+     let (e, o) := rest in seq (chunks_join k) "ab" && eq_evs e [] && negb o),
+  check "an empty read of an empty buffer makes no event"
+    (let (k, rest) := peer_read_events [] "" 100 in
+     let (e, o) := rest in seq (chunks_join k) "" && eq_evs e [] && negb o),
+  check "EOF (peer_closed) forgets only that connection's bytes" forgot,
+  (* the byte cap *)
+  check "a buffer at its limit stays open"
+    (read_is [] "abcd" 4 ["abcd"] [] false),
+  check "a buffer one byte past its limit closes"
+    (read_is [] "abcde" 4 ["abcde"] [] true),
+  check "past the limit across reads"
+    (read_is ["ab", "cd"] "e" 4 ["ab", "cd", "e"] [] true),
+  check "complete lines are queued before an over-cap partial closes"
+    (read_is [] (nl "ok" "abcde") 4 ["abcde"] [["peer_raw", "ok"]] true),
+  check "complete lines don't count against the cap"
+    (read_is [] (nl "abcdefgh" "ab") 4 ["ab"] [["peer_raw", "abcdefgh"]] false),
+  check "buffer_over is strict" (negb (buffer_over 4 4) && buffer_over 5 4),
+  check "the line cap is 60 quoted transactions at the byte cap"
+    (peer_line_cap "262144" =? 31457280),
+  (* admission *)
+  check "fifteen from a host is admitted" (is_new (conn_offer_decision "a" (repeat "a" 15))),
+  check "the sixteenth from a host is refused" (is_refuse (conn_offer_decision "a" (repeat "a" 16))),
+  check "sixty-three in all is admitted" (is_new (conn_offer_decision "z" (repeat "b" 63))),
+  check "sixty-four in all evicts" (is_evict (conn_offer_decision "z" (repeat "b" 64))),
+  check "admitting names no target" (plan_is AdmitNew conns4 "new" ""),
+  check "refusing names no target" (plan_is AdmitRefuse conns4 "refuse" ""),
+  check "evicting closes the quietest, first of equals" (plan_is AdmitEvict conns4 "evict" "2"),
+  check "the oldest of one" (seq (oldest_conn [("9", 1%float)]) "9"),
+  check "the oldest of none" (seq (oldest_conn []) ""),
+  (* line kinds *)
+  check "a vote line becomes a msg event"
+    (eq_strs (line_to_event "me" "{""from"":""p"",""sig"":""s"",""fields"":[""prevote"",""1""]}" (fun _ => false))
+       ["msg", "p", "prevote", "1"]),
+  check "a transaction line becomes a tx event"
+    (eq_strs (line_to_event "me" "{""from"":""p"",""sig"":""s"",""fields"":[""tx"",""r""]}" (fun _ => false))
+       ["tx", "r"]),
+  check "this node's own line is dropped"
+    (eq_strs (line_to_event "me" "{""from"":""me"",""sig"":""s"",""fields"":[""prevote"",""1""]}" (fun _ => false))
+       ["dropped"]),
+  check "an already-refused transaction is dropped"
+    (eq_strs (line_to_event "me" "{""from"":""p"",""sig"":""s"",""fields"":[""tx"",""r""]}" (fun r => seq r "r"))
+       ["dropped"]),
+  check "a malformed line is no event"
+    (eq_strs (line_to_event "me" "{not json" (fun _ => false)) []),
+  check "an inbox file becomes its local transaction"
+    (match inbox_tx (node_json_tokens "[""bid"",""x""]") with
+     | Some f => eq_strs f ["bid", "x"] | None => false end),
+  check "a malformed inbox file is no transaction"
+    (match inbox_tx (node_json_tokens "[1]") with Some _ => false | None => true end)
+].
+main := print_lines checks.

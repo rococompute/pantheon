@@ -230,6 +230,20 @@ separate work; this status does not mark `.plan`.
 
 ## Done so far
 
+- Step 5, the line cap and admission's plan: the buffered-line byte cap
+  is Soma's `peer_line_cap` (60 quoted transactions at `tx_byte_cap`,
+  the old `max_line`); the `node_line_limit` binding and the shell's
+  `max_line`, `max_conns` and `max_conns_per_host` are gone.
+  `peer_read_events` turns one read into the kept chunks, its lines'
+  `peer_raw` events and the close verdict, and `conn_admit_plan` names
+  the mode and the evicted connection, which the `peer_bytes` and
+  `conn_offer` cases carry out. `test/peer-read.sh` checks 30 exact
+  results: split and multiple lines, empty reads and EOF, both cap
+  edges, admission at and past both caps with the evicted connection,
+  and each line kind's event. The shell keeps select, reads, accepts,
+  closes, the held-request and limit storage, and the job launch's
+  output-file plumbing; the plan stays open.
+
 - Step 5, check eligibility: `check_request_op` selects a check launch or
   the queued unchecked-repository fact from raw flag and scope lists.
   Scope exclusions retain precedence over `--no-check`. The native gate
