@@ -799,3 +799,71 @@ Proof. repeat split; reflexivity. Qed.
 Theorem bad_nonce_refused : forall agent nonce fields sg verified,
   nonce_ok nonce = false -> tx_decision (Some (agent, (nonce, (fields, sg)))) verified = [].
 Proof. intros agent nonce fields sg verified H. simpl. rewrite H. reflexivity. Qed.
+
+(** M-3, part: the roster by height. A change committed at height c takes
+    effect at c + 1 + delay, so the roster, and every quorum computed from
+    it, is the same at c as without the change; a stable roster keeps
+    genesis's quorums. *)
+Theorem change_takes_effect_after_commit : forall c d : nat, c < effective_height c d.
+Proof. intros c d. unfold effective_height. lia. Qed.
+
+Theorem roster_unchanged_at_commit : forall (g : list string) (cs : list (string * bool * nat))
+    (a : string) (j : bool) (c d : nat),
+  roster_at g (cs ++ [(a, j, effective_height c d)]) c = roster_at g cs c.
+Proof.
+  intros g cs a j c d. unfold roster_at. rewrite fold_left_app.
+  cbn [fold_left]. cbv beta iota.
+  assert (H : (effective_height c d <=? c) = false)
+    by (apply Nat.leb_gt; unfold effective_height; lia).
+  rewrite H. reflexivity.
+Qed.
+
+Theorem quorums_from_the_roster_at_the_height : forall (g : list string) (cs : list (string * bool * nat)) (h : nat),
+  quorum_at g cs h = quorum (length (roster_at g cs h)) /\
+  reject_quorum_at g cs h = reject_quorum (length (roster_at g cs h)).
+Proof. intros. split; reflexivity. Qed.
+
+Theorem quorums_unchanged_at_commit : forall (g : list string) (cs : list (string * bool * nat))
+    (a : string) (j : bool) (c d : nat),
+  quorum_at g (cs ++ [(a, j, effective_height c d)]) c = quorum_at g cs c /\
+  reject_quorum_at g (cs ++ [(a, j, effective_height c d)]) c = reject_quorum_at g cs c.
+Proof.
+  intros. unfold quorum_at, reject_quorum_at. rewrite roster_unchanged_at_commit. split; reflexivity.
+Qed.
+
+Theorem stable_roster_keeps_genesis_quorums : forall (g : list string) (h : nat),
+  roster_at g [] h = g /\ quorum_at g [] h = quorum (length g) /\
+  reject_quorum_at g [] h = reject_quorum (length g).
+Proof. intros. repeat split; reflexivity. Qed.
+
+Example absent_blocks_boundary :
+  absent_run "a3" [["a1", "a2"], ["a1", "a2"], ["a1", "a2", "a3"]] = 2 /\
+  removal_due 3 "a3" [["a1", "a2"], ["a1", "a2"], ["a1", "a2", "a3"]] = false /\
+  removal_due 3 "a3" [["a1", "a2"], ["a1", "a2"], ["a1", "a2"], ["a1", "a2", "a3"]] = true /\
+  removal_due 3 "a1" [["a1", "a2"], ["a2"], ["a2"]] = false /\
+  removal_due 0 "a3" [["a1"], ["a1"]] = false /\
+  effective_height 10 1 = 12.
+Proof. repeat split; reflexivity. Qed.
+
+Example roster_seven_to_six :
+  roster_at ["a1", "a2", "a3", "a4", "a5", "a6", "a7"] [("a7", false, effective_height 10 1)] 11
+    = ["a1", "a2", "a3", "a4", "a5", "a6", "a7"] /\
+  roster_at ["a1", "a2", "a3", "a4", "a5", "a6", "a7"] [("a7", false, effective_height 10 1)] 12
+    = ["a1", "a2", "a3", "a4", "a5", "a6"] /\
+  (quorum_at ["a1", "a2", "a3", "a4", "a5", "a6", "a7"] [("a7", false, 12)] 11,
+   reject_quorum_at ["a1", "a2", "a3", "a4", "a5", "a6", "a7"] [("a7", false, 12)] 11) = (5, 3) /\
+  (quorum_at ["a1", "a2", "a3", "a4", "a5", "a6", "a7"] [("a7", false, 12)] 12,
+   reject_quorum_at ["a1", "a2", "a3", "a4", "a5", "a6", "a7"] [("a7", false, 12)] 12) = (5, 2).
+Proof. repeat split; reflexivity. Qed.
+
+Example roster_four_to_three_and_back :
+  (quorum_at ["a1", "a2", "a3", "a4"] [("a4", false, 10), ("a4", true, 20)] 9,
+   reject_quorum_at ["a1", "a2", "a3", "a4"] [("a4", false, 10), ("a4", true, 20)] 9) = (3, 2) /\
+  roster_at ["a1", "a2", "a3", "a4"] [("a4", false, 10), ("a4", true, 20)] 15 = ["a1", "a2", "a3"] /\
+  (quorum_at ["a1", "a2", "a3", "a4"] [("a4", false, 10), ("a4", true, 20)] 15,
+   reject_quorum_at ["a1", "a2", "a3", "a4"] [("a4", false, 10), ("a4", true, 20)] 15) = (3, 1) /\
+  roster_at ["a1", "a2", "a3", "a4"] [("a4", false, 10), ("a4", true, 20)] 20 = ["a1", "a2", "a3", "a4"] /\
+  (quorum_at ["a1", "a2", "a3", "a4"] [("a4", false, 10), ("a4", true, 20)] 20,
+   reject_quorum_at ["a1", "a2", "a3", "a4"] [("a4", false, 10), ("a4", true, 20)] 20) = (3, 2) /\
+  roster_at ["a1", "a2", "a3"] [("a2", true, 5)] 6 = ["a1", "a2", "a3"].
+Proof. repeat split; reflexivity. Qed.

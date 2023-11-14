@@ -382,6 +382,42 @@ rejected_at (n no : nat) : bool := reject_quorum n <=? no.
 draw_ready (n revealed : nat) (window_passed : bool) : bool :=
   (revealed =? n) || (window_passed && (quorum n <=? revealed)).
 
+(** ---- M-3, part: the roster by height (docs/DESIGN.md "Membership by
+    heartbeat") ----
+    Pure schedule functions, not yet wired into consensus or settle: the
+    roster in effect at a height is the genesis roster with every committed
+    roster change whose effective height has been reached applied in commit
+    order, and n, f and the quorums at a height come from that roster. A
+    change committed at height c takes effect at c + 1 + delay, never at c.
+    [precommits] is newest first: the precommitter sets of the latest
+    blocks (as consensus's certificate extraction gives them). *)
+Fixpoint absent_run (a : string) (precommits : list (list string)) : nat :=
+  match precommits with
+  | [] => 0
+  | pc :: older => if mem a pc then 0 else S (absent_run a older)
+  end.
+
+(** a removal is proposed once the agent missed absent_blocks blocks in a
+    row (absent_blocks 0 never proposes one) *)
+removal_due (absent_blocks : nat) (a : string) (precommits : list (list string)) : bool :=
+  (0 <? absent_blocks) && (absent_blocks <=? absent_run a precommits).
+
+effective_height (committed delay : nat) : nat := committed + S delay.
+
+(** a change: the agent, true to join (false to leave), its effective height *)
+apply_change (roster : list string) (a : string) (join : bool) : list string :=
+  if join then (if mem a roster then roster else roster ++ [a]) else remove_s a roster.
+
+roster_at (genesis : list string) (changes : list (string * bool * nat)) (h : nat) : list string :=
+  fold_left (fun r ch => match ch with (a, join, e) => if e <=? h then apply_change r a join else r end)
+    changes genesis.
+
+quorum_at (genesis : list string) (changes : list (string * bool * nat)) (h : nat) : nat :=
+  quorum (length (roster_at genesis changes h)).
+
+reject_quorum_at (genesis : list string) (changes : list (string * bool * nat)) (h : nat) : nat :=
+  reject_quorum (length (roster_at genesis changes h)).
+
 (** the roster a merge's quorums count: the agents whose scope has the bid's
     repository (all of them unless genesis excludes some) *)
 merge_n (m : obj) (p : proposal) : nat :=
