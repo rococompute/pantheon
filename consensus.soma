@@ -411,3 +411,50 @@ Fixpoint certified_commit_window (verify : string -> string -> list string -> bo
           end
       end
   end.
+
+(** M-3 transport prerequisite. A certificate is a list of string fields,
+    with a versioned header and seven fields per signed witness. No delimiter
+    is inserted into signed bytes. Decoding is structural only: callers must
+    still use verify_height_certificate before trusting participation. *)
+Fixpoint encode_commit_votes (votes : list signed_precommit) : option (list string) :=
+  match votes with
+  | [] => Some []
+  | v :: rest =>
+      match commit_fields v, encode_commit_votes rest with
+      | [k, h, r, vr, id], Some tail =>
+          Some (commit_signer v :: commit_signature v :: k :: h :: r :: vr :: id :: tail)
+      | _, _ => None
+      end
+  end.
+
+Fixpoint decode_commit_votes (fuel : nat) (fields : list string) : option (list signed_precommit) :=
+  match fields with
+  | [] => Some []
+  | a :: sg :: k :: h :: r :: vr :: id :: rest =>
+      match fuel with
+      | 0 => None
+      | S remaining => match decode_commit_votes remaining rest with
+          | Some votes => Some ({| commit_signer := a; commit_signature := sg;
+                                   commit_fields := [k, h, r, vr, id] |} :: votes)
+          | None => None
+          end
+      end
+  | _ => None
+  end.
+
+encode_commit_certificate (cert : commit_certificate) : option (list string) :=
+  match encode_commit_votes (certificate_votes cert) with
+  | Some votes => Some (["commit-v1", show (certificate_height cert), show (certificate_round cert)] ++ votes)
+  | None => None
+  end.
+
+decode_commit_certificate (fields : list string) : option commit_certificate :=
+  match fields with
+  | "commit-v1" :: h :: r :: rest =>
+      match num_opt h, num_opt r, decode_commit_votes (length rest) rest with
+      | Some ht, Some rd, Some votes => Some {| certificate_height := ht;
+          certificate_round := rd; certificate_votes := votes |}
+      | _, _, _ => None
+      end
+  | _ => None
+  end.
