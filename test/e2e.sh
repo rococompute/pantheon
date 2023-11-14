@@ -364,6 +364,23 @@ scenario_ciflood() {
   echo "ok ciflood: a check printing forever was stopped at the cap and rejected; every node lived"
 }
 
+# docs/SECURITY-REVIEW-2.md P-6: a bid's CI prints Docker's and ci-sandbox's
+# own errors, and the node's "node problem:" words, and exits 125 as docker
+# does when its daemon is down. Whether CI could run is the node's call, from
+# its own signals: this is a CI failure, rejected as one, and no node abstains.
+scenario_cispoof() {
+  init cispoof 28550 term_blocks=60 max_merges=1 bid_cooldown=2 attest_window=200 || return 1
+  fake=$ROOT/cispoof/fake-ci
+  printf '#!/bin/sh\ncd "$2" || exit 2\neval "$3"\n' > "$fake"; chmod +x "$fake"
+  ci='echo "docker: Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?"; echo "Unable to find image x locally"; echo "ci-sandbox: no bwrap"; echo "Failed to start transient scope"; echo "node problem: docker down"; exit 125'
+  for a in $AGENTS; do node cispoof "$a" -- --ci-sandbox "$fake" --ci "$ci" --ci-memory 1g; done
+  wait_for cispoof claude 180 "a rejection for CI" sh -c "grep -q 'CI failed on the merged tree' $ROOT/cispoof/claude/status.txt" || { stop cispoof; return 1; }
+  sleep 2; stop cispoof
+  if grep -q "a check couldn't run on this node" "$ROOT"/cispoof/*/node.log; then echo "FAIL cispoof: a node abstained on a bid whose CI printed Docker's error"; return 1; fi
+  agree cispoof claude codex grok muse || return 1
+  echo "ok cispoof: a bid's CI printing Docker's error and exiting 125 was rejected as a CI failure; no node abstained"
+}
+
 # someone with no key floods a node: hundreds of connections, a line of
 # deeply nested JSON, an endless line. The node stays up and the chain moves.
 scenario_flood() {
@@ -706,6 +723,7 @@ run() {
     ci) scenario_ci ;;
     cifail) scenario_cifail ;;
     ciflood) scenario_ciflood ;;
+    cispoof) scenario_cispoof ;;
     flood) scenario_flood ;;
     policy) scenario_policy ;;
     model) scenario_model ;;
@@ -719,7 +737,7 @@ run() {
   esac
 }
 
-ALL="bidders bidder-fallback bidder-timeout happy crash equivocate double-vote silent bad-sig withhold bad-tree deny silent-model policy model stuck limit limit-cli prune epoch text network ci cifail ciflood flood"
+ALL="bidders bidder-fallback bidder-timeout happy crash equivocate double-vote silent bad-sig withhold bad-tree deny silent-model policy model stuck limit limit-cli prune epoch text network ci cifail ciflood cispoof flood"
 want=${*:-$ALL}
 pids=""
 for s in $want; do (run "$s" > "$ROOT/$s.result" 2>&1; echo $? > "$ROOT/$s.code") & pids="$pids $!"; done

@@ -479,16 +479,45 @@ let edits_json edits note =
   `Assoc [ ("edits", `List (List.map (fun (p, o, n) -> `Assoc [ ("path", `String p); ("old", `String o); ("new", `String n) ]) edits));
            ("note", `String note) ]
 
-(* the tree a bid's edits give on a checkout's HEAD, in a fresh clone *)
+(* the tree a bid's edits give on a checkout's HEAD, in a fresh clone. An
+   error says whose it is: `Node (this node's checkout or git) or `Bid (the
+   edits don't apply), decided here, never read back from the message *)
 let check_tree repo head_tree edits out =
   let commit = git_out repo [ "rev-parse"; "HEAD" ] and tree = git_out repo [ "rev-parse"; "HEAD^{tree}" ] in
-  if tree <> head_tree then Error (Printf.sprintf "node problem: this node's checkout %s is at tree %s, not the market's head %s" repo tree head_tree)
-  else if not (fst (capture "git" [ "clone"; "--quiet"; "--shared"; "--no-checkout"; repo; out ])) then Error "node problem: cloning the checkout failed"
-  else if not (git_ok out [ "checkout"; "-q"; "--detach"; commit ]) then Error "node problem: checking out the head failed"
+  if tree <> head_tree then Error (`Node, Printf.sprintf "node problem: this node's checkout %s is at tree %s, not the market's head %s" repo tree head_tree)
+  else if not (fst (capture "git" [ "clone"; "--quiet"; "--shared"; "--no-checkout"; repo; out ])) then Error (`Node, "node problem: cloning the checkout failed")
+  else if not (git_ok out [ "checkout"; "-q"; "--detach"; commit ]) then Error (`Node, "node problem: checking out the head failed")
   else
     match apply_edits out edits with
-    | Error e -> Error e
-    | Ok () -> if git_ok out [ "add"; "-A"; "-f" ] then Ok (git_out out [ "write-tree" ]) else Error "node problem: git add failed"
+    | Error e -> Error (`Bid, e)
+    | Ok () -> if git_ok out [ "add"; "-A"; "-f" ] then Ok (git_out out [ "write-tree" ]) else Error (`Node, "node problem: git add failed")
+
+(* how `pantheon check` says the failure is the edits' (they don't apply):
+   any other failing exit is this node's *)
+let check_bid_failed = 1
+
+(* how a CI command, wrapped by the node, says the bid's CI failed. Any other
+   failing exit of the runner (docker's own 125-127, ci-sandbox's 2 and 3,
+   bwrap or systemd-run failing) is the runner's, so this node's. The bid's
+   exits are remapped to this inside the runner, except 124 and 137 (its
+   time and memory budgets, also the bid's) (docs/SECURITY-REVIEW-2.md P-6) *)
+let ci_bid_failed = 86
+let ci_wrap ci =
+  "(" ^ ci ^ ") 2>&1; r=$?; if [ $r -ne 0 ] && grep -qs 'oom_kill [1-9]' /sys/fs/cgroup/memory.events; then exit 137; fi; "
+  ^ "case $r in 0|124|137) exit $r;; esac; exit " ^ string_of_int ci_bid_failed
+
+(* how a job ended, from the node's own "!process failed (HOW): " prefix;
+   None when the job never started (the node couldn't spawn it). What follows
+   the prefix is the job's output, and could say anything *)
+let job_how t =
+  let pre = "!process failed (" in
+  let lp = String.length pre in
+  if String.length t > lp && String.sub t 0 lp = pre then
+    match String.index_from_opt t lp ')' with Some i -> Some (String.sub t lp (i - lp)) | None -> Some ""
+  else None
+
+let exit_code how =
+  if String.length how > 5 && String.sub how 0 5 = "exit " then int_of_string_opt (String.sub how 5 (String.length how - 5)) else None
 
 (* ---------- hash chains for the leader draw ---------- *)
 
@@ -727,7 +756,8 @@ let rec run init step =
   | [ "check"; repo; head; file; out ] ->
       (match check_tree repo head (triples_of (json_strings (Yojson.Safe.from_file file))) out with
        | Ok t -> print_string t
-       | Error e -> print_string e; exit 1)
+       | Error (`Bid, e) -> print_string e; exit check_bid_failed
+       | Error (`Node, e) -> print_string e; exit 3)
   | [ "status"; home ] ->
       let p = Filename.concat home "status.txt" in
       if Sys.file_exists p then print_string (read_file p)
@@ -1139,10 +1169,16 @@ and node init step home flags =
        problem, which ok=error already sends the agent to abstain on) *)
     (* why carries the bid's own output (its CI's): no control character of
        it goes on to a rejection's reason *)
-    let result ok tree why stage = let why = plain_text why in push [ "check_result"; id; "ok"; (if ok then "true" else if contains why "node problem:" then "error" else "false"); "tree"; tree; "why"; why; "stage"; stage ] in
+    (* whose a failure is comes from stage alone, which the node decides from
+       its own signals (exit codes, a job that never started), never from
+       what the check or the bid's CI printed (docs/SECURITY-REVIEW-2.md P-6) *)
+    let result ok tree why stage = let why = plain_text why in push [ "check_result"; id; "ok"; (if ok then "true" else if stage = "node" then "error" else "false"); "tree"; tree; "why"; why; "stage"; stage ] in
     start_job self_exe [ "check"; rdir r; head; ef; out ] ~stdin_text:"" ~env:(Unix.environment ())
       ~on_done:(fun t ->
-        if String.length t > 0 && t.[0] = '!' then (say "check of request %s failed: %s" id t; result false "" t (if contains t "node problem:" then "node" else "apply"))
+        if String.length t > 0 && t.[0] = '!' then (say "check of request %s failed: %s" id t; result false "" t
+              (match job_how t with
+               | None -> "node"
+               | Some h -> (match exit_code h with Some c when c <> check_bid_failed -> "node" | _ -> "apply")))
         else
           let tree = if byz = "bad-tree" then (say "FAULT INJECTION: naming a wrong tree"; sha256 ("lie" ^ id)) |> fun x -> String.sub x 0 40 else String.trim t in
           if ci = "" then result true tree "" ""
@@ -1151,34 +1187,37 @@ and node init step home flags =
             let name = "pantheon-ci-" ^ random_hex 6 in
             with_ci @@ fun () ->
             let prog, args =
-              if !ci_sandbox <> "" then (!ci_sandbox, [ !ci_memory; out; ci ]) else
+              if !ci_sandbox <> "" then (!ci_sandbox, [ !ci_memory; out; ci_wrap ci ]) else
               ("docker", [ "run"; "--rm"; "--name"; name; "--network=none"; "--read-only"; "--tmpfs"; "/tmp:exec,size=" ^ !ci_memory; "--cap-drop=ALL";
                 "--security-opt=no-new-privileges"; "--pids-limit=512"; "--memory=" ^ !ci_memory; "--memory-swap=" ^ !ci_memory;
                 "--user=65534:65534"; "-e"; "HOME=/tmp";
                 (* its errors too, as start_job keeps only stdout; and a build the
                    kernel killed for the container's memory (oom_kill in its cgroup)
                    ends as 137, the way docker ends the container itself *)
-                "-v"; out ^ ":/work:ro"; "-w"; "/work"; !ci_image; "sh"; "-c";
-                "(" ^ ci ^ ") 2>&1; r=$?; if [ $r -ne 0 ] && grep -qs 'oom_kill [1-9]' /sys/fs/cgroup/memory.events; then exit 137; fi; exit $r" ]) in
+                "-v"; out ^ ":/work:ro"; "-w"; "/work"; !ci_image; "sh"; "-c"; ci_wrap ci ]) in
             start_job ~limit:3600. prog args
               ~stdin_text:"" ~env:(Unix.environment ())
               ~on_done:(fun t ->
                 let ok = not (String.length t > 0 && t.[0] = '!') in
                 say "CI for request %s: %s" id (if ok then "passed" else "failed");
-                (* docker itself failing is this node's problem, not the bid's *)
-                let docker_down = (not ok) && (contains t "Cannot connect to the Docker daemon" || contains t "Unable to find image"
-                                               || contains t "ci-sandbox: " || contains t "Failed to start transient scope") in
+                (* the runner itself failing (docker, ci-sandbox) is this node's
+                   problem, not the bid's: decided from the node's own signals --
+                   the job never started, or the runner exited with a code of its
+                   own, which ci_wrap keeps the bid's exits from using -- never
+                   from what the bid printed (docs/SECURITY-REVIEW-2.md P-6). A run
+                   ended by a signal (the node's time or output limit, or a bid
+                   killing its own shell) is the bid's. *)
+                let docker_down = (not ok) && (match job_how t with
+                                               | None -> true
+                                               | Some h -> (match exit_code h with
+                                                            | Some c -> c >= 1 && c < 128 && c <> ci_bid_failed && c <> 124
+                                                            | None -> false)) in
                 if not ok then say "CI for request %s said: %s" id (String.map (fun c -> if c = '\n' then ' ' else c) t);
                 (* over budget is the bid's fault, but say which budget: docker ends
                    a container that passes its memory with 137, timeout with 124 *)
                 (* how the check ended, from the node's own "!process failed (HOW): "
                    prefix: the output after it is the bid's, and could say anything *)
-                let how =
-                  let pre = "!process failed (" in
-                  let lp = String.length pre in
-                  if String.length t > lp && String.sub t 0 lp = pre then
-                    match String.index_from_opt t lp ')' with Some i -> String.sub t lp (i - lp) | None -> ""
-                  else "" in
+                let how = match job_how t with Some h -> h | None -> "" in
                 let why =
                   if ok then ""
                   else if docker_down then "node problem: " ^ (if !ci_sandbox <> "" then "ci-sandbox: " else "docker: ") ^ t
