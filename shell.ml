@@ -124,6 +124,8 @@ let load_consensus path =
 
 let read_json p = try Yojson.Safe.from_file p with _ -> fail "cannot read %s: is this a home made by `pantheon init`?" p
 let lines p = if Sys.file_exists p then String.split_on_char '\n' (read_file p) |> List.filter (( <> ) "") else []
+(* a log's bytes, or "" when there is none: Soma splits it (node.soma's log_lines) *)
+let file_text p = if Sys.file_exists p then read_file p else ""
 
 (* A .plan's open items are computed in Soma ([plan_open] in util.soma), and
    so are the prompts that quote them (node.soma's perform_llm). *)
@@ -790,7 +792,7 @@ type node_handle = { h_events : float -> string list list;
                      h_send_all : string list -> unit;
                      h_signed_vote : string -> string option;
                      h_signed_body : string -> string list option;
-                     h_signed_lines : string list;
+                     h_signed_text : string;
                      h_signed_restore : string -> string -> string list -> unit;
                      h_remember_vote : string -> string -> string list -> unit;
                      h_remember_broadcast : string -> string -> string list -> string list -> unit;
@@ -935,9 +937,10 @@ let node_encode_tx id nonce fields = (lookup_handle id).h_encode_tx nonce fields
 let node_nonce_flooded id = (lookup_handle id).h_nonce_flooded ()
 let node_signed_vote id slot = (lookup_handle id).h_signed_vote slot
 let node_signed_body id slot = (lookup_handle id).h_signed_body slot
-(* signed.log's nonempty lines, raw, and noting one vote Soma read from them
-   (without appending it again); Soma's signed_log_entry parses each line *)
-let node_signed_lines id = (lookup_handle id).h_signed_lines
+(* signed.log's bytes, raw, and noting one vote Soma read from them (without
+   appending it again); Soma's log_lines splits them and signed_log_entry
+   parses each line *)
+let node_signed_text id = (lookup_handle id).h_signed_text
 let node_signed_restore id slot vid fields = (lookup_handle id).h_signed_restore slot vid fields; true
 (* a startup Soma refuses: the message on stderr, exit 1, as `fail` *)
 let node_fail msg : bool = fail "%s" msg
@@ -1032,7 +1035,7 @@ let node_open packed home flags =
   (* filled from signed.log's lines by Soma (node.soma's restore_signed,
      through signed_log_entry) before replay: the shell only reads the lines *)
   let signed : (string, string * string list option) Hashtbl.t = Hashtbl.create 64 in
-  let signed_lines = lines signed_path in
+  let signed_text = file_text signed_path in
   let blocks_path = Filename.concat home "blocks.log" in
   (* the governed repositories: a checkout each, at genesis or later *)
   let repos = List.map (fun r -> (to_string (member "name" r), to_string (member "url" r), to_string (member "commit" r), to_string (member "tree" r)))
@@ -1271,7 +1274,8 @@ let node_open packed home flags =
   List.iter feed !agent_events;
   List.iter (fun (n, body) -> feed ["applied_body"; n; body]) (List.rev !pending_applied);
   let replayed = ref 0 in
-  List.iter (fun l -> feed ["block_log"; l]) (lines blocks_path);
+  (* the file's bytes: node.soma's log_lines splits them into block_log lines *)
+  feed ["block_log_text"; file_text blocks_path];
   let boot_saved = if Sys.file_exists checkpoint_path then
       Some (Obj.repr (load_consensus checkpoint_path)) else None in
   (* votes with no consensus.state: Soma refuses to start (node.soma's
@@ -1552,7 +1556,7 @@ let node_open packed home flags =
       h_send_all = (fun fields -> let line = wire fields in List.iter (fun p -> send_to p line) peers);
       h_signed_vote = (fun slot -> Option.map fst (Hashtbl.find_opt signed slot));
       h_signed_body = (fun slot -> match Hashtbl.find_opt signed slot with Some (_, body) -> body | None -> None);
-      h_signed_lines = signed_lines;
+      h_signed_text = signed_text;
       h_signed_restore = (fun slot vid fields -> Hashtbl.replace signed slot (vid, Some fields));
       h_remember_vote = (fun slot vid fields ->
         Hashtbl.replace signed slot (vid, Some fields);

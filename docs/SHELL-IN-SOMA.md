@@ -230,6 +230,17 @@ separate work; this status does not mark `.plan`.
 
 ## Done so far
 
+- Step 5, log lines at startup: the shell no longer splits blocks.log or
+  signed.log. It hands over each file's bytes ("" when it is missing):
+  blocks.log as one `block_log_text` boot event, which `boot_expand` turns
+  into the old `block_log` events at the same place, and signed.log through
+  `node_signed_text` (it replaces `node_signed_lines`). Soma's `log_lines`
+  splits them at each newline and drops empty lines, as the old
+  `String.split_on_char` and filter did, reading by offset (`split_lines`).
+  `test/log-lines.sh` checks fixed texts: a missing file, a final newline or
+  none, empty lines, a line cut short, a carriage return, the events' order,
+  and a 20000-line log.
+
 - Step 5, genesis.json at startup: the shell feeds the file's text as one
   `genesis` boot event; Soma's `boot_expand` turns it, through the JSON
   token binding and `genesis_events`, into the old boot events in the old

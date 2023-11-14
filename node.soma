@@ -2214,6 +2214,12 @@ Fixpoint restore_signed (h : node_t) (lines : list string) (found : bool) : bool
       end
   end.
 
+(** A log file's lines (blocks.log, signed.log): the bytes split at each
+    newline, empty lines dropped, as the shell's old [lines] did with
+    String.split_on_char. A missing file comes as "", which has none.
+    [split_lines] reads by offset, so a long log is one pass. *)
+log_lines (text : string) : list string := filter (fun l => negb (seq l "")) (split_lines text).
+
 (** Votes signed with no consensus.state to go with them: a node that
     started would forget its lock, so it doesn't start. *)
 signed_needs_snapshot (snapshot_missing votes_found : bool) : bool := snapshot_missing && votes_found.
@@ -2365,13 +2371,14 @@ boot_expand (h : node_t) (evs : list (list string)) : list (list string) :=
         | Some gevs => gevs
         | None => if node_fail genesis_refused_text then [] else [["genesis_refused"]]
         end
+    | ["block_log_text", text] => map (fun l => ["block_log", l]) (log_lines text)
     | _ => [ev]
     end) evs.
 
 run_node (home : string) (flags : list string) : unit :=
   let h := node_open (pack_helpers node_helpers) home flags in
   let snap : option consensus_state := boot_snapshot h in
-  let (restored, found) := restore_signed h (node_signed_lines h) false in
+  let (restored, found) := restore_signed h (log_lines (node_signed_text h)) false in
   let missing := match snap with None => true | Some _ => false end in
   let guarded := if signed_needs_snapshot missing found then node_fail signed_missing_text else true in
   if restored && guarded then
