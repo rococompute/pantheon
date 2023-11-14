@@ -105,4 +105,18 @@ PANTHEON_GITDIR="$T/hostile.git" "$BIN" edits "$T/hostile" "hostile" > "$T/hosti
 [ ! -e "$T/pwned-fsmonitor" ] && [ ! -e "$T/pwned-filter" ] && ok "a checkout's .git config runs nothing" || fail "a checkout's .git config ran a command"
 jq -e '[.edits[].path] == ["a.txt"]' "$T/hostile.json" >/dev/null && ok "edits come from the node's repository" || fail "edits with PANTHEON_GITDIR: $(cat "$T/hostile.json")"
 
+# ... nor can PANTHEON_GITDIR itself: when node and model are one user the
+# model can write that repository's config too. A clean filter and an
+# fsmonitor there (routed to by .gitattributes in the worktree) must never
+# run when the snapshot reads the checkout, and edits are still read.
+g clone -q --separate-git-dir="$T/hostile2.git" "$T/origin" "$T/hostile2"
+git --git-dir="$T/hostile2.git" config filter.x.clean "touch $T/pwned-gitdir-filter; cat"
+git --git-dir="$T/hostile2.git" config core.fsmonitor "touch $T/pwned-gitdir-fsmonitor; false"
+git --git-dir="$T/hostile2.git" config core.hooksPath "$T/hostile2-hooks"
+printf '* filter=x\n' > "$T/hostile2/.gitattributes"
+printf 'changed\n' >> "$T/hostile2/a.txt"
+PANTHEON_GITDIR="$T/hostile2.git" "$BIN" edits "$T/hostile2" "hostile2" > "$T/hostile2.json" || fail "pantheon edits failed with a hostile PANTHEON_GITDIR"
+[ ! -e "$T/pwned-gitdir-filter" ] && [ ! -e "$T/pwned-gitdir-fsmonitor" ] && ok "a hostile PANTHEON_GITDIR config runs nothing" || fail "a hostile PANTHEON_GITDIR config ran a command"
+jq -e '[.edits[].path] | index("a.txt")' "$T/hostile2.json" >/dev/null && ok "edits still come from a hostile PANTHEON_GITDIR" || fail "edits with a hostile PANTHEON_GITDIR: $(cat "$T/hostile2.json")"
+
 [ $fails -eq 0 ] && echo PASS || { echo "$fails failed"; exit 1; }

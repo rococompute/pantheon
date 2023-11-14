@@ -172,7 +172,7 @@ let capture ?(env = Unix.environment ()) prog args =
    signing, so every node does exactly the same thing *)
 let git_env extra =
   Array.of_list
-    ([ "GIT_CONFIG_NOSYSTEM=1"; "GIT_CONFIG_GLOBAL=/dev/null"; "GIT_TERMINAL_PROMPT=0" ] @ extra
+    (extra @ [ "GIT_CONFIG_NOSYSTEM=1"; "GIT_CONFIG_GLOBAL=/dev/null"; "GIT_TERMINAL_PROMPT=0" ]
      @ List.filter (fun kv -> not (String.length kv > 4 && String.sub kv 0 4 = "GIT_")) (Array.to_list (Unix.environment ())))
 
 let git ?(extra = []) dir args =
@@ -252,7 +252,7 @@ let apply_edits dir edits =
    on the old content gives the new; otherwise one whole-file write. *)
 let hunk_edits g p before now =
   let whole = [ (p, "", now) ] in
-  let ok, d = g [ "diff"; "--cached"; "-U3"; "--no-color"; "--no-ext-diff"; "HEAD"; "--"; p ] in
+  let ok, d = g [ "diff"; "--cached"; "-U3"; "--no-color"; "--no-ext-diff"; "--no-textconv"; "HEAD"; "--"; p ] in
   if not ok then whole
   else begin
     let hunks = ref [] and cur = ref None and bad = ref false in
@@ -287,46 +287,160 @@ let hunk_edits g p before now =
    the edits name, ignored or not, so the tree doesn't hang on .gitignore.
 
    The checkout is the model's to write, so nothing in it is trusted:
-   - contents come from git's index, never the filesystem, and only regular
-     files count: a symlink (mode 120000) would otherwise make the node read
-     whatever it points at (a key, a login) into a signed bid;
-   - with PANTHEON_GITDIR (the node made the checkout with its repository
-     outside it), git runs on that repository, not on the checkout's .git,
-     whose config a model could fill with commands (core.fsmonitor, filters);
-     either way core.fsmonitor is off. *)
+   - only regular files count: a symlink (mode 120000) would otherwise make
+     the node read whatever it points at (a key, a login) into a signed bid;
+   - the snapshot is built in a node-owned temporary repository whose
+     config (and global/system config) is an empty file the node wrote:
+     the checkout's .git and PANTHEON_GITDIR are only read, as plain files,
+     for their HEAD and their object store (through alternates), so no
+     config they hold is ever used -- no clean/smudge filters, fsmonitor,
+     textconv or external diff can run. Each worktree file is hashed with
+     [git hash-object -w --no-filters] into that snapshot, and changed
+     files are staged there with [update-index --cacheinfo], never with
+     [git add] on a repository the model can configure. *)
 let edits_of_checkout dir =
-  let gd = match Sys.getenv_opt "PANTHEON_GITDIR" with Some g when g <> "" -> [ "--git-dir=" ^ g; "--work-tree=." ] | _ -> [] in
-  let git dir args = git dir ("-c" :: "core.fsmonitor=false" :: gd @ args) in
-  if not (fst (git dir [ "add"; "-A" ])) then Error (dir ^ " is not a git checkout")
-  else
-    let ok, out = git dir [ "diff"; "--cached"; "--no-renames"; "--raw"; "-z"; "HEAD" ] in
-    if not ok then Error "git diff failed"
-    else
-      (* --raw -z: ":OLDMODE NEWMODE OLDSHA NEWSHA STATUS" NUL "PATH" NUL *)
-      let rec pairs = function meta :: p :: r -> (meta, p) :: pairs r | _ -> [] in
-      let skipped = ref [] in
-      let blob spec = let ok, c = git dir [ "cat-file"; "blob"; spec ] in if ok then Some c else None in
-      let edits =
-        List.concat_map (fun (meta, p) ->
-            let f = String.split_on_char ' ' meta in
-            let st = if List.length f >= 5 then List.nth f 4 else "?" and mode = if List.length f >= 2 then List.nth f 1 else "" in
-            match st.[0] with
-            | 'D' -> [ (p, "", "") ]
-            | ('A' | 'M') when not (safe_path p) -> skipped := p :: !skipped; []
-            | ('A' | 'M') when mode <> "100644" && mode <> "100755" -> skipped := p :: !skipped; []
-            | 'A' | 'M' -> (
-                match blob (":" ^ p) with
-                | None -> skipped := p :: !skipped; []
-                | Some now ->
-                    if String.contains now '\000' then (skipped := p :: !skipped; [])
-                    else if st.[0] = 'A' then (if now = "" then (skipped := p :: !skipped; []) else [ (p, "", now) ])
-                    else
-                      let before = Option.value ~default:"" (blob ("HEAD:" ^ p)) in
-                      if now = "" then [ (p, before, "") ] else hunk_edits (git dir) p before now)
-            | _ -> skipped := p :: !skipped; [])
-          (pairs (List.filter (( <> ) "") (String.split_on_char '\000' out)))
+  let abs_dir = if Filename.is_relative dir then Filename.concat (Sys.getcwd ()) dir else dir in
+  let read_opt p = try Some (read_file p) with _ -> None in
+  let has_prefix s pre = String.length s >= String.length pre && String.sub s 0 (String.length pre) = pre in
+  let resolve_rel base p = if Filename.is_relative p then Filename.concat base p else p in
+  let is_hex s =
+    s <> "" && String.for_all (fun c -> (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) s
+  in
+  (* the repository that holds HEAD and the objects: the checkout's .git
+     (a directory, or a gitdir: file), or PANTHEON_GITDIR when the node
+     kept the repository outside the checkout *)
+  let orig_gitdir =
+    match Sys.getenv_opt "PANTHEON_GITDIR" with
+    | Some g when g <> "" -> resolve_rel abs_dir g
+    | _ ->
+        let dot = Filename.concat abs_dir ".git" in
+        (match (try Some (Unix.stat dot).st_kind with _ -> None) with
+         | Some Unix.S_DIR -> dot
+         | _ ->
+             (match read_opt dot with
+              | Some c ->
+                  let t = String.trim c in
+                  if has_prefix t "gitdir:" then resolve_rel abs_dir (String.trim (String.sub t 7 (String.length t - 7))) else dot
+              | None -> dot))
+  in
+  let common_gitdir =
+    match read_opt (Filename.concat orig_gitdir "commondir") with
+    | Some c -> resolve_rel orig_gitdir (String.trim c)
+    | None -> orig_gitdir
+  in
+  (* HEAD's commit, from the ref files alone: no git command runs on
+     this repository, so nothing its config names can run either *)
+  let head_commit =
+    let from_ref refname =
+      match List.find_map read_opt [ Filename.concat orig_gitdir refname; Filename.concat common_gitdir refname ] with
+      | Some c when is_hex (String.trim c) -> Some (String.trim c)
+      | _ ->
+          (match List.find_map read_opt [ Filename.concat orig_gitdir "packed-refs"; Filename.concat common_gitdir "packed-refs" ] with
+           | None -> None
+           | Some content ->
+               List.find_map
+                 (fun line ->
+                   let line = String.trim line in
+                   if line = "" || line.[0] = '#' || line.[0] = '^' then None
+                   else
+                     match String.index_opt line ' ' with
+                     | Some i when String.sub line (i + 1) (String.length line - i - 1) = refname && is_hex (String.sub line 0 i) ->
+                         Some (String.sub line 0 i)
+                     | _ -> None)
+                 (String.split_on_char '\n' content))
+    in
+    match read_opt (Filename.concat orig_gitdir "HEAD") with
+    | None -> None
+    | Some c ->
+        let t = String.trim c in
+        if has_prefix t "ref:" then from_ref (String.trim (String.sub t 4 (String.length t - 4)))
+        else if is_hex t then Some t
+        else None
+  in
+  match head_commit with
+  | None -> Error (dir ^ " is not a git checkout")
+  | Some head_commit ->
+      let snapshot = Filename.temp_dir "pantheon-snapshot" "" in
+      let result =
+        try
+          let snap_git = Filename.concat snapshot "gitdir" in
+          mkdir_p (Filename.concat (Filename.concat snap_git "objects") "info");
+          mkdir_p (Filename.concat snap_git "refs");
+          write_file (Filename.concat snap_git "config") "";
+          write_file (Filename.concat snap_git "HEAD") (head_commit ^ "\n");
+          write_file (Filename.concat (Filename.concat (Filename.concat snap_git "objects") "info") "alternates")
+            (Filename.concat common_gitdir "objects" ^ "\n");
+          let empty_config = Filename.concat snapshot "gitconfig" in
+          write_file empty_config "";
+          let sgit args =
+            git ~extra:[ "GIT_CONFIG_GLOBAL=" ^ empty_config; "GIT_CONFIG_SYSTEM=" ^ empty_config;
+                         "GIT_INDEX_FILE=" ^ Filename.concat snap_git "index" ]
+              abs_dir
+              ("-c" :: "core.fsmonitor=false" :: ("--git-dir=" ^ snap_git) :: ("--work-tree=" ^ abs_dir) :: args)
+          in
+          let blob spec = let ok, c = sgit [ "cat-file"; "blob"; spec ] in if ok then Some c else None in
+          let ok, out = sgit [ "ls-tree"; "-r"; "-z"; "HEAD" ] in
+          if not ok then Error (dir ^ " is not a git checkout")
+          else
+            let head_tbl = Hashtbl.create 64 in
+            let head_paths =
+              List.filter_map
+                (fun entry ->
+                  match String.index_opt entry '\t' with
+                  | Some tab ->
+                      let meta = String.split_on_char ' ' (String.sub entry 0 tab) in
+                      let p = String.sub entry (tab + 1) (String.length entry - tab - 1) in
+                      (match meta with mode :: _ :: sha :: _ -> Hashtbl.replace head_tbl p (mode, sha) | _ -> ());
+                      Some p
+                  | None -> None)
+                (List.filter (( <> ) "") (String.split_on_char '\000' out))
+            in
+            let ok, out = sgit [ "ls-files"; "--others"; "--exclude-standard"; "-z" ] in
+            if not ok then Error "git ls-files failed"
+            else
+              let paths =
+                List.sort_uniq String.compare (List.filter (( <> ) "") (String.split_on_char '\000' out) @ head_paths)
+              in
+              let skipped = ref [] and edits = ref [] in
+              List.iter
+                (fun p ->
+                  if List.exists (fun x -> String.lowercase_ascii x = ".git") (String.split_on_char '/' p) then ()
+                  else if not (safe_path p) then skipped := p :: !skipped
+                  else
+                    let f = Filename.concat abs_dir p in
+                    let head_entry = Hashtbl.find_opt head_tbl p in
+                    match (try Some (Unix.lstat f) with _ -> None) with
+                    | None -> (match head_entry with Some _ -> edits := !edits @ [ (p, "", "") ] | None -> ())
+                    | Some st when st.st_kind <> Unix.S_REG -> skipped := p :: !skipped
+                    | Some st when not (no_symlink abs_dir p) -> skipped := p :: !skipped
+                    | Some st ->
+                        let mode = if st.st_perm land 0o100 <> 0 then "100755" else "100644" in
+                        let ok, hout = sgit [ "hash-object"; "-w"; "--no-filters"; "--"; p ] in
+                        let hash = String.trim hout in
+                        if not ok || not (is_hex hash) then skipped := p :: !skipped
+                        else
+                          (match head_entry with
+                           | None ->
+                               let now = read_file f in
+                               if String.contains now '\000' || now = "" then skipped := p :: !skipped
+                               else edits := !edits @ [ (p, "", now) ]
+                           | Some (hmode, _) when hmode <> "100644" && hmode <> "100755" -> skipped := p :: !skipped
+                           | Some (hmode, hsha) when hash = hsha && mode = hmode -> ()
+                           | Some (_, hsha) ->
+                               let now = read_file f in
+                               if String.contains now '\000' then skipped := p :: !skipped
+                               else if hash = hsha then edits := !edits @ [ (p, "", now) ]
+                               else if now = "" then
+                                 edits := !edits @ [ (p, Option.value ~default:"" (blob ("HEAD:" ^ p)), "") ]
+                               else if fst (sgit [ "update-index"; "--add"; "--cacheinfo"; mode; hash; p ]) then
+                                 edits := !edits @ hunk_edits sgit p (Option.value ~default:"" (blob ("HEAD:" ^ p))) now
+                               else edits := !edits @ [ (p, "", now) ]))
+                paths;
+              Ok (!edits, List.rev !skipped)
+        with e -> Error (Printexc.to_string e)
       in
-      Ok (edits, List.rev !skipped)
+      remove_tree_later snapshot;
+      result
 
 let edits_json edits note =
   `Assoc [ ("edits", `List (List.map (fun (p, o, n) -> `Assoc [ ("path", `String p); ("old", `String o); ("new", `String n) ]) edits));
