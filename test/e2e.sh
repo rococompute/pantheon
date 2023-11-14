@@ -461,7 +461,19 @@ case "$p" in
     # each node's first two drafts fail, as a flaky model's do: the leader
     # has to ask again within its term
     c=$(dirname "$0")/drafts.$PPID; n=$(cat "$c" 2>/dev/null || echo 0); echo $((n + 1)) > "$c"
-    [ "$n" -ge 2 ] || { echo "I'll look at the repository first."; exit 0; }
+    # P-16: otherwise valid drafts with hostile structure must fail before
+    # parsing/flattening. Both fit within the model output byte cap.
+    if [ "$n" -lt 2 ]; then
+      python3 - "$n" <<'PYREPLY'
+import sys
+base = '{"task":"add a hello command","repo":"calc","context":["calc.sh"],'
+if sys.argv[1] == "0":
+    print(base + '"extra":' + '[' * 100000 + '0' + ']' * 100000 + '}')
+else:
+    print(base + '"extra":{' + ','.join('"k%d":0' % i for i in range(5000)) + '}}')
+PYREPLY
+      exit 0
+    fi
     echo 'Sure! {"task": "add a hello command", "repo": "calc", "context": ["calc.sh"]}' ;;
   *"writing a patch"*)
     case "$p" in *"file calc.sh>>>"*"A tiny calculator"*) ;; *) echo '{"edits": []}'; exit 0 ;; esac
@@ -483,6 +495,8 @@ F
   wait_for model claude 90 "a merge through the model path" merges_at_least model claude 1 || { stop model; return 1; }
   sleep 2; stop model
   [ ! -s "$ROOT/model/plan-errors" ] || { echo "FAIL model: the leader's prompt had the wrong plan: $(sort -u "$ROOT/model/plan-errors" | tr '\n' ' ')"; return 1; }
+  failures=$(grep -h 'model call failed.*the reply had no JSON object' "$ROOT"/model/*/node.log | wc -l)
+  [ "$failures" -ge 2 ] || { echo "FAIL model: hostile JSON drafts did not count as failures"; return 1; }
   r=$ROOT/model/claude/repos/calc
   [ "$(git -C "$r" show HEAD:hello.sh)" = "echo hello" ] || { echo "FAIL model: hello.sh is wrong"; return 1; }
   [ "$(cd "$r" && sh calc.sh hello)" = "hello" ] || { echo "FAIL model: calc.sh hello doesn't run hello.sh"; return 1; }

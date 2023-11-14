@@ -14,7 +14,7 @@
 + P-9: genesis requires exactly four parts, with unique names and unique keys (docs/SECURITY-REVIEW-2.md P-9)
 + P-17: refuse NUL and control characters in specs, notes and reasons; give git the merge commit's message on stdin (docs/SECURITY-REVIEW-2.md P-17)
 + P-14: deny .gitattributes and .gitmodules in any path component, in any case (docs/SECURITY-REVIEW-2.md P-14)
-P-16: bound a model's JSON reply before parsing it: depth, field count, iterative flattening (docs/SECURITY-REVIEW-2.md P-16)
++ P-16: bound a model's JSON reply before parsing it: depth, field count, iterative flattening (docs/SECURITY-REVIEW-2.md P-16)
 P-6: decide that CI couldn't run from the node's own signals, never from the check's output (docs/SECURITY-REVIEW-2.md P-6)
 P-5: keep future-nonce transactions from filling the pool (docs/SECURITY-REVIEW-2.md P-5)
 P-8: make a leader-draw reveal unique, and prove two accepted reveals for one draw are equal (docs/SECURITY-REVIEW-2.md P-8; market.soma reaches)

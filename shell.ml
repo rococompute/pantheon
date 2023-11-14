@@ -77,14 +77,19 @@ let all_digits s = s <> "" && String.length s < 18 && String.for_all (fun c -> c
    strings), and they're parsed before their signature can be checked: a
    peer with no key could otherwise send a line of "[[[[..." that takes
    gigabytes to parse. *)
-let shallow_json ?(max = 4) s =
+(* Optional structural budget bounds object fields and array entries before
+   allocating a JSON tree. Colons, commas and containers each spend one. *)
+let shallow_json ?(max = 4) ?(max_items = max_int) s =
+  let items = ref 0 in
+  let spend () = incr items; !items <= max_items in
   let depth = ref 0 and ok = ref true and in_str = ref false and esc = ref false in
   String.iter (fun c ->
       if !ok then
         if !in_str then (if !esc then esc := false else if c = '\\' then esc := true else if c = '"' then in_str := false)
         else match c with
           | '"' -> in_str := true
-          | '[' | '{' -> incr depth; if !depth > max then ok := false
+          | '[' | '{' -> incr depth; if !depth > max || not (spend ()) then ok := false
+          | ':' | ',' -> if not (spend ()) then ok := false
           | ']' | '}' -> decr depth
           | _ -> ())
     s;
@@ -668,9 +673,16 @@ let resolve s =
 (* JSON reply -> flat [key; value; ...], arrays as indices: files.0.path *)
 let flatten_reply j =
   let out = ref [] in
-  let rec go prefix = function
-    | `Assoc kv -> List.iter (fun (k, v) -> go (if prefix = "" then k else prefix ^ "." ^ k) v) kv
-    | `List l -> List.iteri (fun i v -> go (prefix ^ "." ^ string_of_int i) v) l
+  let pending = Stack.create () in
+  Stack.push ("", j) pending;
+  while not (Stack.is_empty pending) do
+    let prefix, value = Stack.pop pending in
+    match value with
+    | `Assoc kv ->
+        List.iter (fun (k, v) -> Stack.push ((if prefix = "" then k else prefix ^ "." ^ k), v) pending) (List.rev kv)
+    | `List l ->
+        List.iter (fun (i, v) -> Stack.push (prefix ^ "." ^ string_of_int i, v) pending)
+          (List.rev (List.mapi (fun i v -> (i, v)) l))
     | `String s -> out := s :: prefix :: !out
     | `Bool b -> out := string_of_bool b :: prefix :: !out
     | `Null -> out := "null" :: prefix :: !out
@@ -678,13 +690,16 @@ let flatten_reply j =
     | `Intlit s -> out := s :: prefix :: !out
     | `Float f -> out := Printf.sprintf "%.0f" f :: prefix :: !out
     | _ -> ()
-  in
-  go "" j;
+  done;
   List.rev !out
 
 let json_in_reply text =
-  match String.index_opt text '{', String.rindex_opt text '}' with
-  | Some a, Some b when b > a -> (try Some (Yojson.Safe.from_string (String.sub text a (b - a + 1))) with _ -> None)
+  if String.length text > max_job_output then None
+  else match String.index_opt text '{', String.rindex_opt text '}' with
+  | Some a, Some b when b > a ->
+      let raw = String.sub text a (b - a + 1) in
+      if not (shallow_json ~max_items:4096 raw) then None
+      else (try Some (Yojson.Safe.from_string raw) with _ -> None)
   | _ -> None
 
 let rec run init step =
