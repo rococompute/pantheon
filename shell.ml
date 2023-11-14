@@ -831,6 +831,7 @@ and node init step home flags =
   let addr_of_agent n = to_string (member "addr" (List.find (fun a -> to_string (member "name" a) = n) agents)) in
   let byz = try Sys.getenv "PANTHEON_BYZ" with Not_found -> "" in
   if byz <> "" then say "FAULT INJECTION: this node misbehaves on purpose (%s)" byz;
+  let nonce_flood_sent = ref false in
   (* flags: agent settings, given to Soma as events *)
   let backend = ref "scripted" and agent_events = ref [] and ci_cmd = ref "" and ci_repo = ref [] and ci_image = ref "alpine:3.20" and ci_sandbox = ref "" in
   let listen = ref "0.0.0.0" and ci_memory = ref "8g" in
@@ -1316,7 +1317,20 @@ and node init step home flags =
         my_txs := (Unix.gettimeofday (), raw) :: !my_txs;
         say "sending %s" (String.concat " " (List.map (fun f -> if String.length f > 60 then String.sub f 0 60 ^ "..." else f) fields));
         push [ "tx"; raw ];
-        broadcast_fields [ "tx"; raw ]
+        broadcast_fields [ "tx"; raw ];
+        if byz = "future-nonce" && not !nonce_flood_sent then begin
+          (* docs/SECURITY-REVIEW-2.md P-5: 600 signed transactions at nonces
+             past the pool's window, sent again with this node's own *)
+          nonce_flood_sent := true;
+          say "FAULT INJECTION: flooding 600 future-nonce transactions";
+          let n = int_of_string nonce in
+          for k = 4 to 603 do
+            let raw = encode_tx key me (string_of_int (n + k)) [ "withdraw"; "0" ] in
+            my_txs := (Unix.gettimeofday (), raw) :: !my_txs;
+            push [ "tx"; raw ];
+            broadcast_fields [ "tx"; raw ]
+          done
+        end
     | "llm" :: id :: kind :: prompt :: ctx ->
         incr calls;
         if !calls > !max_calls then push [ "llm_error"; id; Printf.sprintf "model call budget of %d used up: restart with a higher --max-llm-calls" !max_calls ]

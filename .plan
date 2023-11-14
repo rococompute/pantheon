@@ -16,7 +16,7 @@
 + P-14: deny .gitattributes and .gitmodules in any path component, in any case (docs/SECURITY-REVIEW-2.md P-14)
 + P-16: bound a model's JSON reply before parsing it: depth, field count, iterative flattening (docs/SECURITY-REVIEW-2.md P-16)
 + P-6: decide that CI couldn't run from the node's own signals, never from the check's output (docs/SECURITY-REVIEW-2.md P-6)
-P-5: keep future-nonce transactions from filling the pool (docs/SECURITY-REVIEW-2.md P-5)
++ P-5: keep future-nonce transactions from filling the pool (docs/SECURITY-REVIEW-2.md P-5)
 P-8: make a leader-draw reveal unique, and prove two accepted reveals for one draw are equal (docs/SECURITY-REVIEW-2.md P-8; market.soma reaches)
 P-4: keep consensus locks across a restart, with an e2e scenario restarting a locked node (docs/SECURITY-REVIEW-2.md P-4)
 S-4 and P-7: CI refuses a bid that adds an unproved assumption (Admitted, an axiom, unk) or weakens the test it runs (docs/SECURITY-REVIEW-2.md S-4, P-7; the CI commands in scripts/sandbox.sh and scripts/host.sh)

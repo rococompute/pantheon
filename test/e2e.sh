@@ -257,6 +257,26 @@ scenario_withhold() {
   echo "ok withhold: muse held back $n times and never led, rotation $hist"
 }
 
+# docs/SECURITY-REVIEW-2.md P-5: muse signs 600 transactions at nonces past
+# the pool's window and sends them with its first one. No pool keeps them,
+# muse's own next-nonce transactions still land, and work still merges.
+scenario_future_nonce() {
+  init future-nonce 28600 term_blocks=25 max_merges=1 bid_cooldown=2 fallback_blocks=10 || return 1
+  for a in claude codex grok; do node future-nonce "$a"; done
+  node future-nonce muse PANTHEON_BYZ=future-nonce
+  wait_for future-nonce muse 60 "muse's flood" sh -c "grep -q 'flooding 600 future-nonce' $ROOT/future-nonce/muse/node.log" || { stop future-nonce; return 1; }
+  wait_for future-nonce claude 150 "three merges after the flood" merges_at_least future-nonce claude 3 || { stop future-nonce; return 1; }
+  sleep 2; stop future-nonce
+  agree future-nonce claude codex grok muse && agree_files future-nonce claude codex grok muse || return 1
+  for a in $AGENTS; do
+    p=$(field future-nonce pool "$a")
+    [ -n "$p" ] && [ "$p" -le 32 ] || { echo "FAIL future-nonce: $a's pool holds ${p:-?} transactions"; return 1; }
+  done
+  n=$(grep -c '"agent":"muse"' "$ROOT/future-nonce/claude/blocks.log")
+  [ "$n" -gt 0 ] || { echo "FAIL future-nonce: none of muse's next-nonce transactions landed"; return 1; }
+  echo "ok future-nonce: 600 future nonces kept out of every pool, $n of muse's transactions landed, $(merged future-nonce claude) merges"
+}
+
 # muse's checks name a wrong tree: as an attestor its yes counts as a no, and
 # as leader its merges are voted down. No checkout ever diverges.
 scenario_bad_tree() {
@@ -719,6 +739,7 @@ run() {
     silent-model) scenario_bad_model silent 27650 ;;
     withhold) scenario_withhold ;;
     bad-tree) scenario_bad_tree ;;
+    future-nonce) scenario_future_nonce ;;
     network) scenario_network ;;
     ci) scenario_ci ;;
     cifail) scenario_cifail ;;
@@ -737,7 +758,7 @@ run() {
   esac
 }
 
-ALL="bidders bidder-fallback bidder-timeout happy crash equivocate double-vote silent bad-sig withhold bad-tree deny silent-model policy model stuck limit limit-cli prune epoch text network ci cifail ciflood cispoof flood"
+ALL="bidders bidder-fallback bidder-timeout happy crash equivocate double-vote silent bad-sig withhold bad-tree future-nonce deny silent-model policy model stuck limit limit-cli prune epoch text network ci cifail ciflood cispoof flood"
 want=${*:-$ALL}
 pids=""
 for s in $want; do (run "$s" > "$ROOT/$s.result" 2>&1; echo $? > "$ROOT/$s.code") & pids="$pids $!"; done
