@@ -49,6 +49,20 @@ Proof.
   rewrite Ha in Hm. discriminate.
 Qed.
 
+(** The pool isn't empty while anyone who didn't hold back revealed. *)
+Lemma draw_pool_not_nil :
+  forall (revealed held recent latest : list string) (b : string),
+    In b revealed -> mem b held = false -> draw_pool revealed held recent latest <> [].
+Proof.
+  intros revealed held recent latest b Hb Hbh.
+  unfold draw_pool; cbv zeta.
+  assert (Hf : In b (filter (fun x => negb (mem x held)) revealed)).
+  { apply filter_In. split; [exact Hb | rewrite Hbh; reflexivity]. }
+  destruct (filter (fun x => negb (mem x held)) revealed) as [|y ys] eqn:F; [destruct Hf|].
+  destruct (filter (fun x => negb (mem x recent)) (y :: ys)) as [|z zs]; [|discriminate].
+  destruct (filter (fun x => negb (mem x latest)) (y :: ys)) as [|w ws]; discriminate.
+Qed.
+
 (** Updating another field cannot change the bids. *)
 Lemma getf_setf_other : forall (m : obj) (k q : string) (v : Any),
   seq q k = false -> getf (setf m k v) q = getf m q.
@@ -66,6 +80,51 @@ Proof.
     + change ((if seq q key then value else getf (setf rest k v) q) =
         (if seq q key then value else getf rest q)).
       rewrite IH. reflexivity.
+Qed.
+
+Lemma leader_setf_other : forall (m : obj) (k : string) (v : Any),
+  seq "leader" k = false -> leader (setf m k v) = leader m.
+Proof.
+  intros m k v H. unfold leader. rewrite getf_setf_other by exact H. reflexivity.
+Qed.
+
+Lemma leader_setf_leader : forall (m : obj) (l : string),
+  leader (setf m "leader" l) = l.
+Proof.
+  intros m l. unfold leader. induction m as [|[key value] rest IH].
+  - reflexivity.
+  - change (cast Any string
+      (getf (if seq "leader" key then ("leader", cast string Any l) :: rest
+        else (key, value) :: setf rest "leader" l) "leader") = l).
+    destruct (seq "leader" key) eqn:E.
+    + reflexivity.
+    + change (cast Any string (if seq "leader" key then value else
+        getf (setf rest "leader" l) "leader") = l).
+      rewrite E. exact IH.
+Qed.
+
+(** The same at maybe_draw: an agent in held_back, which the previous draw
+    recorded, is not the leader this draw picks, as long as someone who
+    didn't hold back revealed. When no draw happens, the state is unchanged. *)
+Theorem maybe_draw_bars_who_held_back :
+  forall (m : obj) (a b : string),
+    mem a (held_back m) = true -> In b (revealed m) -> mem b (held_back m) = false ->
+    maybe_draw m = m \/ leader (maybe_draw m) <> a.
+Proof.
+  intros m a b Ha Hb Hbh. unfold maybe_draw.
+  destruct (awaiting m && ((length (reveals m) =? length (agents m)) ||
+    ((3 <=? length (reveals m)) &&
+      (asince m + param m "reveal_window" <=? mheight m))));
+    [right|left; reflexivity].
+  cbv zeta. unfold count.
+  repeat rewrite leader_setf_other by reflexivity.
+  rewrite leader_setf_leader.
+  assert (Hne : eligible m <> []).
+  { unfold eligible. eapply draw_pool_not_nil; eauto. }
+  assert (Hout : ~ In a (eligible m)).
+  { unfold eligible. eapply holding_back_bars_you_from_the_next_draw; eauto. }
+  intros E. apply Hout. rewrite <- E. apply nth_In. apply Nat.mod_upper_bound.
+  intros L. apply Hne. apply length_zero_iff_nil. exact L.
 Qed.
 
 Lemma bids_setf_other : forall (m : obj) (k : string) (v : Any),
