@@ -230,6 +230,15 @@ separate work; this status does not mark `.plan`.
 
 ## Done so far
 
+- Step 5, framing checks: `peer_feed` packages each read's complete lines,
+  retained chunks and strict retained-byte cap verdict in a typed record.
+  The live `peer_bytes` branch uses that same pure plan, storing the partial
+  and queueing complete lines before carrying out a close. New
+  `test/peer-feed.sh` checks split and multiple lines, empty lines, malformed
+  input, trailing partials, both cap edges, and a completed line followed by
+  an over-cap partial, without a running node. Buffer storage still lives
+  behind the native connection bindings; this does not complete step 5.
+
 - Step 5, part: a check that fails before CI (applying the bid's edits)
   goes to Soma as a `check_failed` fact; `check_apply_stage` makes it the
   bid's (the check's own exit 1, or a signal) or this node's (it couldn't
