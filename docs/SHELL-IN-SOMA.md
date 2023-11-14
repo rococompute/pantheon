@@ -195,6 +195,35 @@ Each task moves one piece, keeps the same behaviour, and leaves the rest
 where it is. A piece that would need a binding Soma can't express yet is
 worth a note in this file rather than a workaround.
 
+## Step 4 is complete
+
+Every output, including `llm`, is selected and interpreted by Soma's
+`perform_output`. Startup/replay uses `perform_outputs` through `run_boot`,
+and the live loop uses `carry_effect` through the same `perform_output`.
+`LlmRequest` calls `perform_llm`; held calls return through `llm_call`, which
+uses the same `prompt_assemble`. There is no OCaml `perform`/`handle` prompt
+builder, and neither `replace_all` nor `plan_open` is a shell callback.
+
+For model requests, the native bindings that remain are `node_llm_budget`
+(increment/read the count and maximum), `node_limit_info` (read limit state),
+`node_float_text` (format a float), `node_llm_hold` (store a raw request),
+`node_token` (random fence token), `node_repo_names`, `node_ls_files` and
+`node_head_file` (checkout metadata and contents), and `node_llm_start`
+(start the process/inbox request, returning raw output immediately on startup
+failure). Logs, event queues and the clock use `node_io`. Soma chooses the
+budget/hold/ask branch and formats every prompt and log line. The three
+remaining helper callbacks are `edit_once`, `contains` and `shell_safe_path`;
+they serve edit/command code and never assemble model prompts.
+
+`test/prompt-assembly.sh` runs fixed inputs through the actual Soma functions,
+including a mixed open/done/dropped plan and all placeholder substitutions.
+It also pins complete leader draft, leader pick, bidder and attestor prompt
+bytes with SHA-256 goldens, including defanged placeholders inside untrusted
+text. Its `.proof` checks the fixed assembled result in Soma and proves the
+plan's length bound, ordered-prefix property and open-source membership.
+These checks use no running node or timing. Steps 5 and 6 and U-1 remain
+separate work; this status does not mark `.plan`.
+
 ## Done so far
 
 - U-1, part: the node's effects that write (a log line, a timer, an
@@ -318,16 +347,16 @@ worth a note in this file rather than a workaround.
   Soma assembles its prompt again when it is asked, as before. `perform`
   and `handle` are gone: every output is decided in Soma. `replace_all`
   left the helper record and `plan_open` left `node_open`'s arguments.
-  Still OCaml, for step 5: reading a reply (`json_in_reply`,
-  `flatten_reply`), noticing a limit in it (`is_limit`, `reset_in`) and
-  when to release held requests.
+  The subsequent step 5 work below also moved reply interpretation and
+  held-request release decisions into Soma; native code decodes JSON
+  members, reads completed jobs and stores the held-request state.
 
 - Step 4, broadcast: `broadcast_plan` decides which vote is sent, the
   signed-vote log, and the per-peer equivocate and double-vote variants.
   Silence records the vote and sends nothing. The two-second resend repeats
   the messages Soma stored, and does not choose them again. OCaml only
-  reads and writes the vote table and the sockets. Remaining cases: merge,
-  llm and check.
+  reads and writes the vote table and the sockets. Merge, llm and check
+  followed; all step 4 cases are now complete.
 
 - Step 4, status and submission: `status_output` assembles the status file
   from raw checkout heads, divergence records and limit metadata; the only
@@ -339,8 +368,8 @@ worth a note in this file rather than a workaround.
   suppression is selected in Soma. Both cases use `perform_output` during
   startup/replay and runtime, and their old `handle` branches are gone.
   `node.proof` checks exact status bytes, limit boundaries, log truncation,
-  dispatch, flood ordering/count/range and silent sends. Remaining step 4
-  cases are merge, llm and check; the helper record is unchanged.
+  dispatch, flood ordering/count/range and silent sends. Merge, llm and
+  check followed through the same dispatcher.
 
 - Step 4, peer catch-up: `behind` now selects `CatchupPeer` in the shared
   Soma dispatcher. `catchup_plan` names the served-table write and bounded
@@ -349,8 +378,8 @@ worth a note in this file rather than a workaround.
   throttle, remembering silent/absent peers, and inclusive 51-block cap are
   preserved. `node.proof` checks exact plans and message fields, malformed
   arities, time/range boundaries, and missing/empty blocks. OCaml supplies
-  only clock/table/metadata access and signing/socket writes. Remaining
-  cases: broadcast, status, merge, submit, llm and check.
+  only clock/table/metadata access and signing/socket writes. The other
+  cases now also dispatch through `perform_output`.
 
 - Step 4, partial: Soma handles `timer`, `log`, `reveal` and `decided`.
   `plan_output` selects their small bindings; pure `reveal_plan` decides
@@ -365,7 +394,8 @@ worth a note in this file rather than a workaround.
   node with decided outputs before its mandatory snapshot and votes after.
   `startup_effects` checks this order without timing a live process. The
   old `feed` loop and its state/step/checkpoint/restore callbacks are gone.
-  Remaining step 4 cases: llm. Helpers stay in their record until those callers move.
+  The llm case above completed step 4. Helpers with remaining edit/command
+  callers stay in their record.
 
 - Step 4, merge: a decided merge dispatches in Soma (`perform_merge`). Pure
   `merge_gate_of` passes over an unknown repository, an applied version and
@@ -376,18 +406,15 @@ worth a note in this file rather than a workaround.
   `check` and `apply-edits`.
 
 - The helper callbacks (step 3) are one typed `shell_helpers` record in
-  `util.soma` (`replace_all` has since left it, with the llm case). `node_open` receives it once; the binding transports its four
-  fields as a product (`pack_helpers`), since `.definition` accepts products
-  but not Soma record types. `shell.ml` unpacks it into a named OCaml record
-  and threads it through callers, including the standalone commands; the
-  edit, contains and path refs are gone. All four fields still have callers:
-  edit application and diff replay use `edit_once`, URL resolution and prompt
-  handling use `contains`, path checks use `shell_safe_path`, and prompt
-  expansion uses `replace_all`. `util.proof` checks the record projections
-  and calls all four functions from the packed value on pure inputs. The
-  separate JSON scan callback still serves `decode_tx`; its existing wiring
-  is outside this step. Next: step 4 above.
-
+  `util.soma`. `node_open` receives it once; the binding transports its three
+  remaining fields as a product (`pack_helpers`), since `.definition`
+  accepts products but not Soma record types. `shell.ml` unpacks it into a
+  named OCaml record and threads it through edit and command callers.
+  `edit_once` serves edit application/diff replay, `contains` serves URL
+  resolution and CI error classification, and `shell_safe_path` serves path
+  checks. `util.proof` checks all three packed callbacks on pure inputs.
+  Prompt expansion calls `replace_all` directly in Soma; plan filtering
+  calls `plan_open` directly there too.
 
 - Command selection now lives in `main.soma`: `argv` excludes the executable
   name, and Soma preserves the command tails and the existing usage behavior.
@@ -435,8 +462,8 @@ at the time; their `run` references are historical.
   `chain_len`/`iterate` (over the `sha256` binding).
 
 - `replace_all`: now in `util.soma`, with `drop_str` and a bounded scan.
-  The OCaml implementation is deleted; `main.soma` passes the Soma helper
-  through `shell.definition`'s `run` argument to the node's prompt expansion.
+  The OCaml implementation is deleted. It initially crossed `run` as a
+  callback; after step 4 it is called directly by Soma's `prompt_assemble`.
   Replacement remains literal, left-to-right and non-overlapping; inserted
   text is not scanned again. All shell patterns are nonempty (an empty
   pattern now leaves the text alone, rather than looping forever).

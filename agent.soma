@@ -5,7 +5,7 @@
     answers without a model, for tests and for an agent that has none.
 
     The market holds no file contents, so a prompt names what it needs and the
-    shell fills it in from its checkout: {{REPOS}} lists every repository's
+    Soma fills it in from the shell's checkout reads: {{REPOS}} lists every repository's
     files, and {{REPO}} gives a task's context files. *)
 Import util shell market.
 
@@ -70,7 +70,7 @@ violation (a : obj) (m : obj) (b : bid) : string :=
                  end
        end.
 
-(** Prompts. {{F}} is replaced by the shell with a fresh random token, so
+(** Prompts. Soma replaces {{F}} with a fresh token read from the shell, so
     text from other agents can't close its own fence. *)
 fence (label body : string) : string :=
   append "<<<UNTRUSTED {{F}} " (append (defang label) (append ">>>
