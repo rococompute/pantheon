@@ -10,20 +10,44 @@
 #
 # PANTHEON_INBOX is the inbox (default /var/lib/pantheon-inbox): a directory
 # the node's user and the agent's user can both write.
+# PANTHEON_INBOX_GROUP optionally limits request and checkout access to that
+# inbox's Unix group. The node must belong to it; the checkout's separate
+# git directory is deliberately never shared by this backend.
 set -u
 INBOX=${PANTHEON_INBOX:-/var/lib/pantheon-inbox}
 [ -d "$INBOX" ] && [ -w "$INBOX" ] || { echo "!bidder-inbox: no inbox the node can write at $INBOX (set PANTHEON_INBOX)"; exit 0; }
+# Fail closed when a configured group cannot be used. Do not publish a request
+# with broader permissions after a failed chgrp.
+share_group=${PANTHEON_INBOX_GROUP:-}
+if [ -n "$share_group" ]; then umask 007; fi
 id=$(date +%s)-$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')
 r=$INBOX/$id
 mkdir "$r" && chmod 2770 "$r" || { echo "!bidder-inbox: can't make $r"; exit 0; }
+if [ -n "$share_group" ]; then
+  chgrp "$share_group" "$r" || { rmdir "$r"; echo "!bidder-inbox: can't share inbox group"; exit 0; }
+fi
 # on the way out: the request, and the checkout made removable by the node
 # (what the agent made in it is the agent's user's, and a build is close to a GB)
-free() { rm -rf "$r"; [ -n "${PANTHEON_WORKTREE:-}" ] && sudo -n -u "${BIDDER_USER:-bidder}" chmod -R a+rwX "$PANTHEON_WORKTREE" 2>/dev/null; true; }
+free() { rm -rf "$r"; [ -z "$share_group" ] && [ -n "${PANTHEON_WORKTREE:-}" ] && sudo -n -u "${BIDDER_USER:-bidder}" chmod -R a+rwX "$PANTHEON_WORKTREE" 2>/dev/null; true; }
 trap free EXIT
 cat > "$r/.prompt"
 
 if [ -n "${PANTHEON_WORKTREE:-}" ]; then
-  chmod -R a+rwX "$PANTHEON_WORKTREE"
+  if [ -n "$share_group" ]; then
+    # Only the worktree, never its sibling PANTHEON_GITDIR (node metadata).
+    # Refuse symlinks before recursive permissions: no target outside the
+    # checkout should be exposed by a deployment permission operation.
+    if [ -L "$PANTHEON_WORKTREE" ] || [ -n "$(find "$PANTHEON_WORKTREE" -type l -print -quit)" ]; then
+      echo "!bidder-inbox: can't share a checkout containing symlinks"; exit 0
+    fi
+    chgrp -R "$share_group" "$PANTHEON_WORKTREE" &&
+      chmod -R u+rwX,g+rwX,o-rwx "$PANTHEON_WORKTREE" &&
+      find "$PANTHEON_WORKTREE" -type d -exec chmod g+s {} + || {
+        echo "!bidder-inbox: can't share checkout group"; exit 0;
+      }
+  else
+    chmod -R a+rwX "$PANTHEON_WORKTREE"
+  fi
   echo patch > "$r/kind"; printf '%s\n' "$PANTHEON_WORKTREE" > "$r/worktree"
   budget=1700
   if [ -n "${INBOX_URL:-}" ]; then
