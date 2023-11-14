@@ -761,6 +761,7 @@ type node_handle = { h_events : float -> string list list;
                      h_job_buffer : string -> string list;
                      h_job_store_buffer : string -> string list -> unit;
                      h_job_flood : string -> unit;
+                     h_check_result : string -> bool -> string -> string -> string -> unit;
                      h_llm_budget : unit -> string * string;
                      h_llm_hold : string -> string -> string -> string list -> unit;
                      h_llm_start : string -> string -> string -> string -> string list -> string list -> string list -> string list -> string list option;
@@ -841,6 +842,7 @@ let node_job_complete id job result = (lookup_handle id).h_job_complete job resu
 let node_job_buffer id jid = (lookup_handle id).h_job_buffer jid
 let node_job_store_buffer id jid chunks = (lookup_handle id).h_job_store_buffer jid chunks; true
 let node_job_flood id jid = (lookup_handle id).h_job_flood jid; true
+let node_check_result id req ok tree why stage = (lookup_handle id).h_check_result req ok tree why stage; true
 (* a model call's I/O: node.soma's perform_llm decides and builds the prompt *)
 let node_llm_budget id = (lookup_handle id).h_llm_budget ()
 let node_llm_hold id req kind prompt ctx = (lookup_handle id).h_llm_hold req kind prompt ctx; true
@@ -1207,6 +1209,11 @@ let node_open packed home flags =
   (* A check for an attestor: the bid's edits on the head, in a fresh clone,
      give a tree; then the repository's CI, if this node has one, runs on it in
      a container with no network, a read-only root and nobody's uid. *)
+  (* a check's result event; why is the bid's own output, so no control
+     character of it goes on to a rejection's reason *)
+  let push_check_result id ok tree why stage =
+    let why = plain_text why in
+    push [ "check_result"; id; "ok"; (if ok then "true" else if stage = "node" then "error" else "false"); "tree"; tree; "why"; why; "stage"; stage ] in
   let run_check id r head edits =
     let out = Filename.temp_dir "pantheon-check" "" in
     let ef = Filename.temp_file "pantheon-edits" ".json" in
@@ -1222,7 +1229,7 @@ let node_open packed home flags =
     (* whose a failure is comes from stage alone, which the node decides from
        its own signals (exit codes, a job that never started), never from
        what the check or the bid's CI printed (docs/SECURITY-REVIEW-2.md P-6) *)
-    let result ok tree why stage = let why = plain_text why in push [ "check_result"; id; "ok"; (if ok then "true" else if stage = "node" then "error" else "false"); "tree"; tree; "why"; why; "stage"; stage ] in
+    let result ok tree why stage = push_check_result id ok tree why stage in
     if List.mem r !no_check || List.mem r my_excluded then (rm_out (); (try Sys.remove ef with _ -> ()); result false "" ("this node doesn't check " ^ r ^ (if List.mem r my_excluded then " (outside its scope: its genesis part excludes it)" else " (--no-check " ^ r ^ ")")) "node") else
     start_job self_exe [ "check"; rdir r; head; ef; out ] ~stdin_text:"" ~env:(Unix.environment ())
       ~on_done:(fun t ->
@@ -1256,40 +1263,10 @@ let node_open packed home flags =
             start_job ~limit:3600. prog args
               ~stdin_text:"" ~env:(Unix.environment ())
               ~on_done:(fun t ->
-                let ok = not (String.length t > 0 && t.[0] = '!') in
-                say "CI for request %s: %s" id (if ok then "passed" else "failed");
-                (* the runner itself failing (docker, ci-sandbox) is this node's
-                   problem, not the bid's: decided from the node's own signals --
-                   the job never started, or the runner exited with a code of its
-                   own, which ci_wrap keeps the bid's exits from using -- never
-                   from what the bid printed (docs/SECURITY-REVIEW-2.md P-6). A run
-                   ended by a signal (the node's time or output limit, or a bid
-                   killing its own shell) is the bid's. *)
-                let docker_down = (not ok) && (match job_how t with
-                                               | None -> true
-                                               | Some h -> (match exit_code h with
-                                                            | Some c -> c >= 1 && c < 128 && c <> ci_bid_failed && c <> 124
-                                                            | None -> false)) in
-                if not ok then say "CI for request %s said: %s" id (String.map (fun c -> if c = '\n' then ' ' else c) t);
-                (* over budget is the bid's fault, but say which budget: docker ends
-                   a container that passes its memory with 137, timeout with 124 *)
-                (* how the check ended, from the node's own "!process failed (HOW): "
-                   prefix: the output after it is the bid's, and could say anything *)
-                let how = match job_how t with Some h -> h | None -> "" in
-                let why =
-                  if ok then ""
-                  else if docker_down then "node problem: " ^ (if !ci_sandbox <> "" then "ci-sandbox: " else "docker: ") ^ t
-                  else if contains helpers how "printed more than" then "CI " ^ how ^ ": a check has to print less than that"
-                  else if how = "exit 137" then "CI went over its memory budget (" ^ !ci_memory ^ ", no swap): the build needs less memory than that to merge"
-                  else if how = "exit 124" then "CI went over its time budget: the build has to finish within the limit its CI command gives"
-                  else begin
-                    (* the end of what CI said, where its error is: a rejection carries it to
-                       the next bidder, who otherwise can't see why bids keep failing *)
-                    let one = String.trim (String.map (fun c -> if c = '\n' || c = '\r' then ' ' else c) t) in
-                    let n = String.length one in
-                    "CI failed: " ^ (if n > 400 then "..." ^ String.sub one (n - 400) 400 else one)
-                  end in
-                result ok tree why (if ok then "" else if docker_down then "node" else "ci");
+                (* what the check's outcome is (passed, the bid's failure or
+                   this node's problem, and why) is node.soma's ci_outcome,
+                   from the node's own signals only (docs/SECURITY-REVIEW-2.md P-6) *)
+                push [ "ci_done"; id; tree; !ci_memory; (if !ci_sandbox <> "" then "sandbox" else "docker"); t ];
                 ci_next ())
               ~clean:(fun () -> if !ci_sandbox = "" then ignore (Sys.command ("docker rm -f " ^ name ^ " >/dev/null 2>&1")); rm_out ())
           end)
@@ -1544,6 +1521,7 @@ let node_open packed home flags =
             List.rev !evs);
       h_job_buffer = (fun jid -> match List.find_opt (fun j -> j.jid = jid) !jobs with Some j -> j.jchunks | None -> []);
       h_job_store_buffer = (fun jid chunks -> match List.find_opt (fun j -> j.jid = jid) !jobs with Some j -> j.jchunks <- chunks | None -> ());
+      h_check_result = push_check_result;
       h_job_flood = (fun jid ->
         match List.find_opt (fun j -> j.jid = jid) !jobs with
         | Some j when not (Hashtbl.mem flooded j.jpid) ->

@@ -963,3 +963,27 @@ Proof. repeat split; reflexivity. Qed.
 Theorem select_does_not_wait_on_a_queued_event : forall now timers,
   select_wait now false timers = 0%float.
 Proof. reflexivity. Qed.
+
+(** A CI check's outcome: passed, the bid's failures (with the budget named
+    or the output's tail), and this node's problems, from the node's own
+    exit codes only. *)
+Example ci_outcome_cases :
+  ci_outcome "tree ok" false "3g" = (true, ("", "")) /\
+  ci_outcome "!process failed (exit 86): boom" false "3g" = (false, ("CI failed: !process failed (exit 86): boom", "ci")) /\
+  ci_outcome "!process failed (exit 137): x" false "3g" = (false, ("CI went over its memory budget (3g, no swap): the build needs less memory than that to merge", "ci")) /\
+  ci_outcome "!process failed (exit 124): x" false "3g" = (false, ("CI went over its time budget: the build has to finish within the limit its CI command gives", "ci")) /\
+  ci_outcome "!process failed (exit 2): no docker" false "3g" = (false, ("node problem: docker: !process failed (exit 2): no docker", "node")) /\
+  ci_outcome "!process failed (exit 2): x" true "3g" = (false, ("node problem: ci-sandbox: !process failed (exit 2): x", "node")) /\
+  ci_outcome "!couldn't start" false "3g" = (false, ("node problem: docker: !couldn't start", "node")) /\
+  ci_outcome "!process failed (signal 9): x" false "3g" = (false, ("CI failed: !process failed (signal 9): x", "ci")) /\
+  ci_outcome "!process failed (printed more than 4 MB): x" false "3g" = (false, ("CI printed more than 4 MB: a check has to print less than that", "ci")).
+Proof. repeat split; reflexivity. Qed.
+
+Example ci_exit_codes_and_tail :
+  ci_exit_code "exit 0" = Some 0 /\ ci_exit_code "exit 12x" = None /\ ci_exit_code "exit " = None /\
+  ci_exit_code "signal 9" = None /\
+  ci_node_problem false (Some "exit 1") = true /\ ci_node_problem false (Some "exit 128") = false /\
+  ci_node_problem false (Some "exit 86") = false /\ ci_node_problem true None = false /\
+  ci_tail "  a
+b  " = "CI failed: a b".
+Proof. repeat split; reflexivity. Qed.

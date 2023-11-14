@@ -146,6 +146,10 @@ node_job_complete : string -> string -> string -> list (list string).
 node_job_buffer : string -> string -> list string.
 node_job_store_buffer : string -> string -> list string -> bool.
 node_job_flood : string -> string -> bool.
+(** A CI check's result, decided in node.soma (ci_outcome): request id,
+    passed, the tree, why (made plain text here) and the stage ("", "ci" or
+    "node"), queued as the check_result event. *)
+node_check_result : string -> string -> bool -> string -> string -> string -> bool.
 node_reply_open : string -> option string.
 node_reply_close : string -> option string.
 node_json_tokens : string -> option (list string).
