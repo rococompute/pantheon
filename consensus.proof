@@ -200,3 +200,28 @@ Proof.
   destruct (four_validators c H4) as [_ Hw2]. rewrite Hw2 in Hq.
   exists d, S. split; [exact Hin|]. split; [exact Hd|]. split; [exact Hn|]. split; [exact Hq | exact Hs].
 Qed.
+
+(** Locks only move forward (docs/PROOFS.md, item 3). r_lock sets the lock
+    round to round c + 1 whatever it was, so the lock can only grow if it
+    was not already past that: a state with lockr c <= round c + 1, as every
+    state reached from new_consensus is (the lock is taken in the current
+    round, and rounds only grow within a height). That invariant is the
+    explicit hypothesis here. *)
+Lemma r_lock_change_moves_forward : forall c c' : consensus_state,
+  lockr c <= round c + 1 -> lockr c' = round c + 1 -> lockr c <= lockr c'.
+Proof.
+  intros c c' Hinv Hset. rewrite Hset. exact Hinv.
+Qed.
+
+Theorem locks_only_move_forward :
+  forall (c : consensus_state) (valid : list string -> bool)
+    (getv : list string) (c' : consensus_state) (outs : list (list string)),
+    lockr c <= round c + 1 ->
+    rule c valid getv = Some (c', outs) -> height c' = height c ->
+    lockr c <= lockr c' /\ (lockr c' = lockr c \/ lockr c' = round c + 1).
+Proof.
+  intros c valid getv c' outs Hinv Hr Hh.
+  destruct (lockr_changes_only_in_r_lock c valid getv c' outs Hr Hh) as [E|E].
+  - split; [rewrite E; apply le_n | left; exact E].
+  - split; [apply (r_lock_change_moves_forward c c' Hinv E) | right; exact E].
+Qed.
