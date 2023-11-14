@@ -42,7 +42,7 @@ cmd_up : string -> list string -> unit.
     handle is a string naming the shell's side of the node. Existing Soma
     helpers are passed once as util.soma's shell_helpers record, packed as a
     product (edit_once, contains, shell_safe_path) at the binding boundary. *)
-node_open : (((string -> string -> string -> option string) * (string -> string -> bool)) * (string -> bool)) -> (string -> string -> string -> bool) -> string -> list string -> string.
+node_open : (((string -> string -> string -> option string) * (string -> string -> bool)) * (string -> bool)) -> string -> list string -> string.
 events : string -> list (list string).
 save_snapshot : forall {C : Type}, string -> C -> bool.
 note_refused : string -> string -> bool.
@@ -70,6 +70,13 @@ node_peer_exists : string -> string -> bool.
 node_peer_send : string -> string -> list string -> bool.
 (** Verify a peer line's signature; Soma asks only for lines that are
     neither this node's own nor an already-refused transaction. *)
+(** Raw Yojson members, the item's cap as decimal text, and metadata reads.
+    Soma scans each raw line before invoking the JSON library, then drops
+    own/refused lines before invoking node_verify_line. *)
+node_line_parts : string -> option (string * (string * list string)).
+node_line_item_cap : unit -> string.
+node_identity : string -> string.
+node_seen_refused : string -> string -> bool.
 node_verify_line : string -> string -> string -> list string -> bool.
 
 (** Status metadata and atomic file I/O; Soma assembles every status line. *)
