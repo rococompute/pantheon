@@ -1030,13 +1030,59 @@ reply_events (h : node_t) (id kind prompt0 text : string) (ctx : list string) : 
   | ReplyFields kv => if node_limit_clear h 900%float then [("llm_reply" :: id :: kv)] else []
   end.
 
-(** A finished job's raw output comes back as an llm_output event; it is
-    turned into what it becomes before any of the turn's events runs, in
-    order, as the shell did when the job finished. *)
-job_output_events (h : node_t) (ev : list string) : list (list string) :=
+(** The operating system's wait status, decoded without deciding its
+    meaning. Signal names are platform data supplied by the shell. *)
+Inductive job_status := JobExit (code : string) | JobSignal (name : string) | JobStop (name : string).
+
+job_status_of (tag value : string) : option job_status :=
+  if seq tag "exit" then Some (JobExit value)
+  else if seq tag "signal" then Some (JobSignal value)
+  else if seq tag "stop" then Some (JobStop value)
+  else None.
+
+(** The same final 3000 bytes as the old process failure report. *)
+job_failure_tail (out : string) : string :=
+  if 3000 <? slen out then append "..." (substr out (slen out - 3000) 3000) else out.
+
+job_failure_reason (status : job_status) (timeout : option string) (flooded : bool) (max_mb : string) : string :=
+  if flooded then append "it printed more than " (append max_mb " MB, so the node stopped it")
+  else match status with
+  | JobExit code => append "exit " code
+  | JobSignal name =>
+      match timeout with
+      | Some seconds => append "it ran past its time limit of " (append seconds " s, so the node stopped it")
+      | None => append "killed by " name
+      end
+  | JobStop name => append "stopped by " name
+  end.
+
+job_result (status : job_status) (timeout : option string) (flooded : bool) (max_mb out : string) : string :=
+  let success := match status with JobExit code => seq code "0" && negb flooded | _ => false end in
+  if success then (if seq out "" then "pending" else out)
+  else append "!process failed (" (append (job_failure_reason status timeout flooded max_mb)
+         (append "): " (job_failure_tail out))).
+
+(** A finished job's callback still runs before its cleanup (Codex reads
+    its output file there). Generated model replies are interpreted before
+    the turn's events run, at the finished job's original queue position. *)
+model_output_events (h : node_t) (ev : list string) : list (list string) :=
   match ev with
   | "llm_output" :: id :: kind :: prompt0 :: text :: ctx => reply_events h id kind prompt0 text ctx
   | _ => [ev]
+  end.
+
+job_output_events (h : node_t) (ev : list string) : list (list string) :=
+  match ev with
+  | ["job_finished", id, tag, value, timeout, flooded, out] =>
+      match job_status_of tag value with
+      | None => []
+      | Some status =>
+          let seconds := if seq timeout "" then None else Some timeout in
+          let result := job_result status seconds (seq flooded "1")
+                          (show (num (node_job_output_limit tt) / num "1048576")) out in
+          flat_map (model_output_events h) (node_job_complete h id result)
+      end
+  | _ => model_output_events h ev
   end.
 
 Fixpoint job_outputs_go (h : node_t) (evs acc : list (list string)) : list (list string) :=
