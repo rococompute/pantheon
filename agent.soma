@@ -47,9 +47,12 @@ note_asked (a : obj) (key : string) : obj := setf a "asked" (firstn 500 (key :: 
     files or touches a denied path. The market already refuses unsafe paths. *)
 violation (a : obj) (m : obj) (b : bid) : string :=
   if param m "max_files" <? length (edit_paths (edits b)) then "edits too many files"
-  else match find (fun p => existsb (fun d => starts d p) (deny a)) (edit_paths (edits b)) with
+  else match find (fun p => git_meta_component p) (edit_paths (edits b)) with
        | Some p => append p " is on the denied list"
-       | None => ""
+       | None => match find (fun p => existsb (fun d => starts d p) (deny a)) (edit_paths (edits b)) with
+                 | Some p => append p " is on the denied list"
+                 | None => ""
+                 end
        end.
 
 (** Prompts. {{F}} is replaced by the shell with a fresh random token, so

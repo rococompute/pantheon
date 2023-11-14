@@ -82,6 +82,26 @@ echo '["dup.txt", "same\n", "other\n"]' > "$T/e5.json"
 "$BIN" apply-edits "$T/bad" "$T/e5.json" >/dev/null 2>&1 && fail "applied an ambiguous edit" || ok "ambiguous old text refused"
 echo '["a.txt", "not there\n", "x"]' > "$T/e6.json"
 "$BIN" apply-edits "$T/bad" "$T/e6.json" >/dev/null 2>&1 && fail "applied an edit whose old text is missing" || ok "missing old text refused"
+# .gitattributes and .gitmodules, in any component and any case, are refused:
+# they change how git reads every later edit, so no edit may write them
+for p in .gitattributes .gitmodules sub/.gitattributes SUB/.GitAttributes sub/.gitmodules SUB/.GITMODULES \
+         sub/.gitattributes/file.txt deep/.GitModules/file.txt; do
+  echo "[\"$p\", \"\", \"x\"]" > "$T/ga.json"
+  "$BIN" apply-edits "$T/bad" "$T/ga.json" >/dev/null 2>&1 && fail "wrote $p" || ok "$p refused"
+  [ -e "$T/bad/$p" ] && fail "$p exists after a refused edit"
+done
+# similar but distinct names are ordinary files
+for p in sub/gitattributes.txt sub/.gitattributes.txt sub/x.gitmodules sub/.gitmodules.bak; do
+  echo "[\"$p\", \"\", \"fine\n\"]" > "$T/ga.json"
+  "$BIN" apply-edits "$T/bad" "$T/ga.json" >/dev/null 2>&1 && [ -f "$T/bad/$p" ] && ok "$p allowed" || fail "$p was refused"
+done
+# and a model's checkout cannot sneak one into a bid either
+g clone -q "$T/origin" "$T/meta"
+printf '* text eol=crlf\n' > "$T/meta/sub/.gitattributes"
+printf 'changed\n' >> "$T/meta/a.txt"
+"$BIN" edits "$T/meta" "meta" > "$T/meta.json" || fail "pantheon edits failed on a checkout with sub/.gitattributes"
+jq -e '[.edits[].path] == ["a.txt"]' "$T/meta.json" >/dev/null && ok "sub/.gitattributes left out of a bid" \
+  || fail "edits with sub/.gitattributes: $(cat "$T/meta.json")"
 
 # the checkout is the model's: a symlink in it must not bring what it points at
 # into the bid (a node's key), whether the model made it or a diff did

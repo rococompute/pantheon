@@ -156,10 +156,14 @@ let plan_open text =
   |> List.map (fun l -> if String.length l > 400 then String.sub l 0 400 ^ "..." else l)
 
 (* a path an edit may touch: also checked by the market, checked again here.
-   Nothing in a .git directory: writing there means running code. *)
+   Nothing in a .git directory: writing there means running code. Nor a
+   .gitattributes or .gitmodules in any component, in any case: they change
+   how git reads every later edit. *)
 let safe_path p =
   p <> "" && p.[0] <> '/' && not (String.contains p '\\') && not (String.contains p '\000')
-  && List.for_all (fun x -> x <> "" && x <> "." && x <> ".." && String.lowercase_ascii x <> ".git") (String.split_on_char '/' p)
+  && List.for_all (fun x -> x <> "" && x <> "." && x <> ".."
+                            && not (List.mem (String.lowercase_ascii x) [ ".git"; ".gitattributes"; ".gitmodules" ]))
+       (String.split_on_char '/' p)
 
 (* ---------- processes and git ---------- *)
 
