@@ -1022,12 +1022,34 @@ reply_fields_of (text limit : string) (open_at close_at : option string)
       end
   end.
 
+(** Where a reply's braces are, by byte offset (as OCaml's String.index_opt
+    and String.rindex_opt found them): a tail-recursive scan by [char_at],
+    no substring per step, so a 4 MB reply is one pass each way. *)
+Fixpoint first_code (fuel : nat) (t : string) (c i : nat) : option nat :=
+  match fuel with
+  | 0 => None
+  | Succ f => if code_at t i =? c then Some i else first_code f t c (Succ i)
+  end.
+
+Fixpoint last_code (fuel : nat) (t : string) (c j : nat) : option nat :=
+  match fuel, j with
+  | Succ f, Succ j' => if code_at t j' =? c then Some j' else last_code f t c j'
+  | _, _ => None
+  end.
+
+(** The offsets cross to [json_in_reply] as decimal strings, as before. *)
+reply_open_at (text : string) : option string :=
+  match first_code (slen text) text 123 0 with Some i => Some (show i) | None => None end.
+
+reply_close_at (text : string) : option string :=
+  match last_code (slen text) text 125 (slen text) with Some j => Some (show j) | None => None end.
+
 (** Over the cap, the braces are not even looked up: the same short
     circuit as before, and no walk of a multi-megabyte output. *)
 reply_fields (text : string) : option (list string) :=
   let limit := node_job_output_limit tt in
   if num limit <? slen text then None
-  else reply_fields_of text limit (node_reply_open text) (node_reply_close text) node_json_tokens.
+  else reply_fields_of text limit (reply_open_at text) (reply_close_at text) node_json_tokens.
 
 (** The outcome carried out: a limit is noted (its wait, reason and doubled
     backoff, the log line) and the raw request held; otherwise the backoff

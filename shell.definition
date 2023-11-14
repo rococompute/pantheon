@@ -153,8 +153,6 @@ node_job_flood : string -> string -> bool.
     passed, the tree, why (made plain text here) and the stage ("", "ci" or
     "node"), queued as the check_result event. *)
 node_check_result : string -> string -> bool -> string -> string -> string -> bool.
-node_reply_open : string -> option string.
-node_reply_close : string -> option string.
 node_json_tokens : string -> option (list string).
 node_float_of_digits : string -> float.
 node_limit_set : string -> float -> string -> float -> bool.
