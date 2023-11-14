@@ -1288,6 +1288,29 @@ feed_chunks (chunks : list string) (chunk : string) : list string * list string 
 Fixpoint chunks_len (chunks : list string) : nat :=
   match chunks with [] => 0 | c :: r => slen c + chunks_len r end.
 
+chunks_join (chunks : list string) : string := Stdlib.Strings.String.concat "" chunks.
+
+(** The tail a flooded job keeps, one 64 KiB read, as a decimal string:
+    not a unary nat. *)
+job_keep_text : string := "65536".
+
+(** A job's buffered chunks plus one read. Under the output cap the chunk
+    is kept on its own, so a long output is not rebuilt on every read.
+    Past the cap ([buffer_over] of the new length) the last [keep] bytes
+    of the whole buffer stay, as one chunk: the end a failed check shows.
+    The shell only reads the descriptor, stores these chunks and, when
+    this says the job is over, signals the process once. The outcome text
+    is still [job_result]. *)
+job_feed (chunks : list string) (chunk : string) (limit keep : nat) : list string * bool :=
+  if limit <? chunks_len chunks + slen chunk then
+    let joined := chunks_join (chunks ++ [chunk]) in
+    let n := slen joined in
+    (* [n <= keep] keeps the whole buffer: the tail is everything, and the
+       subtraction stays in range once [nat] is an OCaml int *)
+    let tail := if n <=? keep then joined else substr joined (n - keep) keep in
+    ([tail], true)
+  else (chunks ++ [chunk], false).
+
 Fixpoint queue_lines (h : node_t) (lines : list string) : bool :=
   match lines with
   | [] => true
@@ -1355,6 +1378,13 @@ run_event (h : node_t) (st : node_state) (ev : list string) : node_state :=
           if node_conn_close h cid then st else with_live st (live st)
         else st
       else st
+  | ["job_bytes", id, chunk] =>
+      let (kept, over) := job_feed (node_job_buffer h id) chunk
+                            (num (node_job_output_limit tt)) (num job_keep_text) in
+      if node_job_store_buffer h id kept then
+        if over then if node_job_flood h id then st else with_live st (live st)
+        else st
+      else with_live st (live st)
   | _ =>
       let (s, outs) := step st ev in
       if carry_all h (cons s) (order_effects ev st s outs) then s else st

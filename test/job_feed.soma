@@ -1,0 +1,71 @@
+(** Fixed job-output buffers. No running node and no timers. *)
+Import util shell node.
+From Stdlib Require ExtrOcamlNatInt.
+Extract Inlined Constant Nat.div => "(fun a b -> if b = 0 then 0 else a / b)".
+Extract Inlined Constant Nat.modulo => "(fun a b -> if b = 0 then a else a mod b)".
+
+(** Strings run as OCaml's (ExtrOcamlNativeString), which leaves out the
+    operations that count in [nat]. With [nat] as OCaml ints they're
+    OCaml's own, each as total as its definition: offsets past the end give
+    [None] or an empty string. util.soma reads long text through them. *)
+Extract Inlined Constant Stdlib.Strings.String.length => "String.length".
+Extract Inlined Constant Stdlib.Strings.String.get =>
+  "(fun n s -> if n < String.length s then Some (String.unsafe_get s n) else None)".
+Extract Inlined Constant Stdlib.Strings.String.substring =>
+  "(fun n m s -> let l = String.length s in if n >= l then """" else String.sub s n (min m (l - n)))".
+
+check (label : string) (ok : bool) : string := append (if ok then "ok " else "FAIL ") label.
+same_bool (a b : bool) : bool := if a then b else negb b.
+
+split_second : list string * bool := job_feed ["hel"] "lo
+x" 8 4.
+many_lines : list string * bool := job_feed [] "one
+
+two
+par" 20 4.
+at_cap : list string * bool := job_feed ["abcdef"] "gh" 8 4.
+one_past : list string * bool := job_feed ["abcdef"] "ghi" 8 4.
+across : list string * bool := job_feed ["abcdef"] "ghij" 8 4.
+whole_over : list string * bool := job_feed [] "abcdefghij" 8 4.
+
+checks : list string := [
+  check "one line split across two chunks" (eq_strs (fst (job_feed [] "hel" 8 4)) ["hel"] &&
+    eq_strs (fst split_second) ["hel", "lo
+x"] && seq (chunks_join (fst split_second)) "hello
+x" && seq (chunks_join (fst (job_feed [] "hello
+x" 8 4))) "hello
+x"),
+  check "several lines in one chunk" (eq_strs (fst many_lines) ["one
+
+two
+par"] && negb (snd many_lines)),
+  check "trailing partial line kept" (seq (chunks_join (fst many_lines)) "one
+
+two
+par"),
+  check "empty line kept" (eq_strs (fst (job_feed [] "
+" 8 4)) ["
+"] && negb (snd (job_feed [] "
+" 8 4))),
+  check "malformed chunk kept without an event" (eq_strs (fst (job_feed [] "{bad}" 8 4)) ["{bad}"] &&
+    negb (snd (job_feed [] "{bad}" 8 4))),
+  check "empty chunk does not drop the buffer" (eq_strs (fst (job_feed ["ab"] "" 8 4)) ["ab", ""] &&
+    seq (chunks_join (fst (job_feed ["ab"] "" 8 4))) "ab"),
+  check "exactly at the cap is kept" (eq_strs (fst at_cap) ["abcdef", "gh"] && negb (snd at_cap) &&
+    negb (buffer_over (chunks_len ["abcdef"] + slen "gh") 8)),
+  check "one byte past the cap keeps the tail" (eq_strs (fst one_past) ["fghi"] && snd one_past &&
+    buffer_over (chunks_len ["abcdef"] + slen "ghi") 8),
+  check "cap tail matches one chunk and two chunks" (eq_strs (fst across) (fst whole_over) &&
+    eq_strs (fst across) ["ghij"] && snd across),
+  check "after the tail a short chunk appends" (eq_strs (fst (job_feed ["ghij"] "xy" 8 4)) ["ghij", "xy"] &&
+    negb (snd (job_feed ["ghij"] "xy" 8 4))),
+  check "a later crossing keeps the new tail" (eq_strs (fst (job_feed ["ghij"] "xyzABC" 8 4)) ["zABC"] &&
+    snd (job_feed ["ghij"] "xyzABC" 8 4)),
+  check "kept tail is not over the keep length" (negb (buffer_over (chunks_len (fst one_past)) 4) &&
+    (chunks_len (fst one_past) =? 4)),
+  check "over flag is buffer_over" (same_bool (snd across) (buffer_over (chunks_len ["abcdef"] + slen "ghij") 8) &&
+    same_bool (snd at_cap) (buffer_over 8 8)),
+  check "production tail is 65536 bytes" (seq job_keep_text "65536")
+].
+
+main := print_lines checks.
