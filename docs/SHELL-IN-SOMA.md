@@ -161,11 +161,12 @@ What a `Sandbox` interpreter of each operation still lacks:
 | `IoQueue event` | the event queue the next turn drains | nothing: a queue in the program's loop |
 | `IoSendAll fields`, `IoSendPeer index fields`, `IoPeerSend peer fields` | sign, frame and buffer on the peer's TCP link | links that stay open (Soma's "links that stay open") and RSA signing (Soma's "SHA-256 and RSA") |
 | `IoClock` | `Unix.gettimeofday`, returned as the second of `(true, now)` | a millisecond clock (Soma's "a millisecond clock"); Sandbox's time of day is not this clock |
+| `IoStore height txs`, `IoSetHeight height`, `IoWriteStatus text` | append the block to blocks.log, note the height (dropping old resends), write status.txt | storage (Soma's "storage": named files on the image) |
 
 Not yet operations, still bindings of their own (the next parts of U-1):
 the node's tables (reads, which need operations with a result, as
-`Sandbox.io`'s binds have; the clock is the first of those), the block
-log, signed votes and the snapshot (Soma's "storage"), the listener and
+`Sandbox.io`'s binds have; the clock is the first of those), signed
+votes and the snapshot (Soma's "storage" still), the listener and
 accepted connections (links), SHA-256 and RSA (Soma's item), and git,
 model and CI jobs (Soma's "services": `fetch` with a timeout and HTTP POST).
 

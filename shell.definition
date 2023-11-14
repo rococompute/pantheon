@@ -61,8 +61,6 @@ node_io : string -> list string -> bool * float.
 (** Small I/O bindings; output tags and decisions live in Soma. *)
 node_draw : string -> string * (string * string).
 node_block : string -> string -> option (list string).
-node_store : string -> string -> list string -> bool.
-node_height : string -> string -> bool.
 forever : forall {A : Type}, (A -> A) -> A -> unit.
 
 (** Metadata and table reads. The clock is node_io's "clock" operation.
@@ -94,7 +92,6 @@ node_release_state : string -> float * bool.
 node_release_one : string -> list string.
 node_release_all : string -> list (list string).
 node_local_time : float -> string.
-node_write_status : string -> string -> bool.
 (** Signing, retry-table access and socket writes; Soma selects submissions. *)
 node_encode_tx : string -> string -> list string -> string.
 node_track_tx : string -> string -> bool.

@@ -246,10 +246,11 @@ Inductive output_action :=
     one binding, [node_io], and Sandbox could interpret the same values for
     a unikernel. So far: logging, a timer, queueing an event for the loop,
     and sending on peer links (to every peer, to the peer at an index, to a
-    peer by name). The clock is a read of the same interface: interpreting
-    it yields the time, the same [Unix.gettimeofday] value as before.
-    Table reads, files, git, model and CI jobs are still bindings of their
-    own: the next parts of U-1. An operation crosses the binding as its
+    peer by name), and the storage writes: storing a decided block, setting
+    the height and writing the assembled status file. The clock is a read
+    of the same interface: interpreting it yields the time, the same
+    [Unix.gettimeofday] value as before. Table reads, git, model and CI
+    jobs are still bindings of their own: the next parts of U-1. An operation crosses the binding as its
     wire form ([io_wire]), since a .definition takes no Soma inductive;
     [io_of_wire] reads it back, and shell.ml's [node_io] does exactly that
     match. An effect's result is [(true, 0)]; the clock's is [(true, now)]. *)
@@ -260,6 +261,9 @@ Inductive node_op :=
 | IoSendAll (fields : list string)
 | IoSendPeer (index : string) (fields : list string)
 | IoPeerSend (who : string) (fields : list string)
+| IoStore (height : string) (txs : list string)
+| IoSetHeight (height : string)
+| IoWriteStatus (text : string)
 | IoClock.
 
 io_wire (op : node_op) : list string :=
@@ -270,6 +274,9 @@ io_wire (op : node_op) : list string :=
   | IoSendAll fields => "send_all" :: fields
   | IoSendPeer index fields => "send_peer" :: index :: fields
   | IoPeerSend who fields => "peer_send" :: who :: fields
+  | IoStore height txs => "store" :: height :: txs
+  | IoSetHeight height => ["set_height", height]
+  | IoWriteStatus text => ["write_status", text]
   | IoClock => ["clock"]
   end.
 
@@ -281,6 +288,9 @@ io_of_wire (w : list string) : option node_op :=
   | "send_all" :: fields => Some (IoSendAll fields)
   | "send_peer" :: index :: fields => Some (IoSendPeer index fields)
   | "peer_send" :: who :: fields => Some (IoPeerSend who fields)
+  | "store" :: height :: txs => Some (IoStore height txs)
+  | ["set_height", height] => Some (IoSetHeight height)
+  | ["write_status", text] => Some (IoWriteStatus text)
   | ["clock"] => Some IoClock
   | _ => None
   end.
@@ -304,6 +314,7 @@ action_io (action : output_action) : option node_op :=
   | QueueAction ev => Some (IoQueue ev)
   | SendPeer index fields => Some (IoSendPeer index fields)
   | SendEveryone fields => Some (IoSendAll fields)
+  | StoreAction height txs => Some (IoStore height txs)
   | _ => None
   end.
 
@@ -479,7 +490,7 @@ carry_output_action (h : node_t) (action : output_action) : bool :=
   match action with
   | LogAction text => io_do h (IoLog text)
   | QueueAction ev => io_do h (IoQueue ev)
-  | StoreAction height txs => node_store h height txs
+  | StoreAction height txs => io_do h (IoStore height txs)
   | RememberPeer who first now => node_mark_served h who first now
   | MarkNonceFlood => node_mark_nonce_flood h
   | PublishTransaction nonce fields message =>
@@ -1065,7 +1076,7 @@ perform_output (h : node_t) (out : list string) : bool :=
       carry_output_actions h (reveal_plan byz limit secret term)
   | DecidedBlock height txs =>
       carry_output_actions h (decided_plan height txs (node_block h height))
-  | SetHeight height => node_height h height
+  | SetHeight height => io_do h (IoSetHeight height)
   | CatchupPeer who first =>
       let now := io_now h in
       let last := node_last_served h who first in
@@ -1081,7 +1092,7 @@ perform_output (h : node_t) (out : list string) : bool :=
       let (held, reason) := detail in
       let limited := status_limit_active now until in
       let clock := if limited then node_local_time until else "" in
-      node_write_status h (status_output lines heads bad limited backend clock held reason)
+      io_do h (IoWriteStatus (status_output lines heads bad limited backend clock held reason))
   | SubmitTransaction nonce fields =>
       carry_output_actions h (submission_plan (fst (node_draw h)) (node_nonce_flooded h) nonce fields)
   | Broadcast fields =>

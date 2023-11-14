@@ -869,7 +869,8 @@ let replay_count id = (lookup_handle id).h_replayed
 (* The node's operations (node.soma's node_op, U-1), one at a time in their
    wire form (node.soma's io_wire; this match is its io_of_wire): the only
    place the node logs, sets a timer, queues an event, sends on a peer
-   link, or reads the clock. Effects return (true, 0.); "clock" returns
+   link, stores a block, sets the height, writes the status file, or
+   reads the clock. Effects return (true, 0.); "clock" returns
    (true, Unix.gettimeofday ()). A unikernel would interpret the same
    operations through Sandbox. *)
 let node_io id op =
@@ -881,6 +882,9 @@ let node_io id op =
   | "send_all" :: fields -> h.h_send_all fields; (true, 0.)
   | "send_peer" :: index :: fields -> h.h_send_peer index fields; (true, 0.)
   | "peer_send" :: who :: fields -> h.h_peer_send who fields; (true, 0.)
+  | "store" :: height :: txs -> h.h_store height txs; (true, 0.)
+  | [ "set_height"; height ] -> h.h_height height; (true, 0.)
+  | [ "write_status"; text ] -> h.h_write_status text; (true, 0.)
   | [ "clock" ] -> (true, Unix.gettimeofday ())
   | _ -> fail "unknown node operation %s" (String.concat " " op)
 let node_conn_admit id oid mode target = (lookup_handle id).h_conn_admit oid mode target; true
@@ -889,8 +893,6 @@ let node_conn_close id cid = (lookup_handle id).h_conn_close cid; true
 let node_line_limit id = (lookup_handle id).h_line_limit ()
 let node_draw id = (lookup_handle id).h_draw
 let node_block id height = (lookup_handle id).h_block height
-let node_store id height txs = (lookup_handle id).h_store height txs; true
-let node_height id h = (lookup_handle id).h_height h; true
 (* Reads/writes and authenticated socket sends; catch-up policy is Soma.
    The clock is the "clock" arm of node_io. *)
 let node_current_height id = (lookup_handle id).h_current_height ()
@@ -905,7 +907,6 @@ let node_release_one id = (lookup_handle id).h_release_one ()
 let node_release_all id = (lookup_handle id).h_release_all ()
 let node_local_time until =
   let tm = Unix.localtime until in Printf.sprintf "%02d:%02d" tm.Unix.tm_hour tm.Unix.tm_min
-let node_write_status id text = (lookup_handle id).h_write_status text; true
 let node_run_check id req r head edits = (lookup_handle id).h_run_check req r head edits; true
 let node_encode_tx id nonce fields = (lookup_handle id).h_encode_tx nonce fields
 let node_track_tx id raw = (lookup_handle id).h_track_tx raw; true
