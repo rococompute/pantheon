@@ -13,6 +13,7 @@
 # elsewhere (keygen, join): then its nodes listen on LISTEN, its tailnet address.
 #
 #   scripts/host.sh users              provision isolated accounts and inbox groups (root; HOST_DRY=DIR to preview)
+#   scripts/host.sh credentials        transfer stopped node keys and inbox credentials to pantheon (root; HOST_DRY=DIR to preview)
 #   scripts/host.sh permissions        restrict existing node homes and secrets (HOST_DRY=DIR to preview)
 #   scripts/host.sh network            keys, the network and its genesis (once), for Pantheon at HEAD
 #   scripts/host.sh keygen             to join a network made elsewhere: this host's agents' keys, their
@@ -156,6 +157,31 @@ permissions_script() {
   done
   k=$(q "$P/inbox.json")
   printf '[ ! -f %s ] || chmod 0600 %s\n' "$k" "$k"
+}
+
+# Transfer credentials of a stopped network before enabling node services.
+# Separate from mode-only permissions so it cannot silently change ownership
+# in an existing operator deployment.
+cmd_credentials() {
+  valid_agent_names
+  if [ -n "${HOST_DRY:-}" ]; then
+    mkdir -p "$HOST_DRY"
+    credentials_script > "$HOST_DRY/credentials.sh"
+  else
+    [ "$(id -u)" = 0 ] || die "credentials requires root (or HOST_DRY=DIR to preview)"
+    credentials_script | sh -eu
+  fi
+}
+credentials_script() {
+  printf '#!/bin/sh\nset -eu\nR=${HOST_ROOT:-}\n'
+  path_guard
+  printf 'reject_links "$R/var/lib/pantheon/inbox.json"\n'
+  for a in $AGENTS; do
+    printf 'reject_links "$R"%s\n' "$(q "/var/lib/pantheon/net/$a/key.json")"
+  done
+  for secret in /var/lib/pantheon/inbox.json $(for a in $AGENTS; do printf '/var/lib/pantheon/net/%s/key.json ' "$a"; done); do
+    printf '[ ! -f "$R"%s ] || { chown pantheon "$R"%s; chmod 0600 "$R"%s; }\n' "$(q "$secret")" "$(q "$secret")" "$(q "$secret")"
+  done
 }
 
 # Provision identities independently of migrating a running deployment. These
@@ -952,7 +978,7 @@ cmd_logs() {
 
 c=${1:-}; [ $# -gt 0 ] && shift
 case $c in
-  users|services|sessions|permissions|network|keygen|join|start|vm|login|diplomats|watchdog|instructions|mirror|check|stop|status|logs) "cmd_$c" "$@" ;;
+  users|services|sessions|permissions|credentials|network|keygen|join|start|vm|login|diplomats|watchdog|instructions|mirror|check|stop|status|logs) "cmd_$c" "$@" ;;
   mirror-loop) cmd_mirror_loop ;;
   watchdog-loop) cmd_watchdog_loop ;;
   *) awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "$0"; [ -z "$c" ] || exit 1 ;;

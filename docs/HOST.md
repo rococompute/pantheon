@@ -84,6 +84,13 @@ cannot reach - before any root write. Its files are built in a
 root-only stage; per-node scripts are piped to pantheon over stdin,
 never read out of that stage. It disables the operator's legacy user
 units before enabling the system ones, so no node runs twice.
+For an existing stopped network, `sudo scripts/host.sh credentials` transfers
+node `key.json` files and `inbox.json` under `/var/lib/pantheon` to pantheon
+and restricts them to 0600 before services are enabled. Changing the parent
+directory's owner alone leaves operator-created credentials behind. Missing
+files stay absent; symlinked paths or ancestors refuse all changes.
+`HOST_DRY=DIR scripts/host.sh credentials` emits `DIR/credentials.sh`, the
+same provisioning operations, for inspection without root.
 `HOST_DRY=DIR` previews the same script (`DIR/services.sh`). The node
 unit sets `CI_LOCK=/var/lib/pantheon/.ci-lock`, the host's one CI lock. All three system
 service definitions set `UMask=0077` so newly created files are private
