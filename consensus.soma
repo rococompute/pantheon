@@ -39,18 +39,6 @@ new_consensus (me : string) (nodes : list string) (h : nat) : consensus_state :=
      lockr := 0; lockv := []; validr := 0; validv := []; log := []; once := []; block_ms := 1000 |}.
 
 (* Stopgap until Soma's record update elaborates to setters. *)
-with_me (c : consensus_state) (v : string) : consensus_state :=
-  {| me := v; nodes := nodes c; height := height c; round := round c; step := step c;
-     lockr := lockr c; lockv := lockv c; validr := validr c; validv := validv c; log := log c; once := once c; block_ms := block_ms c |}.
-
-with_nodes (c : consensus_state) (v : list string) : consensus_state :=
-  {| me := me c; nodes := v; height := height c; round := round c; step := step c;
-     lockr := lockr c; lockv := lockv c; validr := validr c; validv := validv c; log := log c; once := once c; block_ms := block_ms c |}.
-
-with_height (c : consensus_state) (v : nat) : consensus_state :=
-  {| me := me c; nodes := nodes c; height := v; round := round c; step := step c;
-     lockr := lockr c; lockv := lockv c; validr := validr c; validv := validv c; log := log c; once := once c; block_ms := block_ms c |}.
-
 with_lockr (c : consensus_state) (v : nat) : consensus_state :=
   {| me := me c; nodes := nodes c; height := height c; round := round c; step := step c;
      lockr := v; lockv := lockv c; validr := validr c; validv := validv c; log := log c; once := once c; block_ms := block_ms c |}.
