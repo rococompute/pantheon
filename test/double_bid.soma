@@ -1,0 +1,152 @@
+(** D-5, deterministically: one bid per agent per task.
+
+    A duty reissued while a bid is in flight asks for nothing. A patch reply
+    for a task that already has a pending bid (on the chain or in flight) is
+    dropped. A refused or expired in-flight bid clears, and the agent may bid
+    again. Run with test/double-bid.sh. *)
+Import util shell market agent.
+
+market0 : obj :=
+  let m := new_market ["claude", "codex", "grok", "muse"] in
+  let m := setf m "leader" "claude" in
+  let m := setf m "h" 10 in
+  let m := setf m "repos" ([("calc", "tree")] : list (string * string)) in
+  let m := setf m "awaiting" false in
+  let '(m, _, _) := apply m "claude" ["post", "calc", "fix the double bid"] in
+  m.
+
+first_task (m : obj) : option task :=
+  match open_tasks m with t :: _ => Some t | [] => None end.
+
+bidder0 : string :=
+  match first_task market0 with
+  | Some t => match bidders_for market0 t with a :: _ => a | [] => "" end
+  | None => ""
+  end.
+
+other0 : string :=
+  match first_task market0 with
+  | Some t => match bidders_for market0 t with _ :: b :: _ => b | _ => "" end
+  | None => ""
+  end.
+
+llm (who : string) : obj := setf (new_agent who) "backend" "llm".
+
+sample_bid : list string := ["bid", "1", "0", "note", "f.txt", "", "hello"].
+
+patch_kv : list string :=
+  ["edits.0.path", "f.txt", "edits.0.old", "", "edits.0.new", "hello", "note", "from the model"].
+
+with_inflight (a : obj) (n sent : nat) (tx : list string) : obj :=
+  setf (setf (setf a "inflight" n) "sent_at" sent) "inflight_tx" tx.
+
+with_req (a : obj) : obj :=
+  setf (setf a "nreq" 1) "reqs" ([("1", ["patch", "1", "0"])] : list (string * list string)).
+
+at_height (m : obj) (h : nat) : obj := setf m "h" h.
+
+with_nonce (m : obj) (who : string) (n : nat) : obj :=
+  setf m "nonces" (put who n (nonces m)).
+
+patch_asks (o : list (list string)) : nat :=
+  length (filter (fun x => match x with "llm" :: _ :: "patch" :: _ => true | _ => false end) o).
+
+bid_submits (o : list (list string)) : nat :=
+  length (filter (fun x => match x with "submit" :: _ :: "bid" :: _ => true | _ => false end) o).
+
+queued (a : obj) (t : string) : nat :=
+  length (filter (fun q => match q with "bid" :: id :: _ => seq id t | _ => false end) (queue a)).
+
+mine (m : obj) (who : string) : nat :=
+  length (filter (fun b => (btask b =? 1) && seq (bidder b) who) (bids m)).
+
+say (cond : bool) (what : string) : list string :=
+  [if cond then append "ok " what else append "FAIL " what].
+
+empty_tx (tx : list string) : bool := match tx with [] => true | _ => false end.
+
+lines_setup : list string :=
+  say (negb (seq bidder0 "")) "a bidder is eligible"
+  ++ say (negb (seq other0 "")) "a second bidder is eligible"
+  ++ say (match first_task market0 with Some t => tid t =? 1 | None => false end) "task 1 is open".
+
+lines_duty : list string :=
+  let m := market0 in
+  let who := bidder0 in
+  let (_, asked) := bid_duty (llm who) m in
+  let (a2, held) := bid_duty (with_inflight (llm who) 1 10 sample_bid) m in
+  say (patch_asks asked =? 1) "duty asks when nothing is waiting"
+  ++ say (patch_asks held =? 0) "duty reissued while a bid is in flight asks nothing"
+  ++ say (inflight a2 =? 1) "in flight bid is kept"
+  ++ say (queued a2 "1" =? 0) "in flight bid is not queued again"
+  ++ say (get_or 0 "1.0" (attempts a2) =? 0) "a suppressed duty does not spend a try".
+
+lines_expire : list string :=
+  let who := bidder0 in
+  let (_, early) := bid_duty (with_inflight (llm who) 1 10 sample_bid) (at_height market0 39) in
+  let (a40, late) := bid_duty (with_inflight (llm who) 1 10 sample_bid) (at_height market0 40) in
+  say (patch_asks early =? 0) "a bid in flight is kept until it expires"
+  ++ say (patch_asks late =? 1) "an expired in flight bid can be sent again"
+  ++ say (inflight a40 =? 0) "an expired in flight bid clears that state".
+
+lines_refused : list string :=
+  let who := bidder0 in
+  let m := with_nonce market0 who 1 in
+  let (a2, o) := bid_duty (with_inflight (llm who) 1 10 sample_bid) m in
+  say (inflight a2 =? 0) "a refused bid clears in flight"
+  ++ say (empty_tx (inflight_tx a2)) "a refused bid drops its transaction"
+  ++ say (patch_asks o =? 1) "a refused bid frees the agent to bid again".
+
+lines_reply : list string :=
+  let who := bidder0 in
+  let m := market0 in
+  let '(m1, _, why) := apply m who ["bid", "1", "0", "note", "f.txt", "", "hello"] in
+  let dropped := on_answer (llm who) m1 ["patch", "1", "0"] patch_kv in
+  let inflight_drop := on_answer (with_inflight (llm who) 1 10 sample_bid) m ["patch", "1", "0"] patch_kv in
+  let kept := on_answer (llm who) m ["patch", "1", "0"] patch_kv in
+  let queued_drop := on_answer (enqueue (llm who) sample_bid) m ["patch", "1", "0"] patch_kv in
+  let other_task := on_answer (with_inflight (llm who) 1 10 sample_bid) m ["patch", "2", "0"] patch_kv in
+  let refused_keep := on_answer (with_inflight (llm who) 1 10 sample_bid) (with_nonce m who 1) ["patch", "1", "0"] patch_kv in
+  let (answered_a, answered_o) := answered (with_req (with_inflight (llm who) 1 10 sample_bid)) m "1" patch_kv in
+  say (seq why "") "the chain accepts one bid"
+  ++ say (mine m1 who =? 1) "one bid per agent on the task"
+  ++ say (queued dropped "1" =? 0) "late reply dropped for a task with a pending bid"
+  ++ say (queued inflight_drop "1" =? 0) "late reply dropped while a bid is in flight"
+  ++ say (queued kept "1" =? 1) "a reply is enqueued when no bid is pending"
+  ++ say (queued queued_drop "1" =? 1) "a reply is dropped when a bid is already queued"
+  ++ say (queued other_task "2" =? 1) "a reply for another task is kept"
+  ++ say (queued refused_keep "1" =? 1) "a reply after a refused bid is kept"
+  ++ say (queued answered_a "1" =? 0) "an answered late reply is not enqueued"
+  ++ say (bid_submits answered_o =? 0) "an answered late reply is not sent".
+
+lines_two : list string :=
+  let x := bidder0 in
+  let y := other0 in
+  let '(m, _, w1) := apply market0 x ["bid", "1", "0", "note", "f.txt", "", "one"] in
+  let '(m, _, w2) := apply m y ["bid", "1", "0", "note", "g.txt", "", "two"] in
+  say ((seq w1 "") && (seq w2 "")) "two agents may each bid once"
+  ++ say ((mine m x =? 1) && (mine m y =? 1)) "one bid from each agent on the task".
+
+lines_scripted : list string :=
+  let who := bidder0 in
+  let m := market0 in
+  let a := new_agent who in
+  let (a, _) := bid_duty a m in
+  let (a, s1) := flush a m in
+  let (a, _) := bid_duty a m in
+  let (a, s2) := flush a m in
+  let (a, s3) := answered (with_req a) m "1" patch_kv in
+  let tries := get_or 0 "1.0" (attempts a) in
+  let m2 := with_nonce m who 1 in
+  let (a, _) := bid_duty a m2 in
+  let (_, s4) := flush a m2 in
+  say (bid_submits s1 =? 1) "the first duty sends one bid"
+  ++ say (bid_submits s2 =? 0) "a duty reissued while that bid is in flight sends nothing"
+  ++ say (bid_submits s3 =? 0) "a late patch reply for that task is not sent"
+  ++ say (tries =? 1) "one try is spent until the bid settles"
+  ++ say (bid_submits s4 =? 1) "after the bid is refused the agent sends one more".
+
+report : list string :=
+  lines_setup ++ lines_duty ++ lines_expire ++ lines_refused ++ lines_reply ++ lines_two ++ lines_scripted.
+
+main := print_lines report.

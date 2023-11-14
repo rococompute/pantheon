@@ -17,6 +17,8 @@ perspective (a : obj) : string := getf a "perspective".
 deny (a : obj) : list string := getf a "deny".
 inflight (a : obj) : nat := getf a "inflight".
 sent_at (a : obj) : nat := getf a "sent_at".
+(** the transaction [inflight] names, kept until that nonce lands or is given up *)
+inflight_tx (a : obj) : list string := getf a "inflight_tx".
 queue (a : obj) : list (list string) := getf a "queue".
 asked (a : obj) : list string := getf a "asked".
 attempts (a : obj) : list (string * nat) := getf a "attempts".
@@ -37,7 +39,8 @@ new_agent (me : string) : obj :=
   [("me", me : Any), ("backend", "scripted" : Any), ("behavior", "honest" : Any),
    ("goal", ([] : list string) : Any), ("perspective", "" : Any),
    ("deny", ([".git/", ".github/", ".gitmodules", ".gitattributes", "network/"] : list string) : Any),
-   ("inflight", 0 : Any), ("sent_at", 0 : Any), ("queue", ([] : list (list string)) : Any),
+   ("inflight", 0 : Any), ("sent_at", 0 : Any), ("inflight_tx", ([] : list string) : Any),
+   ("queue", ([] : list (list string)) : Any),
    ("asked", ([] : list string) : Any), ("attempts", ([] : list (string * nat)) : Any), ("retry_keys", ([] : list (string * string)) : Any),
    ("reqs", ([] : list (string * list string)) : Any), ("nreq", 0 : Any), ("bid_window", 30 : Any),
    ("done_marks", ([] : list (string * string)) : Any), ("merge_seen", ([] : list (string * nat)) : Any),
@@ -216,6 +219,26 @@ Fixpoint rejects_from (kv : list string) (i fuel : nat) : list (string * string)
       if seq b "" then [] else (b, kv_at kv (append "reject." (append (show i) ".reason"))) :: rejects_from kv (i + 1) f
   end.
 
+(** [tx] is a bid for task [t], the task id in decimal. *)
+bid_for (tx : list string) (t : string) : bool :=
+  match tx with "bid" :: id :: _ => seq id t | _ => false end.
+
+(** A bid for task [t] this agent already has out: pending on the chain, sent
+    and not yet in a block, or waiting in the queue. One agent never keeps
+    two bids on one task (docs/DOGFOOD-REPORT.md D-5). *)
+pending_bid (a m : obj) (t : string) : bool :=
+  existsb (fun b => (btask b =? num t) && seq (bidder b) (me a) && is_pending (bst b)) (bids m)
+  || bid_for (inflight_tx a) t
+  || existsb (fun q => bid_for q t) (queue a).
+
+(** A transaction that has landed (its nonce was used, accepted or refused) or
+    sat for 30 blocks without landing is no longer in flight. *)
+release_inflight (a m : obj) : obj :=
+  let n := nonce_of m (me a) in
+  if (0 <? inflight a) && ((inflight a <=? n) || (sent_at a + 30 <=? mheight m))
+  then setf (setf a "inflight" 0) "inflight_tx" ([] : list string)
+  else a.
+
 (** A model's answer, with the request it answers. Nothing it says is trusted:
     each action is checked against the market and the policy first. *)
 on_answer (a m : obj) (data kv : list string) : obj :=
@@ -225,11 +248,15 @@ on_answer (a m : obj) (data kv : list string) : obj :=
       let r := match kv_at kv "repo", repos m with "", [(r, _)] => r | r, _ => r end in
       if seq t "" || seq t "null" then a else enqueue a ("post" :: r :: clean_text t :: firstn 8 (list_from kv "context" 0 8))
   | "patch" :: t :: v :: _ =>
+      let a := release_inflight a m in
       let es := edits_from kv 0 (5 * param m "max_files") in
       let r := match task_by m (num t) with Some tk => trepo tk | None => "" end in
       (* the version may have moved while the model thought: rebase when the
-         patch's paths haven't changed since, and give up when they have *)
+         patch's paths haven't changed since, and give up when they have.
+         A bid already pending on the chain or in flight is kept, and this
+         reply is dropped: it would be a second bid on the same task. *)
       if seq (hash_list es) (hash_list []) || existsb (changed_since m r (num v)) (edit_paths (triples es)) then a
+      else if pending_bid a m t then a
       else enqueue a ("bid" :: t :: show (version m) :: clean_text (kv_at kv "note") :: es)
   | "pick" :: t :: cands =>
       let a := fold_left (fun a r => if mem (fst r) cands then enqueue a ["reject", fst r, clean_text (snd r)] else a) (rejects_from kv 0 10) a in
@@ -333,6 +360,7 @@ lead (a m : obj) : obj * list (list string) :=
   else st.
 
 bid_duty (a m : obj) : obj * list (list string) :=
+  let a := release_inflight a m in
   if seq (leader m) "" || is_leader m (me a) then (a, []) else
   if (0 <? get_or 0 (me a) (lastbid m)) && (mheight m <? get_or 0 (me a) (lastbid m) + param m "bid_cooldown") then (a, []) else
   fold_left (fun (st : obj * list (list string)) (t : task) =>
@@ -341,10 +369,12 @@ bid_duty (a m : obj) : obj * list (list string) :=
     let finished := existsb (fun b => (btask b =? tid t) && seq (bidder b) (me a) && is_pending (bst b)) (bids m) in
     let k := append (show (tid t)) (append "." (show (length (filter (fun b => (btask b =? tid t) && is_merged b) (bids m))))) in
     let n := get_or 0 k (attempts a) in
-    (* one patch at a time per task: not while a model is writing one, nor while
-       one waits to be sent *)
+    (* one patch at a time per task: not while a model is writing one, not while
+       one waits to be sent, and not while one has been sent and is not yet in
+       a block. The in-flight transaction is that bid, not only its nonce. *)
     let waiting := existsb (fun r => match snd r with "patch" :: x :: _ => seq x (show (tid t)) | _ => false end) (reqs a)
-                   || existsb (fun q => match q with "bid" :: x :: _ => seq x (show (tid t)) | _ => false end) (queue a) in
+                   || existsb (fun q => bid_for q (show (tid t))) (queue a)
+                   || bid_for (inflight_tx a) (show (tid t)) in
     (* after a merge on the task, wait bid_cooldown blocks: a leader who
        judged it done closes it, and a bid then would be wasted *)
     let merges := length (filter (fun b => (btask b =? tid t) && is_merged b) (bids m)) in
@@ -400,12 +430,13 @@ reveal_duty (a m : obj) : obj * list (list string) :=
   if awaiting m && negb (existsb (fun r => seq (fst r) (me a)) (reveals m)) && ask_once a key
   then (note_asked a key, [["reveal", show (term m + 1)]]) else (a, []).
 
-(** One transaction in flight at a time, at the next nonce. One that never
-    lands is given up after 30 blocks. A merge without a tree is checked
-    first. *)
+(** One transaction in flight at a time, at the next nonce. The transaction
+    itself is kept, not only its nonce, until it lands in a block (accepted
+    or refused) or 30 blocks pass without it. A merge without a tree is
+    checked first. *)
 flush (a m : obj) : obj * list (list string) :=
+  let a := release_inflight a m in
   let n := nonce_of m (me a) in
-  let a := if (0 <? inflight a) && ((inflight a <=? n) || (sent_at a + 30 <=? mheight m)) then setf a "inflight" 0 else a in
   match queue a with
   | ["merge", b] :: rest =>
       let a := setf a "queue" rest in
@@ -423,7 +454,8 @@ flush (a m : obj) : obj * list (list string) :=
       end
   | tx :: rest =>
       if inflight a =? 0 then
-        (setf (setf (setf a "queue" rest) "inflight" (n + 1)) "sent_at" (mheight m), [("submit" :: show (n + 1) :: tx)])
+        (setf (setf (setf (setf a "queue" rest) "inflight" (n + 1)) "sent_at" (mheight m)) "inflight_tx" tx,
+         [("submit" :: show (n + 1) :: tx)])
       else (a, [])
   | [] => (a, [])
   end.
