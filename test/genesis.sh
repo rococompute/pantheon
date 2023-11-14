@@ -1,0 +1,71 @@
+#!/bin/bash
+# Genesis validation on its own: exactly four parts, unique names and
+# unique public keys, and a valid four-part genesis still builds.
+#
+#   test/genesis.sh
+#
+# Needs main.exe (soma build main.soma) and jq.
+set -u
+cd "$(dirname "$0")/.."
+BIN=$PWD/main.exe
+[ -x "$BIN" ] || { echo "no main.exe: run soma build main.soma"; exit 1; }
+T=$(mktemp -d "${TMPDIR:-/tmp}/pantheon-genesis.XXXXXX")
+trap 'rm -rf "$T"' EXIT
+fails=0
+fail() { echo "FAIL $*"; fails=$((fails + 1)); }
+ok() { echo "ok $*"; }
+
+mkdir -p "$T/net/parts" "$T/home"
+printf '{"repos": []}\n' > "$T/net/network.json"
+
+i=0
+for a in a b c d e; do
+  "$BIN" keygen "$T/key-$a" --name "$a" --addr "127.0.0.1:$((39100 + i))" >/dev/null \
+    || fail "keygen $a failed"
+  i=$((i + 1))
+done
+
+copy4() {
+  rm -f "$T/net/parts"/*.json
+  for a in a b c d; do cp "$T/key-$a/public.json" "$T/net/parts/$a.json"; done
+}
+
+expect_refused() {
+  desc=$1 pattern=$2
+  if "$BIN" genesis "$T/home" "$T/net" > "$T/genesis.log" 2>&1; then
+    fail "$desc: genesis succeeded"
+  elif grep -q "$pattern" "$T/genesis.log"; then
+    ok "$desc refused"
+  else
+    fail "$desc: wrong error: $(cat "$T/genesis.log")"
+  fi
+}
+
+# a valid four-part genesis still builds, with four agents in it
+copy4
+"$BIN" genesis "$T/home" "$T/net" > "$T/genesis.log" 2>&1 \
+  && jq -e '.agents | length == 4' "$T/home/genesis.json" >/dev/null \
+  && ok "valid four-part genesis builds" || fail "valid genesis failed: $(cat "$T/genesis.log")"
+
+# five parts
+copy4
+cp "$T/key-e/public.json" "$T/net/parts/e.json"
+expect_refused "five parts" 'genesis must have exactly 4 parts, got 5'
+
+# three parts (wrong count the other way)
+copy4
+rm "$T/net/parts/d.json"
+expect_refused "three parts" 'genesis must have exactly 4 parts, got 3'
+
+# a repeated name (d.json now claims to be a)
+copy4
+cp "$T/key-a/public.json" "$T/net/parts/d.json"
+expect_refused "duplicate name" 'duplicate part name'
+
+# a repeated public key (d keeps its name, but carries a's key)
+copy4
+jq --argjson k "$(jq '.pubkey' "$T/net/parts/a.json")" '.pubkey = $k' "$T/net/parts/d.json" > "$T/d.json" \
+  && mv "$T/d.json" "$T/net/parts/d.json"
+expect_refused "duplicate public key" 'duplicate public key'
+
+[ $fails -eq 0 ] && echo PASS || { echo "$fails failed"; exit 1; }

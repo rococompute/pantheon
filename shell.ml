@@ -536,11 +536,29 @@ let build_genesis home net =
   let netj = read_json (Filename.concat net "network.json") in
   let pdir = Filename.concat net "parts" in
   let files = if Sys.file_exists pdir then Sys.readdir pdir |> Array.to_list |> List.filter (fun f -> Filename.check_suffix f ".json") |> List.sort compare else [] in
-  if List.length files < 4 then fail "%s has %d parts; a network needs 4 (n = 3f + 1 with f = 1). Each agent runs `pantheon keygen` and adds its public.json there" pdir (List.length files);
-  let parts = List.map (fun f -> let j = read_json (Filename.concat pdir f) in
+  if List.length files <> 4 then
+    fail "genesis must have exactly 4 parts, got %d (%s has %d parts; a network needs 4 (n = 3f + 1 with f = 1). Each agent runs `pantheon keygen` and adds its public.json there)"
+      (List.length files) pdir (List.length files);
+  let raw_parts = List.map (fun f -> (f, read_json (Filename.concat pdir f))) files in
+  let seen_names = ref [] in
+  List.iter (fun (_, j) ->
+      let n = to_string (member "name" j) in
+      if List.mem n !seen_names then fail "duplicate part name %s in genesis parts in %s: each agent must add exactly one part under its own name" n pdir;
+      seen_names := n :: !seen_names) raw_parts;
+  let seen_keys = ref [] in
+  List.iter (fun (_, j) ->
+      let n = to_string (member "name" j) in
+      let k = match member "pubkey" j with
+        | `Assoc kv -> Yojson.Safe.to_string (`Assoc (List.sort (fun (a, _) (b, _) -> String.compare a b) kv))
+        | other -> Yojson.Safe.to_string other in
+      (match List.assoc_opt k !seen_keys with
+       | Some other -> fail "duplicate public key in genesis parts in %s: %s and %s share the same public key; each part must carry its own agent's key" pdir other n
+       | None -> ());
+      seen_keys := (k, n) :: !seen_keys) raw_parts;
+  let parts = List.map (fun (f, j) ->
                           let n = to_string (member "name" j) in
                           if n ^ ".json" <> f then fail "%s/%s is named %s inside: rename the file to %s.json" pdir f n n;
-                          `Assoc [ ("name", member "name" j); ("addr", member "addr" j); ("pubkey", member "pubkey" j); ("tip", member "tip" j) ]) files in
+                          `Assoc [ ("name", member "name" j); ("addr", member "addr" j); ("pubkey", member "pubkey" j); ("tip", member "tip" j) ]) raw_parts in
   let repos = List.map (fun r ->
       let name = to_string (member "name" r) and url = to_string (member "url" r) and commit = to_string (member "commit" r) in
       if not (safe_path name) || String.contains name '/' then fail "bad repository name %s" name;
