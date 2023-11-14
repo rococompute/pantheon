@@ -239,6 +239,72 @@ Inductive output_action :=
 | SendPeer (index : string) (fields : list string)
 | SendEveryone (fields : list string).
 
+(** ---- U-1: the node's I/O as one interface (docs/SHELL-IN-SOMA.md,
+    "Two directions, and the unikernel") ----
+    The node's effects are values of [node_op], as a Sandbox program's are
+    values of Sandbox.io: shell.ml interprets them for the binary through
+    one binding, [node_io], and Sandbox could interpret the same values for
+    a unikernel. So far: logging, a timer, queueing an event for the loop,
+    and sending on peer links (to every peer, to the peer at an index, to a
+    peer by name). Reads (the clock, tables), files, git, model and CI jobs
+    are still bindings of their own: the next parts of U-1. An operation
+    crosses the binding as its wire form ([io_wire]), since a .definition
+    takes no Soma inductive; [io_of_wire] reads it back, and shell.ml's
+    [node_io] does exactly that match. *)
+Inductive node_op :=
+| IoLog (text : string)
+| IoTimer (ms : string) (event : list string)
+| IoQueue (event : list string)
+| IoSendAll (fields : list string)
+| IoSendPeer (index : string) (fields : list string)
+| IoPeerSend (who : string) (fields : list string).
+
+io_wire (op : node_op) : list string :=
+  match op with
+  | IoLog text => ["log", text]
+  | IoTimer ms ev => "timer" :: ms :: ev
+  | IoQueue ev => "push" :: ev
+  | IoSendAll fields => "send_all" :: fields
+  | IoSendPeer index fields => "send_peer" :: index :: fields
+  | IoPeerSend who fields => "peer_send" :: who :: fields
+  end.
+
+io_of_wire (w : list string) : option node_op :=
+  match w with
+  | ["log", text] => Some (IoLog text)
+  | "timer" :: ms :: ev => Some (IoTimer ms ev)
+  | "push" :: ev => Some (IoQueue ev)
+  | "send_all" :: fields => Some (IoSendAll fields)
+  | "send_peer" :: index :: fields => Some (IoSendPeer index fields)
+  | "peer_send" :: who :: fields => Some (IoPeerSend who fields)
+  | _ => None
+  end.
+
+(** The one place these operations happen. *)
+io_do (h : node_t) (op : node_op) : bool := node_io h (io_wire op).
+
+io_log (h : node_t) (text : string) : bool := io_do h (IoLog text).
+
+io_push (h : node_t) (ev : list string) : bool := io_do h (IoQueue ev).
+
+(** The output actions that are a single operation, and the operation. *)
+action_io (action : output_action) : option node_op :=
+  match action with
+  | LogAction text => Some (IoLog text)
+  | QueueAction ev => Some (IoQueue ev)
+  | SendPeer index fields => Some (IoSendPeer index fields)
+  | SendEveryone fields => Some (IoSendAll fields)
+  | _ => None
+  end.
+
+(** The outputs that are a single operation (a timer, a log line). *)
+output_io (out : list string) : option node_op :=
+  match plan_output out with
+  | SetTimer ms ev => Some (IoTimer ms ev)
+  | WriteLog text => Some (IoLog text)
+  | _ => None
+  end.
+
 Fixpoint draw_link (n : nat) (secret : string) : string :=
   match n with
   | 0 => secret
@@ -401,26 +467,26 @@ broadcast_plan (byz : string) (peers : nat) (fields : list string)
 
 carry_output_action (h : node_t) (action : output_action) : bool :=
   match action with
-  | LogAction text => node_log h text
-  | QueueAction ev => node_push h ev
+  | LogAction text => io_do h (IoLog text)
+  | QueueAction ev => io_do h (IoQueue ev)
   | StoreAction height txs => node_store h height txs
   | RememberPeer who first now => node_mark_served h who first now
   | MarkNonceFlood => node_mark_nonce_flood h
   | PublishTransaction nonce fields message =>
       let raw := node_encode_tx h nonce fields in
       node_track_tx h raw &&
-      (match message with Some text => node_log h text | None => true end) &&
-      node_push h ["tx", raw] &&
+      (match message with Some text => io_do h (IoLog text) | None => true end) &&
+      io_do h (IoQueue ["tx", raw]) &&
       (match submission_send (fst (node_draw h)) raw with
-       | None => true | Some fields => node_send_all h fields end)
+       | None => true | Some fields => io_do h (IoSendAll fields) end)
   | RememberVote slot vid fields => node_remember_vote h slot vid fields
   | RememberBroadcast height kind fields alt => node_remember_broadcast h height kind fields alt
-  | SendPeer index fields => node_send_peer h index fields
-  | SendEveryone fields => node_send_all h fields
+  | SendPeer index fields => io_do h (IoSendPeer index fields)
+  | SendEveryone fields => io_do h (IoSendAll fields)
   | ReadPeerBlock who k =>
       match catchup_send who k (node_block h (show k)) with
       | None => true
-      | Some (peer, fields) => node_peer_send h peer fields
+      | Some (peer, fields) => io_do h (IoPeerSend peer fields)
       end
   end.
 
@@ -518,12 +584,12 @@ Fixpoint merge_apply_edits (h : node_t) (r : string) (es : list (string * string
   end.
 
 merge_diverge (h : node_t) (r v why : string) : bool :=
-  node_log h (merge_diverged_text r v why) &&
+  io_log h (merge_diverged_text r v why) &&
   node_merge_note_diverged h r (append (show (num v)) (append ": " why)).
 
 perform_merge (h : node_t) (r v tree bid task bidder spec : string) (edits : list string) : bool :=
   match merge_gate_of (node_merge_applied h r) v (node_merge_diverged h r) with
-  | MergeUnknown => node_log h (append "a merge for repository " (append r ", which this node doesn't have"))
+  | MergeUnknown => io_log h (append "a merge for repository " (append r ", which this node doesn't have"))
   | MergeSkip => true
   | MergeApply =>
       node_merge_reset h r &&
@@ -536,7 +602,7 @@ perform_merge (h : node_t) (r v tree bid task bidder spec : string) (edits : lis
            | None =>
                let short := match committed with Some (_, s) => s | None => "" end in
                node_merge_set_applied h r v &&
-               node_log h (append "merged bid " (append bid (append " into " (append r (append ": " short)))))
+               io_log h (append "merged bid " (append bid (append " into " (append r (append ": " short)))))
            end
        end)
   end.
@@ -912,7 +978,7 @@ reply_events (h : node_t) (id kind prompt0 text : string) (ctx : list string) : 
       let wait := limit_wait (reset_in node_float_of_digits now body) backoff in
       let reason := limit_reason_of body in
       if node_limit_set h (PrimFloat.add now wait) reason (limit_next_backoff backoff)
-         && node_log h (limit_log_text (fst info) (node_float_text (PrimFloat.div wait 60%float)) reason)
+         && io_log h (limit_log_text (fst info) (node_float_text (PrimFloat.div wait 60%float)) reason)
          && node_llm_hold h id kind prompt0 ctx
       then [] else [["llm_error", id, "the request couldn't be held"]]
   | ReplyError why => if node_limit_clear h 900%float then [["llm_error", id, why]] else []
@@ -939,7 +1005,7 @@ job_outputs (h : node_t) (evs : list (list string)) : list (list string) := job_
 Fixpoint push_all (h : node_t) (evs : list (list string)) : bool :=
   match evs with
   | [] => true
-  | ev :: rest => node_push h ev && push_all h rest
+  | ev :: rest => io_push h ev && push_all h rest
   end.
 
 llm_repos_text (h : node_t) (token : string) : string :=
@@ -971,18 +1037,18 @@ perform_llm (h : node_t) (id kind prompt : string) (ctx : list string) : bool :=
   let (until, info) := node_limit_info h in
   let backend := fst info in
   match llm_gate_of calls max now until with
-  | LlmOverBudget => node_push h ["llm_error", id, llm_budget_text max]
+  | LlmOverBudget => io_push h ["llm_error", id, llm_budget_text max]
   | LlmHeld =>
-      node_log h (llm_hold_text id kind backend
+      io_log h (llm_hold_text id kind backend
                     (node_float_text (PrimFloat.div (PrimFloat.sub until now) 60%float))) &&
       node_llm_hold h id kind prompt ctx
-  | LlmAsk => node_log h (llm_ask_text backend kind id calls max) && llm_call h id kind prompt ctx
+  | LlmAsk => io_log h (llm_ask_text backend kind id calls max) && llm_call h id kind prompt ctx
   end.
 
 perform_output (h : node_t) (out : list string) : bool :=
   match plan_output out with
-  | SetTimer ms ev => node_timer h ms ev
-  | WriteLog text => node_log h text
+  | SetTimer ms ev => io_do h (IoTimer ms ev)
+  | WriteLog text => io_do h (IoLog text)
   | RevealLink term =>
       let (byz, chain) := node_draw h in
       let (limit, secret) := chain in
@@ -1175,8 +1241,8 @@ release_held (h : node_t) : list (list string) :=
   let over := negb (PrimFloat.ltb (node_clock tt) until) in
   match release_plan_of (num held) over probing (PrimFloat.ltb 900%float backoff) with
   | ReleaseNone => []
-  | ReleaseOne => if node_log h (release_one_text backend held) then [node_release_one h] else []
-  | ReleaseAll => if node_log h (release_all_text backend held) then node_release_all h else []
+  | ReleaseOne => if io_log h (release_one_text backend held) then [node_release_one h] else []
+  | ReleaseAll => if io_log h (release_all_text backend held) then node_release_all h else []
   end.
 
 (** Released requests come first among a turn's events, as they did. *)
@@ -1215,6 +1281,6 @@ run_node (home : string) (flags : list string) : unit :=
   let h := node_open (pack_helpers node_helpers) home flags in
   let st := run_boot h empty_node (boot_events h) in
   let n := replay_count h in
-  let logged := if seq n "0" then true else node_log h (append "replayed " (append n " blocks from disk")) in
+  let logged := if seq n "0" then true else io_log h (append "replayed " (append n " blocks from disk")) in
   let st := match boot_snapshot h with Some c => restore_cons st c | None => st end in
   if logged then forever (node_tick h) (start_node h st) else print_text "".
