@@ -136,3 +136,87 @@ step (n : node_state) (ev : list string) : node_state * list (list string) :=
   | ["llm_error", id, why] => (with_ag n (failed (ag n) id), [["log", append "model call failed: " why]])
   | _ => (n, [])
   end.
+
+(** ---- Step 2 (docs/SHELL-IN-SOMA.md): the node loop in Soma ----
+    The loop holds the state and drives [step]; shell.ml only binds
+    [node_open] (setup), [events] (one select turn), [perform] (one output,
+    the shell's old handle), [save_snapshot], [note_refused], [take_state]
+    and [forever]. An effect is a field list: ["perform"; output...],
+    ["save_snapshot"] or ["refuse"; raw]. [order_effects] is pure: it takes
+    the event, the state before and after [step], and the outputs, and puts
+    decided outputs first, then the snapshot when consensus changed, then
+    the rest. A transaction [step] refused leaves the pool unchanged and is
+    remembered; an accepted one enters the pool. *)
+
+node_t : Type := string.
+
+Fixpoint eq_strs (a b : list string) : bool :=
+  match a, b with
+  | [], [] => true
+  | x :: r, y :: s => seq x y && eq_strs r s
+  | _, _ => false
+  end.
+
+msg_eq (a b : msg) : bool :=
+  kind_eq (kd a) (kd b) && seq (frm a) (frm b) && (mh a =? mh b) && (mr a =? mr b)
+  && (vr a =? vr b) && seq (vid a) (vid b) && eq_strs (value a) (value b).
+
+Fixpoint eq_msgs (a b : list msg) : bool :=
+  match a, b with
+  | [], [] => true
+  | x :: r, y :: s => msg_eq x y && eq_msgs r s
+  | _, _ => false
+  end.
+
+cons_eq (a b : consensus_state) : bool :=
+  seq (consensus.me a) (consensus.me b) && eq_strs (consensus.nodes a) (consensus.nodes b) && (consensus.height a =? consensus.height b)
+  && (consensus.round a =? consensus.round b) && (consensus.step a =? consensus.step b) && (consensus.lockr a =? consensus.lockr b)
+  && eq_strs (consensus.lockv a) (consensus.lockv b) && (consensus.validr a =? consensus.validr b) && eq_strs (consensus.validv a) (consensus.validv b)
+  && eq_msgs (consensus.log a) (consensus.log b) && eq_strs (consensus.once a) (consensus.once b) && (consensus.block_ms a =? consensus.block_ms b).
+
+is_decided (o : list string) : bool :=
+  match o with "decided" :: _ => true | _ => false end.
+
+order_effects (ev : list string) (before after : node_state) (outs : list (list string)) : list (list string) :=
+  let refused :=
+    match ev with
+    | ["tx", raw] => if mem raw (pool after) && negb (mem raw (pool before)) then [] else [["refuse", raw]]
+    | _ => []
+    end in
+  let decided := map (fun o => "perform" :: o) (filter is_decided outs) in
+  let save := if cons_eq (cons before) (cons after) then [] else [["save_snapshot"]] in
+  let rest := map (fun o => "perform" :: o) (filter (fun o => negb (is_decided o)) outs) in
+  refused ++ decided ++ save ++ rest.
+
+(** Effects return whether they were carried out, and the loop keeps the
+    new state only when they were: a unit result would be a cast the
+    extraction can erase, and with it the call. *)
+carry_effect (h : node_t) (snap : consensus_state) (eff : list string) : bool :=
+  match eff with
+  | "perform" :: out => perform h out
+  | ["save_snapshot"] => save_snapshot h snap
+  | ["refuse", raw] => note_refused h raw
+  | _ => true
+  end.
+
+Fixpoint carry_all (h : node_t) (snap : consensus_state) (effs : list (list string)) : bool :=
+  match effs with
+  | [] => true
+  | e :: rest => carry_effect h snap e && carry_all h snap rest
+  end.
+
+run_event (h : node_t) (st : node_state) (ev : list string) : node_state :=
+  let (s, outs) := step st ev in
+  if carry_all h (cons s) (order_effects ev st s outs) then s else st.
+
+Fixpoint run_events (h : node_t) (st : node_state) (evs : list (list string)) : node_state :=
+  match evs with
+  | [] => st
+  | ev :: rest => run_events h (run_event h st ev) rest
+  end.
+
+node_tick (h : node_t) (st : node_state) : node_state := run_events h st (events h).
+
+run_node (home : string) (flags : list string) : unit :=
+  let h := node_open empty_node step cons restore_cons plan_open replace_all edit_once contains shell_safe_path shallow_json home flags in
+  forever (node_tick h) (take_state h).

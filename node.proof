@@ -1,0 +1,35 @@
+(** What node.soma's pure effect order does, checked without running a node:
+    no sockets, no timers, only [order_effects] on made-up steps. A snapshot
+    effect appears only when consensus changed (as [empty_node]'s has not),
+    decided outputs come before it, and the rest come after. *)
+
+Example decided_snapshot_rest :
+  order_effects ["msg", "peer", "x"] empty_node (with_cons empty_node (new_consensus "me" ["me"] 2))
+    [["broadcast", "vote"], ["decided", "1", "tx"], ["status", "s"]]
+  = [["perform", "decided", "1", "tx"], ["save_snapshot"], ["perform", "broadcast", "vote"], ["perform", "status", "s"]].
+Proof. reflexivity. Qed.
+
+Example refused_tx_is_remembered :
+  order_effects ["tx", "raw"] empty_node empty_node []
+  = [["refuse", "raw"]]
+  /\ order_effects ["tx", "raw"] empty_node (with_pool empty_node ["raw"]) []
+  = [].
+Proof. repeat split; reflexivity. Qed.
+
+Example empty_step_has_no_effects :
+  order_effects ["timeout", "commit", "1", "0"] empty_node empty_node [] = [].
+Proof. reflexivity. Qed.
+
+Example only_some_kinds :
+  order_effects ["msg", "peer"] empty_node empty_node [["status", "s"], ["log", "hi"]]
+  = [["perform", "status", "s"], ["perform", "log", "hi"]]
+  /\ order_effects ["msg", "peer"] empty_node (with_cons empty_node (new_consensus "me" ["me"] 2)) [["broadcast", "vote"]]
+  = [["save_snapshot"], ["perform", "broadcast", "vote"]]
+  /\ order_effects ["msg", "peer"] empty_node empty_node [["decided", "3", "tx"]]
+  = [["perform", "decided", "3", "tx"]].
+Proof. repeat split; reflexivity. Qed.
+
+Example vote_saves_before_it_sends :
+  order_effects ["msg", "peer"] empty_node (with_cons empty_node (new_consensus "me" ["me"] 2)) [["broadcast", "prevote", "1"]]
+  = [["save_snapshot"], ["perform", "broadcast", "prevote", "1"]].
+Proof. reflexivity. Qed.

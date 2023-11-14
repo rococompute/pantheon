@@ -54,7 +54,7 @@ dispatch (args : list string) : unit :=
   | ["status", home] => cmd_status home
   | "tx" :: home :: field :: rest => cmd_tx home (field :: rest)
   | "up" :: dir :: rest => cmd_up dir rest
-  | "node" :: home :: flags => cmd_node empty_node step cons restore_cons plan_open replace_all edit_once contains shell_safe_path shallow_json home flags
+  | "node" :: home :: flags => run_node home flags
   | _ => print_text usage
   end.
 
