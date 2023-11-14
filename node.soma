@@ -1145,15 +1145,26 @@ backend_launch (backend : string) : list string :=
     [drop_str 4 backend, "", "cmd"]
   else [].
 
+
+(** A model job's environment is Soma's filter: the node's own
+    PANTHEON_ settings never reach a model, except for a name that is
+    exactly the prefix (the shell asked for more than nine bytes).
+    The grok launch keeps the whole environment, as the shell did. *)
+model_env_entries (entries : list string) : list string :=
+  filter (fun kv => negb ((9 <? slen kv) && starts "PANTHEON_" kv)) entries.
+
 llm_call (h : node_t) (id kind prompt : string) (ctx : list string) : bool :=
   let token := node_token tt in
   let backend := fst (snd (node_limit_info h)) in
   match backend_launch backend with
   | [] => io_push h ["llm_error", id, append "unknown backend " backend]
   | launch =>
+      let all_env := node_env_entries tt in
+      let env := if seq (hd "" (tl (tl launch))) "grok" then all_env
+                 else model_env_entries all_env in
       match node_llm_start h id kind prompt
         (prompt_assemble token prompt ctx (fun _ => llm_repos_text h token) (fun _ => llm_plan_text h token)
-           (llm_repo_text h token)) ctx (llm_checkout kind ctx (node_repo_names h)) launch with
+           (llm_repo_text h token)) ctx (llm_checkout kind ctx (node_repo_names h)) launch env with
       | None => true
       (* the process couldn't start: its output is here at once *)
       | Some text => push_all h (reply_events h id kind prompt text ctx)

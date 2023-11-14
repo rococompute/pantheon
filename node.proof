@@ -3,6 +3,12 @@
     effect appears only when consensus changed (as [empty_node]'s has not),
     decided outputs come before it, and the rest come after. *)
 
+Example model_env_drops_only_the_nodes_own_settings :
+  model_env_entries ["PANTHEON_X=1", "HOME=/h", "PANTHEON_", "PANTHEON=1", "APANTHEON_X=2", "PATH=/bin"] =
+    ["HOME=/h", "PANTHEON_", "PANTHEON=1", "APANTHEON_X=2", "PATH=/bin"] /\
+  model_env_entries [] = [].
+Proof. repeat split; reflexivity. Qed.
+
 Example backend_launches_are_fixed_data :
   backend_launch "claude" = ["claude", "600", "prompt", "-p", "--tools", "", "--strict-mcp-config", "--no-session-persistence", "--setting-sources", "", "--output-format", "text"] /\
   hd "" (tl (tl (backend_launch "codex"))) = "codex" /\ backend_launch "cmd:my-model" = ["my-model", "", "cmd"] /\

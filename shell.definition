@@ -110,7 +110,8 @@ node_nonce_flooded : string -> bool.
     node_llm_start gets is complete, assembled by Soma's prompt_assemble. *)
 node_llm_budget : string -> string * string.
 node_llm_hold : string -> string -> string -> string -> list string -> bool.
-node_llm_start : string -> string -> string -> string -> string -> list string -> option string -> list string -> option string.
+node_env_entries : unit -> list string.
+node_llm_start : string -> string -> string -> string -> string -> list string -> option string -> list string -> list string -> option string.
 (** What a model's output becomes is decided in Soma (node.soma's
     reply_events and reply_fields). node_llm_start gives the output at once
     when the process couldn't start (none: it runs, and its output comes

@@ -763,7 +763,7 @@ type node_handle = { h_events : unit -> string list list;
                      h_job_flood : string -> unit;
                      h_llm_budget : unit -> string * string;
                      h_llm_hold : string -> string -> string -> string list -> unit;
-                     h_llm_start : string -> string -> string -> string -> string list -> string option -> string list -> string option;
+                     h_llm_start : string -> string -> string -> string -> string list -> string option -> string list -> string list -> string option;
                      h_limit_set : float -> string -> float -> unit;
                      h_limit_clear : float -> unit;
                      h_repo_names : unit -> string list;
@@ -829,7 +829,8 @@ let node_job_flood id jid = (lookup_handle id).h_job_flood jid; true
 (* a model call's I/O: node.soma's perform_llm decides and builds the prompt *)
 let node_llm_budget id = (lookup_handle id).h_llm_budget ()
 let node_llm_hold id req kind prompt ctx = (lookup_handle id).h_llm_hold req kind prompt ctx; true
-let node_llm_start id req kind raw prompt ctx checkout launch = (lookup_handle id).h_llm_start req kind raw prompt ctx checkout launch
+let node_llm_start id req kind raw prompt ctx checkout launch env = (lookup_handle id).h_llm_start req kind raw prompt ctx checkout launch env
+let node_env_entries () = Array.to_list (Unix.environment ())
 (* a model's output: node.soma's reply_fields decides what it becomes.
    These bindings only report the cap, where the braces are, and yojson's
    value as tokens. The slice, the guards and the key paths are Soma. *)
@@ -1133,9 +1134,6 @@ let node_open packed home flags =
                 jclean = (fun () -> (try Sys.remove inp with _ -> ()); (try remove_tree_later cwd with _ -> ()); clean ()) } :: !jobs
     end
   in
-  let model_env () =
-    Unix.environment () |> Array.to_list |> List.filter (fun kv -> not (String.length kv > 9 && String.sub kv 0 9 = "PANTHEON_")) |> Array.of_list
-  in
   (* What a prompt asks for from the checkouts is assembled in Soma
      (node.soma's perform_llm): the shell lists files and reads them at a
      checkout's head. *)
@@ -1154,7 +1152,7 @@ let node_open packed home flags =
   (* the model process for a prompt Soma assembled from prompt0. Its output
      comes back raw as an llm_output event, or at once when the process
      couldn't start *)
-  let call_model id kind prompt0 prompt ctx checkout launch =
+  let call_model id kind prompt0 prompt ctx checkout launch env =
     let starting = ref true and immediate = ref None in
     let reply text =
       if !starting then immediate := Some text
@@ -1164,7 +1162,7 @@ let node_open packed home flags =
      | prog :: limit_s :: "codex" :: args ->
          let out = Filename.temp_file "pantheon-codex" ".txt" in
          start_job ~limit:(float_of_string limit_s) prog
-           (List.map (fun a -> if a = "@OUT@" then out else a) args) ~stdin_text:prompt ~env:(model_env ())
+           (List.map (fun a -> if a = "@OUT@" then out else a) args) ~stdin_text:prompt ~env:(Array.of_list env)
            ~on_done:(fun t -> if String.length t > 0 && t.[0] = '!' then reply t else reply (try read_file out with _ -> "!codex wrote no reply"))
            ~clean:(fun () -> try Sys.remove out with _ -> ())
      | prog :: limit_s :: "grok" :: args ->
@@ -1197,9 +1195,9 @@ let node_open packed home flags =
                else ([], gone, 600.)
            | None -> ([], ignore, 1200.)
          in
-         start_job ~limit prog args ~stdin_text:prompt ~env:(Array.append (Array.of_list extra) (model_env ())) ~on_done:reply ~clean
+         start_job ~limit prog args ~stdin_text:prompt ~env:(Array.append (Array.of_list extra) (Array.of_list env)) ~on_done:reply ~clean
      | prog :: limit_s :: _ :: args ->
-         start_job ~limit:(float_of_string limit_s) prog args ~stdin_text:prompt ~env:(model_env ()) ~on_done:reply ~clean:ignore
+         start_job ~limit:(float_of_string limit_s) prog args ~stdin_text:prompt ~env:(Array.of_list env) ~on_done:reply ~clean:ignore
      | _ -> push [ "llm_error"; id; "unknown backend " ^ !backend ]);
     starting := false;
     !immediate
