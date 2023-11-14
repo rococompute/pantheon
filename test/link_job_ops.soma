@@ -1,0 +1,82 @@
+(** U-1, peer links and job control behind the node's one I/O interface:
+    the operations Soma issues for an offered connection, an over-cap read
+    and jobs past their limit, run through a pure scripted interpreter that
+    answers each operation from a fixed list and records what it saw. No
+    node, no sockets, no timing. *)
+Import util shell node.
+From Stdlib Require ExtrOcamlNatInt.
+Extract Inlined Constant Nat.div => "(fun a b -> if b = 0 then 0 else a / b)".
+Extract Inlined Constant Nat.modulo => "(fun a b -> if b = 0 then a else a mod b)".
+Extract Inlined Constant Stdlib.Strings.String.length => "String.length".
+Extract Inlined Constant Stdlib.Strings.String.get =>
+  "(fun n s -> if n < String.length s then Some (String.unsafe_get s n) else None)".
+Extract Inlined Constant Stdlib.Strings.String.substring =>
+  "(fun n m s -> let l = String.length s in if n >= l then """" else String.sub s n (min m (l - n)))".
+
+check (label : string) (ok : bool) : string := append (if ok then "ok " else "FAIL ") label.
+
+Fixpoint same (a b : list string) : bool :=
+  match a, b with
+  | [], [] => true
+  | x :: r, y :: t => seq x y && same r t
+  | _, _ => false
+  end.
+
+Fixpoint same_all (a b : list (list string)) : bool :=
+  match a, b with
+  | [], [] => true
+  | x :: r, y :: t => same x y && same_all r t
+  | _, _ => false
+  end.
+
+(** A scripted interpreter: each operation takes the next scripted answer
+    (true when the script runs out) and is recorded by its wire form. *)
+Fixpoint scripted (answers : list bool) (ops : list node_op) (seen : list (list string))
+    : list (list string) * bool :=
+  match ops with
+  | [] => (rev_onto seen [], true)
+  | op :: rest =>
+      let ok := match answers with a :: _ => a | [] => true end in
+      let more := match answers with _ :: r => r | [] => [] end in
+      if ok then scripted more rest (io_wire op :: seen) else (rev_onto (io_wire op :: seen) [], false)
+  end.
+
+admit_op (oid host : string) (hosts : list string) (conns : list (string * float)) : node_op :=
+  let (mode, target) := conn_admit_plan (conn_offer_decision host hosts) conns in
+  IoConnAdmit oid mode target.
+
+jobs : list (string * (float * (float * bool))) :=
+  [("1", (0%float, (10%float, false))), ("2", (0%float, (100%float, false))),
+   ("3", (0%float, (5%float, true))), ("4", (1%float, (5%float, false)))].
+
+main := print_lines [
+  check "a new connection is admitted as new"
+    (same (io_wire (admit_op "9" "h" [] [])) ["conn_admit", "9", "new", ""]),
+  check "an offer past the overall cap evicts the quietest connection"
+    (same (io_wire (admit_op "9" "h" (map (fun _ => "x") (List.seq 0 64)) [("c1", 5%float), ("c2", 1%float)]))
+       ["conn_admit", "9", "evict", "c2"]),
+  check "an offer past the per-host cap is refused"
+    (same (io_wire (admit_op "9" "h" (map (fun _ => "h") (List.seq 0 16)) [])) ["conn_admit", "9", "refuse", ""]),
+  check "an over-cap read closes its connection"
+    (same (io_wire (IoConnClose "7")) ["conn_close", "7"]),
+  check "a flooded job is killed"
+    (same (io_wire (IoJobFlood "3")) ["job_flood", "3"]),
+  check "jobs past their limit expire in order, marked and in-time ones don't"
+    (same_all (map io_wire (expire_ops 20%float jobs)) [["job_expire", "1"], ["job_expire", "4"]]),
+  check "nothing expires before any limit"
+    (same_all (map io_wire (expire_ops 1%float jobs)) []),
+  check "the scripted interpreter sees the deadline pass's exact sequence"
+    (same_all (fst (scripted [] (expire_ops 20%float jobs) [])) [["job_expire", "1"], ["job_expire", "4"]] &&
+     snd (scripted [] (expire_ops 20%float jobs) [])),
+  check "a failed operation stops the pass there"
+    (same_all (fst (scripted [false] (expire_ops 20%float jobs) [])) [["job_expire", "1"]] &&
+     negb (snd (scripted [false] (expire_ops 20%float jobs) []))),
+  check "every new operation reads back from its wire form"
+    (match io_of_wire ["conn_admit", "9", "evict", "c2"], io_of_wire ["conn_close", "7"],
+           io_of_wire ["job_flood", "3"], io_of_wire ["job_expire", "1"],
+           io_of_wire ["conn_close"], io_of_wire ["job_expire", "1", "x"] with
+     | Some (IoConnAdmit "9" "evict" "c2"), Some (IoConnClose "7"), Some (IoJobFlood "3"),
+       Some (IoJobExpire "1"), None, None => true
+     | _, _, _, _, _, _ => false
+     end)
+].

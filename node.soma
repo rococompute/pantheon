@@ -306,7 +306,14 @@ Inductive node_op :=
 | IoMergeApplied (repo version : string)
 | IoMergeDiverged (repo entry : string)
 | IoClock
-| IoRememberBroadcast (height kind : string) (fields alternate : list string).
+| IoRememberBroadcast (height kind : string) (fields alternate : list string)
+(** peer links and job control (U-1): admit, refuse or evict for an
+    offered connection, close a connection, kill a job whose output went
+    over its cap or that ran past its limit *)
+| IoConnAdmit (offer mode target : string)
+| IoConnClose (conn : string)
+| IoJobFlood (job : string)
+| IoJobExpire (job : string).
 
 (** Two arbitrary lists on one wire: tagged field/value pairs, then the
     alternate-list marker. A marker occurring as a value is never a tag.
@@ -342,6 +349,10 @@ io_wire (op : node_op) : list string :=
   | IoClock => ["clock"]
   | IoRememberBroadcast height kind fields alternate =>
       ["remember_broadcast", height, kind] ++ resend_fields fields ++ ("alternate" :: alternate)
+  | IoConnAdmit offer mode target => ["conn_admit", offer, mode, target]
+  | IoConnClose conn => ["conn_close", conn]
+  | IoJobFlood job => ["job_flood", job]
+  | IoJobExpire job => ["job_expire", job]
   end.
 
 io_of_wire (w : list string) : option node_op :=
@@ -367,6 +378,10 @@ io_of_wire (w : list string) : option node_op :=
       | Some (fields, alternate) => Some (IoRememberBroadcast height kind fields alternate)
       | None => None
       end
+  | ["conn_admit", offer, mode, target] => Some (IoConnAdmit offer mode target)
+  | ["conn_close", conn] => Some (IoConnClose conn)
+  | ["job_flood", job] => Some (IoJobFlood job)
+  | ["job_expire", job] => Some (IoJobExpire job)
   | _ => None
   end.
 
@@ -2025,7 +2040,7 @@ run_event (h : node_t) (st : node_state) (ev : list string) : node_state :=
       let d := conn_offer_decision host hosts in
       let conns := match d with AdmitEvict => node_conns h | _ => [] end in
       let (mode, target) := conn_admit_plan d conns in
-      if node_conn_admit h oid mode target then
+      if io_do h (IoConnAdmit oid mode target) then
         (if seq mode "evict" then peer_forget st target else st)
       else with_live st (live st)
   | ["peer_closed", cid] => peer_forget st cid
@@ -2047,14 +2062,14 @@ run_event (h : node_t) (st : node_state) (ev : list string) : node_state :=
       let st := peer_remember st cid kept in
       if push_all h evs then
         if over then
-          if node_conn_close h cid then peer_forget st cid else with_live st (live st)
+          if io_do h (IoConnClose cid) then peer_forget st cid else with_live st (live st)
         else st
       else with_live st (live st)
   | ["job_bytes", id, chunk] =>
       let (kept, over) := job_feed (job_buffer st id) chunk
                             (num (node_job_output_limit tt)) (num job_keep_text) in
       let st := job_remember st id kept in
-      if over then if node_job_flood h id then st else with_live st (live st)
+      if over then if io_do h (IoJobFlood id) then st else with_live st (live st)
       else st
   | _ =>
       let (s, outs) := step st ev in
@@ -2142,14 +2157,24 @@ release_held (h : node_t) : list (list string) :=
 job_should_expire (now started limit : float) (marked : bool) : bool :=
   negb marked && PrimFloat.ltb limit (PrimFloat.sub now started).
 
-Fixpoint expire_jobs (h : node_t) (now : float)
-    (jobs : list (string * (float * (float * bool)))) : bool :=
+(** the operations a turn's deadline pass issues: one IoJobExpire per job
+    past its limit and not yet marked, in the jobs' order *)
+Fixpoint expire_ops (now : float) (jobs : list (string * (float * (float * bool)))) : list node_op :=
   match jobs with
-  | [] => true
+  | [] => []
   | (id, (started, (limit, marked))) :: r =>
-      (if job_should_expire now started limit marked then node_job_expire h id else true)
-      && expire_jobs h now r
+      if job_should_expire now started limit marked then IoJobExpire id :: expire_ops now r
+      else expire_ops now r
   end.
+
+Fixpoint io_all (h : node_t) (ops : list node_op) : bool :=
+  match ops with
+  | [] => true
+  | op :: rest => io_do h op && io_all h rest
+  end.
+
+expire_jobs (h : node_t) (now : float) (jobs : list (string * (float * (float * bool)))) : bool :=
+  io_all h (expire_ops now jobs).
 
 (** Deadlines at or before [now], and the rest, each in list order. *)
 Fixpoint timers_due (now : float) (l : list (float * list string))
