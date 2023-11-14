@@ -417,3 +417,107 @@ Proof.
   - exists b. split; [reflexivity|]. split; [|reflexivity].
     unfold seq in He. apply Stdlib.Strings.String.eqb_neq in He. exact He.
 Qed.
+
+(** A leader-draw reveal is unique (docs/SECURITY-REVIEW-2.md P-8). What a
+    reveal does, the reveal branch of apply on its own. *)
+Lemma apply_reveal : forall (m : obj) (a v : string),
+  apply m a ["reveal", v] =
+  (if negb (awaiting m) then (m, [], "no draw under way")
+   else if existsb (fun r => seq (fst r) a) (reveals m) then (m, [], "already revealed")
+   else if negb (next_link v (get_or "" a (tips m))) then (m, [], "not a link of this agent's hash chain")
+   else (setf (setf m "reveals" (reveals m ++ [(a, v)])) "tips" (put a v (tips m)), [], "")).
+Proof.
+  intros m a v. reflexivity.
+Qed.
+
+Lemma getf_setf_same : forall (m : obj) (k : string) (v : Any),
+  getf (setf m k v) k = v.
+Proof.
+  intros m k v. induction m as [|[key value] rest IH].
+  - change ((if seq k k then v else unk) = v).
+    unfold seq. rewrite Stdlib.Strings.String.eqb_refl. reflexivity.
+  - change (getf (if seq k key then (k, v) :: rest else
+      (key, value) :: setf rest k v) k = v).
+    destruct (seq k key) eqn:E.
+    + change ((if seq k k then v else getf rest k) = v).
+      unfold seq. rewrite Stdlib.Strings.String.eqb_refl. reflexivity.
+    + change ((if seq k key then value else getf (setf rest k v) k) = v).
+      rewrite E. exact IH.
+Qed.
+
+Lemma reveals_after_reveal : forall (m : obj) (rs ts : list (string * string)),
+  reveals (setf (setf m "reveals" rs) "tips" ts) = rs.
+Proof.
+  intros m rs ts. unfold reveals.
+  rewrite getf_setf_other by reflexivity. rewrite getf_setf_same. reflexivity.
+Qed.
+
+(** An accepted reveal hashes, in one step, to the agent's tip: never an
+    older link of its chain. *)
+Theorem accepted_reveal_is_the_next_link :
+  forall (m m' : obj) (a v : string) (outs : list (list string)),
+    apply m a ["reveal", v] = (m', outs, "") -> sha256 v = get_or "" a (tips m).
+Proof.
+  intros m m' a v outs H. rewrite apply_reveal in H.
+  destruct (negb (awaiting m)); [discriminate H|].
+  destruct (existsb (fun r => seq (fst r) a) (reveals m)); [discriminate H|].
+  destruct (next_link v (get_or "" a (tips m))) eqn:E; [|discriminate H].
+  unfold next_link, seq in E. apply Stdlib.Strings.String.eqb_eq in E. exact E.
+Qed.
+
+(** The regression: with the tip at sha256 (sha256 v), the next link
+    sha256 v is accepted, and the older link v, which the 64-step check let
+    through, is refused, leaving the market as it was. *)
+Theorem reveal_one_step_regression :
+  forall (m : obj) (a v : string),
+    awaiting m = true -> existsb (fun r => seq (fst r) a) (reveals m) = false ->
+    get_or "" a (tips m) = sha256 (sha256 v) -> sha256 v <> sha256 (sha256 v) ->
+    (exists m', apply m a ["reveal", sha256 v] = (m', [], "")) /\
+    apply m a ["reveal", v] = (m, [], "not a link of this agent's hash chain").
+Proof.
+  intros m a v Ha Hr Ht Hne.
+  rewrite !apply_reveal, Ha, Hr, Ht. unfold next_link, seq.
+  rewrite Stdlib.Strings.String.eqb_refl.
+  apply Stdlib.Strings.String.eqb_neq in Hne. rewrite Hne.
+  split; [eexists; reflexivity | reflexivity].
+Qed.
+
+(** Once an agent's reveal is accepted, any second reveal from it in the
+    same draw, different or not, is refused before it is admitted. *)
+Theorem second_reveal_for_a_draw_is_refused :
+  forall (m m' : obj) (a v w : string) (outs : list (list string)),
+    apply m a ["reveal", v] = (m', outs, "") ->
+    exists why, why <> "" /\ apply m' a ["reveal", w] = (m', [], why).
+Proof.
+  intros m m' a v w outs H. rewrite apply_reveal in H.
+  destruct (negb (awaiting m)); [discriminate H|].
+  destruct (existsb (fun r => seq (fst r) a) (reveals m)); [discriminate H|].
+  destruct (next_link v (get_or "" a (tips m))); [|discriminate H].
+  injection H as Hm Ho. subst m'.
+  rewrite apply_reveal.
+  match goal with |- context [existsb ?f (reveals ?s)] =>
+    assert (Hx : existsb f (reveals s) = true);
+    [ rewrite reveals_after_reveal; apply existsb_exists; exists (a, v); split;
+      [ apply in_or_app; right; left; reflexivity
+      | change (seq a a = true); unfold seq; apply Stdlib.Strings.String.eqb_refl ]
+    | rewrite Hx ]
+  end.
+  match goal with |- context [negb (awaiting ?s)] => destruct (negb (awaiting s)) end;
+    [exists "no draw under way" | exists "already revealed"];
+    split; [discriminate | reflexivity | discriminate | reflexivity].
+Qed.
+
+(** Any two reveals accepted for one agent in one draw are the same link:
+    both hash to its tip, and so are equal when the tip has one preimage. *)
+Theorem accepted_reveals_for_a_draw_are_equal :
+  forall (m m1 m2 : obj) (a v w : string) (o1 o2 : list (list string)),
+    apply m a ["reveal", v] = (m1, o1, "") -> apply m a ["reveal", w] = (m2, o2, "") ->
+    sha256 v = get_or "" a (tips m) /\ sha256 v = sha256 w /\
+    ((forall x y, sha256 x = get_or "" a (tips m) -> sha256 y = get_or "" a (tips m) -> x = y) -> v = w).
+Proof.
+  intros m m1 m2 a v w o1 o2 Hv Hw.
+  pose proof (accepted_reveal_is_the_next_link _ _ _ _ _ Hv) as Ev.
+  pose proof (accepted_reveal_is_the_next_link _ _ _ _ _ Hw) as Ew.
+  split; [exact Ev|]. split; [congruence|].
+  intros U. exact (U v w Ev Ew).
+Qed.
