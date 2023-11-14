@@ -869,8 +869,9 @@ let replay_count id = (lookup_handle id).h_replayed
 (* The node's operations (node.soma's node_op, U-1), one at a time in their
    wire form (node.soma's io_wire; this match is its io_of_wire): the only
    place the node logs, sets a timer, queues an event, sends on a peer
-   link, stores a block, sets the height, writes the status file, or
-   reads the clock. Effects return (true, 0.); "clock" returns
+   link, stores a block, sets the height, writes the status file, logs a
+   signed vote, tracks its own transaction, marks the nonce flood, starts
+   a CI check, records a merge applied or diverged, or reads the clock. Effects return (true, 0.); "clock" returns
    (true, Unix.gettimeofday ()). A unikernel would interpret the same
    operations through Sandbox. *)
 let node_io id op =
@@ -885,6 +886,12 @@ let node_io id op =
   | "store" :: height :: txs -> h.h_store height txs; (true, 0.)
   | [ "set_height"; height ] -> h.h_height height; (true, 0.)
   | [ "write_status"; text ] -> h.h_write_status text; (true, 0.)
+  | "sign_vote" :: slot :: vid :: fields -> h.h_remember_vote slot vid fields; (true, 0.)
+  | [ "track_tx"; raw ] -> h.h_track_tx raw; (true, 0.)
+  | [ "mark_nonce_flood" ] -> h.h_mark_nonce_flood (); (true, 0.)
+  | "check" :: req :: r :: head :: edits -> h.h_run_check req r head edits; (true, 0.)
+  | [ "merge_applied"; r; v ] -> h.h_merge_set_applied r v; (true, 0.)
+  | [ "merge_diverged"; r; entry ] -> h.h_merge_note_diverged r entry; (true, 0.)
   | [ "clock" ] -> (true, Unix.gettimeofday ())
   | _ -> fail "unknown node operation %s" (String.concat " " op)
 let node_conn_admit id oid mode target = (lookup_handle id).h_conn_admit oid mode target; true
@@ -907,14 +914,10 @@ let node_release_one id = (lookup_handle id).h_release_one ()
 let node_release_all id = (lookup_handle id).h_release_all ()
 let node_local_time until =
   let tm = Unix.localtime until in Printf.sprintf "%02d:%02d" tm.Unix.tm_hour tm.Unix.tm_min
-let node_run_check id req r head edits = (lookup_handle id).h_run_check req r head edits; true
 let node_encode_tx id nonce fields = (lookup_handle id).h_encode_tx nonce fields
-let node_track_tx id raw = (lookup_handle id).h_track_tx raw; true
 let node_nonce_flooded id = (lookup_handle id).h_nonce_flooded ()
-let node_mark_nonce_flood id = (lookup_handle id).h_mark_nonce_flood (); true
 let node_signed_vote id slot = (lookup_handle id).h_signed_vote slot
 let node_signed_body id slot = (lookup_handle id).h_signed_body slot
-let node_remember_vote id slot vid fields = (lookup_handle id).h_remember_vote slot vid fields; true
 let node_remember_broadcast id height kind fields alt = (lookup_handle id).h_remember_broadcast height kind fields alt; true
 let node_peer_count id = (lookup_handle id).h_peer_count ()
 (* Raw Yojson member reads and node metadata. Soma gates the parse and
@@ -940,8 +943,6 @@ let node_merge_read id r p = (lookup_handle id).h_merge_read r p
 let node_merge_write id r p text = (lookup_handle id).h_merge_write r p text
 let node_merge_remove id r p = (lookup_handle id).h_merge_remove r p
 let node_merge_commit id r v tree bid task bidder spec = (lookup_handle id).h_merge_commit r v tree bid task bidder spec
-let node_merge_set_applied id r v = (lookup_handle id).h_merge_set_applied r v; true
-let node_merge_note_diverged id r entry = (lookup_handle id).h_merge_note_diverged r entry; true
 let rec forever f s = forever f (f s)
 
 let node_open packed home flags =

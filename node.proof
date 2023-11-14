@@ -734,6 +734,33 @@ Example plans_become_operations :
   action_io (StoreAction "7" []) = Some (IoStore "7" []).
 Proof. repeat split; reflexivity. Qed.
 
+(** U-1: the signed-vote log, the own-transaction table, the nonce-flood
+    mark, the CI check and a merge's records are operations too. *)
+Example writes_and_check_travel_the_one_interface :
+  io_wire (IoSignVote "prevote/1/0" "v" ["prevote", "1"]) = ["sign_vote", "prevote/1/0", "v", "prevote", "1"] /\
+  io_of_wire ["sign_vote", "s", "v"] = Some (IoSignVote "s" "v" []) /\
+  io_of_wire ["sign_vote", "s"] = None /\
+  io_wire (IoTrackTx "raw") = ["track_tx", "raw"] /\
+  io_of_wire ["track_tx", "a", "b"] = None /\
+  io_wire IoMarkNonceFlood = ["mark_nonce_flood"] /\
+  io_wire (IoCheck "9" "calc" "head1" ["a", "o", "n"]) = ["check", "9", "calc", "head1", "a", "o", "n"] /\
+  io_of_wire ["check", "9", "calc"] = None /\
+  io_wire (IoMergeApplied "calc" "2") = ["merge_applied", "calc", "2"] /\
+  io_wire (IoMergeDiverged "calc" "2: boom") = ["merge_diverged", "calc", "2: boom"] /\
+  io_of_wire ["merge_applied", "calc"] = None.
+Proof. repeat split; reflexivity. Qed.
+
+Example votes_floods_and_checks_become_operations :
+  map action_io (broadcast_plan "" 2 ["prevote", "1", "0", "-1", "v", "nil"]
+    (Some ("prevote", "1", "0", "v")) None None) =
+    [Some (IoSignVote "prevote/1/0" "v" ["prevote", "1", "0", "-1", "v", "nil"]), None,
+     Some (IoSendAll ["prevote", "1", "0", "-1", "v", "nil"])] /\
+  map action_io (firstn 3 (submission_plan "future-nonce" false "7" ["withdraw", "0"])) =
+    [None, Some IoMarkNonceFlood, Some (IoLog "FAULT INJECTION: flooding 600 future-nonce transactions")] /\
+  output_io ["check", "9", "calc", "head1", "e1", "e2"] = Some (IoCheck "9" "calc" "head1" ["e1", "e2"]) /\
+  output_io ["check", "9", "calc"] = None.
+Proof. repeat split; reflexivity. Qed.
+
 (** An action that is one operation is carried out as exactly that
     operation, and so are the timer and log outputs. *)
 Theorem single_actions_are_their_operation : forall h action op,

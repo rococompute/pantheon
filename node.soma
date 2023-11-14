@@ -247,7 +247,9 @@ Inductive output_action :=
     a unikernel. So far: logging, a timer, queueing an event for the loop,
     and sending on peer links (to every peer, to the peer at an index, to a
     peer by name), and the storage writes: storing a decided block, setting
-    the height and writing the assembled status file. The clock is a read
+    the height and writing the assembled status file, the signed-vote log,
+    the own-transaction retry table and nonce-flood mark, a CI check
+    request, and a merge's applied version or divergence. The clock is a read
     of the same interface: interpreting it yields the time, the same
     [Unix.gettimeofday] value as before. Table reads, git, model and CI
     jobs are still bindings of their own: the next parts of U-1. An operation crosses the binding as its
@@ -264,6 +266,12 @@ Inductive node_op :=
 | IoStore (height : string) (txs : list string)
 | IoSetHeight (height : string)
 | IoWriteStatus (text : string)
+| IoSignVote (slot vid : string) (fields : list string)
+| IoTrackTx (raw : string)
+| IoMarkNonceFlood
+| IoCheck (id repo head : string) (edits : list string)
+| IoMergeApplied (repo version : string)
+| IoMergeDiverged (repo entry : string)
 | IoClock.
 
 io_wire (op : node_op) : list string :=
@@ -277,6 +285,12 @@ io_wire (op : node_op) : list string :=
   | IoStore height txs => "store" :: height :: txs
   | IoSetHeight height => ["set_height", height]
   | IoWriteStatus text => ["write_status", text]
+  | IoSignVote slot vid fields => "sign_vote" :: slot :: vid :: fields
+  | IoTrackTx raw => ["track_tx", raw]
+  | IoMarkNonceFlood => ["mark_nonce_flood"]
+  | IoCheck id repo head edits => "check" :: id :: repo :: head :: edits
+  | IoMergeApplied repo version => ["merge_applied", repo, version]
+  | IoMergeDiverged repo entry => ["merge_diverged", repo, entry]
   | IoClock => ["clock"]
   end.
 
@@ -291,6 +305,12 @@ io_of_wire (w : list string) : option node_op :=
   | "store" :: height :: txs => Some (IoStore height txs)
   | ["set_height", height] => Some (IoSetHeight height)
   | ["write_status", text] => Some (IoWriteStatus text)
+  | "sign_vote" :: slot :: vid :: fields => Some (IoSignVote slot vid fields)
+  | ["track_tx", raw] => Some (IoTrackTx raw)
+  | ["mark_nonce_flood"] => Some IoMarkNonceFlood
+  | "check" :: id :: repo :: head :: edits => Some (IoCheck id repo head edits)
+  | ["merge_applied", repo, version] => Some (IoMergeApplied repo version)
+  | ["merge_diverged", repo, entry] => Some (IoMergeDiverged repo entry)
   | ["clock"] => Some IoClock
   | _ => None
   end.
@@ -315,14 +335,18 @@ action_io (action : output_action) : option node_op :=
   | SendPeer index fields => Some (IoSendPeer index fields)
   | SendEveryone fields => Some (IoSendAll fields)
   | StoreAction height txs => Some (IoStore height txs)
+  | RememberVote slot vid fields => Some (IoSignVote slot vid fields)
+  | MarkNonceFlood => Some IoMarkNonceFlood
   | _ => None
   end.
 
-(** The outputs that are a single operation (a timer, a log line). *)
+(** The outputs that are a single operation (a timer, a log line, a CI
+    check request). *)
 output_io (out : list string) : option node_op :=
   match plan_output out with
   | SetTimer ms ev => Some (IoTimer ms ev)
   | WriteLog text => Some (IoLog text)
+  | CheckRequest id r head edits => Some (IoCheck id r head edits)
   | _ => None
   end.
 
@@ -492,15 +516,15 @@ carry_output_action (h : node_t) (action : output_action) : bool :=
   | QueueAction ev => io_do h (IoQueue ev)
   | StoreAction height txs => io_do h (IoStore height txs)
   | RememberPeer who first now => node_mark_served h who first now
-  | MarkNonceFlood => node_mark_nonce_flood h
+  | MarkNonceFlood => io_do h IoMarkNonceFlood
   | PublishTransaction nonce fields message =>
       let raw := node_encode_tx h nonce fields in
-      node_track_tx h raw &&
+      io_do h (IoTrackTx raw) &&
       (match message with Some text => io_do h (IoLog text) | None => true end) &&
       io_do h (IoQueue ["tx", raw]) &&
       (match submission_send (fst (node_draw h)) raw with
        | None => true | Some fields => io_do h (IoSendAll fields) end)
-  | RememberVote slot vid fields => node_remember_vote h slot vid fields
+  | RememberVote slot vid fields => io_do h (IoSignVote slot vid fields)
   | RememberBroadcast height kind fields alt => node_remember_broadcast h height kind fields alt
   | SendPeer index fields => io_do h (IoSendPeer index fields)
   | SendEveryone fields => io_do h (IoSendAll fields)
@@ -606,7 +630,7 @@ Fixpoint merge_apply_edits (h : node_t) (r : string) (es : list (string * string
 
 merge_diverge (h : node_t) (r v why : string) : bool :=
   io_log h (merge_diverged_text r v why) &&
-  node_merge_note_diverged h r (append (show (num v)) (append ": " why)).
+  io_do h (IoMergeDiverged r (append (show (num v)) (append ": " why))).
 
 perform_merge (h : node_t) (r v tree bid task bidder spec : string) (edits : list string) : bool :=
   match merge_gate_of (node_merge_applied h r) v (node_merge_diverged h r) with
@@ -622,7 +646,7 @@ perform_merge (h : node_t) (r v tree bid task bidder spec : string) (edits : lis
            | Some why => merge_diverge h r v why
            | None =>
                let short := match committed with Some (_, s) => s | None => "" end in
-               node_merge_set_applied h r v &&
+               io_do h (IoMergeApplied r v) &&
                io_log h (append "merged bid " (append bid (append " into " (append r (append ": " short)))))
            end
        end)
@@ -1105,7 +1129,7 @@ perform_output (h : node_t) (out : list string) : bool :=
           carry_output_actions h (broadcast_plan byz n fields (Some (k, ht, r, vid))
             (node_signed_vote h slot) (node_signed_body h slot))
       end
-  | CheckRequest id r head edits => node_run_check h id r head edits
+  | CheckRequest id r head edits => io_do h (IoCheck id r head edits)
   | MergeRequest r v tree bid task bidder spec edits => perform_merge h r v tree bid task bidder spec edits
   | LlmRequest id kind prompt ctx => perform_llm h id kind prompt ctx
   | LegacyOutput _ => true

@@ -53,9 +53,12 @@ replay_count : string -> string.
 (** The node's operations (node.soma's node_op, U-1), carried out: one
     operation in its wire form (node.soma's io_wire): "log" TEXT, "timer"
     MS EVENT..., "push" EVENT..., "send_all" FIELDS..., "send_peer" INDEX
-    FIELDS..., "peer_send" PEER FIELDS..., "clock". The only way the node
-    logs, sets a timer, queues an event, sends on a peer link, or reads
-    the clock. An effect returns (true, 0); "clock" returns (true, now),
+    FIELDS..., "peer_send" PEER FIELDS..., "store" HEIGHT TXS...,
+    "set_height" H, "write_status" TEXT, "sign_vote" SLOT VID FIELDS...,
+    "track_tx" RAW, "mark_nonce_flood", "check" ID REPO HEAD EDITS...,
+    "merge_applied" REPO V, "merge_diverged" REPO ENTRY, "clock". The only
+    way the node logs, sets a timer, queues an event, sends on a peer link,
+    does those writes, starts a CI check, or reads the clock. An effect returns (true, 0); "clock" returns (true, now),
     the same gettimeofday value the node used to read directly. *)
 node_io : string -> list string -> bool * float.
 (** Small I/O bindings; output tags and decisions live in Soma. *)
@@ -94,9 +97,7 @@ node_release_all : string -> list (list string).
 node_local_time : float -> string.
 (** Signing, retry-table access and socket writes; Soma selects submissions. *)
 node_encode_tx : string -> string -> list string -> string.
-node_track_tx : string -> string -> bool.
 node_nonce_flooded : string -> bool.
-node_mark_nonce_flood : string -> bool.
 
 (** A model call's I/O; node.soma's perform_llm decides and assembles the
     prompt. The call count, bumped for this call, and the budget; holding a
@@ -146,8 +147,6 @@ node_conns : string -> list (string * float).
 node_conn_close : string -> string -> bool.
 node_line_limit : string -> string.
 
-(** The CI check job; Soma selects it, the shell runs the process. *)
-node_run_check : string -> string -> string -> string -> list string -> bool.
 (** A decided merge's I/O; node.soma's perform_merge decides. The version
     applied to a repository (none: this node doesn't have it), whether its
     checkout diverged, a hard reset and clean of it, a path's kind there
@@ -163,12 +162,9 @@ node_merge_read : string -> string -> string -> option string.
 node_merge_write : string -> string -> string -> string -> string.
 node_merge_remove : string -> string -> string -> string.
 node_merge_commit : string -> string -> string -> string -> string -> string -> string -> string -> option (string * string).
-node_merge_set_applied : string -> string -> string -> bool.
-node_merge_note_diverged : string -> string -> string -> bool.
 
 (** Vote table, resend memory and socket writes. Soma chooses the message. *)
 node_signed_vote : string -> string -> option string.
 node_signed_body : string -> string -> option (list string).
-node_remember_vote : string -> string -> string -> list string -> bool.
 node_remember_broadcast : string -> string -> string -> list string -> list string -> bool.
 node_peer_count : string -> string.
