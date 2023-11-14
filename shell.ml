@@ -115,6 +115,15 @@ let write_file p s =
   let tmp = p ^ ".tmp" in
   Out_channel.with_open_bin tmp (fun oc -> output_string oc s);
   Unix.rename tmp p
+(* The node's own binary, as an absolute path, fixed when the program starts
+   and before anything changes directory (docs/SECURITY-REVIEW-2.md P-10):
+   started as ./main.exe, a check or a model's PANTHEON_BIN run from a
+   scratch directory would otherwise miss it. The path it was invoked as when
+   that names a file (has a /), else what the system says it is. *)
+let self_exe =
+  let e = if Array.length Sys.argv > 0 && String.contains Sys.argv.(0) '/' then Sys.argv.(0) else Sys.executable_name in
+  if Filename.is_relative e then Filename.concat (Sys.getcwd ()) e else e
+
 let rec mkdir_p d = if d <> "" && d <> "." && d <> "/" && not (Sys.file_exists d) then (mkdir_p (Filename.dirname d); Unix.mkdir d 0o755)
 (* A checkout removed in the background: one with a build in it is close to
    a GB, and removing it in the main loop stalled consensus for minutes *)
@@ -588,7 +597,7 @@ let cmd_init args =
       write_file (Filename.concat (Filename.concat net "parts") (n ^ ".json")) (read_file pub))
     agents_default;
   List.iter (fun n -> build_genesis (Filename.concat !dir n) net) agents_default;
-  say "made a 4-agent network in %s. Run it with: %s up %s" !dir Sys.argv.(0) !dir
+  say "made a 4-agent network in %s. Run it with: %s up %s" !dir self_exe !dir
 
 (* ---------- the node ---------- *)
 
@@ -677,7 +686,7 @@ let rec run init step =
       write_file (Filename.concat d (Printf.sprintf "%.6f.json" (Unix.gettimeofday ()))) (Yojson.Safe.to_string (strings_json fields));
       say "queued for %s's agent: %s (it signs and sends it next; see `pantheon status %s`)" (Filename.basename home) (String.concat " " fields) home
   | "up" :: dir :: rest ->
-      let self = Sys.executable_name in
+      let self = self_exe in
       let backends = ref [] and pass = ref [] in
       let rec go = function
         | "--backends" :: b :: r ->
@@ -1047,7 +1056,7 @@ and node init step home flags =
               let commit = git_out (rdir r) [ "rev-parse"; "HEAD" ] in
               if fst (capture "git" [ "clone"; "--quiet"; "--shared"; "--no-checkout"; "--separate-git-dir=" ^ gd; rdir r; wt ])
                  && git_ok wt [ "checkout"; "-q"; "--detach"; commit ] then
-                ([ "PANTHEON_WORKTREE=" ^ wt; "PANTHEON_GITDIR=" ^ gd; "PANTHEON_REPO=" ^ r; "PANTHEON_BIN=" ^ Sys.executable_name ],
+                ([ "PANTHEON_WORKTREE=" ^ wt; "PANTHEON_GITDIR=" ^ gd; "PANTHEON_REPO=" ^ r; "PANTHEON_BIN=" ^ self_exe ],
                  gone, 1800.)
               else ([], gone, 600.)
           (* an answer: a model with tools may read the code a bid changes
@@ -1077,7 +1086,7 @@ and node init step home flags =
        apply (no tree yet), ci (a tree, then CI), or node (this node's own
        problem, which ok=error already sends the agent to abstain on) *)
     let result ok tree why stage = push [ "check_result"; id; "ok"; (if ok then "true" else if contains why "node problem:" then "error" else "false"); "tree"; tree; "why"; why; "stage"; stage ] in
-    start_job Sys.executable_name [ "check"; rdir r; head; ef; out ] ~stdin_text:"" ~env:(Unix.environment ())
+    start_job self_exe [ "check"; rdir r; head; ef; out ] ~stdin_text:"" ~env:(Unix.environment ())
       ~on_done:(fun t ->
         if String.length t > 0 && t.[0] = '!' then (say "check of request %s failed: %s" id t; result false "" t (if contains t "node problem:" then "node" else "apply"))
         else

@@ -119,4 +119,13 @@ PANTHEON_GITDIR="$T/hostile2.git" "$BIN" edits "$T/hostile2" "hostile2" > "$T/ho
 [ ! -e "$T/pwned-gitdir-filter" ] && [ ! -e "$T/pwned-gitdir-fsmonitor" ] && ok "a hostile PANTHEON_GITDIR config runs nothing" || fail "a hostile PANTHEON_GITDIR config ran a command"
 jq -e '[.edits[].path] | index("a.txt")' "$T/hostile2.json" >/dev/null && ok "edits still come from a hostile PANTHEON_GITDIR" || fail "edits with a hostile PANTHEON_GITDIR: $(cat "$T/hostile2.json")"
 
+# the node started as ./main.exe still finds its own binary once the
+# directory has changed (docs/SECURITY-REVIEW-2.md P-10): the path it gives
+# for itself, the one `up`, checks and PANTHEON_BIN use, works from elsewhere
+(cd "$(dirname "$BIN")" && ./main.exe init "$T/selfnet" --repo origin="$T/origin") > "$T/init.out" 2>&1 || fail "./main.exe init failed: $(tail -3 "$T/init.out")"
+self=$(sed -n 's/.*Run it with: \(.*\) up .*/\1/p' "$T/init.out")
+(cd "$T/selfnet" && [ -x "$self" ] && "$self" plan "$T/no-such-plan" 2>&1 | grep -q 'no .*no-such-plan here') \
+  && ok "./main.exe gives itself as a path that works from another directory ($self)" \
+  || fail "./main.exe names itself as '$self', which isn't there from another directory"
+
 [ $fails -eq 0 ] && echo PASS || { echo "$fails failed"; exit 1; }
