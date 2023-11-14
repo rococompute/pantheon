@@ -1,0 +1,62 @@
+(** Fixed peer framing and retained-byte limits. No running node and no timers. *)
+Import util shell node.
+From Stdlib Require ExtrOcamlNatInt.
+Extract Inlined Constant Nat.div => "(fun a b -> if b = 0 then 0 else a / b)".
+Extract Inlined Constant Nat.modulo => "(fun a b -> if b = 0 then a else a mod b)".
+
+(** Strings run as OCaml's (ExtrOcamlNativeString), which leaves out the
+    operations that count in [nat]. With [nat] as OCaml ints they're
+    OCaml's own, each as total as its definition: offsets past the end give
+    [None] or an empty string. util.soma reads long text through them. *)
+Extract Inlined Constant Stdlib.Strings.String.length => "String.length".
+Extract Inlined Constant Stdlib.Strings.String.get =>
+  "(fun n s -> if n < String.length s then Some (String.unsafe_get s n) else None)".
+Extract Inlined Constant Stdlib.Strings.String.substring =>
+  "(fun n m s -> let l = String.length s in if n >= l then """" else String.sub s n (min m (l - n)))".
+
+check (label : string) (ok : bool) : string := append (if ok then "ok " else "FAIL ") label.
+
+matches (chunks : list string) (chunk limit : string) (lines kept : list string) (over : bool) : bool :=
+  let p := peer_feed chunks chunk limit in
+  eq_strs (peer_lines p) lines && eq_strs (peer_kept p) kept &&
+  (if over then peer_over p else negb (peer_over p)).
+
+admission_is (same total : nat) (expected : string) : bool :=
+  seq (match admit_decision_of same total with
+       | AdmitNew => "new" | AdmitRefuse => "refuse" | AdmitEvict => "evict" end) expected.
+
+checks : list string := [
+  check "below connection cap" (admission_is 0 63 "new"),
+  check "at connection cap" (admission_is 0 64 "evict"),
+  check "past connection cap" (admission_is 0 65 "evict"),
+  check "host cap wins" (admission_is 16 65 "refuse"),
+  check "oldest is quietest and first of ties"
+    (seq (oldest_conn [("first", 3%float), ("old", 1%float), ("tie", 1%float)]) "old"),
+  check "no oldest" (seq (oldest_conn []) ""),
+  check "transaction line event" (eq_strs (line_event "p" ["tx", "raw"]) ["tx", "raw"]),
+  check "message line event" (eq_strs (line_event "p" ["prevote", "1"]) ["msg", "p", "prevote", "1"]),
+  check "malformed transaction arity remains message"
+    (eq_strs (line_event "p" ["tx"]) ["msg", "p", "tx"]),
+  check "inbox line fields" (match inbox_tx (Some ["L", "2", "S", "draft", "S", "task"]) with
+    | Some fields => eq_strs fields ["draft", "task"] | None => false end),
+  check "split line" (matches ["hel"] "lo
+" "10" ["hello"] [] false),
+  check "several lines and partial" (matches [] "a
+b
+par" "10" ["a", "b"] ["par"] false),
+  check "trailing partial" (matches ["ab"] "cd" "10" [] ["ab", "cd"] false),
+  check "empty line" (matches [] "
+" "10" [""] [] false),
+  check "malformed line makes no parsed event"
+    (matches [] "{bad}
+" "10" ["{bad}"] [] false &&
+     eq_strs (peer_raw_event "100" "me" "{bad}" (fun _ => None) (fun _ => false)) []),
+  check "at cap" (matches ["ab"] "cd" "4" [] ["ab", "cd"] false),
+  check "past cap" (matches ["ab"] "cde" "4" [] ["ab", "cde"] true),
+  check "completed line does not spend partial cap" (matches [] "abcdef
+x" "1" ["abcdef"] ["x"] false),
+  check "lines precede over-cap partial" (matches [] "a
+xyz" "2" ["a"] ["xyz"] true),
+  check "empty read preserves partial" (matches ["ab"] "" "2" [] ["ab", ""] false)
+].
+main := print_lines checks.

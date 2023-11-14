@@ -1997,6 +1997,14 @@ release_one_text (backend held : string) : string :=
 release_all_text (backend held : string) : string :=
   append backend (append " answers again: asking its " (append held " held requests")).
 
+(** Raw stored model requests become events here, including an absent
+    single request. Context fields keep their exact bytes and order. *)
+held_request_event (request : string * string * string * list string) : list string :=
+  let '(id, kind, prompt, ctx) := request in "llm_release" :: id :: kind :: prompt :: ctx.
+
+held_one_events (request : option (string * string * string * list string)) : list (list string) :=
+  match request with None => [] | Some r => [held_request_event r] end.
+
 (** The held requests this turn gives back, oldest first, as llm_release
     events; the shell only keeps them and hands them over. *)
 release_held (h : node_t) : list (list string) :=
@@ -2007,8 +2015,8 @@ release_held (h : node_t) : list (list string) :=
   let over := negb (PrimFloat.ltb (io_now h) until) in
   match release_plan_of (num held) over probing (PrimFloat.ltb 900%float backoff) with
   | ReleaseNone => []
-  | ReleaseOne => if io_log h (release_one_text backend held) then [node_release_one h] else []
-  | ReleaseAll => if io_log h (release_all_text backend held) then node_release_all h else []
+  | ReleaseOne => if io_log h (release_one_text backend held) then held_one_events (node_release_one h) else []
+  | ReleaseAll => if io_log h (release_all_text backend held) then map held_request_event (node_release_all h) else []
   end.
 
 (** ---- Step 5: job deadlines and which timers fire ----

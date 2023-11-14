@@ -230,6 +230,15 @@ separate work; this status does not mark `.plan`.
 
 ## Done so far
 
+- Step 5, held-request event construction: taking held requests returns raw
+  typed tuples through the storage bindings. Soma's `held_request_event`
+  and `held_one_events` construct `llm_release` events, preserving prompt
+  bytes and context order; an absent request gives no event. The shell no
+  longer constructs these events. `test/held-events.sh` checks exact fixed
+  results; `test/event-boundaries.sh` checks framing, admission, oldest
+  selection and peer/inbox classification. This is a partial step 5 bid;
+  the remaining native orchestration still needs its final audit.
+
 - Step 5, the --backend flag: the shell feeds the raw string. Soma's
   `backend_kind_name` turns "scripted" and "scripted:" plus a suffix into
   the scripted kind, and anything else, including "scripted:" alone, into

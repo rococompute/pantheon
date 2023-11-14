@@ -782,8 +782,8 @@ type node_handle = { h_events : float -> string list list;
                      h_divergences : unit -> (string * string) list;
                      h_limit_info : unit -> float * (string * (string * string));
                      h_release_state : unit -> float * bool;
-                     h_release_one : unit -> string list;
-                     h_release_all : unit -> string list list;
+                     h_release_one : unit -> (((string * string) * string) * string list) option;
+                     h_release_all : unit -> (((string * string) * string) * string list) list;
                      h_write_status : string -> unit;
                      h_encode_tx : string -> string list -> string;
                      h_track_tx : string -> unit;
@@ -1534,16 +1534,16 @@ let node_open packed home flags =
       h_checkout_heads = (fun () -> List.map (fun (n, _, _, _) -> (n, git_out (rdir n) [ "rev-parse"; "--short"; "HEAD" ])) repos);
       h_divergences = (fun () -> !diverged);
       h_limit_info = (fun () -> (!limited_until, (!backend, (string_of_int (List.length !held), !limit_reason))));
-      (* held requests, oldest first, as llm_release events: node.soma's release_held decides when *)
+      (* Raw held requests, oldest first; Soma constructs their events. *)
       h_release_state = (fun () -> (!limit_backoff, !probing));
       h_release_one = (fun () ->
         match List.rev !held with
-        | (id, kind, prompt0, ctx) :: rest -> held := List.rev rest; probing := true; "llm_release" :: id :: kind :: prompt0 :: ctx
-        | [] -> []);
+        | (id, kind, prompt, ctx) :: rest -> held := List.rev rest; probing := true; Some (((id, kind), prompt), ctx)
+        | [] -> None);
       h_release_all = (fun () ->
         let hs = List.rev !held in
         held := [];
-        List.map (fun (id, kind, prompt0, ctx) -> "llm_release" :: id :: kind :: prompt0 :: ctx) hs);
+        List.map (fun (id, kind, prompt, ctx) -> (((id, kind), prompt), ctx)) hs);
       h_write_status = (fun text -> write_file (Filename.concat home "status.txt") text);
       h_encode_tx = encode_tx key me;
       h_track_tx = (fun raw -> my_txs := (Unix.gettimeofday (), raw) :: !my_txs);
