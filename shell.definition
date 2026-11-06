@@ -1,0 +1,21 @@
+(** What Soma takes the shell to be. shell.ml does all the I/O: sockets,
+    timers, keys, signatures, disk and model processes. The Soma files decide
+    everything, and the kernel never computes these, so to a proof each is an
+    assumption: soma explore lists them. *)
+OCaml Library "cryptokit".
+OCaml Library "yojson".
+
+(** hex sha256 of a string *)
+sha256 : string -> string.
+
+(** hex sha256 of a list of strings, unambiguous about where each one ends *)
+hash_list : list string -> string.
+
+(** A signed transaction, checked against the genesis keys: its fields
+    [agent; nonce; type; args...], or [] when it's malformed, oversized, or
+    its signature doesn't verify. The same on every node, given one genesis. *)
+decode_tx : string -> list string.
+
+(** Runs a node: feeds the state machine its events, one at a time, and does
+    what each step's outputs say. Never returns. *)
+run : forall {S : Type}, S -> (S -> list string -> S * list (list string)) -> unit.

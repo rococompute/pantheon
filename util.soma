@@ -1,0 +1,92 @@
+(** Helpers that the consensus, the market and the agent share. *)
+From Stdlib Require Import Ascii.
+
+(** An object is a record whose fields are looked up by name, each an [Any].
+    It keeps the state machines short: reading a field casts it to the type
+    it's used at, and a wrong field is a run-time error, not a static one.
+    Turning these into typed records with invariants is a job for proofs. *)
+obj : Type := list (string * Any).
+
+Abbreviation SNil := Stdlib.Strings.String.EmptyString.
+Abbreviation SCons := Stdlib.Strings.String.String.
+
+seq (a b : string) : bool := Stdlib.Strings.String.eqb a b.
+
+Fixpoint getf (o : obj) (k : string) : Any :=
+  match o with [] => unk | (k', v) :: r => if seq k k' then v else getf r k end.
+
+Fixpoint setf (o : obj) (k : string) (v : Any) : obj :=
+  match o with
+  | [] => [(k, v)]
+  | (k', w) :: r => if seq k k' then (k, v) :: r else (k', w) :: setf r k v
+  end.
+
+Fixpoint mem (x : string) (l : list string) : bool :=
+  match l with [] => false | y :: r => seq x y || mem x r end.
+
+Fixpoint lookup {A : Type} (k : string) (l : list (string * A)) : option A :=
+  match l with [] => None | (k', v) :: r => if seq k k' then Some v else lookup k r end.
+
+Fixpoint put {A : Type} (k : string) (v : A) (l : list (string * A)) : list (string * A) :=
+  match l with
+  | [] => [(k, v)]
+  | (k', w) :: r => if seq k k' then (k, v) :: r else (k', w) :: put k v r
+  end.
+
+get_or {A : Type} (d : A) (k : string) (l : list (string * A)) : A :=
+  match lookup k l with Some v => v | None => d end.
+
+(** add one to a counter in a list of counters *)
+bump (k : string) (l : list (string * nat)) : list (string * nat) := put k (get_or 0 k l + 1) l.
+
+Fixpoint digits (s : string) (acc : nat) : nat :=
+  match s with SNil => acc | SCons c r => digits r (acc * 10 + (nat_of_ascii c - 48)) end.
+
+(** a decimal number; anything that isn't one reads as some number, never fails *)
+num (s : string) : nat := digits s 0.
+
+show (n : nat) : string := to_string n.
+
+Fixpoint nodup_s (l : list string) : list string :=
+  match l with [] => [] | x :: r => if mem x r then nodup_s r else x :: nodup_s r end.
+
+distinct (l : list string) : nat := length (nodup_s l).
+
+Fixpoint remove_s (x : string) (l : list string) : list string :=
+  match l with [] => [] | y :: r => if seq x y then remove_s x r else y :: remove_s x r end.
+
+Fixpoint index_of (x : string) (l : list string) : nat :=
+  match l with [] => 0 | y :: r => if seq x y then 0 else 1 + index_of x r end.
+
+hexval (c : ascii) : nat := let n := nat_of_ascii c in if n <? 58 then n - 48 else n - 87.
+
+(** the number in the first [k] hex digits of [s] *)
+Fixpoint hexnum (s : string) (k acc : nat) : nat :=
+  match k, s with
+  | 0, _ => acc
+  | _, SNil => acc
+  | Succ k', SCons c r => hexnum r k' (acc * 16 + hexval c)
+  end.
+
+Fixpoint starts (p s : string) : bool :=
+  match p, s with
+  | SNil, _ => true
+  | SCons a p', SCons b s' => Ascii.eqb a b && starts p' s'
+  | _, _ => false
+  end.
+
+Fixpoint contains (p s : string) : bool :=
+  match s with SNil => starts p s | SCons _ s' => starts p s || contains p s' end.
+
+(** a path a patch may write: relative, no "..", no backslash, not empty *)
+safe_path (p : string) : bool :=
+  negb (seq p "") && negb (starts "/" p) && negb (contains ".." p) && negb (contains "\" p).
+
+(** pairs from a flat list: [a; b; c; d] is [(a, b); (c, d)] *)
+Fixpoint pairs (l : list string) : list (string * string) :=
+  match l with a :: b :: r => (a, b) :: pairs r | _ => [] end.
+
+Fixpoint flat (l : list (string * string)) : list string :=
+  match l with [] => [] | (a, b) :: r => a :: b :: flat r end.
+
+last_n {A : Type} (n : nat) (l : list A) : list A := skipn (length l - n) l.

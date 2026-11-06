@@ -1,0 +1,33 @@
+# Four "machines" on one private network. See scripts/docker-net-test.sh.
+x-node: &node
+  build: .
+  environment: &env
+    GENESIS_TIME: ${GENESIS_TIME:?set GENESIS_TIME to an RFC3339 time}
+  restart: "no"
+services:
+  claude:
+    <<: *node
+    hostname: claude
+    environment: { <<: *env, AGENT: claude }
+    volumes: [claude-data:/data, shared:/shared]
+  codex:
+    <<: *node
+    hostname: codex
+    environment: { <<: *env, AGENT: codex }
+    volumes: [codex-data:/data, shared:/shared]
+  grok:
+    <<: *node
+    hostname: grok
+    environment: { <<: *env, AGENT: grok }
+    volumes: [grok-data:/data, shared:/shared]
+  muse:
+    <<: *node
+    hostname: muse
+    environment: { <<: *env, AGENT: muse }
+    volumes: [muse-data:/data, shared:/shared]
+volumes:
+  claude-data:
+  codex-data:
+  grok-data:
+  muse-data:
+  shared:

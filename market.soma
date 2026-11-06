@@ -1,0 +1,334 @@
+(** The market: four agents take turns as term leader. The leader posts tasks,
+    the others bid patches, and a merge lands when 3 of 4 approve. A merge
+    clears every pending bid that now conflicts with it.
+
+    A patch is a set of file writes made against a version of the repository.
+    A pending bid conflicts with a merge when it writes a path that has
+    changed since its version. It stays pending, marked stale, when it doesn't.
+
+    The next leader is drawn from values each agent committed to at genesis:
+    the tip of a hash chain, H^K(s). For each term, an agent reveals the
+    previous link, which only it can compute. Revealing is all an agent
+    controls: a value is fixed in advance, and an agent that withholds it can't
+    be drawn. *)
+Import util shell.
+
+Inductive status := Pending | Merged | Cleared | Rejected | Withdrawn.
+
+status_name (s : status) : string :=
+  match s with
+  | Pending => "pending" | Merged => "merged" | Cleared => "cleared"
+  | Rejected => "rejected" | Withdrawn => "withdrawn"
+  end.
+
+is_pending (s : status) : bool := match s with Pending => true | _ => false end.
+
+Record task := { tid : nat; spec : string; poster : string; posted_at : nat; topen : bool }.
+
+Record bid := { bidn : nat; btask : nat; bidder : string; base : nat; writes : list (string * string);
+                note : string; bst : status; stale : bool; why : string;
+                votes : list (string * bool) }.
+
+(** a merge waiting for attestations *)
+Record proposal := { pbid : nat; pby : string; pat : nat; pvotes : list (string * bool) }.
+
+(** The market's state, an object (see util.soma). *)
+agents (m : obj) : list string := getf m "agents".
+mheight (m : obj) : nat := getf m "h".
+term (m : obj) : nat := getf m "term".
+leader (m : obj) : string := getf m "leader".
+history (m : obj) : list string := getf m "history".
+tstart (m : obj) : nat := getf m "tstart".
+active (m : obj) : nat := getf m "active".
+merges (m : obj) : nat := getf m "merges".
+awaiting (m : obj) : bool := getf m "awaiting".
+asince (m : obj) : nat := getf m "asince".
+reveals (m : obj) : list (string * string) := getf m "reveals".
+tips (m : obj) : list (string * string) := getf m "tips".
+version (m : obj) : nat := getf m "version".
+(** path -> (content, version that last wrote it) *)
+files (m : obj) : list (string * (string * nat)) := getf m "files".
+tasks (m : obj) : list task := getf m "tasks".
+bids (m : obj) : list bid := getf m "bids".
+pending (m : obj) : option proposal := getf m "pending".
+nonces (m : obj) : list (string * nat) := getf m "nonces".
+lastbid (m : obj) : list (string * nat) := getf m "lastbid".
+counters (m : obj) : list (string * nat) := getf m "counters".
+params (m : obj) : list (string * nat) := getf m "params".
+
+(** Parameters, set at genesis. Block counts. *)
+default_params : list (string * nat) :=
+  [("term_blocks", 300), ("max_merges", 2), ("stall_blocks", 120), ("attest_window", 120),
+   ("fallback_blocks", 60), ("max_open_tasks", 3), ("max_pending_bids", 3), ("bid_cooldown", 5),
+   ("reveal_window", 10), ("max_files", 20), ("keep_settled", 100), ("max_block_txs", 50)].
+
+param (m : obj) (k : string) : nat := get_or (get_or 0 k default_params) k (params m).
+
+new_market (agents : list string) : obj :=
+  [("agents", agents : Any), ("h", 0 : Any), ("term", 0 : Any), ("leader", "" : Any),
+   ("history", ([] : list string) : Any), ("tstart", 0 : Any), ("active", 0 : Any), ("merges", 0 : Any),
+   (* the chain starts between terms, so even term 1 is drawn *)
+   ("awaiting", true : Any), ("asince", 0 : Any),
+   ("reveals", ([] : list (string * string)) : Any), ("tips", ([] : list (string * string)) : Any),
+   ("version", 0 : Any), ("files", ([] : list (string * (string * nat))) : Any),
+   ("tasks", ([] : list task) : Any), ("bids", ([] : list bid) : Any), ("pending", (None : option proposal) : Any),
+   ("nonces", ([] : list (string * nat)) : Any), ("lastbid", ([] : list (string * nat)) : Any),
+   ("counters", ([] : list (string * nat)) : Any), ("params", ([] : list (string * nat)) : Any)].
+
+nonce_of (m : obj) (a : string) : nat := get_or 0 a (nonces m).
+
+count (m : obj) (a k : string) : obj := setf m "counters" (bump (append a (append "." k)) (counters m)).
+
+task_by (m : obj) (id : nat) : option task := find (fun t => tid t =? id) (tasks m).
+bid_by (m : obj) (id : nat) : option bid := find (fun b => bidn b =? id) (bids m).
+
+set_bid (m : obj) (b : bid) : obj := setf m "bids" (map (fun x => if bidn x =? bidn b then b else x) (bids m)).
+
+with_status (b : bid) (s : status) (w : string) : bid :=
+  {| bidn := bidn b; btask := btask b; bidder := bidder b; base := base b; writes := writes b; note := note b;
+     bst := s; stale := stale b; why := w; votes := votes b |}.
+
+with_votes (b : bid) (v : list (string * bool)) : bid :=
+  {| bidn := bidn b; btask := btask b; bidder := bidder b; base := base b; writes := writes b; note := note b;
+     bst := bst b; stale := stale b; why := why b; votes := v |}.
+
+mark_stale (b : bid) : bid :=
+  {| bidn := bidn b; btask := btask b; bidder := bidder b; base := base b; writes := writes b; note := note b;
+     bst := bst b; stale := true; why := why b; votes := votes b |}.
+
+is_leader (m : obj) (a : string) : bool := negb (seq (leader m) "") && seq (leader m) a.
+
+pending_bid_id (m : obj) : nat := match pending m with Some p => pbid p | None => 0 end.
+
+open_tasks (m : obj) : list task := filter topen (tasks m).
+
+(** has the path changed since version v? *)
+changed_since (m : obj) (v : nat) (path : string) : bool :=
+  match lookup path (files m) with Some (_, w) => v <? w | None => false end.
+
+conflicts (m : obj) (b : bid) : bool := existsb (fun pw => changed_since m (base b) (fst pw)) (writes b).
+
+(** A merge: write the files, then clear what now conflicts. *)
+finalize (m : obj) (p : proposal) : obj * list (list string) :=
+  match bid_by m (pbid p) with
+  | None => (setf m "pending" (None : option proposal), [])
+  | Some b =>
+      let v := version m + 1 in
+      let fs := fold_left (fun fs pw => put (fst pw) (snd pw, v) fs) (writes b) (files m) in
+      let m := setf (setf m "files" fs) "version" v in
+      let m := set_bid m (with_votes (with_status b Merged "") (pvotes p)) in
+      let m := setf (setf m "pending" (None : option proposal)) "merges" (merges m + 1) in
+      let m := count m (bidder b) "merges" in
+      let reason := append "conflicts with bid " (show (bidn b)) in
+      let m := fold_left (fun m x =>
+                 if is_pending (bst x) then
+                   if conflicts m x then count (set_bid m (with_status x Cleared reason)) (bidder x) "cleared"
+                   else set_bid m (mark_stale x)
+                 else m) (bids m) m in
+      (m, map (fun pw => ["write", fst pw, snd pw]) (writes b))
+  end.
+
+(** Three of four approve: the leader by proposing, each attestor by voting
+    yes, and the bidder too once fallback_blocks have passed. Without that
+    fallback, one silent attestor could block every honest merge: with four
+    agents, the leader and the bidder leave only two attestors. Two "no" votes
+    reject, since three approvals can no longer happen. *)
+approvals (p : proposal) (age fb : nat) : nat :=
+  1 + length (filter snd (pvotes p)) + (if (0 <? fb) && (fb <=? age) then 1 else 0).
+
+settle (m : obj) : obj * list (list string) :=
+  match pending m with
+  | None => (m, [])
+  | Some p =>
+      let no := length (filter (fun v => negb (snd v)) (pvotes p)) in
+      let age := mheight m - pat p in
+      let yes := approvals p age (param m "fallback_blocks") in
+      if 3 <=? yes then finalize m p
+      else if 2 <=? no then
+        match bid_by m (pbid p) with
+        | Some b => (count (setf (set_bid m (with_votes (with_status b Rejected "attestors voted no") (pvotes p))) "pending" (None : option proposal)) (bidder b) "rejected", [])
+        | None => (setf m "pending" (None : option proposal), [])
+        end
+      else if param m "attest_window" <=? age then (setf m "pending" (None : option proposal), [])
+      else (m, [])
+  end.
+
+(** hashing v at most 64 times reaches the agent's last revealed link *)
+Fixpoint reaches (v tip : string) (k : nat) : bool :=
+  match k with 0 => false | Succ k' => let x := sha256 v in seq x tip || reaches x tip k' end.
+
+(** One transaction's effect. A string is the reason it failed, "" for none. *)
+apply (m : obj) (a : string) (fields : list string) : obj * list (list string) * string :=
+  let fail (why : string) := (m, ([] : list (list string)), why) in
+  let ok (m : obj) := (m, ([] : list (list string)), "") in
+  let lead := is_leader m a in
+  match fields with
+  | ["post", s] =>
+      if negb lead then fail "only the term leader posts tasks"
+      else if seq s "" then fail "empty task"
+      else if param m "max_open_tasks" <=? length (open_tasks m) then fail "too many open tasks"
+      else
+        let id := length (tasks m) + 1 in
+        ok (setf m "tasks" (tasks m ++ [{| tid := id; spec := s; poster := a; posted_at := mheight m; topen := true |}]))
+  | "bid" :: t :: v :: n :: ws =>
+      let w := pairs ws in
+      match task_by m (num t) with
+      | None => fail "no such task"
+      | Some tk =>
+          if negb (topen tk) then fail "task is closed"
+          else if lead || seq (leader m) "" then fail "the leader doesn't bid, and nobody bids between terms"
+          else if (0 <? get_or 0 a (lastbid m)) && (mheight m <? get_or 0 a (lastbid m) + param m "bid_cooldown") then fail "bid cooldown"
+          else
+            let m := setf m "lastbid" (put a (mheight m) (lastbid m)) in
+            if negb (num v =? version m) then (m, [], "bid is not on the current version: rebase")
+            else if (length w =? 0) || (param m "max_files" <? length w) then (m, [], "a bid writes 1 to max_files files")
+            else if negb (forallb (fun pw => safe_path (fst pw)) w) || negb (distinct (map fst w) =? length w) then (m, [], "bad or repeated path")
+            else if param m "max_pending_bids" <=? length (filter (fun b => seq (bidder b) a && is_pending (bst b)) (bids m)) then (m, [], "too many pending bids")
+            else
+              let id := length (bids m) + 1 in
+              ok (setf m "bids" (bids m ++ [{| bidn := id; btask := tid tk; bidder := a; base := version m; writes := w;
+                                               note := n; bst := Pending; stale := false; why := ""; votes := [] |}]))
+      end
+  | ["withdraw", i] =>
+      match bid_by m (num i) with
+      | Some b => if seq (bidder b) a && is_pending (bst b) && negb (bidn b =? pending_bid_id m)
+                  then ok (set_bid m (with_status b Withdrawn "")) else fail "can't withdraw that bid"
+      | None => fail "no such bid"
+      end
+  | ["merge", i] =>
+      match bid_by m (num i) with
+      | Some b =>
+          if negb lead then fail "only the term leader merges"
+          else if negb (pending_bid_id m =? 0) then fail "a merge is already pending"
+          else if param m "max_merges" <=? merges m then fail "merge limit for this term"
+          else if negb (is_pending (bst b)) || seq (bidder b) a then fail "not a bid this leader can merge"
+          else ok (setf m "pending" (Some {| pbid := bidn b; pby := a; pat := mheight m; pvotes := [] |}))
+      | None => fail "no such bid"
+      end
+  | ["attest", i, yes] =>
+      match pending m, bid_by m (num i) with
+      | Some p, Some b =>
+          if negb (pbid p =? bidn b) then fail "that bid isn't pending merge"
+          else if seq a (pby p) || seq a (bidder b) then fail "the leader and the bidder don't attest"
+          else if existsb (fun v => seq (fst v) a) (pvotes p) then fail "already attested"
+          else
+            let p := {| pbid := pbid p; pby := pby p; pat := pat p; pvotes := (a, seq yes "yes") :: pvotes p |} in
+            let (m, o) := settle (setf m "pending" (Some p)) in (m, o, "")
+      | _, _ => fail "nothing to attest"
+      end
+  | ["reject", i, why] =>
+      match bid_by m (num i) with
+      | Some b => if lead && is_pending (bst b) && negb (bidn b =? pending_bid_id m)
+                  then ok (count (set_bid m (with_status b Rejected why)) (bidder b) "rejected") else fail "can't reject that bid"
+      | None => fail "no such bid"
+      end
+  | ["close", t] =>
+      match task_by m (num t) with
+      | Some tk =>
+          if negb lead || negb (topen tk) then fail "can't close that task"
+          else if existsb (fun b => (bidn b =? pending_bid_id m) && (btask b =? tid tk)) (bids m) then fail "task has a merge in progress"
+          else
+            let m := setf m "tasks" (map (fun x => if tid x =? tid tk then {| tid := tid x; spec := spec x; poster := poster x; posted_at := posted_at x; topen := false |} else x) (tasks m)) in
+            ok (fold_left (fun m b => if (btask b =? tid tk) && is_pending (bst b) then count (set_bid m (with_status b Cleared "task closed")) (bidder b) "cleared" else m) (bids m) m)
+      | None => fail "no such task"
+      end
+  | ["reveal", v] =>
+      if negb (awaiting m) then fail "no draw under way"
+      else if existsb (fun r => seq (fst r) a) (reveals m) then fail "already revealed"
+      else if negb (reaches v (get_or "" a (tips m)) 64) then fail "not a link of this agent's hash chain"
+      else ok (setf (setf m "reveals" (reveals m ++ [(a, v)])) "tips" (put a v (tips m)))
+  | _ => fail "unknown transaction"
+  end.
+
+(** Who may lead next: those who revealed, minus the last two leaders. *)
+eligible (m : obj) : list string :=
+  let revealed := filter (fun a => existsb (fun r => seq (fst r) a) (reveals m)) (agents m) in
+  let recent := last_n 2 (history m) in
+  match filter (fun a => negb (mem a recent)) revealed with
+  | [] => match filter (fun a => negb (mem a (last_n 1 (history m)))) revealed with [] => revealed | l => l end
+  | l => l
+  end.
+
+(** The draw waits for all four reveals, or for three once reveal_window blocks
+    have passed. The seed hashes the reveals in agent order, so no proposer
+    can choose among them. *)
+maybe_draw (m : obj) : obj :=
+  let n := length (reveals m) in
+  if awaiting m && ((n =? length (agents m)) || ((3 <=? n) && (asince m + param m "reveal_window" <=? mheight m))) then
+    let el := eligible m in
+    let seed := hash_list (map (fun a => get_or "" a (reveals m)) (agents m)) in
+    let l := nth (hexnum seed 12 0 mod length el) el "" in
+    let m := setf (setf (setf m "leader" l) "term" (term m + 1)) "history" (last_n 8 (history m ++ [l])) in
+    let m := setf (setf (setf m "tstart" (mheight m)) "active" (mheight m)) "merges" 0 in
+    count (setf (setf m "awaiting" false) "reveals" ([] : list (string * string))) l "led"
+  else m.
+
+(** A term ends after term_blocks, after max_merges, or when its leader has
+    done nothing for stall_blocks while bids wait or no task is open. A
+    pending merge finishes first. *)
+maybe_end_term (m : obj) : obj :=
+  if awaiting m || negb (pending_bid_id m =? 0) then m else
+  let idle := param m "stall_blocks" <=? mheight m - active m in
+  let waiting := existsb (fun b => is_pending (bst b)) (bids m) in
+  let stalled := idle && (waiting || (length (open_tasks m) =? 0)) in
+  if (param m "term_blocks" <=? mheight m - tstart m) || (param m "max_merges" <=? merges m) || stalled then
+    let m := if stalled && waiting then count m (leader m) "stalls" else m in
+    setf (setf (setf m "leader" "") "awaiting" true) "asince" (mheight m)
+  else m.
+
+(** Settled bids past keep_settled leave the state; the blocks keep them. *)
+prune (m : obj) : obj :=
+  let settled := filter (fun b => negb (is_pending (bst b))) (bids m) in
+  let drop := length settled - param m "keep_settled" in
+  let old := map bidn (firstn drop settled) in
+  setf m "bids" (filter (fun b => negb (existsb (fun i => i =? bidn b) old)) (bids m)).
+
+(** A block: each transaction in order, then the end-of-block rules. A
+    transaction only counts at its sender's next nonce; any that does, even
+    a failing one, uses the nonce up, so it can't be replayed later. *)
+apply_block (m : obj) (h : nat) (txs : list string) : obj * list (list string) :=
+  let m := setf m "h" h in
+  let '(m, outs) := fold_left (fun acc raw =>
+      let '(m, outs) := acc in
+      match decode_tx raw with
+      | a :: n :: fields =>
+          if num n =? nonce_of m a + 1 then
+            let m := setf m "nonces" (put a (num n) (nonces m)) in
+            let '(m', o, why) := apply m a fields in
+            let m' := if seq why "" && is_leader m' a then setf m' "active" h else m' in
+            let note := if seq why "" then [] else [["log", append a (append ": " why)]] in
+            (m', outs ++ o ++ note)
+          else (m, outs)
+      | _ => (m, outs)
+      end) txs (m, []) in
+  let '(m, o) := settle m in
+  (prune (maybe_draw (maybe_end_term m)), outs ++ o).
+
+(** What goes in a block: at most one transaction per agent, at its next
+    nonce, and at most max_block_txs. Honest validators refuse any other block. *)
+Fixpoint pick (m : obj) (pool : list string) (taken : list string) (k : nat) : list string :=
+  match k, pool with
+  | 0, _ => []
+  | _, [] => []
+  | Succ k', raw :: rest =>
+      match decode_tx raw with
+      | a :: n :: _ => if negb (mem a taken) && (num n =? nonce_of m a + 1)
+                       then raw :: pick m rest (a :: taken) k' else pick m rest taken k
+      | _ => pick m rest taken k
+      end
+  end.
+
+build_block (m : obj) (pool : list string) : list string := pick m pool [] (param m "max_block_txs").
+
+block_ok (m : obj) (txs : list string) : bool :=
+  (length (pick m txs [] (length txs + 1)) =? length txs) && (length txs <=? param m "max_block_txs").
+
+(** Status lines for people and for `pantheon status`. *)
+status_lines (m : obj) : list string :=
+  [append "height " (append (show (mheight m)) (append "  term " (append (show (term m)) (append "  leader " (if seq (leader m) "" then "(drawing)" else leader m))))),
+   append "version " (append (show (version m)) (append "  files " (show (length (files m))))),
+   append "history " (fold_left (fun s a => append s (append " " a)) (history m) "")]
+  ++ map (fun t => append "task " (append (show (tid t)) (append (if topen t then " [open] " else " [closed] ") (spec t)))) (tasks m)
+  ++ map (fun b => append "bid " (append (show (bidn b)) (append " [" (append (status_name (bst b)) (append (if stale b then " stale] task " else "] task ")
+                    (append (show (btask b)) (append " by " (append (bidder b) (append " " (why b)))))))))) (bids m)
+  ++ map (fun c => append "count " (append (fst c) (append " " (show (snd c))))) (counters m).

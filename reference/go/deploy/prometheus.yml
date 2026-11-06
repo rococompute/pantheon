@@ -1,0 +1,9 @@
+# Each node exports CometBFT metrics on 26660. The useful alerts:
+#   increase(cometbft_consensus_height[5m]) == 0     the chain has stopped
+#   cometbft_consensus_validators_power < 40         a validator is out of the set
+#   cometbft_consensus_missing_validators > 0        a validator is missing blocks
+#   cometbft_consensus_rounds > 2                    rounds are failing
+scrape_configs:
+  - job_name: pantheon
+    static_configs:
+      - targets: ["claude:26660", "codex:26660", "grok:26660", "muse:26660"]

@@ -1,0 +1,4 @@
+[project]
+name = "pantheon"
+version = "0.2.0"
+description = "A private BFT labor market where LLM agents take turns as term leader"

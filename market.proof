@@ -1,0 +1,27 @@
+(** What is proved about the market, so far. Each theorem is checked whenever
+    market.soma is built. docs/PROOFS.md lists what to prove next. *)
+
+(** Without the bidder fallback, a merge needs two attestors to vote yes:
+    the leader's approval alone is one of the three. *)
+Theorem without_fallback_two_attestors_must_approve :
+  forall (p : proposal) (age : nat), 3 <= approvals p age 0 -> 2 <= length (filter snd (pvotes p)).
+Proof.
+  Take p : proposal.
+  Take age : nat.
+  Assume that 3 <= approvals p age 0 as H.
+  unfold approvals in H.
+  Computing, we conclude that 2 <= length (filter snd (pvotes p)).
+Qed.
+
+(** With the fallback, one attestor's yes is still needed: leader and bidder
+    together are only two of the three. *)
+Theorem fallback_still_needs_an_attestor :
+  forall (p : proposal) (age fb : nat), 3 <= approvals p age fb -> 1 <= length (filter snd (pvotes p)).
+Proof.
+  Take p : proposal.
+  Take age : nat.
+  Take fb : nat.
+  Assume that 3 <= approvals p age fb as H.
+  unfold approvals in H.
+  destruct ((0 <? fb) && (fb <=? age)); simpl in H; lia.
+Qed.

@@ -1,0 +1,100 @@
+(** A node: consensus, the market it orders blocks for, its agent, and a
+    pool of transactions waiting for a block. [step] is everything the shell
+    runs: it takes one event and gives back what to do. *)
+Import util shell consensus market agent.
+
+cons (n : obj) : obj := getf n "c".
+mkt (n : obj) : obj := getf n "m".
+ag (n : obj) : obj := getf n "a".
+pool (n : obj) : list string := getf n "pool".
+live (n : obj) : bool := getf n "live".
+
+empty_node : obj :=
+  [("c", new_consensus "" [] 1 : Any), ("m", new_market [] : Any), ("a", new_agent "" : Any),
+   ("pool", ([] : list string) : Any), ("live", false : Any)].
+
+(** a transaction worth keeping: well formed, for a nonce not yet used *)
+poolable (m : obj) (raw : string) : bool :=
+  match decode_tx raw with a :: n :: _ => nonce_of m a <? num n | _ => false end.
+
+and_status (n : obj) (outs : list (list string)) : obj * list (list string) :=
+  (n, outs ++ [("status" :: status_lines (mkt n))]).
+
+(** A decided block: apply it, drop what it used from the pool, and let the
+    agent react. *)
+on_decided (n : obj) (h : nat) (txs : list string) : obj * list (list string) :=
+  let (m, o) := apply_block (mkt n) h txs in
+  let n := setf (setf n "m" m) "pool" (filter (fun raw => negb (mem raw txs) && poolable m raw) (pool n)) in
+  if live n then
+    let (a, o') := tick (ag n) m in
+    and_status (setf n "a" a) (o ++ o')
+  else (n, o).
+
+Fixpoint decisions (outs : list (list string)) : list (nat * list string) :=
+  match outs with
+  | ("decided" :: h :: txs) :: rest => (num h, txs) :: decisions rest
+  | _ :: rest => decisions rest
+  | [] => []
+  end.
+
+(** Runs consensus to rest, applying each block it decides before going on,
+    so that the next height's proposals are judged against the new state. *)
+Fixpoint drive (fuel : nat) (n : obj) (outs : list (list string)) : obj * list (list string) :=
+  match fuel with
+  | 0 => (n, outs)
+  | Succ f =>
+      let m := mkt n in
+      let (c, o) := consensus.settle 64 (cons n) (block_ok m) (build_block m (pool n)) [] in
+      let n := setf n "c" c in
+      match decisions o with
+      | (h, txs) :: _ => let (n, o') := on_decided n h txs in drive f n (outs ++ o ++ o')
+      | [] => (n, outs ++ o)
+      end
+  end.
+
+consensus_event (n : obj) (r : obj * list (list string)) : obj * list (list string) :=
+  let (c, o) := r in
+  let (n, o') := drive 8 (setf n "c" c) [] in
+  (n, o ++ o').
+
+set_agent (n : obj) (k : string) (v : Any) : obj := setf n "a" (setf (ag n) k v).
+
+agent_event (n : obj) (r : obj * list (list string)) : obj * list (list string) :=
+  let (a, o) := r in (setf n "a" a, o).
+
+step (n : obj) (ev : list string) : obj * list (list string) :=
+  match ev with
+  (* setup, before "start": genesis, then the blocks already on disk *)
+  | "agents" :: names =>
+      (setf (setf n "m" (new_market names)) "c" (setf (cons n) "nodes" names), [])
+  | ["tip", a, t] => (setf n "m" (setf (mkt n) "tips" (put a t (tips (mkt n)))), [])
+  | ["param", k, v] =>
+      if seq k "block_ms" then (setf n "c" (setf (cons n) "block_ms" (num v)), [])
+      else (setf n "m" (setf (mkt n) "params" (put k (num v) (params (mkt n)))), [])
+  | ["file", p, content] => (setf n "m" (setf (mkt n) "files" (put p (content, 0) (files (mkt n)))), [])
+  | ["me", who] => (setf (setf n "c" (setf (cons n) "me" who)) "a" (setf (ag n) "me" who), [])
+  | ["agent", "goal", line] => (set_agent n "goal" (goal (ag n) ++ [line] : Any), [])
+  | ["agent", "deny", p] => (set_agent n "deny" (deny (ag n) ++ [p] : Any), [])
+  | ["agent", "ci", "true"] => (set_agent n "ci" (true : Any), [])
+  | ["agent", "bid_window", v] => (set_agent n "bid_window" (num v : Any), [])
+  | ["agent", k, v] => (set_agent n k (v : Any), [])
+  | "replay" :: h :: txs =>
+      let (n, o) := on_decided n (num h) txs in
+      (setf n "c" (setf (setf (cons n) "h" (num h + 1)) "log" ([] : list msg)), o)
+  | ["start"] =>
+      let n := setf n "live" true in
+      let h := height (cons n) in
+      let (a, o) := tick (ag n) (mkt n) in
+      and_status (setf n "a" a) (o ++ [["height", show h], timer "commit" h 0 0])
+  (* running *)
+  | "msg" :: from :: fields => consensus_event n (receive (cons n) from fields)
+  | "timeout" :: fields => consensus_event n (timeout (cons n) fields (build_block (mkt n) (pool n)))
+  | ["tx", raw] =>
+      if mem raw (pool n) || negb (poolable (mkt n) raw) || (500 <=? length (pool n)) then (n, [])
+      else (setf n "pool" (pool n ++ [raw]), [])
+  | "local_tx" :: fields => agent_event n (flush (enqueue (ag n) fields) (mkt n))
+  | "llm_reply" :: id :: kv => agent_event n (answered (ag n) (mkt n) id kv)
+  | "ci_result" :: id :: kv => agent_event n (answered (ag n) (mkt n) id kv)
+  | ["llm_error", id, why] => (setf n "a" (failed (ag n) id), [["log", append "model call failed: " why]])
+  | _ => (n, [])
+  end.
