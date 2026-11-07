@@ -1,0 +1,47 @@
+#!/bin/sh
+# The only way the node's user reaches Docker, through sudo. The node runs CI
+# as `docker run` with fixed sandbox flags (shell.ml, run_check); this accepts
+# that exact shape and nothing else, then runs Docker with flags of its own, so
+# a model that gets the node's uid can start a CI container (no network,
+# nobody's uid, a read-only root) and no other.
+#
+#   pantheon-docker run --rm --name pantheon-ci-HEX ... IMAGE sh -c CMD
+#   pantheon-docker rm -f pantheon-ci-HEX
+#
+# Images allowed: one per line in /etc/pantheon/ci-images.
+set -eu
+no() { echo "pantheon-docker: refused: $*" >&2; exit 64; }
+name_ok() { printf '%s' "$1" | grep -Eqx 'pantheon-ci-[0-9a-f]{1,32}'; }
+mem_ok() { printf '%s' "$1" | grep -Eqx '[0-9]{1,4}[mg]'; }
+
+case "${1:-}" in
+  rm)
+    [ $# -eq 3 ] && [ "$2" = -f ] && name_ok "$3" || no "rm takes -f pantheon-ci-HEX"
+    exec /usr/bin/docker rm -f "$3" ;;
+  run) ;;
+  *) no "only run and rm" ;;
+esac
+
+[ $# -eq 23 ] || no "run takes the node's 23 arguments, got $#"
+fixed() { [ "$1" = "$2" ] || no "argument $3 is '$1', want '$2'"; }
+fixed "$2" --rm 2; fixed "$3" --name 3; fixed "$5" --network=none 5; fixed "$6" --read-only 6; fixed "$7" --tmpfs 7
+fixed "$9" --cap-drop=ALL 9; fixed "${10}" --security-opt=no-new-privileges 10; fixed "${11}" --pids-limit=512 11
+fixed "${13}" --user=65534:65534 13; fixed "${14}" -e 14; fixed "${15}" HOME=/tmp 15; fixed "${16}" -v 16
+fixed "${18}" -w 18; fixed "${19}" /work 19; fixed "${21}" sh 21; fixed "${22}" -c 22
+
+name=$4; name_ok "$name" || no "container name $name"
+tmpsize=${8#/tmp:exec,size=}; [ "$tmpsize" != "$8" ] && mem_ok "$tmpsize" || no "tmpfs $8"
+mem=${12#--memory=}; [ "$mem" != "${12}" ] && mem_ok "$mem" || no "memory ${12}"
+
+# the checkout: a directory the node made in /tmp, not a link, owned by the node
+src=${17%:/work:ro}; [ "$src" != "${17}" ] || no "mount ${17}"
+printf '%s' "$src" | grep -Eqx '/tmp/pantheon-check[A-Za-z0-9._-]+' || no "mount source $src"
+[ -d "$src" ] && [ ! -L "$src" ] || no "$src is not a directory"
+[ "$(stat -c %U "$src")" = "${SUDO_USER:-pantheon}" ] || no "$src is not the node's"
+
+image=${20}
+grep -qxF -- "$image" /etc/pantheon/ci-images 2>/dev/null || no "image $image is not in /etc/pantheon/ci-images"
+
+exec /usr/bin/docker run --rm --name "$name" --network=none --read-only --tmpfs "/tmp:exec,size=$tmpsize" \
+  --cap-drop=ALL --security-opt=no-new-privileges --pids-limit=512 --memory="$mem" --user=65534:65534 \
+  -e HOME=/tmp -v "$src:/work:ro" -w /work "$image" sh -c "${23}"

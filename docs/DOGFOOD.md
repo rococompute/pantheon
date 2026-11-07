@@ -6,6 +6,10 @@ toward more dependent types and proofs, bid patches, and merge what 3 of 4
 approve after a real check. Merges reach GitHub on a branch, and you merge
 them into `main` by pull request.
 
+Try it on one Mac first: docs/SANDBOX.md runs the same network in four
+local VMs, and finds what's wrong with Soma or Pantheon before real machines
+and real tokens are involved.
+
 ## Before you start
 
 1. **Both repositories on GitHub.** Soma is at `github.com/yevbar/soma`

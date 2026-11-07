@@ -1,0 +1,17 @@
+# One Pantheon node's VM: Lima on Apple's Virtualization.framework.
+# Nothing of the Mac is shared: no mounts, no forwarded ports, no SSH agent.
+# The VMs reach each other on Lima's user-v2 network, where each is
+# lima-NAME.internal.
+base: template:ubuntu-24.04
+vmType: vz
+plain: true
+cpus: 4
+memory: 5GiB
+disk: 40GiB
+mounts: []
+ssh:
+  forwardAgent: false
+  forwardX11: false
+  loadDotSSHPubKeys: false
+networks:
+  - lima: user-v2

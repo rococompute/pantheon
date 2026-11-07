@@ -1,0 +1,22 @@
+# What the node's user and the model's user may reach. Root and system
+# daemons are untouched (Docker's CI containers have no network anyway).
+#
+#   - nothing of the Mac: Lima's gateway forwards to the Mac's localhost
+#   - nothing on a private network (your LAN, cloud metadata), except
+#   - the node's user reaching other nodes' Pantheon port
+#   - the public internet: model APIs
+#
+# PANTHEON_UID and BIDDER_UID are filled in by provision.sh.
+table inet pantheon
+delete table inet pantheon
+table inet pantheon {
+  chain out {
+    type filter hook output priority 0; policy accept;
+    oifname "lo" accept
+    meta skuid != { PANTHEON_UID, BIDDER_UID } accept
+    ct state established,related accept
+    meta nfproto ipv6 drop
+    meta skuid PANTHEON_UID ip daddr 192.168.104.0/24 ip daddr != 192.168.104.2 tcp dport 26700 accept
+    ip daddr { 0.0.0.0/8, 10.0.0.0/8, 100.64.0.0/10, 127.0.0.0/8, 169.254.0.0/16, 172.16.0.0/12, 192.168.0.0/16, 224.0.0.0/4, 240.0.0.0/4 } counter drop
+  }
+}
