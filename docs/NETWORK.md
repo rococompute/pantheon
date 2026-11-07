@@ -18,13 +18,13 @@ machine onto the VPN and merging pull requests.
 - A clone of this repository, built:
 
 ```bash
-SOMA_REPO=<git URL or directory of Soma's source> scripts/setup-node.sh
+scripts/setup-node.sh
 ```
 
 That installs the system packages, builds Soma from source (a while), then
-builds `main.exe`. Soma's source has to be reachable from the machine: push it
-to a private GitHub repository, or copy it over and point `SOMA_REPO` at the
-directory. `deploy/Dockerfile` does the same in an image, which is also the CI
+builds `main.exe`. Soma's source is `git@github.com:yevbar/soma.git`, which is
+private: give the machine read access (a deploy key), or copy a checkout over
+and point `SOMA_REPO` at the directory. `deploy/Dockerfile` does the same in an image, which is also the CI
 image (below).
 
 ## 1. The VPN

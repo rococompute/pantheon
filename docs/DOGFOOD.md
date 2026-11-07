@@ -8,10 +8,11 @@ them into `main` by pull request.
 
 ## Before you start
 
-1. **Push both repositories to GitHub** (private is fine). Neither is there
-   yet: Soma's only remote is upstream Rocq, and Pantheon has none. Each
-   machine needs read access, for example a deploy key per machine. The node
-   that runs the mirror needs push access to the `pantheon/merged` branch.
+1. **Both repositories on GitHub.** Soma is at `github.com/yevbar/soma`
+   (private), branch `gradual`. Pantheon has no remote yet: push it, private
+   is fine. Each machine needs read access to both, for example a deploy key
+   per machine. The node that runs the mirror needs push access to the
+   `pantheon/merged` branch.
 2. **Pick the commits to start from.** `network.json` names an exact commit
    per repository. Use Soma's `gradual` branch head and Pantheon's `main`.
 3. **Four machines** on a VPN, set up as docs/NETWORK.md says, steps 1 to 4,

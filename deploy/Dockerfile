@@ -22,6 +22,5 @@ RUN git config --global --add safe.directory '*' \
  && chmod -R a+rX /home/pantheon
 # Soma on the PATH. Attestors' CI runs through pantheon-ci, as nobody with a
 # read-only root: see deploy/pantheon-ci.sh.
-ENV PATH=/home/pantheon/soma/_build/install/default/bin:$PATH \
-    ROCQLIB=/home/pantheon/soma/_build/install/default/lib/coq
+ENV PATH=/home/pantheon/soma/_build/install/default/bin:$PATH
 WORKDIR /home/pantheon/pantheon

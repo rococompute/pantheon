@@ -3,11 +3,12 @@
 # Soma from source, then Pantheon with it. Safe to run again: it skips what's
 # done. Run it from a Pantheon checkout.
 #
-#   SOMA_REPO=git@github.com:you/soma.git scripts/setup-node.sh
-#   SOMA_REPO=/path/to/soma-checkout     scripts/setup-node.sh
+#   scripts/setup-node.sh
+#   SOMA_REPO=/path/to/soma-checkout scripts/setup-node.sh
 #
-# SOMA_REPO  where Soma's source is: a git URL or a directory (required unless
-#            SOMA_DIR already holds it)
+# SOMA_REPO  where Soma's source is: a git URL or a directory (default:
+#            git@github.com:yevbar/soma.git, private: the machine needs a
+#            key that can read it)
 # SOMA_REF   the branch or commit to build (default: gradual)
 # SOMA_DIR   where Soma is built (default: ~/soma)
 #
@@ -17,6 +18,7 @@ set -eu
 here=$(cd "$(dirname "$0")/.." && pwd)
 SOMA_DIR=${SOMA_DIR:-$HOME/soma}
 SOMA_REF=${SOMA_REF:-gradual}
+SOMA_REPO=${SOMA_REPO:-git@github.com:yevbar/soma.git}
 say() { printf 'setup: %s\n' "$*"; }
 
 # 1. system packages: git, a C toolchain, opam, gmp for zarith, zlib for cryptokit
@@ -35,7 +37,6 @@ fi
 
 # 3. Soma's source
 if [ ! -f "$SOMA_DIR/dune-project" ]; then
-  [ -n "${SOMA_REPO:-}" ] || { echo "setup: set SOMA_REPO to Soma's git URL or a directory with its source" >&2; exit 1; }
   if [ -d "$SOMA_REPO/.git" ]; then
     say "copying Soma's $SOMA_REF from $SOMA_REPO"
     mkdir -p "$SOMA_DIR"; (cd "$SOMA_REPO" && git archive --format=tar "$SOMA_REF") | tar -x -C "$SOMA_DIR"
@@ -44,22 +45,19 @@ if [ ! -f "$SOMA_DIR/dune-project" ]; then
     mkdir -p "$SOMA_DIR"; cp -R "$SOMA_REPO/." "$SOMA_DIR/"
   else
     say "cloning Soma from $SOMA_REPO"
-    git clone -q "$SOMA_REPO" "$SOMA_DIR" && git -C "$SOMA_DIR" checkout -q "$SOMA_REF"
+    git clone -q "$SOMA_REPO" "$SOMA_DIR" || { echo "setup: cloning $SOMA_REPO failed. It is private: give this machine a key that can read it (a deploy key), or set SOMA_REPO to a directory with Soma's source" >&2; exit 1; }
+    git -C "$SOMA_DIR" checkout -q "$SOMA_REF"
   fi
 fi
 
-# 4. Soma's build switch and the build. This is GRADUAL.md's recipe, with
-# three changes. The switch is a named one, soma-build, not ./_opam: opam
-# builds packages inside the switch, and dune would climb into Soma's own
-# project. It adds the wasm library that Soma's WebAssembly plugin needs. And
-# it runs `make dunestrap`, which generates the theories' build rules (their
-# dune files aren't committed).
+# 4. Soma's build switch and the build: GRADUAL.md's quick start, in a
+# switch named soma-build.
 cd "$SOMA_DIR"
 if ! opam switch list --short 2>/dev/null | grep -qx soma-build; then
   say "making the soma-build opam switch, OCaml 4.14.2: a few minutes"
   opam switch create soma-build ocaml-base-compiler.4.14.2 --no-install -y -q
 fi
-opam install --switch=soma-build -y -q dune ocamlfind zarith wasm
+opam install --switch=soma-build -y -q --deps-only ./soma-runtime.opam
 if [ ! -x _build/install/default/bin/soma ]; then
   say "building Soma: this takes a while"
   eval "$(opam env --switch=soma-build --set-switch)"
@@ -68,23 +66,12 @@ if [ ! -x _build/install/default/bin/soma ]; then
 fi
 [ -f _build/install/default/lib/coq/theories/Init/Prelude.vo ] || { echo "setup: Soma built without its standard library (no Prelude.vo): see $SOMA_DIR/setup-build.log" >&2; exit 1; }
 export PATH="$SOMA_DIR/_build/install/default/bin:$PATH"
-# On Linux, compiling a .definition finds Rocq's library from where the soma
-# binary really is (_build/default), not the install tree: say where it is.
-export ROCQLIB="$SOMA_DIR/_build/install/default/lib/coq"
 command -v soma >/dev/null || { echo "setup: Soma didn't build: see the output above" >&2; exit 1; }
 
 # 5. Pantheon. The first build makes Soma's own OCaml switch
-# (~/.cache/soma/ocaml) and installs what shell.definition names: cryptokit
-# and yojson.
+# (~/.cache/soma/ocaml) and installs what shell.definition names, cryptokit
+# and yojson, at the versions soma.toml's [opam] gives.
 cd "$here"
 say "building Pantheon"
-# Soma installs the newest version of each library, and Soma can't pin one
-# yet. cryptokit 1.21 changed its RSA API, so pin 1.20, as shell.ml expects.
-sw=${SOMA_OCAML_SWITCH:-$HOME/.cache/soma/ocaml}
-if ! soma build main.soma; then
-  [ -d "$sw" ] || { echo "setup: building Pantheon failed: see above" >&2; exit 1; }
-  say "pinning cryptokit 1.20 in $sw, and building again"
-  opam pin add --switch="$sw" -y -q cryptokit 1.20
-  soma build main.soma
-fi
-say "done: $here/main.exe. For soma itself: export PATH=\"$SOMA_DIR/_build/install/default/bin:\$PATH\" ROCQLIB=\"$ROCQLIB\""
+soma build main.soma || { echo "setup: building Pantheon failed: see above" >&2; exit 1; }
+say "done: $here/main.exe. For soma itself: export PATH=\"$SOMA_DIR/_build/install/default/bin:\$PATH\""
