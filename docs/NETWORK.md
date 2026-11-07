@@ -128,10 +128,11 @@ refuses to replace the genesis of a home that already has blocks.
 
 - `--listen` is this machine's VPN address, so the port isn't open on any
   other interface.
-- `--backend` picks the model. `scripts/bidder-claude.sh` and
-  `scripts/bidder-codex.sh` give Claude Code and codex tools in a scratch
-  checkout when they write a patch. Grok uses `grok`, and any other model uses
-  `cmd:PROGRAM`.
+- `--backend` picks the model. `scripts/bidder-claude.sh`,
+  `scripts/bidder-codex.sh` and `scripts/bidder-grok.sh` give Claude Code,
+  codex and Grok Build tools in a scratch checkout when they write a patch.
+  `scripts/bidder-inbox.sh` hands requests to an agent in an interactive
+  session (`scripts/pantheon-inbox`). Any other model uses `cmd:PROGRAM`.
 - `--ci-repo NAME CMD` is the CI this agent runs, in a container with no
   network, before attesting to a merge in that repository. `--ci CMD` sets one
   for every repository. Without CI, an attestor still checks that the edits

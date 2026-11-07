@@ -1,0 +1,67 @@
+#!/bin/sh
+# An interactive agent's side of a Pantheon node. The node's backend
+# (scripts/bidder-inbox.sh) puts each request it has for the model in the
+# inbox and waits; the agent takes them one at a time and answers:
+#
+#   pantheon-inbox wait [SECONDS]      the next request (waits up to SECONDS, default 300)
+#   pantheon-inbox reply ID < FILE     answer a request with the JSON object its prompt asks for
+#   pantheon-inbox done ID NOTE...     a patch request: the checkout is edited; NOTE says what changed
+#   pantheon-inbox list                what's in the inbox
+#
+# PANTHEON_INBOX is the inbox (default /var/lib/pantheon-inbox).
+set -eu
+INBOX=${PANTHEON_INBOX:-/var/lib/pantheon-inbox}
+now() { date +%s; }
+die() { echo "pantheon-inbox: $*" >&2; exit 1; }
+req() {
+  printf '%s' "$1" | grep -Eqx '[0-9]+-[0-9a-f]+' || die "no request $1: ids look like 1794091815-1a2b3c4d (pantheon-inbox list)"
+  r=$INBOX/$1
+  [ -f "$r/prompt.txt" ] || die "no request $1 in $INBOX: it was answered, or it expired and the node moved on"
+  [ ! -e "$r/expired" ] || die "request $1 expired: the node moved on without it. Take the next one: pantheon-inbox wait"
+}
+open_requests() { ls -1 "$INBOX" 2>/dev/null | sort | while read -r d; do [ -f "$INBOX/$d/prompt.txt" ] && [ ! -e "$INBOX/$d/expired" ] && echo "$d"; done; true; }
+
+case ${1:-} in
+  wait)
+    limit=${2:-300}; end=$(( $(now) + limit ))
+    while :; do
+      for d in $(open_requests); do
+        r=$INBOX/$d
+        [ -e "$r/claimed" ] && continue
+        : > "$r/claimed"
+        kind=$(cat "$r/kind"); left=$(( $(cat "$r/deadline") - $(now) ))
+        echo "request $d: $kind, ${left}s left to answer"
+        if [ "$kind" = patch ]; then
+          echo "checkout: $(cat "$r/worktree")"
+          echo "edit the files there (soma build, tests), then: pantheon-inbox done $d \"one line on what you changed\""
+        else
+          echo "answer with the JSON object the prompt asks for: pantheon-inbox reply $d < FILE   (or: echo '{...}' | pantheon-inbox reply $d)"
+        fi
+        size=$(wc -c < "$r/prompt.txt" | tr -d ' ')
+        if [ "$size" -le 24000 ]; then echo "prompt:"; cat "$r/prompt.txt"
+        else echo "prompt: $r/prompt.txt ($size bytes): read it whole"
+        fi
+        exit 0
+      done
+      [ "$(now)" -lt "$end" ] || { echo "no request in ${limit}s. Run pantheon-inbox wait again."; exit 0; }
+      sleep 2
+    done ;;
+  reply)
+    [ $# -eq 2 ] || die "usage: pantheon-inbox reply ID < FILE"
+    req "$2"
+    cat > "$r/.reply"
+    [ -s "$r/.reply" ] || die "the reply was empty: pipe in the JSON object"
+    mv "$r/.reply" "$r/reply.txt"
+    echo "answered $2. Next: pantheon-inbox wait" ;;
+  done)
+    [ $# -ge 3 ] || die "usage: pantheon-inbox done ID NOTE..."
+    id=$2; shift 2; req "$id"
+    [ "$(cat "$r/kind")" = patch ] || die "$id is not a patch request: answer it with pantheon-inbox reply $id"
+    printf '%s\n' "$*" > "$r/.done" && mv "$r/.done" "$r/done"
+    echo "handed in $id: the node turns the checkout's changes into the bid. Next: pantheon-inbox wait" ;;
+  list)
+    for d in $(open_requests); do
+      printf '%s %s %ss left%s\n' "$d" "$(cat "$INBOX/$d/kind")" $(( $(cat "$INBOX/$d/deadline") - $(now) )) "$([ -e "$INBOX/$d/claimed" ] && echo ', taken')"
+    done ;;
+  *) awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "$0"; [ -z "${1:-}" ] || exit 1 ;;
+esac

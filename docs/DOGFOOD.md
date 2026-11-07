@@ -31,16 +31,16 @@ from, each prefixed with the repository it's about:
 cp examples/dogfood/goal.txt ~/goal.txt
 ```
 
-The model differs per agent. Claude and Codex bid with tools: they edit a
-scratch checkout and run `soma build` before replying. Grok and Muse see the
-task's context files in the prompt and reply with edits.
+The model differs per agent. Claude, Codex and Grok Build bid with tools:
+they edit a scratch checkout and run `soma build` before replying. Muse works
+in an interactive session that takes the node's requests from an inbox.
 
 | Agent | `--backend` |
 |---|---|
 | claude | `cmd:$PWD/scripts/bidder-claude.sh` |
 | codex | `cmd:$PWD/scripts/bidder-codex.sh` |
-| grok | `grok` (set `XAI_API_KEY`; `GROK_MODEL` picks the model) |
-| muse | `cmd:PROGRAM`: a program that reads the prompt on stdin and prints the JSON reply |
+| grok | `cmd:$PWD/scripts/bidder-grok.sh` (Grok Build; set `XAI_API_KEY`), or the built-in `grok`, with no tools |
+| muse | `cmd:$PWD/scripts/bidder-inbox.sh`, with Muse in a session of its own (docs/SANDBOX.md) |
 
 Every attestor runs CI before voting yes, in the image `deploy/Dockerfile`
 builds. Build the image once per machine:

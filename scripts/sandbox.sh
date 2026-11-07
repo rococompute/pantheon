@@ -10,6 +10,7 @@
 #   scripts/sandbox.sh nodes                 one VM per agent, cloned from it
 #   scripts/sandbox.sh network               keys, the network directory, genesis on every VM
 #   scripts/sandbox.sh login AGENT           the model's login inside AGENT's VM
+#   scripts/sandbox.sh session AGENT         an interactive session for an agent on the inbox backend (muse)
 #   scripts/sandbox.sh start [AGENT=BACKEND ...] [-- NODE FLAGS]
 #   scripts/sandbox.sh status | logs AGENT | fetch | stop | shell AGENT
 #   scripts/sandbox.sh reset                 discard the chain: every node's home and the network directory
@@ -122,6 +123,21 @@ cmd_network() {
   say "every agent has the same genesis. Next: scripts/sandbox.sh login AGENT for each model, then scripts/sandbox.sh start"
 }
 
+# Grok Build and the Cursor CLI, by their vendors' installers, for the bidder
+install_grok() {
+  say "installing Grok Build (x.ai/cli) and the Cursor CLI (cursor.com/install) in $1"
+  in_vm "$1" sudo -u bidder -H sh -c 'curl -fsSL https://x.ai/cli/install.sh | bash && curl -fsS https://cursor.com/install | bash' >/dev/null
+  in_vm "$1" sudo sh -c 'for c in grok:/home/bidder/.grok/bin/grok cursor-agent:/home/bidder/.local/bin/cursor-agent; do
+      printf "#!/bin/sh\n. /usr/local/lib/pantheon/model-env\nexec %s \"\$@\"\n" "${c#*:}" > "/usr/local/bin/${c%%:*}"; chmod 755 "/usr/local/bin/${c%%:*}"; done'
+  in_vm "$1" sudo -u bidder -H grok --version || die "Grok Build didn't install in $1"
+}
+
+install_muse() {
+  in_vm "$1" sudo sh -c 'install -d -o bidder -g bidder /home/bidder/.local /home/bidder/.local/bin
+    sudo -u bidder -H sh -c "curl -fsSL https://api.meta.ai/muse-launcher.sh -o ~/.local/bin/muse && chmod +x ~/.local/bin/muse"
+    printf "#!/bin/sh\n. /usr/local/lib/pantheon/model-env\nexec /home/bidder/.local/bin/muse \"\$@\"\n" > /usr/local/bin/muse && chmod 755 /usr/local/bin/muse'
+}
+
 # The model's login lives with the VM's bidder user, which runs the model.
 # Non-interactive when the key is in the environment.
 cmd_login() {
@@ -142,10 +158,20 @@ cmd_login() {
       else in_vm "$v" sudo -u bidder -H codex login --device-auth
       fi ;;
     grok)
-      [ -n "${XAI_API_KEY:-}" ] || die "set XAI_API_KEY"
-      # the grok backend is built in: the node calls the API itself, so the key is the node's
-      printf 'XAI_API_KEY=%s\n' "$XAI_API_KEY" | in_vm "$v" sudo sh -c 'umask 077; cat > /etc/pantheon/keys.env'
-      [ -n "${GROK_MODEL:-}" ] && printf 'GROK_MODEL=%s\n' "$GROK_MODEL" | in_vm "$v" sudo sh -c 'cat >> /etc/pantheon/keys.env' ;;
+      [ -n "${XAI_API_KEY:-}" ] || die "set XAI_API_KEY (an API key from console.x.ai)"
+      in_vm "$v" test -x /usr/local/bin/grok || install_grok "$v"
+      # Grok Build runs as the bidder, with its key, and the Cursor CLI's if there is one
+      put "$(printf 'XAI_API_KEY=%s\n%s%s' "$XAI_API_KEY" "${GROK_BUILD_MODEL:+GROK_BUILD_MODEL=$GROK_BUILD_MODEL
+}" "${CURSOR_API_KEY:+CURSOR_API_KEY=$CURSOR_API_KEY}")"
+      # the built-in grok backend (start grok=grok) is the node's own call
+      printf 'XAI_API_KEY=%s\n%s' "$XAI_API_KEY" "${GROK_BUILD_MODEL:+GROK_BUILD_MODEL=$GROK_BUILD_MODEL
+}" | in_vm "$v" sudo sh -c 'umask 077; cat > /etc/pantheon/keys.env'
+      [ -n "${CURSOR_API_KEY:-}" ] || say "no CURSOR_API_KEY: Grok Build runs without the Cursor CLI's login. Set it and run login grok again, or log in inside the VM: scripts/sandbox.sh shell grok, then sudo -u bidder -H cursor-agent login" ;;
+    muse)
+      in_vm "$v" test -x /usr/local/bin/muse || install_muse "$v"
+      if [ -n "${META_API_KEY:-}" ]; then put "META_API_KEY=$META_API_KEY"
+      else in_vm "$v" sudo -u bidder -H muse login
+      fi ;;
     *) die "no login for $a: give it a cmd: backend whose program has its own key (see docs/SANDBOX.md)" ;;
   esac
   say "$a: logged in"
@@ -153,11 +179,47 @@ cmd_login() {
 
 default_backend() {
   case $1 in
-    claude) echo cmd:/home/pantheon/pantheon/scripts/bidder-claude.sh ;;
-    codex) echo cmd:/home/pantheon/pantheon/scripts/bidder-codex.sh ;;
-    grok) echo grok ;;
+    claude) echo cmd:/usr/local/lib/pantheon/bidder-claude.sh ;;
+    codex) echo cmd:/usr/local/lib/pantheon/bidder-codex.sh ;;
+    grok) echo cmd:/usr/local/lib/pantheon/bidder-grok.sh ;;
+    muse) echo cmd:/usr/local/lib/pantheon/bidder-inbox.sh ;;
     *) echo scripted ;;
   esac
+}
+
+# The inbox: requests from the node to an agent working in a session of its
+# own (scripts/bidder-inbox.sh, scripts/pantheon-inbox). Both users write it.
+setup_inbox() {
+  v=$1
+  # the bidders, from this checkout, so a VM never runs a stale copy
+  for f in bidder.sh bidder-claude.sh bidder-codex.sh bidder-grok.sh; do
+    in_vm "$v" sudo sh -c "cat > /usr/local/lib/pantheon/$f && chmod 755 /usr/local/lib/pantheon/$f" < "$here/scripts/$f"
+  done
+  in_vm "$v" sudo sh -c 'cat > /usr/local/lib/pantheon/bidder-inbox.sh && chmod 755 /usr/local/lib/pantheon/bidder-inbox.sh' < "$here/scripts/bidder-inbox.sh"
+  in_vm "$v" sudo sh -c 'cat > /usr/local/bin/pantheon-inbox && chmod 755 /usr/local/bin/pantheon-inbox' < "$here/scripts/pantheon-inbox"
+  in_vm "$v" sudo sh -c 'getent group inbox >/dev/null || groupadd inbox; usermod -aG inbox pantheon; usermod -aG inbox bidder; install -d -o pantheon -g inbox -m 2770 /var/lib/pantheon-inbox'
+}
+
+session_cmd() {
+  case $1 in
+    muse) echo 'muse --yolo' ;;
+    claude) echo 'claude --dangerously-skip-permissions' ;;
+    codex) echo 'codex --dangerously-bypass-approvals-and-sandbox' ;;
+    *) die "no interactive CLI known for $1: set SESSION_CMD" ;;
+  esac
+}
+
+# An interactive session for an agent whose node uses the inbox backend: the
+# model's own CLI, as the bidder user, with full permissions (the VM is the
+# sandbox), told how to work the inbox (deploy/sandbox/session.md). It runs
+# in this terminal; while it's closed, the node's requests time out.
+cmd_session() {
+  a=${1:?usage: scripts/sandbox.sh session AGENT}; v=$(vm "$a"); running "$v" || die "$v isn't running"
+  c=${SESSION_CMD:-$(session_cmd "$a")}
+  setup_inbox "$v"
+  sed "s/^You are AGENT,/You are $a,/" "$here/deploy/sandbox/session.md" | in_vm "$v" sudo sh -c 'cat > /etc/pantheon/session.md'
+  [ -t 0 ] || die "session is interactive: run it in a terminal"
+  command limactl --log-level=warn shell --workdir / "$v" sudo -u bidder -H sh -c "cd ~ && exec $c \"\$(cat /etc/pantheon/session.md)\""
 }
 
 cmd_start() {
@@ -180,6 +242,7 @@ cmd_start() {
     printf '%s\n' "${SOMA_CI:-eval \"\$(opam env --switch=soma-build --set-switch)\" && make dunestrap >/dev/null && dune build -j 2 soma-runtime.install soma-core.install}" | put ci/soma
     printf '%s\n' --bid-window 900 --max-llm-calls 200 $flags | put flags
     put goal.txt < "${GOAL_FILE:-$here/examples/dogfood/goal.txt}"
+    setup_inbox "$v"
     printf '[Service]\nSyslogIdentifier=pantheon\n' | in_vm "$v" sudo sh -c 'mkdir -p /etc/systemd/system/pantheon-node.service.d && cat > /etc/systemd/system/pantheon-node.service.d/log.conf && systemctl daemon-reload'
     in_vm "$v" sudo systemctl enable -q pantheon-node
     in_vm "$v" sudo systemctl restart pantheon-node
@@ -227,6 +290,6 @@ cmd_fetch() {
 
 c=${1:-}; [ $# -gt 0 ] && shift
 case $c in
-  base|nodes|network|login|start|status|logs|shell|stop|fetch|reset) "cmd_$c" "$@" ;;
+  base|nodes|network|login|session|start|status|logs|shell|stop|fetch|reset) "cmd_$c" "$@" ;;
   *) awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "$0"; [ -z "$c" ] || exit 1 ;;
 esac

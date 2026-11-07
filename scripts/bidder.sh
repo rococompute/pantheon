@@ -1,8 +1,12 @@
 #!/bin/sh
-# A cmd: backend for a model with tools: Claude Code or codex.
+# A cmd: backend for a model with tools: Claude Code, codex, or Grok Build.
 #
 #   pantheon node HOME --backend cmd:/path/to/scripts/bidder-claude.sh
 #   pantheon node HOME --backend cmd:/path/to/scripts/bidder-codex.sh
+#   pantheon node HOME --backend cmd:/path/to/scripts/bidder-grok.sh
+#
+# Grok Build uses GROK_BUILD_MODEL if it's set, and may call the Cursor CLI
+# (cursor-agent) as a tool when it's installed.
 #
 # For a patch request the node gives it a fresh checkout of the task's
 # repository at the market's head, in $PANTHEON_WORKTREE. The model edits files
@@ -19,6 +23,9 @@ MODEL=${BIDDER_MODEL:-claude}
 prompt=$(mktemp)
 trap 'rm -f "$prompt"' EXIT
 cat > "$prompt"
+# Grok Build reads its prompt from a file, as the bidder user
+[ -n "${BIDDER_USER:-}" ] && chmod 644 "$prompt"
+grok_model() { [ -n "${GROK_BUILD_MODEL:-}" ] && printf '%s\n' --model "$GROK_BUILD_MODEL"; true; }
 
 as_bidder() {
   if [ -n "${BIDDER_USER:-}" ]; then sudo -n -u "$BIDDER_USER" -H "$@"; else "$@"; fi
@@ -31,7 +38,8 @@ if [ -z "${PANTHEON_WORKTREE:-}" ]; then
       out=$(mktemp)
       as_bidder codex exec --skip-git-repo-check --ephemeral --disable apps --sandbox read-only -c 'approval_policy="never"' -c 'mcp_servers={}' -o "$out" - < "$prompt" >/dev/null
       cat "$out"; rm -f "$out" ;;
-    *) echo "bidder.sh: unknown BIDDER_MODEL $MODEL (claude or codex)" >&2; exit 1 ;;
+    grok) as_bidder grok --prompt-file "$prompt" $(grok_model) --tools "" --no-subagents --disable-web-search --output-format plain ;;
+    *) echo "bidder.sh: unknown BIDDER_MODEL $MODEL (claude, codex or grok)" >&2; exit 1 ;;
   esac
   exit
 fi
@@ -55,6 +63,14 @@ case $MODEL in
     as_bidder codex exec --skip-git-repo-check --ephemeral --disable apps --sandbox workspace-write -C "$PANTHEON_WORKTREE" \
       -c 'approval_policy="never"' -c 'mcp_servers={}' -o "$out" - < "$prompt" >/dev/null
     note=$(tail -n 1 "$out"); rm -f "$out" ;;
-  *) echo "bidder.sh: unknown BIDDER_MODEL $MODEL (claude or codex)" >&2; exit 1 ;;
+  grok)
+    if as_bidder sh -c 'command -v cursor-agent' >/dev/null 2>&1; then
+      echo 'The Cursor CLI is here too: `cursor-agent -p --output-format text "..."` hands a subtask to Cursor'"'"'s agent, in this directory.' >> "$prompt"
+    fi
+    note=$(as_bidder grok --prompt-file "$prompt" --cwd "$PANTHEON_WORKTREE" $(grok_model) --no-subagents --disable-web-search \
+      --allow "Read(./**)" --allow "Edit(./**)" --allow "Glob" --allow "Bash(soma build:*)" --allow "Bash(soma run:*)" --allow "Bash(soma explore:*)" \
+      --allow "Bash(sh test.sh:*)" --allow "Bash(sh tests/:*)" --allow "Bash(sh test/:*)" --allow "Bash(git diff:*)" --allow "Bash(git status)" \
+      --allow "Bash(ls:*)" --allow "Bash(cursor-agent:*)" --permission-mode dontAsk --output-format plain | tail -n 1) ;;
+  *) echo "bidder.sh: unknown BIDDER_MODEL $MODEL (claude, codex or grok)" >&2; exit 1 ;;
 esac
 exec "$PANTHEON_BIN" edits . "$note"

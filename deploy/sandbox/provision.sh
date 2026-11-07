@@ -92,6 +92,14 @@ if [ ! -x /home/bidder/.local/bin/claude ]; then
   sudo -u bidder -H sh -c 'curl -fsSL https://claude.ai/install.sh | bash' >/var/log/pantheon-claude-install.log 2>&1 \
     || { tail -5 /var/log/pantheon-claude-install.log; echo "provision: installing claude failed" >&2; exit 1; }
 fi
+if [ ! -x /home/bidder/.local/bin/muse ]; then
+  sudo -u bidder -H sh -c 'mkdir -p ~/.local/bin && curl -fsSL https://api.meta.ai/muse-launcher.sh -o ~/.local/bin/muse && chmod +x ~/.local/bin/muse' \
+    || { echo "provision: installing muse failed" >&2; exit 1; }
+fi
+[ -x /home/bidder/.grok/bin/grok ] || sudo -u bidder -H sh -c 'curl -fsSL https://x.ai/cli/install.sh | bash' >/dev/null \
+  || { echo "provision: installing Grok Build failed" >&2; exit 1; }
+[ -x /home/bidder/.local/bin/cursor-agent ] || sudo -u bidder -H sh -c 'curl -fsS https://cursor.com/install | bash' >/dev/null \
+  || { echo "provision: installing the Cursor CLI failed" >&2; exit 1; }
 codex_js=/usr/local/lib/node_modules/@openai/codex/bin/codex.js
 [ -f "$codex_js" ] || npm install -g -s @openai/codex >/dev/null 2>&1 || { echo "provision: installing codex failed" >&2; exit 1; }
 # What the bidder runs, through sudo (which resets the environment): its own
@@ -105,8 +113,11 @@ E
 rm -f /usr/local/bin/codex
 printf '#!/bin/sh\n. /usr/local/lib/pantheon/model-env\nexec /home/bidder/.local/bin/claude "$@"\n' > /usr/local/bin/claude
 printf '#!/bin/sh\n. /usr/local/lib/pantheon/model-env\nexec node %s "$@"\n' "$codex_js" > /usr/local/bin/codex
+printf '#!/bin/sh\n. /usr/local/lib/pantheon/model-env\nexec /home/bidder/.local/bin/muse "$@"\n' > /usr/local/bin/muse
+printf '#!/bin/sh\n. /usr/local/lib/pantheon/model-env\nexec /home/bidder/.grok/bin/grok "$@"\n' > /usr/local/bin/grok
+printf '#!/bin/sh\n. /usr/local/lib/pantheon/model-env\nexec /home/bidder/.local/bin/cursor-agent "$@"\n' > /usr/local/bin/cursor-agent
 printf '#!/bin/sh\nexec /home/pantheon/soma/_build/install/default/bin/soma "$@"\n' > /usr/local/bin/soma
-chmod 755 /usr/local/bin/claude /usr/local/bin/codex /usr/local/bin/soma
+chmod 755 /usr/local/bin/claude /usr/local/bin/codex /usr/local/bin/muse /usr/local/bin/grok /usr/local/bin/cursor-agent /usr/local/bin/soma
 install -d -o bidder -g bidder -m 700 /home/bidder/.config /home/bidder/.config/pantheon
 
 say "node service"

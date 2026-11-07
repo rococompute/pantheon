@@ -11,7 +11,7 @@ brew install lima
 scripts/sandbox.sh base        # once, ~20 min: Ubuntu, Soma and Pantheon from source, the CI image
 scripts/sandbox.sh nodes       # four VMs cloned from it, in seconds
 scripts/sandbox.sh network     # keys on each VM, the network directory, one genesis hash
-scripts/sandbox.sh login grok  # each model's key (below)
+scripts/sandbox.sh login grok  # each model's login (below)
 scripts/sandbox.sh start
 scripts/sandbox.sh status
 ```
@@ -36,19 +36,18 @@ the software, not independence between operators.
 `scripts/sandbox.sh login AGENT` puts a model's key where it's used. It
 reads it from the environment:
 
-| Agent | Key | Where it goes |
-|---|---|---|
-| claude | `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token` on this Mac) or `ANTHROPIC_API_KEY` | the bidder user's `~/.config/pantheon/model.env` |
-| codex | `OPENAI_API_KEY`, or with none, a device login (`codex login --device-auth`) | the bidder user's codex login |
-| grok | `XAI_API_KEY` (and `GROK_MODEL`) | `/etc/pantheon/keys.env`, for the node: grok is a built-in backend with no tools |
-| muse | none yet: it runs `scripted` | |
+| Agent | Runs | Key | Where it goes |
+|---|---|---|---|
+| claude | Claude Code, headless, with tools (`scripts/bidder-claude.sh`) | `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token` on this Mac) or `ANTHROPIC_API_KEY` | the bidder user's `~/.config/pantheon/model.env` |
+| codex | codex, headless, with tools (`scripts/bidder-codex.sh`) | `OPENAI_API_KEY`, or with none, a device login | the bidder user's codex login |
+| grok | Grok Build, headless, with tools and the Cursor CLI (`scripts/bidder-grok.sh`) | `XAI_API_KEY`, and `CURSOR_API_KEY` for the Cursor CLI; `GROK_BUILD_MODEL` picks the model | the bidder user's `model.env` |
+| muse | Muse Code, in an interactive session (below) | `META_API_KEY`, or with none, a device login (`muse login`) | the bidder user's muse login |
 
-`start` picks each agent's backend: claude and codex run with tools through
-`scripts/bidder-claude.sh` and `scripts/bidder-codex.sh`, grok uses the
-built-in backend, and anything else is `scripted`. Override per agent:
+`login grok` installs Grok Build and the Cursor CLI in the VM, by their
+vendors' installers, the first time. Override an agent's backend at start:
 
 ```bash
-scripts/sandbox.sh start muse=cmd:/path/in/the/vm codex=scripted -- --bid-window 300
+scripts/sandbox.sh start muse=scripted codex=scripted -- --bid-window 300
 ```
 
 Everything after `--` is more node flags. `GOAL_FILE` picks the goal lines
@@ -60,6 +59,29 @@ To check the plumbing without spending tokens, run every agent scripted:
 ```bash
 scripts/sandbox.sh start claude=scripted codex=scripted grok=scripted muse=scripted -- --bid-window 6
 ```
+
+## An agent in a session of its own
+
+Muse works interactively rather than headless: its node's backend is
+`scripts/bidder-inbox.sh`, which puts each request (draft a task, write a
+patch, pick a bid, attest) in an inbox and waits for the answer. Muse takes
+them in a session of its own, with full permissions (the VM is the sandbox),
+told how by `deploy/sandbox/session.md`:
+
+```bash
+scripts/sandbox.sh session muse
+```
+
+That opens Muse in this terminal, as the bidder user. It loops on
+`pantheon-inbox wait`, answers with `pantheon-inbox reply`, and for a patch
+edits the checkout it's given and says `pantheon-inbox done`. You can watch,
+or talk to it. While the session is closed, requests time out (10 minutes
+for an answer, 28 for a patch) and the node goes on without Muse's say;
+start the session again and it picks up the next one.
+
+Any agent can work this way: `start claude=cmd:/usr/local/lib/pantheon/bidder-inbox.sh`,
+then `session claude` (Claude Code with `--dangerously-skip-permissions`;
+`SESSION_CMD` runs another CLI).
 
 ## Watching and collecting
 
