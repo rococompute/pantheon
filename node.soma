@@ -71,11 +71,10 @@ step (n : obj) (ev : list string) : obj * list (list string) :=
   | ["param", k, v] =>
       if seq k "block_ms" then (setf n "c" (setf (cons n) "block_ms" (num v)), [])
       else (setf n "m" (setf (mkt n) "params" (put k (num v) (params (mkt n)))), [])
-  | ["file", p, content] => (setf n "m" (setf (mkt n) "files" (put p (content, 0) (files (mkt n)))), [])
+  | ["repo", r, tree] => (setf n "m" (setf (mkt n) "repos" (put r tree (repos (mkt n)))), [])
   | ["me", who] => (setf (setf n "c" (setf (cons n) "me" who)) "a" (setf (ag n) "me" who), [])
   | ["agent", "goal", line] => (set_agent n "goal" (goal (ag n) ++ [line] : Any), [])
   | ["agent", "deny", p] => (set_agent n "deny" (deny (ag n) ++ [p] : Any), [])
-  | ["agent", "ci", "true"] => (set_agent n "ci" (true : Any), [])
   | ["agent", "bid_window", v] => (set_agent n "bid_window" (num v : Any), [])
   | ["agent", k, v] => (set_agent n k (v : Any), [])
   | "replay" :: h :: txs =>
@@ -94,7 +93,7 @@ step (n : obj) (ev : list string) : obj * list (list string) :=
       else (setf n "pool" (pool n ++ [raw]), [])
   | "local_tx" :: fields => agent_event n (flush (enqueue (ag n) fields) (mkt n))
   | "llm_reply" :: id :: kv => agent_event n (answered (ag n) (mkt n) id kv)
-  | "ci_result" :: id :: kv => agent_event n (answered (ag n) (mkt n) id kv)
+  | "check_result" :: id :: kv => agent_event n (answered (ag n) (mkt n) id kv)
   | ["llm_error", id, why] => (setf n "a" (failed (ag n) id), [["log", append "model call failed: " why]])
   | _ => (n, [])
   end.

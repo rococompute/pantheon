@@ -52,6 +52,18 @@ Fixpoint nodup_s (l : list string) : list string :=
 
 distinct (l : list string) : nat := length (nodup_s l).
 
+(** "{{" written as "{ {", so text from other agents or a repository can't
+    contain the shell's fence placeholder, {{F}}, and close its own fence *)
+Fixpoint defang (s : string) : string :=
+  match s with
+  | SNil => SNil
+  | SCons a rest =>
+      match rest with
+      | SCons b _ => if Ascii.eqb a "{"%char && Ascii.eqb b "{"%char then SCons a (SCons " "%char (defang rest)) else SCons a (defang rest)
+      | SNil => SCons a SNil
+      end
+  end.
+
 Fixpoint remove_s (x : string) (l : list string) : list string :=
   match l with [] => [] | y :: r => if seq x y then remove_s x r else y :: remove_s x r end.
 
@@ -79,8 +91,12 @@ Fixpoint contains (p s : string) : bool :=
   match s with SNil => starts p s | SCons _ s' => starts p s || contains p s' end.
 
 (** a path a patch may write: relative, no "..", no backslash, not empty *)
+(** a relative path inside a repository: no "..", no empty or "." part, and
+    nothing in a .git directory, where writing would mean running code *)
 safe_path (p : string) : bool :=
-  negb (seq p "") && negb (starts "/" p) && negb (contains ".." p) && negb (contains "\" p).
+  let w := append "/" (append p "/") in
+  negb (seq p "") && negb (starts "/" p) && negb (contains ".." p) && negb (contains "\" p)
+  && negb (contains "//" w) && negb (contains "/./" w) && negb (contains "/.git/" w) && negb (contains "/.GIT/" w).
 
 (** pairs from a flat list: [a; b; c; d] is [(a, b); (c, d)] *)
 Fixpoint pairs (l : list string) : list (string * string) :=

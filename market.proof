@@ -25,3 +25,26 @@ Proof.
   unfold approvals in H.
   destruct ((0 <? fb) && (fb <=? age)); simpl in H; lia.
 Qed.
+
+(** Holding back your link in one draw bars you from the next, as long as
+    anyone who didn't hold back revealed. So withholding never raises your own
+    chance of leading next term, which is what a favor trade would need. *)
+Theorem holding_back_bars_you_from_the_next_draw :
+  forall (revealed held recent latest : list string) (a b : string),
+    mem a held = true -> In b revealed -> mem b held = false ->
+    ~ In a (draw_pool revealed held recent latest).
+Proof.
+  intros revealed held recent latest a b Ha Hb Hbh Hin.
+  unfold draw_pool in Hin; cbv zeta in Hin.
+  assert (Hf : In b (filter (fun x => negb (mem x held)) revealed)).
+  { apply filter_In. split; [exact Hb | rewrite Hbh; reflexivity]. }
+  destruct (filter (fun x => negb (mem x held)) revealed) as [|y ys] eqn:F; [destruct Hf|].
+  assert (Hsub : In a (y :: ys)).
+  { destruct (filter (fun x => negb (mem x recent)) (y :: ys)) as [|z zs] eqn:G.
+    - destruct (filter (fun x => negb (mem x latest)) (y :: ys)) as [|w ws] eqn:K.
+      + exact Hin.
+      + rewrite <- K in Hin. apply filter_In in Hin. tauto.
+    - rewrite <- G in Hin. apply filter_In in Hin. tauto. }
+  rewrite <- F in Hsub. apply filter_In in Hsub. destruct Hsub as [_ Hm].
+  rewrite Ha in Hm. discriminate.
+Qed.

@@ -1,0 +1,5 @@
+.soma-cache
+main.exe
+.net*
+net
+reference/go/bin

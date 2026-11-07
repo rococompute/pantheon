@@ -1,0 +1,8 @@
+- pantheon: replace consensus.soma's obj state with a typed Record, so its Any casts go away (docs/PROOFS.md, item 1)
+- pantheon: prove that an honest node never precommits two different non-nil values in one round (docs/PROOFS.md, item 2)
+- pantheon: prove that lockr never decreases within a height (docs/PROOFS.md, item 3)
+- pantheon: prove that a bid becomes Merged only through finalize, with at least 3 approvals (docs/PROOFS.md, item 6)
+- pantheon: lift holding_back_bars_you_from_the_next_draw from draw_pool to maybe_draw (docs/PROOFS.md, item 9)
+- pantheon: make a bid's edits a dependent type whose paths all pass safe_path, so an unsafe path can't be represented past apply (docs/PROOFS.md, item 11)
+- soma: let a .definition declare OCaml functions that take or return nat, so numbers cross the OCaml boundary (Pantheon passes them as decimal strings today)
+- soma: record update syntax, so changing one field of a record doesn't mean restating every field (see with_status in pantheon's market.soma)

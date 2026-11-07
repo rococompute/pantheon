@@ -15,13 +15,23 @@ ROOT=${TMPDIR:-/tmp}/pantheon-e2e-$$
 mkdir -p "$ROOT"
 AGENTS="claude codex grok muse"
 
+# the governed repositories: git repositories made from examples/
+mkrepo() {
+  d=$ROOT/src/$1; mkdir -p "$d"; cp -R "$2/." "$d/"
+  (cd "$d" && git init -q . && git add -A && git -c user.name=t -c user.email=t@t -c commit.gpgsign=false commit -qm "$1 at genesis")
+}
+mkrepo calc examples/calc
+mkdir -p "$ROOT/notes-src" && echo "# Notes" > "$ROOT/notes-src/README.md"
+mkrepo notes "$ROOT/notes-src"
+REPOS="--repo calc=$ROOT/src/calc"
+
 # start NAME PORT [param=value...]: a fresh network, not yet running
 init() {
   name=$1 port=$2; shift 2
   dir=$ROOT/$name
   args=""
   for p in "$@"; do args="$args --param $p"; done
-  "$BIN" init "$dir" --seed-dir examples/calc --base-port "$port" --block-ms 200 $args >/dev/null 2>&1 || { echo "$name: init failed"; return 1; }
+  "$BIN" init "$dir" $REPOS --base-port "$port" --block-ms 200 $args > "$ROOT/$name.init.log" 2>&1 || { echo "$name: init failed"; tail -3 "$ROOT/$name.init.log"; return 1; }
   printf -- '- add a sub command\n- add a mul command\n- add a div command\n- add a mod command\n' > "$dir/goal.txt"
 }
 
@@ -52,6 +62,7 @@ wait_for() {
   done
 }
 height_at_least() { h=$(field "$1" height "$2"); [ -n "$h" ] && [ "$h" -ge "$3" ]; }
+term_at_least() { t=$(sed -n 's/.*  term \([0-9]*\).*/\1/p' "$ROOT/$1/$2/status.txt" 2>/dev/null | head -1); [ -n "$t" ] && [ "$t" -ge "$3" ]; }
 merges_at_least() { [ "$(merged "$1" "$2")" -ge "$3" ]; }
 
 # agree NAME AGENTS...: every block both have is the same, and so is every file
@@ -67,11 +78,18 @@ agree() {
   done
   return 0
 }
+# every checkout is at the same commit (merges commit the same way
+# everywhere), and none has diverged from the attested tree
 agree_files() {
   name=$1; shift; ref=$1; shift
-  for a in "$@"; do
-    if ! diff -r "$ROOT/$name/$a/repo" "$ROOT/$name/$ref/repo" >/dev/null; then echo "FAIL $name: $a and $ref have different files"; return 1; fi
+  for r in $(ls "$ROOT/$name/$ref/repos"); do
+    want=$(git -C "$ROOT/$name/$ref/repos/$r" rev-parse HEAD)
+    for a in "$@"; do
+      got=$(git -C "$ROOT/$name/$a/repos/$r" rev-parse HEAD)
+      [ "$got" = "$want" ] || { echo "FAIL $name: $a and $ref have $r at different commits"; return 1; }
+    done
   done
+  if grep -l DIVERGED "$ROOT/$name"/*/status.txt >/dev/null 2>&1; then echo "FAIL $name: a checkout diverged: $(grep -h DIVERGED "$ROOT/$name"/*/status.txt | head -1)"; return 1; fi
 }
 # the leader history never repeats within three terms
 rotation_ok() {
@@ -84,19 +102,20 @@ rotation_ok() {
   done
 }
 # heights match within a few blocks: they progress together
-in_step() { a=$(field "$1" height "$2"); b=$(field "$1" height "$3"); [ -n "$a" ] && [ -n "$b" ] && [ $((a - b)) -le 3 ] && [ $((b - a)) -le 3 ]; }
+in_step() { local x y; x=$(field "$1" height "$2"); y=$(field "$1" height "$3"); [ -n "$x" ] && [ -n "$y" ] && [ $((x - y)) -le 3 ] && [ $((y - x)) -le 3 ]; }
 
 all_up() { for a in $AGENTS; do node "$1" "$a" "$@"; done; }
 
 scenario_happy() {
-  init happy 27200 term_blocks=30 max_merges=1 bid_cooldown=2 || return 1
+  REPOS="--repo calc=$ROOT/src/calc --repo notes=$ROOT/src/notes" init happy 27200 term_blocks=30 max_merges=1 bid_cooldown=2 || return 1
   for a in $AGENTS; do node happy "$a"; done
   wait_for happy claude 90 "three merges" merges_at_least happy claude 3 || { stop happy; return 1; }
   sleep 2; stop happy
   agree happy claude codex grok muse && agree_files happy claude codex grok muse && rotation_ok happy claude || return 1
   grep -q 'conflicts with bid' "$ROOT/happy/claude/status.txt" || { echo "FAIL happy: nothing was cleared by a conflict"; return 1; }
-  for f in work/task-1.txt work/task-2.txt work/task-3.txt; do
-    [ -f "$ROOT/happy/claude/repo/$f" ] || { echo "FAIL happy: $f not merged"; return 1; }
+  # scripted leaders post tasks to the repositories in turn
+  for f in calc/work/task-1.txt notes/work/task-2.txt calc/work/task-3.txt; do
+    git -C "$ROOT/happy/claude/repos/${f%%/*}" cat-file -e "HEAD:${f#*/}" 2>/dev/null || { echo "FAIL happy: $f not merged"; return 1; }
   done
   echo "ok happy: $(field happy height claude) blocks, $(merged happy claude) merges, rotation $(sed -n 's/^history //p' "$ROOT/happy/claude/status.txt")"
 }
@@ -140,6 +159,89 @@ scenario_byz() {
   echo "ok byz-$mode: honest nodes agree at $(field "byz-$mode" height claude), $(merged "byz-$mode" claude) merges"
 }
 
+# muse holds back its link on every other draw, the way a recent leader would
+# to steer a draw and be repaid next term. Holding back bars it from the next
+# draw, so it never leads, and the draws still finish without it.
+scenario_withhold() {
+  init withhold 27700 term_blocks=15 max_merges=1 bid_cooldown=2 fallback_blocks=10 reveal_window=6 || return 1
+  for a in claude codex grok; do node withhold "$a"; done
+  node withhold muse PANTHEON_BYZ=withhold
+  wait_for withhold claude 150 "five terms" term_at_least withhold claude 5 || { stop withhold; return 1; }
+  sleep 2; stop withhold
+  agree withhold claude codex grok muse && agree_files withhold claude codex grok muse && rotation_ok withhold claude || return 1
+  hist=$(sed -n 's/^history //p' "$ROOT/withhold/claude/status.txt")
+  case " $hist " in *" muse "*) echo "FAIL withhold: muse led after holding back: $hist"; return 1 ;; esac
+  n=$(sed -n 's/^count muse.held_back \([0-9]*\).*/\1/p' "$ROOT/withhold/claude/status.txt")
+  [ "${n:-0}" -ge 2 ] || { echo "FAIL withhold: muse held back ${n:-0} times, expected 2 or more"; return 1; }
+  grep -q 'holding back my link' "$ROOT/withhold/muse/node.log" || { echo "FAIL withhold: muse never held back"; return 1; }
+  echo "ok withhold: muse held back $n times and never led, rotation $hist"
+}
+
+# muse's checks name a wrong tree: as an attestor its yes counts as a no, and
+# as leader its merges are voted down. No checkout ever diverges.
+scenario_bad_tree() {
+  init bad-tree 27750 term_blocks=25 max_merges=1 bid_cooldown=2 fallback_blocks=10 || return 1
+  for a in claude codex grok; do node bad-tree "$a"; done
+  node bad-tree muse PANTHEON_BYZ=bad-tree
+  wait_for bad-tree claude 150 "three merges with muse lying about trees" merges_at_least bad-tree claude 3 || { stop bad-tree; return 1; }
+  sleep 2; stop bad-tree
+  agree bad-tree claude codex grok muse && agree_files bad-tree claude codex grok || return 1
+  grep -q "muse's yes named another tree" "$ROOT/bad-tree/claude/node.log" || grep -q "naming a wrong tree" "$ROOT/bad-tree/muse/node.log" \
+    || { echo "FAIL bad-tree: muse never named a wrong tree"; return 1; }
+  echo "ok bad-tree: $(merged bad-tree claude) merges, muse's wrong trees never counted, no checkout diverged"
+}
+
+# One machine per agent, the way a real network starts: each agent makes its
+# keys alone, the public parts are gathered in a network directory (in real
+# life, by pull request), and each agent builds genesis by itself. Every
+# genesis must come out the same. Peers are found by name ("localhost"
+# standing in for VPN names), nodes listen only where told, and the mirror
+# pushes merges to a branch of the origin repository.
+scenario_network() {
+  base=$ROOT/network net=$ROOT/network/def port=27850
+  mkdir -p "$net/parts" && printf -- '- add a sub command\n- add a mul command\n' > "$base/goal.txt"
+  i=0
+  for a in $AGENTS; do
+    "$BIN" keygen "$base/$a" --name "$a" --addr "localhost:$((port + i))" > /dev/null || { echo "FAIL network: keygen $a"; return 1; }
+    cp "$base/$a/public.json" "$net/parts/$a.json"; i=$((i + 1))
+    if [ $i -eq 3 ]; then
+      echo "{\"repos\": []}" > "$net/network.json"
+      "$BIN" genesis "$base/claude" "$net" > "$base/early.log" 2>&1 && { echo "FAIL network: genesis with 3 parts"; return 1; }
+      grep -q 'needs 4' "$base/early.log" || { echo "FAIL network: no clear error for 3 parts: $(cat "$base/early.log")"; return 1; }
+    fi
+  done
+  commit=$(git -C "$ROOT/src/calc" rev-parse HEAD)
+  printf '{"block_ms": 200, "params": {"term_blocks": "25", "max_merges": "1", "bid_cooldown": "2"},\n "repos": [{"name": "calc", "url": "../../src/calc", "commit": "%s"}]}\n' "$commit" > "$net/network.json"
+  for a in $AGENTS; do "$BIN" genesis "$base/$a" "$net" > "$base/$a.genesis.log" 2>&1 || { echo "FAIL network: genesis for $a: $(tail -1 "$base/$a.genesis.log")"; return 1; }; done
+  n=$(for a in $AGENTS; do sed -n 's/.*genesis hash \([0-9a-f]*\).*/\1/p' "$base/$a.genesis.log"; done | sort -u | wc -l)
+  [ "$n" -eq 1 ] || { echo "FAIL network: agents built $n different geneses"; return 1; }
+  for a in $AGENTS; do node network "$a" -- --listen 127.0.0.1; done
+  wait_for network claude 120 "two merges" merges_at_least network claude 2 || { stop network; return 1; }
+  sleep 2; stop network
+  agree network claude codex grok muse && agree_files network claude codex grok muse || return 1
+  scripts/mirror.sh "$base/claude" > "$base/mirror.log" 2>&1 || { echo "FAIL network: mirror: $(cat "$base/mirror.log")"; return 1; }
+  scripts/mirror.sh "$base/grok" >> "$base/mirror.log" 2>&1 || { echo "FAIL network: a second node's mirror push conflicted: $(cat "$base/mirror.log")"; return 1; }
+  [ "$(git -C "$ROOT/src/calc" rev-parse pantheon/merged)" = "$(git -C "$base/claude/repos/calc" rev-parse HEAD)" ] \
+    || { echo "FAIL network: the mirror branch isn't the merged head"; return 1; }
+  echo "ok network: 4 keygens, one genesis hash, peers by name, $(merged network claude) merges, mirrored to pantheon/merged"
+}
+
+# Attestors run CI in a container before voting: the calculator's tests,
+# through pantheon-ci in the image deploy/Dockerfile builds (CI_IMAGE).
+# Skipped when the image or docker isn't there.
+scenario_ci() {
+  img=${CI_IMAGE:-pantheon:dev}
+  docker image inspect "$img" >/dev/null 2>&1 || { echo "ok ci: skipped, no docker image $img (build deploy/Dockerfile)"; return 0; }
+  init ci 27950 term_blocks=60 max_merges=1 bid_cooldown=2 attest_window=200 || return 1
+  for a in $AGENTS; do node ci "$a" -- --ci-image "$img" --ci 'pantheon-ci "sh test.sh"' --ci-memory 1g; done
+  wait_for ci claude 180 "two merges checked by CI" merges_at_least ci claude 2 || { stop ci; return 1; }
+  sleep 2; stop ci
+  agree ci claude codex grok muse && agree_files ci claude codex grok muse || return 1
+  n=$(cat "$ROOT"/ci/*/node.log | grep -c 'CI for request .*: passed')
+  [ "$n" -ge 2 ] || { echo "FAIL ci: only $n CI runs passed"; grep -h 'CI for request' "$ROOT"/ci/*/node.log | head -3; return 1; }
+  echo "ok ci: $(merged ci claude) merges, $n CI runs passed in $img"
+}
+
 # one agent's model is compromised (votes no on everything) or dead (silent)
 scenario_bad_model() {
   behavior=$1 port=$2
@@ -148,7 +250,7 @@ scenario_bad_model() {
   node "model-$behavior" muse -- --behavior "$behavior"
   wait_for "model-$behavior" claude 150 "three merges despite muse" merges_at_least "model-$behavior" claude 3 || { stop "model-$behavior"; return 1; }
   sleep 2; stop "model-$behavior"
-  agree "model-$behavior" claude codex grok muse || return 1
+  agree "model-$behavior" claude codex grok muse && agree_files "model-$behavior" claude codex grok muse || return 1
   echo "ok model-$behavior: $(merged "model-$behavior" claude) merges with muse's model $behavior"
 }
 
@@ -160,13 +262,13 @@ scenario_policy() {
   # silent models: no agent starts work by itself, so the only bid is the bad
   # one. Policy runs before any model is asked, so the leader still applies it.
   for a in $AGENTS; do node policy "$a" -- --deny test.sh --behavior silent; done
-  wait_for policy claude 60 "a leader" sh -c "grep -q 'leader [a-z]*$' $ROOT/policy/claude/status.txt && ! grep -q '(drawing)' $ROOT/policy/claude/status.txt" || { stop policy; return 1; }
+  wait_for policy claude 60 "a leader" sh -c "grep -qs 'leader [a-z]*$' $ROOT/policy/claude/status.txt && ! grep -q '(drawing)' $ROOT/policy/claude/status.txt" || { stop policy; return 1; }
   leader=$(sed -n 's/.*leader \([a-z]*\)$/\1/p' "$ROOT/policy/claude/status.txt")
   for a in $AGENTS; do [ "$a" != "$leader" ] && evil=$a; done
   "$BIN" tx "$ROOT/policy/$evil" post "a task from someone who isn't leading" >/dev/null
   "$BIN" tx "$ROOT/policy/$leader" post "make calc.sh print its version" >/dev/null
   wait_for policy claude 60 "the task" sh -c "grep -q '^task 1 \[open\]' $ROOT/policy/claude/status.txt" || { stop policy; return 1; }
-  "$BIN" tx "$ROOT/policy/$evil" bid 1 0 "trust me" test.sh "exit 0" >/dev/null
+  "$BIN" tx "$ROOT/policy/$evil" bid 1 0 "trust me" test.sh "" "exit 0" >/dev/null
   wait_for policy claude 60 "the policy rejection" sh -c "grep -q 'by $evil policy: test.sh is on the denied list' $ROOT/policy/claude/status.txt" || { stop policy; return 1; }
   sleep 2; stop policy
   grep -q "$evil: only the term leader posts tasks" "$ROOT/policy/claude/node.log" || { echo "FAIL policy: a non-leader's task wasn't refused"; return 1; }
@@ -174,7 +276,10 @@ scenario_policy() {
   echo "ok policy: $evil's bid on test.sh rejected by policy, its task refused by the market"
 }
 
-# the model path end to end, with a fake model that answers like a real one
+# The model path end to end, with a fake model that answers like a real one.
+# As a bidder it acts like a model with tools: it edits the scratch checkout
+# the shell gives it and replies with `pantheon edits`. It only does so if the
+# prompt carried the task's context file, so that's tested too.
 scenario_model() {
   init model 27900 term_blocks=40 max_merges=1 bid_cooldown=2 || return 1
   fake=$ROOT/model/fake-model.sh
@@ -182,8 +287,13 @@ scenario_model() {
 #!/bin/sh
 p=$(cat)
 case "$p" in
-  *"choosing the next task"*) echo 'Sure! {"task": "add a hello command"}' ;;
-  *"writing a patch"*) printf '```json\n{"files": [{"path": "hello.sh", "content": "echo hello\\n"}], "note": "hello"}\n```\n' ;;
+  *"choosing the next task"*) echo 'Sure! {"task": "add a hello command", "repo": "calc", "context": ["calc.sh"]}' ;;
+  *"writing a patch"*)
+    case "$p" in *"file calc.sh>>>"*"A tiny calculator"*) ;; *) echo '{"edits": []}'; exit 0 ;; esac
+    cd "$PANTHEON_WORKTREE" || exit 1
+    printf 'echo hello\n' > hello.sh
+    sed -i.bak 's|^  \*) echo "usage|  hello) sh hello.sh ;;\n  *) echo "usage|' calc.sh && rm calc.sh.bak
+    "$PANTHEON_BIN" edits . "hello command" ;;
   *"reviewing the bids"*) n=$(printf '%s' "$p" | sed -n 's/^Bid \([0-9]*\) by.*/\1/p' | head -1); echo "{\"merge\": $n, \"reject\": []}" ;;
   *"proposed merge is safe"*) echo '{"approve": true, "reason": "fine"}' ;;
 esac
@@ -193,9 +303,12 @@ F
   for a in $AGENTS; do node model "$a" -- --backend "cmd:$fake"; done
   wait_for model claude 90 "a merge through the model path" merges_at_least model claude 1 || { stop model; return 1; }
   sleep 2; stop model
-  [ "$(cat "$ROOT/model/claude/repo/hello.sh")" = "echo hello" ] || { echo "FAIL model: merged file is wrong"; return 1; }
-  agree model claude codex grok muse || return 1
-  echo "ok model: a fake model's JSON replies drove a merge"
+  r=$ROOT/model/claude/repos/calc
+  [ "$(git -C "$r" show HEAD:hello.sh)" = "echo hello" ] || { echo "FAIL model: hello.sh is wrong"; return 1; }
+  [ "$(cd "$r" && sh calc.sh hello)" = "hello" ] || { echo "FAIL model: calc.sh hello doesn't run hello.sh"; return 1; }
+  [ "$(cd "$r" && sh calc.sh add 2 3)" = "5" ] || { echo "FAIL model: calc.sh add broke"; return 1; }
+  agree model claude codex grok muse && agree_files model claude codex grok muse || return 1
+  echo "ok model: a fake model with tools edited a checkout, and its edits merged on every node"
 }
 
 run() {
@@ -208,13 +321,17 @@ run() {
     bad-sig) scenario_byz bad-sig 27550 ;;
     deny) scenario_bad_model deny 27600 ;;
     silent-model) scenario_bad_model silent 27650 ;;
+    withhold) scenario_withhold ;;
+    bad-tree) scenario_bad_tree ;;
+    network) scenario_network ;;
+    ci) scenario_ci ;;
     policy) scenario_policy ;;
     model) scenario_model ;;
     *) echo "unknown scenario $1"; return 1 ;;
   esac
 }
 
-ALL="happy crash equivocate double-vote silent bad-sig deny silent-model policy model"
+ALL="happy crash equivocate double-vote silent bad-sig withhold bad-tree deny silent-model policy model network ci"
 want=${*:-$ALL}
 pids=""
 for s in $want; do (run "$s" > "$ROOT/$s.result" 2>&1; echo $? > "$ROOT/$s.code") & pids="$pids $!"; done

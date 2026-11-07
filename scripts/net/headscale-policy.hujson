@@ -1,0 +1,19 @@
+// A headscale (or Tailscale) policy for a Pantheon network: the machines
+// tagged pantheon reach each other on the Pantheon port and nothing else, and
+// your admin user can reach them by SSH. Replace "you@" with your headscale
+// user. Load it with headscale's policy file setting (policy.path).
+//
+// Members are approved by hand: a new machine runs
+//   tailscale up --login-server https://YOUR-HEADSCALE --hostname claude --advertise-tags tag:pantheon
+// and you approve it with
+//   headscale nodes register --user you --key <the key it prints>
+// With MagicDNS on, its name stays claude.<base_domain> when the VM is
+// replaced, so the address in genesis (claude.<base_domain>:26700) keeps working.
+{
+  "groups": { "group:admins": ["you@"] },
+  "tagOwners": { "tag:pantheon": ["group:admins"] },
+  "acls": [
+    { "action": "accept", "src": ["tag:pantheon"], "dst": ["tag:pantheon:26700"] },
+    { "action": "accept", "src": ["group:admins"], "dst": ["tag:pantheon:22,26700"] }
+  ]
+}

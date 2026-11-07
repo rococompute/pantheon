@@ -2,15 +2,26 @@
     the others bid patches, and a merge lands when 3 of 4 approve. A merge
     clears every pending bid that now conflicts with it.
 
-    A patch is a set of file writes made against a version of the repository.
-    A pending bid conflicts with a merge when it writes a path that has
-    changed since its version. It stays pending, marked stale, when it doesn't.
+    The market governs git repositories, and holds no file contents: only each
+    repository's head tree and, for each path, the version that last changed
+    it. A task names a repository. A bid is a list of edits against a version:
+    each replaces one exact, unique piece of a file, writes a whole file, or
+    deletes one. A pending bid conflicts with a merge when it edits a path
+    that has changed since its version. It stays pending, marked stale, when it
+    doesn't. Attestors apply the edits to the head, and a yes names the tree
+    they got. The leader's merge names the tree its own check gave, and an
+    attestor's yes counts only for that same tree. A merge needs the leader
+    and at least one attestor (market.proof), so with at most one faulty agent
+    an honest node computed the tree it records. Every node then checks its own
+    checkout reaches it.
 
     The next leader is drawn from values each agent committed to at genesis:
     the tip of a hash chain, H^K(s). For each term, an agent reveals the
     previous link, which only it can compute. Revealing is all an agent
     controls: a value is fixed in advance, and an agent that withholds it can't
-    be drawn. *)
+    be drawn. Withholding still lets the last agent to reveal choose between two
+    seeds, so an agent that held back in one draw is barred from the next: a
+    recent leader can't steer a draw now and be repaid with a term later. *)
 Import util shell.
 
 Inductive status := Pending | Merged | Cleared | Rejected | Withdrawn.
@@ -23,14 +34,27 @@ status_name (s : status) : string :=
 
 is_pending (s : status) : bool := match s with Pending => true | _ => false end.
 
-Record task := { tid : nat; spec : string; poster : string; posted_at : nat; topen : bool }.
+(** a task in a repository, with paths a model without tools should read *)
+Record task := { tid : nat; spec : string; poster : string; posted_at : nat; topen : bool;
+                 trepo : string; tctx : list string }.
 
-Record bid := { bidn : nat; btask : nat; bidder : string; base : nat; writes : list (string * string);
+(** One edit. eold <> "": replace the one place eold appears in the file with
+    enew. eold = "": write the whole file, enew; with enew = "" too, delete it. *)
+Record edit := { epath : string; eold : string; enew : string }.
+
+Record bid := { bidn : nat; btask : nat; bidder : string; base : nat; edits : list edit;
                 note : string; bst : status; stale : bool; why : string;
                 votes : list (string * bool) }.
 
-(** a merge waiting for attestations *)
-Record proposal := { pbid : nat; pby : string; pat : nat; pvotes : list (string * bool) }.
+(** a merge waiting for attestations; ptree is the tree the leader's check gave *)
+Record proposal := { pbid : nat; pby : string; pat : nat; pvotes : list (string * bool); ptree : string }.
+
+Fixpoint triples (l : list string) : list edit :=
+  match l with p :: o :: n :: r => {| epath := p; eold := o; enew := n |} :: triples r | _ => [] end.
+
+flat_edits (es : list edit) : list string := flat_map (fun e => [epath e, eold e, enew e]) es.
+
+edit_paths (es : list edit) : list string := nodup_s (map epath es).
 
 (** The market's state, an object (see util.soma). *)
 agents (m : obj) : list string := getf m "agents".
@@ -44,10 +68,14 @@ merges (m : obj) : nat := getf m "merges".
 awaiting (m : obj) : bool := getf m "awaiting".
 asince (m : obj) : nat := getf m "asince".
 reveals (m : obj) : list (string * string) := getf m "reveals".
+(** who didn't reveal in the last draw *)
+held_back (m : obj) : list string := getf m "held_back".
 tips (m : obj) : list (string * string) := getf m "tips".
 version (m : obj) : nat := getf m "version".
-(** path -> (content, version that last wrote it) *)
-files (m : obj) : list (string * (string * nat)) := getf m "files".
+(** repository -> its head tree *)
+repos (m : obj) : list (string * string) := getf m "repos".
+(** "repo:path" -> the version that last changed it *)
+paths (m : obj) : list (string * nat) := getf m "paths".
 tasks (m : obj) : list task := getf m "tasks".
 bids (m : obj) : list bid := getf m "bids".
 pending (m : obj) : option proposal := getf m "pending".
@@ -69,8 +97,8 @@ new_market (agents : list string) : obj :=
    ("history", ([] : list string) : Any), ("tstart", 0 : Any), ("active", 0 : Any), ("merges", 0 : Any),
    (* the chain starts between terms, so even term 1 is drawn *)
    ("awaiting", true : Any), ("asince", 0 : Any),
-   ("reveals", ([] : list (string * string)) : Any), ("tips", ([] : list (string * string)) : Any),
-   ("version", 0 : Any), ("files", ([] : list (string * (string * nat))) : Any),
+   ("reveals", ([] : list (string * string)) : Any), ("held_back", ([] : list string) : Any), ("tips", ([] : list (string * string)) : Any),
+   ("version", 0 : Any), ("repos", ([] : list (string * string)) : Any), ("paths", ([] : list (string * nat)) : Any),
    ("tasks", ([] : list task) : Any), ("bids", ([] : list bid) : Any), ("pending", (None : option proposal) : Any),
    ("nonces", ([] : list (string * nat)) : Any), ("lastbid", ([] : list (string * nat)) : Any),
    ("counters", ([] : list (string * nat)) : Any), ("params", ([] : list (string * nat)) : Any)].
@@ -85,15 +113,15 @@ bid_by (m : obj) (id : nat) : option bid := find (fun b => bidn b =? id) (bids m
 set_bid (m : obj) (b : bid) : obj := setf m "bids" (map (fun x => if bidn x =? bidn b then b else x) (bids m)).
 
 with_status (b : bid) (s : status) (w : string) : bid :=
-  {| bidn := bidn b; btask := btask b; bidder := bidder b; base := base b; writes := writes b; note := note b;
+  {| bidn := bidn b; btask := btask b; bidder := bidder b; base := base b; edits := edits b; note := note b;
      bst := s; stale := stale b; why := w; votes := votes b |}.
 
 with_votes (b : bid) (v : list (string * bool)) : bid :=
-  {| bidn := bidn b; btask := btask b; bidder := bidder b; base := base b; writes := writes b; note := note b;
+  {| bidn := bidn b; btask := btask b; bidder := bidder b; base := base b; edits := edits b; note := note b;
      bst := bst b; stale := stale b; why := why b; votes := v |}.
 
 mark_stale (b : bid) : bid :=
-  {| bidn := bidn b; btask := btask b; bidder := bidder b; base := base b; writes := writes b; note := note b;
+  {| bidn := bidn b; btask := btask b; bidder := bidder b; base := base b; edits := edits b; note := note b;
      bst := bst b; stale := true; why := why b; votes := votes b |}.
 
 is_leader (m : obj) (a : string) : bool := negb (seq (leader m) "") && seq (leader m) a.
@@ -102,20 +130,28 @@ pending_bid_id (m : obj) : nat := match pending m with Some p => pbid p | None =
 
 open_tasks (m : obj) : list task := filter topen (tasks m).
 
-(** has the path changed since version v? *)
-changed_since (m : obj) (v : nat) (path : string) : bool :=
-  match lookup path (files m) with Some (_, w) => v <? w | None => false end.
+path_key (r p : string) : string := append r (append ":" p).
 
-conflicts (m : obj) (b : bid) : bool := existsb (fun pw => changed_since m (base b) (fst pw)) (writes b).
+(** has the path in repository r changed since version v? *)
+changed_since (m : obj) (r : string) (v : nat) (p : string) : bool :=
+  match lookup (path_key r p) (paths m) with Some w => v <? w | None => false end.
 
-(** A merge: write the files, then clear what now conflicts. *)
+bid_repo (m : obj) (b : bid) : string := match task_by m (btask b) with Some t => trepo t | None => "" end.
+
+conflicts (m : obj) (b : bid) : bool := existsb (changed_since m (bid_repo m b) (base b)) (edit_paths (edits b)).
+
+(** A merge: move the repository's head to the attested tree, mark the paths
+    it changed, then clear what now conflicts. The shell applies the edits to
+    its checkout and checks it reaches that tree. *)
 finalize (m : obj) (p : proposal) : obj * list (list string) :=
   match bid_by m (pbid p) with
   | None => (setf m "pending" (None : option proposal), [])
   | Some b =>
+      let r := bid_repo m b in
+      let spec_of := match task_by m (btask b) with Some t => spec t | None => "" end in
       let v := version m + 1 in
-      let fs := fold_left (fun fs pw => put (fst pw) (snd pw, v) fs) (writes b) (files m) in
-      let m := setf (setf m "files" fs) "version" v in
+      let ps := fold_left (fun ps x => put (path_key r x) v ps) (edit_paths (edits b)) (paths m) in
+      let m := setf (setf (setf m "paths" ps) "version" v) "repos" (put r (ptree p) (repos m)) in
       let m := set_bid m (with_votes (with_status b Merged "") (pvotes p)) in
       let m := setf (setf m "pending" (None : option proposal)) "merges" (merges m + 1) in
       let m := count m (bidder b) "merges" in
@@ -125,7 +161,7 @@ finalize (m : obj) (p : proposal) : obj * list (list string) :=
                    if conflicts m x then count (set_bid m (with_status x Cleared reason)) (bidder x) "cleared"
                    else set_bid m (mark_stale x)
                  else m) (bids m) m in
-      (m, map (fun pw => ["write", fst pw, snd pw]) (writes b))
+      (m, [("merge" :: r :: show v :: ptree p :: show (bidn b) :: show (btask b) :: bidder b :: spec_of :: flat_edits (edits b))])
   end.
 
 (** Three of four approve: the leader by proposing, each attestor by voting
@@ -163,15 +199,24 @@ apply (m : obj) (a : string) (fields : list string) : obj * list (list string) *
   let ok (m : obj) := (m, ([] : list (list string)), "") in
   let lead := is_leader m a in
   match fields with
-  | ["post", s] =>
+  | "post" :: rest =>
+      (* post SPEC, with one repository; or post REPO SPEC CONTEXT-PATH... *)
+      let '(r, s, ctx) := match rest, repos m with
+                          | [s], [(r, _)] => (r, s, [])
+                          | r :: s :: ctx, _ => (r, s, ctx)
+                          | _, _ => ("", "", [])
+                          end in
       if negb lead then fail "only the term leader posts tasks"
-      else if seq s "" then fail "empty task"
+      else if seq s "" then fail "empty task, or no repository named: post REPO SPEC [CONTEXT-PATH...]"
+      else if negb (existsb (fun x => seq (fst x) r) (repos m)) then fail "no such repository"
+      else if (8 <? length ctx) || negb (forallb safe_path ctx) then fail "context is up to 8 safe paths"
       else if param m "max_open_tasks" <=? length (open_tasks m) then fail "too many open tasks"
       else
         let id := length (tasks m) + 1 in
-        ok (setf m "tasks" (tasks m ++ [{| tid := id; spec := s; poster := a; posted_at := mheight m; topen := true |}]))
-  | "bid" :: t :: v :: n :: ws =>
-      let w := pairs ws in
+        ok (setf m "tasks" (tasks m ++ [{| tid := id; spec := s; poster := a; posted_at := mheight m; topen := true;
+                                           trepo := r; tctx := ctx |}]))
+  | "bid" :: t :: v :: n :: es =>
+      let w := triples es in
       match task_by m (num t) with
       | None => fail "no such task"
       | Some tk =>
@@ -181,12 +226,13 @@ apply (m : obj) (a : string) (fields : list string) : obj * list (list string) *
           else
             let m := setf m "lastbid" (put a (mheight m) (lastbid m)) in
             if negb (num v =? version m) then (m, [], "bid is not on the current version: rebase")
-            else if (length w =? 0) || (param m "max_files" <? length w) then (m, [], "a bid writes 1 to max_files files")
-            else if negb (forallb (fun pw => safe_path (fst pw)) w) || negb (distinct (map fst w) =? length w) then (m, [], "bad or repeated path")
+            else if (length w =? 0) || negb (length es =? 3 * length w) then (m, [], "a bid's edits come in threes: path, old, new")
+            else if (param m "max_files" <? length (edit_paths w)) || (5 * param m "max_files" <? length w) then (m, [], "a bid edits 1 to max_files files, with up to 5 edits each")
+            else if negb (forallb (fun e => safe_path (epath e)) w) then (m, [], "unsafe path")
             else if param m "max_pending_bids" <=? length (filter (fun b => seq (bidder b) a && is_pending (bst b)) (bids m)) then (m, [], "too many pending bids")
             else
               let id := length (bids m) + 1 in
-              ok (setf m "bids" (bids m ++ [{| bidn := id; btask := tid tk; bidder := a; base := version m; writes := w;
+              ok (setf m "bids" (bids m ++ [{| bidn := id; btask := tid tk; bidder := a; base := version m; edits := w;
                                                note := n; bst := Pending; stale := false; why := ""; votes := [] |}]))
       end
   | ["withdraw", i] =>
@@ -195,25 +241,33 @@ apply (m : obj) (a : string) (fields : list string) : obj * list (list string) *
                   then ok (set_bid m (with_status b Withdrawn "")) else fail "can't withdraw that bid"
       | None => fail "no such bid"
       end
-  | ["merge", i] =>
+  | "merge" :: i :: rest =>
+      let tree := match rest with [t] => t | _ => "" end in
       match bid_by m (num i) with
       | Some b =>
           if negb lead then fail "only the term leader merges"
+          else if seq tree "" then fail "a merge names the tree its edits give on the head: merge BID TREE"
           else if negb (pending_bid_id m =? 0) then fail "a merge is already pending"
           else if param m "max_merges" <=? merges m then fail "merge limit for this term"
           else if negb (is_pending (bst b)) || seq (bidder b) a then fail "not a bid this leader can merge"
-          else ok (setf m "pending" (Some {| pbid := bidn b; pby := a; pat := mheight m; pvotes := [] |}))
+          else ok (setf m "pending" (Some {| pbid := bidn b; pby := a; pat := mheight m; pvotes := []; ptree := tree |}))
       | None => fail "no such bid"
       end
-  | ["attest", i, yes] =>
+  | "attest" :: i :: yes :: rest =>
+      (* attest BID yes TREE, the tree the edits gave on the head; or attest BID no *)
       match pending m, bid_by m (num i) with
       | Some p, Some b =>
+          let tree := match rest with [x] => x | _ => "" end in
           if negb (pbid p =? bidn b) then fail "that bid isn't pending merge"
           else if seq a (pby p) || seq a (bidder b) then fail "the leader and the bidder don't attest"
           else if existsb (fun v => seq (fst v) a) (pvotes p) then fail "already attested"
+          else if seq yes "yes" && seq tree "" then fail "a yes names the tree it checked: attest BID yes TREE"
           else
-            let p := {| pbid := pbid p; pby := pby p; pat := pat p; pvotes := (a, seq yes "yes") :: pvotes p |} in
-            let (m, o) := settle (setf m "pending" (Some p)) in (m, o, "")
+            (* a yes for another tree than the leader's counts as a no *)
+            let agree := seq yes "yes" && seq (ptree p) tree in
+            let p := {| pbid := pbid p; pby := pby p; pat := pat p; pvotes := (a, agree) :: pvotes p; ptree := ptree p |} in
+            let note := if seq yes "yes" && negb agree then [["log", append a (append "'s yes named another tree than the leader's, " (ptree p))]] else [] in
+            let '(m, o) := settle (setf m "pending" (Some p)) in (m, o ++ note, "")
       | _, _ => fail "nothing to attest"
       end
   | ["reject", i, why] =>
@@ -228,7 +282,8 @@ apply (m : obj) (a : string) (fields : list string) : obj * list (list string) *
           if negb lead || negb (topen tk) then fail "can't close that task"
           else if existsb (fun b => (bidn b =? pending_bid_id m) && (btask b =? tid tk)) (bids m) then fail "task has a merge in progress"
           else
-            let m := setf m "tasks" (map (fun x => if tid x =? tid tk then {| tid := tid x; spec := spec x; poster := poster x; posted_at := posted_at x; topen := false |} else x) (tasks m)) in
+            let m := setf m "tasks" (map (fun x => if tid x =? tid tk then {| tid := tid x; spec := spec x; poster := poster x; posted_at := posted_at x; topen := false;
+                                                                             trepo := trepo x; tctx := tctx x |} else x) (tasks m)) in
             ok (fold_left (fun m b => if (btask b =? tid tk) && is_pending (bst b) then count (set_bid m (with_status b Cleared "task closed")) (bidder b) "cleared" else m) (bids m) m)
       | None => fail "no such task"
       end
@@ -240,14 +295,21 @@ apply (m : obj) (a : string) (fields : list string) : obj * list (list string) *
   | _ => fail "unknown transaction"
   end.
 
-(** Who may lead next: those who revealed, minus the last two leaders. *)
-eligible (m : obj) : list string :=
-  let revealed := filter (fun a => existsb (fun r => seq (fst r) a) (reveals m)) (agents m) in
-  let recent := last_n 2 (history m) in
-  match filter (fun a => negb (mem a recent)) revealed with
-  | [] => match filter (fun a => negb (mem a (last_n 1 (history m)))) revealed with [] => revealed | l => l end
+(** Who may win a draw: those who revealed, minus anyone who held back in the
+    last draw, then minus the last two leaders. Each step is skipped if it
+    would leave no one. Pure on lists, so market.proof reasons about it
+    directly. *)
+draw_pool (revealed held recent latest : list string) : list string :=
+  let fresh := match filter (fun a => negb (mem a held)) revealed with [] => revealed | l => l end in
+  match filter (fun a => negb (mem a recent)) fresh with
+  | [] => match filter (fun a => negb (mem a latest)) fresh with [] => fresh | l => l end
   | l => l
   end.
+
+revealed (m : obj) : list string := filter (fun a => existsb (fun r => seq (fst r) a) (reveals m)) (agents m).
+
+eligible (m : obj) : list string :=
+  draw_pool (revealed m) (held_back m) (last_n 2 (history m)) (last_n 1 (history m)).
 
 (** The draw waits for all four reveals, or for three once reveal_window blocks
     have passed. The seed hashes the reveals in agent order, so no proposer
@@ -258,6 +320,8 @@ maybe_draw (m : obj) : obj :=
     let el := eligible m in
     let seed := hash_list (map (fun a => get_or "" a (reveals m)) (agents m)) in
     let l := nth (hexnum seed 12 0 mod length el) el "" in
+    let held := filter (fun a => negb (mem a (revealed m))) (agents m) in
+    let m := fold_left (fun m a => count m a "held_back") held (setf m "held_back" held) in
     let m := setf (setf (setf m "leader" l) "term" (term m + 1)) "history" (last_n 8 (history m ++ [l])) in
     let m := setf (setf (setf m "tstart" (mheight m)) "active" (mheight m)) "merges" 0 in
     count (setf (setf m "awaiting" false) "reveals" ([] : list (string * string))) l "led"
@@ -326,9 +390,10 @@ block_ok (m : obj) (txs : list string) : bool :=
 (** Status lines for people and for `pantheon status`. *)
 status_lines (m : obj) : list string :=
   [append "height " (append (show (mheight m)) (append "  term " (append (show (term m)) (append "  leader " (if seq (leader m) "" then "(drawing)" else leader m))))),
-   append "version " (append (show (version m)) (append "  files " (show (length (files m))))),
+   append "version " (show (version m)),
    append "history " (fold_left (fun s a => append s (append " " a)) (history m) "")]
-  ++ map (fun t => append "task " (append (show (tid t)) (append (if topen t then " [open] " else " [closed] ") (spec t)))) (tasks m)
+  ++ map (fun r => append "repo " (append (fst r) (append " " (snd r)))) (repos m)
+  ++ map (fun t => append "task " (append (show (tid t)) (append (if topen t then " [open] " else " [closed] ") (append (trepo t) (append ": " (spec t)))))) (tasks m)
   ++ map (fun b => append "bid " (append (show (bidn b)) (append " [" (append (status_name (bst b)) (append (if stale b then " stale] task " else "] task ")
                     (append (show (btask b)) (append " by " (append (bidder b) (append " " (why b)))))))))) (bids m)
   ++ map (fun c => append "count " (append (fst c) (append " " (show (snd c))))) (counters m).
