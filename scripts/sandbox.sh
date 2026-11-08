@@ -235,6 +235,7 @@ setup_inbox() {
   done
   in_vm "$v" sudo sh -c 'cat > /usr/local/lib/pantheon/bidder-inbox.sh.new && chmod 755 /usr/local/lib/pantheon/bidder-inbox.sh.new && mv /usr/local/lib/pantheon/bidder-inbox.sh.new /usr/local/lib/pantheon/bidder-inbox.sh' < "$here/scripts/bidder-inbox.sh"
   in_vm "$v" sudo sh -c 'cat > /usr/local/bin/pantheon-inbox.new && chmod 755 /usr/local/bin/pantheon-inbox.new && mv /usr/local/bin/pantheon-inbox.new /usr/local/bin/pantheon-inbox' < "$here/scripts/pantheon-inbox"
+  in_vm "$v" sudo sh -c 'cat > /usr/local/bin/soma-dev-build.new && chmod 755 /usr/local/bin/soma-dev-build.new && mv /usr/local/bin/soma-dev-build.new /usr/local/bin/soma-dev-build' < "$here/scripts/soma-dev-build"
   in_vm "$v" sudo sh -c 'getent group inbox >/dev/null || groupadd inbox; usermod -aG inbox pantheon; usermod -aG inbox bidder; install -d -o pantheon -g inbox -m 2770 /var/lib/pantheon-inbox'
 }
 

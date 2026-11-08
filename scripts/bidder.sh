@@ -69,10 +69,11 @@ I
 
 case $MODEL in
   claude)
-    echo 'Run shell commands one at a time, not chained with ; && or || and not piped: only these run, `soma build`, `soma run`, `soma explore`, `sh test.sh`, `sh tests/...`, `sh test/...`, `git diff`, `git status`, and `ls`. A command run another way is refused, and your work goes in unchecked. Read and edit files with your file tools.' >> "$prompt"
+    echo 'Run shell commands one at a time, not chained with ; && or || and not piped: only these run, `soma build`, `soma run`, `soma explore`, `sh test.sh`, `sh tests/...`, `sh test/...`, `git diff`, `git status`, `ls`, and, in a checkout of Soma itself, `soma-dev-build` (builds it) and `./_build/install/default/bin/soma ...` (the Soma you built). A command run another way is refused, and your work goes in unchecked. Read and edit files with your file tools.' >> "$prompt"
     note=$(as_bidder claude -p --tools "Read,Edit,Write,Glob,Bash" \
       --allowedTools "Read(./**)" "Edit(./**)" "Glob" "Bash(soma build:*)" "Bash(soma run:*)" "Bash(soma explore:*)" \
                      "Bash(sh test.sh:*)" "Bash(sh tests/:*)" "Bash(sh test/:*)" "Bash(git diff:*)" "Bash(git status)" "Bash(ls:*)" \
+                     "Bash(soma-dev-build)" "Bash(./_build/install/default/bin/soma:*)" \
       --permission-mode dontAsk --strict-mcp-config --no-session-persistence --setting-sources "" --output-format text < "$prompt" | tail -n 1) ;;
   codex)
     outd=$(mktemp -d); chmod 777 "$outd"; out=$outd/reply.txt

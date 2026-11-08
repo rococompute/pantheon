@@ -1,0 +1,19 @@
+#!/bin/sh
+# Builds the Soma checkout in the current directory, the way Soma's CI does,
+# in the soma-build opam switch scripts/setup-node.sh made, then says where
+# the built soma is. For a bidder whose task changes Soma itself: build, then
+# run ./_build/install/default/bin/soma (on an example project, say) to see
+# the change.
+#
+#   soma-dev-build
+#
+# SOMA_JOBS: dune's jobs (default 2: a whole build peaks at 2.3 GiB with 2)
+set -eu
+[ -f dune-project ] && [ -f soma-runtime.opam ] || { echo "soma-dev-build: run it in a checkout of Soma (no dune-project and soma-runtime.opam here)" >&2; exit 1; }
+eval "$(opam env --switch=soma-build --set-switch)"
+log=${TMPDIR:-/tmp}/soma-dev-build.$$.log   # outside the checkout: not part of a patch
+make dunestrap > "$log" 2>&1 || { tail -20 "$log"; echo "soma-dev-build: make dunestrap failed ($log)" >&2; exit 1; }
+rm -f "$log"
+start=$(date +%s)
+dune build -j "${SOMA_JOBS:-2}" soma-runtime.install soma-core.install
+echo "built in $(( $(date +%s) - start ))s: $PWD/_build/install/default/bin/soma"

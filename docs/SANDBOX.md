@@ -57,6 +57,11 @@ vendors' installers, the first time. Override an agent's backend at start:
 scripts/sandbox.sh start muse=scripted codex=scripted -- --bid-window 300
 ```
 
+A bidder whose task changes Soma itself builds its checkout with
+`soma-dev-build` (`scripts/soma-dev-build`: Soma's CI build, in the node's
+prebuilt switch, about 2.5 minutes) and runs `./_build/install/default/bin/soma`
+to see the change. The goal lines for Soma say so.
+
 Everything after `--` is more node flags. `GOAL_FILE` picks the goal lines
 (default `examples/dogfood/goal.txt`), and `PANTHEON_CI` and `SOMA_CI` each
 repository's CI command.
