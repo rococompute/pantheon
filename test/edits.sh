@@ -59,6 +59,14 @@ rm -f "$T/work/blob.bin"
 [ "$(tree_of "$T/replay")" = "$(tree_of "$T/work")" ] && ok "replayed edits give the same tree" || fail "trees differ after replay"
 [ -x "$T/replay/run.sh" ] && ok "executable bit kept" || fail "run.sh lost its executable bit"
 
+# what the repository ignores (a build's output) is no part of a patch
+g clone -q "$T/origin" "$T/built"
+printf '_build/\n' > "$T/built/.gitignore" && (cd "$T/built" && g add .gitignore && g commit -qm ignore)
+mkdir -p "$T/built/_build" && printf 'output\n' > "$T/built/_build/out.txt" && printf 'changed\n' >> "$T/built/sub/d.txt"
+"$BIN" edits "$T/built" "built" > "$T/built.json" || fail "pantheon edits failed on a built checkout"
+jq -e '[.edits[].path] == ["sub/d.txt"]' "$T/built.json" >/dev/null && ok "ignored build output left out" \
+  || fail "edits of a built checkout: $(jq -c '[.edits[].path]' "$T/built.json")"
+
 # refusals
 g clone -q "$T/origin" "$T/bad"
 ln -s /tmp "$T/bad/link"

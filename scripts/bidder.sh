@@ -64,6 +64,7 @@ case $MODEL in
       -c 'approval_policy="never"' -c 'mcp_servers={}' -o "$out" - < "$prompt" >/dev/null
     note=$(tail -n 1 "$out"); rm -f "$out" ;;
   grok)
+    echo 'Run shell commands one at a time, not chained with ; && or ||: only these run, `soma build`, `soma run`, `soma explore`, `sh test.sh`, `sh tests/...`, `sh test/...`, `git diff`, `git status`, `ls`, and `cursor-agent`. Read and edit files with your file tools.' >> "$prompt"
     if as_bidder sh -c 'command -v cursor-agent' >/dev/null 2>&1; then
       echo 'The Cursor CLI is here too: `cursor-agent -p --output-format text "..."` hands a subtask to Cursor'"'"'s agent, in this directory.' >> "$prompt"
     fi

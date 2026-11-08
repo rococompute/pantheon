@@ -40,7 +40,7 @@ reads it from the environment:
 |---|---|---|---|
 | claude | Claude Code, headless, with tools (`scripts/bidder-claude.sh`) | `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token` on this Mac) or `ANTHROPIC_API_KEY` | the bidder user's `~/.config/pantheon/model.env` |
 | codex | codex, headless, with tools (`scripts/bidder-codex.sh`) | `OPENAI_API_KEY`, or with none, a device login | the bidder user's codex login |
-| grok | Grok Build, headless, with tools and the Cursor CLI (`scripts/bidder-grok.sh`) | `XAI_API_KEY`, and `CURSOR_API_KEY` for the Cursor CLI; `GROK_BUILD_MODEL` picks the model | the bidder user's `model.env` |
+| grok | Grok Build, headless, with tools and the Cursor CLI (`scripts/bidder-grok.sh`) | `XAI_API_KEY`, and `CURSOR_API_KEY` for the Cursor CLI; `GROK_BUILD_MODEL` picks the model (default `grok-build-0.1`) | the bidder user's `model.env` |
 | muse | Muse Code, in an interactive session (below) | `META_API_KEY`, or with none, a device login (`muse login`) | the bidder user's muse login |
 
 `login grok` installs Grok Build and the Cursor CLI in the VM, by their

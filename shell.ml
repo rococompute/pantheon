@@ -234,9 +234,12 @@ let hunk_edits dir p before now =
   end
 
 (* What changed in a checkout since its HEAD, as edits. Binary files, and
-   new empty ones, can't be said as edits: they're listed as skipped. *)
+   new empty ones, can't be said as edits: they're listed as skipped. What
+   the repository ignores (a build's output, from the model's soma build) is
+   no part of it. Applying edits (check_tree, merges) still takes every path
+   the edits name, ignored or not, so the tree doesn't hang on .gitignore. *)
 let edits_of_checkout dir =
-  if not (git_ok dir [ "add"; "-A"; "-f" ]) then Error (dir ^ " is not a git checkout")
+  if not (git_ok dir [ "add"; "-A" ]) then Error (dir ^ " is not a git checkout")
   else
     let ok, out = git dir [ "diff"; "--cached"; "--no-renames"; "--name-status"; "-z"; "HEAD" ] in
     if not ok then Error "git diff failed"

@@ -8,7 +8,8 @@
 #
 #   scripts/sandbox.sh base                  build the VM every node is cloned from (once, ~20 min)
 #   scripts/sandbox.sh nodes                 one VM per agent, cloned from it
-#   scripts/sandbox.sh network               keys, the network directory, genesis on every VM
+#   scripts/sandbox.sh network               the node built from PANTHEON_COMMIT, keys, the network directory, genesis
+#   scripts/sandbox.sh update                rebuild every VM's node from PANTHEON_COMMIT (network does this)
 #   scripts/sandbox.sh login AGENT           the model's login inside AGENT's VM
 #   scripts/sandbox.sh session AGENT         an interactive session for an agent on the inbox backend (muse)
 #   scripts/sandbox.sh start [AGENT=BACKEND ...] [-- NODE FLAGS]
@@ -86,7 +87,23 @@ cmd_nodes() {
   say "next: scripts/sandbox.sh network"
 }
 
+# Every VM's node, built from the commit the chain starts from, as each agent
+# would on its own machine: soma build, from source
+cmd_update() {
+  commit=$(git -C "$here" rev-parse "${PANTHEON_COMMIT:-HEAD}")
+  for a in $AGENTS; do
+    v=$(vm "$a"); running "$v" || die "$v isn't running: scripts/sandbox.sh nodes"
+    [ "$(in_vm "$v" sudo cat /home/pantheon/pantheon/.commit 2>/dev/null)" = "$commit" ] && continue
+    git -C "$here" archive --format=tar "$commit" | in_vm "$v" sudo -u pantheon -H sh -c \
+      'cd ~/pantheon && find . -mindepth 1 -maxdepth 1 ! -name .soma-cache -exec rm -rf {} + && tar -x -f - && soma build main.soma >/tmp/pantheon-build.log 2>&1' \
+      || die "building Pantheon $commit failed on $v: scripts/sandbox.sh shell $a, then: sudo cat /tmp/pantheon-build.log"
+    printf '%s\n' "$commit" | in_vm "$v" sudo -u pantheon sh -c 'cat > ~/pantheon/.commit; chmod -R a+rX ~/pantheon'
+    say "$a: node built from $(git -C "$here" log -1 --format='%h %s' "$commit")"
+  done
+}
+
 cmd_network() {
+  cmd_update
   net=$SANDBOX_DIR/network
   mkdir -p "$net/parts" "$net/repos"
   for a in $AGENTS; do
@@ -159,6 +176,7 @@ cmd_login() {
       fi ;;
     grok)
       [ -n "${XAI_API_KEY:-}" ] || die "set XAI_API_KEY (an API key from console.x.ai)"
+      GROK_BUILD_MODEL=${GROK_BUILD_MODEL:-grok-build-0.1}
       in_vm "$v" test -x /usr/local/bin/grok || install_grok "$v"
       # Grok Build runs as the bidder, with its key, and the Cursor CLI's if there is one
       put "$(printf 'XAI_API_KEY=%s\n%s%s' "$XAI_API_KEY" "${GROK_BUILD_MODEL:+GROK_BUILD_MODEL=$GROK_BUILD_MODEL
@@ -290,6 +308,6 @@ cmd_fetch() {
 
 c=${1:-}; [ $# -gt 0 ] && shift
 case $c in
-  base|nodes|network|login|session|start|status|logs|shell|stop|fetch|reset) "cmd_$c" "$@" ;;
+  base|nodes|network|update|login|session|start|status|logs|shell|stop|fetch|reset) "cmd_$c" "$@" ;;
   *) awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "$0"; [ -z "$c" ] || exit 1 ;;
 esac
