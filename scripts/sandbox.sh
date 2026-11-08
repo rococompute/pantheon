@@ -300,10 +300,13 @@ cmd_start() {
     setup_inbox "$v"
     printf '[Service]\nSyslogIdentifier=pantheon\nEnvironment="BIDDER_WRITABLE=/home/pantheon/.opam/log"\n' | in_vm "$v" sudo sh -c 'mkdir -p /etc/systemd/system/pantheon-node.service.d && cat > /etc/systemd/system/pantheon-node.service.d/log.conf && systemctl daemon-reload'
     in_vm "$v" sudo systemctl enable -q pantheon-node
-    in_vm "$v" sudo systemctl restart pantheon-node
-    say "$a: started, backend $b"
+    say "$a: ready, backend $b"
   done
-  say "watch it with: scripts/sandbox.sh status"
+  # all at once: restarted one after another mid-height, a node that came back
+  # first can decide a block the others then miss the last votes of, and
+  # catching up needs two nodes that have it
+  for a in $AGENTS; do in_vm "$(vm "$a")" sudo systemctl restart pantheon-node & done; wait
+  say "started. Watch it with: scripts/sandbox.sh status"
 }
 
 cmd_status() {
