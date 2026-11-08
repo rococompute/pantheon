@@ -78,7 +78,9 @@ case $MODEL in
     extra=""; for d in ${BIDDER_WRITABLE:-}; do extra="$extra --add-dir $d"; done
     as_bidder codex exec --skip-git-repo-check --ephemeral --disable apps --sandbox workspace-write -C "$PANTHEON_WORKTREE" $extra \
       -c 'approval_policy="never"' -c 'mcp_servers={}' -o "$out" - < "$prompt" >/dev/null
-    note=$(sed '/^[[:space:]]*$/d' "$out" 2>/dev/null | tail -n 1); rm -rf "$outd" ;;
+    note=$(sed '/^[[:space:]]*$/d' "$out" 2>/dev/null | tail -n 1); rm -rf "$outd"
+    # codex sometimes ends with the reply format's JSON: its note, then
+    case $note in '{'*) note=$(printf '%s' "$note" | jq -r '.note // empty' 2>/dev/null || printf '%s' "$note") ;; esac ;;
   grok)
     echo 'Run shell commands one at a time, not chained with ; && or ||: only these run, `soma build`, `soma run`, `soma explore`, `sh test.sh`, `sh tests/...`, `sh test/...`, `git diff`, `git status`, `ls`, and `cursor-agent`. Read and edit files with your file tools.' >> "$prompt"
     if as_bidder sh -c 'command -v cursor-agent' >/dev/null 2>&1; then

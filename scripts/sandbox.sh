@@ -230,10 +230,11 @@ setup_inbox() {
   # the bidders, from this checkout, so a VM never runs a stale copy
   in_vm "$v" sudo sh -c 'cat > /usr/local/lib/pantheon/model-env' < "$here/deploy/sandbox/model-env"
   for f in bidder.sh bidder-claude.sh bidder-codex.sh bidder-grok.sh; do
-    in_vm "$v" sudo sh -c "cat > /usr/local/lib/pantheon/$f && chmod 755 /usr/local/lib/pantheon/$f" < "$here/scripts/$f"
+    # moved into place, so a bidder that's running keeps the copy it started with
+    in_vm "$v" sudo sh -c "cat > /usr/local/lib/pantheon/.$f && chmod 755 /usr/local/lib/pantheon/.$f && mv /usr/local/lib/pantheon/.$f /usr/local/lib/pantheon/$f" < "$here/scripts/$f"
   done
-  in_vm "$v" sudo sh -c 'cat > /usr/local/lib/pantheon/bidder-inbox.sh && chmod 755 /usr/local/lib/pantheon/bidder-inbox.sh' < "$here/scripts/bidder-inbox.sh"
-  in_vm "$v" sudo sh -c 'cat > /usr/local/bin/pantheon-inbox && chmod 755 /usr/local/bin/pantheon-inbox' < "$here/scripts/pantheon-inbox"
+  in_vm "$v" sudo sh -c 'cat > /usr/local/lib/pantheon/bidder-inbox.sh.new && chmod 755 /usr/local/lib/pantheon/bidder-inbox.sh.new && mv /usr/local/lib/pantheon/bidder-inbox.sh.new /usr/local/lib/pantheon/bidder-inbox.sh' < "$here/scripts/bidder-inbox.sh"
+  in_vm "$v" sudo sh -c 'cat > /usr/local/bin/pantheon-inbox.new && chmod 755 /usr/local/bin/pantheon-inbox.new && mv /usr/local/bin/pantheon-inbox.new /usr/local/bin/pantheon-inbox' < "$here/scripts/pantheon-inbox"
   in_vm "$v" sudo sh -c 'getent group inbox >/dev/null || groupadd inbox; usermod -aG inbox pantheon; usermod -aG inbox bidder; install -d -o pantheon -g inbox -m 2770 /var/lib/pantheon-inbox'
 }
 
