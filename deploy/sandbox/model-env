@@ -2,7 +2,8 @@
 # environment): Soma from the node's build with its prebuilt switches (the
 # way CI runs it), and the model's own login from ~/.config/pantheon/model.env.
 # Sourced by the wrappers in /usr/local/bin (claude, codex, grok, muse, ...).
-export PATH=/home/pantheon/soma/_build/install/default/bin:/usr/local/bin:/usr/bin:/bin
+# soma-locked first: a bidder's soma build waits for a CI build on this VM
+export PATH=/usr/local/lib/pantheon/bidder-bin:/home/pantheon/soma/_build/install/default/bin:/usr/local/bin:/usr/bin:/bin
 export OPAMROOT=/home/pantheon/.opam SOMA_OCAML_SWITCH=/home/pantheon/.cache/soma/ocaml
 # soma's cache where a model's own sandbox lets it write (codex: the workdir and /tmp)
 export XDG_CACHE_HOME=/tmp/bidder-cache

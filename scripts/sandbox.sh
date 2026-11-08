@@ -228,7 +228,7 @@ default_backend() {
 setup_inbox() {
   v=$1
   # the bidders, from this checkout, so a VM never runs a stale copy
-  in_vm "$v" sudo sh -c 'cat > /usr/local/lib/pantheon/model-env' < "$here/deploy/sandbox/model-env"
+  in_vm "$v" sudo sh -c 'cat > /usr/local/lib/pantheon/.model-env && mv /usr/local/lib/pantheon/.model-env /usr/local/lib/pantheon/model-env' < "$here/deploy/sandbox/model-env"
   for f in bidder.sh bidder-claude.sh bidder-codex.sh bidder-grok.sh; do
     # moved into place, so a bidder that's running keeps the copy it started with
     in_vm "$v" sudo sh -c "cat > /usr/local/lib/pantheon/.$f && chmod 755 /usr/local/lib/pantheon/.$f && mv /usr/local/lib/pantheon/.$f /usr/local/lib/pantheon/$f" < "$here/scripts/$f"
@@ -237,6 +237,7 @@ setup_inbox() {
   in_vm "$v" sudo sh -c 'cat > /usr/local/bin/pantheon-inbox.new && chmod 755 /usr/local/bin/pantheon-inbox.new && mv /usr/local/bin/pantheon-inbox.new /usr/local/bin/pantheon-inbox' < "$here/scripts/pantheon-inbox"
   in_vm "$v" sudo sh -c 'cat > /usr/local/bin/soma-dev-build.new && chmod 755 /usr/local/bin/soma-dev-build.new && mv /usr/local/bin/soma-dev-build.new /usr/local/bin/soma-dev-build' < "$here/scripts/soma-dev-build"
   in_vm "$v" sudo sh -c 'install -d -m 755 /var/lib/pantheon-build && touch /var/lib/pantheon-build/lock && chmod 644 /var/lib/pantheon-build/lock'
+  in_vm "$v" sudo sh -c 'install -d -m 755 /usr/local/lib/pantheon/bidder-bin && cat > /usr/local/lib/pantheon/bidder-bin/.soma && chmod 755 /usr/local/lib/pantheon/bidder-bin/.soma && mv /usr/local/lib/pantheon/bidder-bin/.soma /usr/local/lib/pantheon/bidder-bin/soma' < "$here/deploy/sandbox/soma-locked"
   in_vm "$v" sudo sh -c 'cat > /usr/local/sbin/pantheon-docker.new && chmod 755 /usr/local/sbin/pantheon-docker.new && mv /usr/local/sbin/pantheon-docker.new /usr/local/sbin/pantheon-docker' < "$here/deploy/sandbox/pantheon-docker"
   in_vm "$v" sudo sh -c 'getent group inbox >/dev/null || groupadd inbox; usermod -aG inbox pantheon; usermod -aG inbox bidder; install -d -o pantheon -g inbox -m 2770 /var/lib/pantheon-inbox'
 }

@@ -1,0 +1,15 @@
+#!/bin/sh
+# soma, as a bidder runs it in the sandbox: `soma build` and `soma run` take
+# this VM's heavy-build lock first, the one the node's CI and soma-dev-build
+# take, so a bidder's build and a CI build never run at once. Two of them
+# (one Pantheon build can take 3.6 GB) run a 4 GiB VM out of memory.
+case "${1:-}" in
+  build|run)
+    lock=/var/lib/pantheon-build/lock
+    if [ -r "$lock" ] && command -v flock >/dev/null; then
+      exec 9<"$lock"
+      flock -n 9 || { echo "soma: waiting for the other build on this machine (CI) to finish" >&2; flock 9; }
+    fi ;;
+esac
+# the real soma by its path: it finds its library from where it was run
+exec /home/pantheon/soma/_build/install/default/bin/soma "$@"
