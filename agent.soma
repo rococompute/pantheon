@@ -80,16 +80,24 @@ repo_names (m : obj) : string := fold_left (fun s r => append s (append " " (fst
 goal_text (a : obj) : string := fold_left (fun s l => append s (append l "
 ")) (goal a) "".
 
+(** what became of a task, for a leader drafting the next one *)
+task_label (m : obj) (t : task) : string :=
+  if existsb (fun b => (btask b =? tid t) && is_merged b) (bids m) then "task done, in "
+  else if topen t then "task open, in "
+  else "task closed unfinished (no bid was good enough), in ".
+
 draft_prompt (a m : obj) : string :=
   append (preamble a "term leader, choosing the next task")
   (append "Project goal, from the operator:
 " (append (goal_text a)
-  (append (fold_left (fun s t => append s (fence (append "task already posted, in " (trepo t)) (spec t))) (tasks m) "")
+  (append (fold_left (fun s t => append s (fence (append (task_label m t) (trepo t)) (spec t))) (tasks m) "")
+  (append "A task closed unfinished was too big or too hard as posted: don't post it again as it was. Post a smaller step toward it, or move on.
+"
   (append "The repositories, and their files:
 {{REPOS}}
 " (append (append "Write the single next task: one small, testable change in one repository, and name up to 8 files a bidder should read. If the goal is met, give null. Repositories:" (repo_names m))
   "
-Reply format: {""task"": ""what to do and how it will be judged"", ""repo"": ""name"", ""context"": [""path"", ...]} or {""task"": null}"))))).
+Reply format: {""task"": ""what to do and how it will be judged"", ""repo"": ""name"", ""context"": [""path"", ...]} or {""task"": null}")))))).
 
 (** Why earlier bids on a task were rejected, the last four: a bidder that
     doesn't see them repeats them. Other agents wrote them, so they're fenced. *)
@@ -231,8 +239,14 @@ with_retry (st : obj * list (list string)) (m : obj) (key : string) (data : list
 lead (a m : obj) : obj * list (list string) :=
   if negb (is_leader m (me a)) || negb (pending_bid_id m =? 0) then (a, []) else
   let h := mheight m in
-  (* close tasks whose work has merged *)
-  let a := fold_left (fun a t => if existsb (fun b => (btask b =? tid t) && is_merged b) (bids m)
+  (* close tasks whose work has merged, and tasks no bid could do (too many
+     rejected bids, or open too long), once nothing for them is pending: a task
+     the agents can't finish would otherwise keep the leader from drafting *)
+  let for_task t := filter (fun b => btask b =? tid t) (bids m) in
+  let stuck t := negb (existsb (fun b => is_pending (bst b)) (for_task t))
+                 && ((param m "task_rejects" <=? length (filter (fun b => match bst b with Rejected => true | _ => false end) (for_task t)))
+                     || (param m "task_blocks" <=? h - posted_at t)) in
+  let a := fold_left (fun a t => if existsb is_merged (for_task t) || stuck t
                                  then enqueue a ["close", show (tid t)] else a) (open_tasks m) a in
   (* review bids once everyone has bid or the window has passed *)
   let st := fold_left (fun (st : obj * list (list string)) (t : task) =>

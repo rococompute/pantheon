@@ -317,6 +317,43 @@ F
   echo "ok model: a fake model with tools edited a checkout, and its edits merged on every node, though its first drafts failed"
 }
 
+scenario_stuck() {
+  init stuck 27950 term_blocks=600 task_rejects=2 bid_cooldown=2 || return 1
+  fake=$ROOT/stuck/fake-model.sh
+  cat > "$fake" <<'F'
+#!/bin/sh
+p=$(cat)
+case "$p" in
+  *"choosing the next task"*)
+    # the first task can't be done; once it's closed unfinished, the next goal
+    case "$p" in *"closed unfinished"*"do the impossible"*|*"do the impossible"*"closed unfinished"*)
+      echo '{"task": "add a sub command", "repo": "calc", "context": ["calc.sh"]}' ;;
+    *) echo '{"task": "do the impossible", "repo": "calc", "context": ["calc.sh"]}' ;; esac ;;
+  *"writing a patch"*)
+    cd "$PANTHEON_WORKTREE" || exit 1
+    printf 'attempt\n' > "attempt-$$.txt"
+    "$PANTHEON_BIN" edits . "an attempt" ;;
+  *"reviewing the bids"*)
+    case "$p" in
+      *"do the impossible"*) bids=$(printf '%s' "$p" | sed -n 's/^Bid \([0-9]*\) by.*/\1/p' | tr '\n' ' ')
+        r=""; for b in $bids; do r="$r${r:+,}{\"bid\": $b, \"reason\": \"it can't be done\"}"; done
+        echo "{\"merge\": 0, \"reject\": [$r]}" ;;
+      *) n=$(printf '%s' "$p" | sed -n 's/^Bid \([0-9]*\) by.*/\1/p' | head -1); echo "{\"merge\": $n, \"reject\": []}" ;;
+    esac ;;
+  *"proposed merge is safe"*) echo '{"approve": true, "reason": "fine"}' ;;
+esac
+F
+  chmod +x "$fake"
+  for a in $AGENTS; do node stuck "$a" -- --backend "cmd:$fake"; done
+  wait_for stuck claude 120 "a second task after the first was closed unfinished" \
+    sh -c "grep -q '^task 2 .*add a sub command' '$ROOT/stuck/claude/status.txt'" || { stop stuck; return 1; }
+  stop stuck
+  grep -q '^task 1 \[closed\]' "$ROOT/stuck/claude/status.txt" || { echo "FAIL stuck: task 1 isn't closed"; return 1; }
+  grep -E '^bid [0-9]+ \[merged\] task 1 ' "$ROOT/stuck/claude/status.txt" && { echo "FAIL stuck: task 1 merged a bid"; return 1; }
+  agree stuck claude codex grok muse || return 1
+  echo "ok stuck: a task no bid could do was closed unfinished, and the leader drafted the next"
+}
+
 run() {
   case "$1" in
     happy) scenario_happy ;;
@@ -333,11 +370,12 @@ run() {
     ci) scenario_ci ;;
     policy) scenario_policy ;;
     model) scenario_model ;;
+    stuck) scenario_stuck ;;
     *) echo "unknown scenario $1"; return 1 ;;
   esac
 }
 
-ALL="happy crash equivocate double-vote silent bad-sig withhold bad-tree deny silent-model policy model network ci"
+ALL="happy crash equivocate double-vote silent bad-sig withhold bad-tree deny silent-model policy model stuck network ci"
 want=${*:-$ALL}
 pids=""
 for s in $want; do (run "$s" > "$ROOT/$s.result" 2>&1; echo $? > "$ROOT/$s.code") & pids="$pids $!"; done

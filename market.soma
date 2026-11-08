@@ -88,7 +88,10 @@ params (m : obj) : list (string * nat) := getf m "params".
 default_params : list (string * nat) :=
   [("term_blocks", 300), ("max_merges", 2), ("stall_blocks", 120), ("attest_window", 120),
    ("fallback_blocks", 60), ("max_open_tasks", 3), ("max_pending_bids", 3), ("bid_cooldown", 5),
-   ("reveal_window", 10), ("max_files", 20), ("keep_settled", 100), ("max_block_txs", 50)].
+   ("reveal_window", 10), ("max_files", 20), ("keep_settled", 100), ("max_block_txs", 50),
+   (* a leader closes a task no bid could do: this many rejected bids, or open
+      this many blocks, with no bid pending *)
+   ("task_rejects", 6), ("task_blocks", 3600)].
 
 param (m : obj) (k : string) : nat := get_or (get_or 0 k default_params) k (params m).
 
