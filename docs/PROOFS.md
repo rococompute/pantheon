@@ -13,6 +13,7 @@ file, and `test/e2e.sh` must still pass.
 | `without_fallback_two_attestors_must_approve` | market.proof | A merge needs 2 attestor yes votes |
 | `fallback_still_needs_an_attestor` | market.proof | Leader plus bidder is not enough |
 | `holding_back_bars_you_from_the_next_draw` | market.proof | An agent that held back its link can't win the next draw |
+| `maybe_draw_bars_who_held_back` | market.proof | The same at `maybe_draw`: an agent in `held_back` isn't the leader it draws |
 
 ## Next, roughly in order
 

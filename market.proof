@@ -48,3 +48,313 @@ Proof.
   rewrite <- F in Hsub. apply filter_In in Hsub. destruct Hsub as [_ Hm].
   rewrite Ha in Hm. discriminate.
 Qed.
+
+(** The pool isn't empty while anyone who didn't hold back revealed. *)
+Lemma draw_pool_not_nil :
+  forall (revealed held recent latest : list string) (b : string),
+    In b revealed -> mem b held = false -> draw_pool revealed held recent latest <> [].
+Proof.
+  intros revealed held recent latest b Hb Hbh.
+  unfold draw_pool; cbv zeta.
+  assert (Hf : In b (filter (fun x => negb (mem x held)) revealed)).
+  { apply filter_In. split; [exact Hb | rewrite Hbh; reflexivity]. }
+  destruct (filter (fun x => negb (mem x held)) revealed) as [|y ys] eqn:F; [destruct Hf|].
+  destruct (filter (fun x => negb (mem x recent)) (y :: ys)) as [|z zs]; [|discriminate].
+  destruct (filter (fun x => negb (mem x latest)) (y :: ys)) as [|w ws]; discriminate.
+Qed.
+
+(** Updating another field cannot change the bids. *)
+Lemma getf_setf_other : forall (m : obj) (k q : string) (v : Any),
+  seq q k = false -> getf (setf m k v) q = getf m q.
+Proof.
+  intros m k q v H. induction m as [|[key value] rest IH].
+  - change ((if seq q k then v else unk) = unk). rewrite H. reflexivity.
+  - change (getf (if seq k key then (k, v) :: rest else
+      (key, value) :: setf rest k v) q =
+      (if seq q key then value else getf rest q)).
+    destruct (seq k key) eqn:E.
+    + change ((if seq q k then v else getf rest q) =
+        (if seq q key then value else getf rest q)).
+      unfold seq in E. apply Stdlib.Strings.String.eqb_eq in E.
+      subst key. rewrite H. reflexivity.
+    + change ((if seq q key then value else getf (setf rest k v) q) =
+        (if seq q key then value else getf rest q)).
+      rewrite IH. reflexivity.
+Qed.
+
+Lemma leader_setf_other : forall (m : obj) (k : string) (v : Any),
+  seq "leader" k = false -> leader (setf m k v) = leader m.
+Proof.
+  intros m k v H. unfold leader. rewrite getf_setf_other by exact H. reflexivity.
+Qed.
+
+Lemma leader_setf_leader : forall (m : obj) (l : string),
+  leader (setf m "leader" l) = l.
+Proof.
+  intros m l. unfold leader. induction m as [|[key value] rest IH].
+  - reflexivity.
+  - change (cast Any string
+      (getf (if seq "leader" key then ("leader", cast string Any l) :: rest
+        else (key, value) :: setf rest "leader" l) "leader") = l).
+    destruct (seq "leader" key) eqn:E.
+    + reflexivity.
+    + change (cast Any string (if seq "leader" key then value else
+        getf (setf rest "leader" l) "leader") = l).
+      rewrite E. exact IH.
+Qed.
+
+(** The same at maybe_draw: an agent in held_back, which the previous draw
+    recorded, is not the leader this draw picks, as long as someone who
+    didn't hold back revealed. When no draw happens, the state is unchanged. *)
+Theorem maybe_draw_bars_who_held_back :
+  forall (m : obj) (a b : string),
+    mem a (held_back m) = true -> In b (revealed m) -> mem b (held_back m) = false ->
+    maybe_draw m = m \/ leader (maybe_draw m) <> a.
+Proof.
+  intros m a b Ha Hb Hbh. unfold maybe_draw.
+  destruct (awaiting m && ((length (reveals m) =? length (agents m)) ||
+    ((3 <=? length (reveals m)) &&
+      (asince m + param m "reveal_window" <=? mheight m))));
+    [right|left; reflexivity].
+  cbv zeta. unfold count.
+  repeat rewrite leader_setf_other by reflexivity.
+  rewrite leader_setf_leader.
+  assert (Hne : eligible m <> []).
+  { unfold eligible. eapply draw_pool_not_nil; eauto. }
+  assert (Hout : ~ In a (eligible m)).
+  { unfold eligible. eapply holding_back_bars_you_from_the_next_draw; eauto. }
+  intros E. apply Hout. rewrite <- E. apply nth_In. apply Nat.mod_upper_bound.
+  intros L. apply Hne. apply length_zero_iff_nil. exact L.
+Qed.
+
+Lemma bids_setf_other : forall (m : obj) (k : string) (v : Any),
+  seq "bids" k = false -> bids (setf m k v) = bids m.
+Proof.
+  intros m k v H. unfold bids. rewrite getf_setf_other by exact H. reflexivity.
+Qed.
+
+Lemma bids_setf_bids : forall (m : obj) (bs : list bid),
+  bids (setf m "bids" bs) = bs.
+Proof.
+  intros m bs. unfold bids. induction m as [|[key value] rest IH].
+  - reflexivity.
+  - change (cast Any (list bid)
+      (getf (if seq "bids" key then ("bids", cast (list bid) Any bs) :: rest
+        else (key, value) :: setf rest "bids" bs) "bids") = bs).
+    destruct (seq "bids" key) eqn:E.
+    + reflexivity.
+    + change (cast Any (list bid) (if seq "bids" key then value else
+        getf (setf rest "bids" bs) "bids") = bs).
+      rewrite E. exact IH.
+Qed.
+
+Definition merged_satisfy (P : bid -> Prop) (m : obj) : Prop :=
+  forall b, In b (bids m) -> bst b = Merged -> P b.
+
+Lemma merged_setf_other : forall P m k v,
+  seq "bids" k = false -> merged_satisfy P m -> merged_satisfy P (setf m k v).
+Proof.
+  unfold merged_satisfy. intros P m k v H Hm.
+  rewrite bids_setf_other by exact H. exact Hm.
+Qed.
+
+Lemma merged_set_bid : forall P m b,
+  bst b <> Merged -> merged_satisfy P m -> merged_satisfy P (set_bid m b).
+Proof.
+  unfold merged_satisfy, set_bid. intros P m b H Hm x Hin Hx.
+  rewrite bids_setf_bids in Hin. apply in_map_iff in Hin.
+  destruct Hin as [y [E Hy]]. destruct (bidn y =? bidn b).
+  - subst x. contradiction.
+  - subst x. eauto.
+Qed.
+
+Lemma merged_count : forall P m a k,
+  merged_satisfy P m -> merged_satisfy P (count m a k).
+Proof.
+  intros. unfold count. apply merged_setf_other; auto.
+Qed.
+
+Lemma merged_clear_fold : forall P (bs : list bid) m f,
+  (forall m b, merged_satisfy P m -> merged_satisfy P (f m b)) ->
+  merged_satisfy P m -> merged_satisfy P (fold_left f bs m).
+Proof.
+  intros P bs. induction bs; intros m f H Hm; simpl; auto.
+Qed.
+
+Lemma settle_preserves_merged : forall P,
+  (forall m p, pending m = Some p -> merged_satisfy P m ->
+    3 <= approvals p (mheight m - pat p) (param m "fallback_blocks") ->
+    merged_satisfy P (fst (finalize m p))) ->
+  forall m, merged_satisfy P m -> merged_satisfy P (fst (settle m)).
+Proof.
+  intros P Hfinal m Hm. unfold settle.
+  destruct (pending m) as [p|] eqn:Hp; [|exact Hm].
+  destruct (3 <=? approvals p (mheight m - pat p) (param m "fallback_blocks")) eqn:Hyes.
+  - apply Hfinal; [exact Hp|exact Hm|]. apply Nat.leb_le. exact Hyes.
+  - destruct (2 <=? length (filter (fun v => negb (snd v)) (pvotes p)));
+      [destruct (bid_by m (pbid p)) as [b|] |
+       destruct (param m "attest_window" <=? mheight m - pat p)]; simpl;
+      repeat first [apply merged_count | apply merged_setf_other; [reflexivity|] |
+        apply merged_set_bid; [discriminate|] | exact Hm].
+Qed.
+
+Lemma merged_append_pending : forall P m b,
+  bst b <> Merged -> merged_satisfy P m ->
+  merged_satisfy P (setf m "bids" (bids m ++ [b])).
+Proof.
+  unfold merged_satisfy. intros P m b H Hm x Hin Hx.
+  rewrite bids_setf_bids in Hin. apply in_app_iff in Hin.
+  destruct Hin as [Hin|[E|[]]]; [eauto|subst x; contradiction].
+Qed.
+
+Lemma apply_preserves_merged : forall P,
+  (forall m p, pending m = Some p -> merged_satisfy P m ->
+    3 <= approvals p (mheight m - pat p) (param m "fallback_blocks") ->
+    merged_satisfy P (fst (finalize m p))) ->
+  forall m a fields, merged_satisfy P m ->
+    merged_satisfy P (fst (fst (apply m a fields))).
+Proof.
+  intros P Hfinal m a fields Hm. unfold apply.
+  (* Match the state constructor before applying a preservation lemma: failed
+     unification would otherwise unfold whole transaction branches. *)
+  Ltac merged_steps :=
+    repeat first [ assumption
+      | match goal with
+        | |- merged_satisfy _ (count _ _ _) => apply merged_count
+        | |- merged_satisfy _ (setf _ _ _) =>
+            apply merged_setf_other; [reflexivity|]
+        | |- merged_satisfy _ (set_bid _ _) =>
+            apply merged_set_bid; [discriminate|]
+        end ].
+  repeat first [solve [merged_steps]
+    | solve [match goal with
+        | |- merged_satisfy _ (setf _ "bids" _) =>
+            apply merged_append_pending; [discriminate|]; merged_steps
+        end]
+    | solve [match goal with
+        | |- merged_satisfy _ (fold_left _ _ _) =>
+            apply merged_clear_fold;
+              [intros; destruct (_ && _); merged_steps | merged_steps]
+        end]
+    | match goal with
+      | |- merged_satisfy _ (fst (fst (match settle ?s with _ => _ end))) =>
+        let Hs := fresh "Hs" in
+        assert (Hs : merged_satisfy P (fst (settle s))) by
+          (apply settle_preserves_merged; [exact Hfinal|]; merged_steps);
+        destruct (settle s) as [sm so] eqn:?;
+        cbn [fst] in Hs
+      end
+    | progress cbn beta iota zeta delta [fst]
+    | match goal with
+      | |- merged_satisfy _ (fst (fst (match ?x with _ => _ end))) => destruct x
+      end ].
+Qed.
+
+Lemma end_term_preserves_merged : forall P m,
+  merged_satisfy P m -> merged_satisfy P (maybe_end_term m).
+Proof.
+  intros P m Hm. unfold maybe_end_term.
+  repeat first [solve [merged_steps]
+    | progress cbn beta iota zeta
+    | match goal with |- context [if ?c then _ else _] => destruct c end].
+Qed.
+
+Lemma draw_preserves_merged : forall P m,
+  merged_satisfy P m -> merged_satisfy P (maybe_draw m).
+Proof.
+  intros P m Hm. unfold maybe_draw.
+  destruct (awaiting m && ((length (reveals m) =? length (agents m)) ||
+    ((3 <=? length (reveals m)) &&
+      (asince m + param m "reveal_window" <=? mheight m))));
+    [|exact Hm].
+  cbv zeta. merged_steps.
+  generalize (filter (fun a => negb (mem a (revealed m))) (agents m)).
+  intros held. induction held as [|a rest IH] using rev_ind.
+  - simpl. merged_steps.
+  - rewrite fold_left_app. simpl. apply merged_count. exact IH.
+Qed.
+
+Lemma prune_preserves_merged : forall P m,
+  merged_satisfy P m -> merged_satisfy P (prune m).
+Proof.
+  unfold merged_satisfy, prune. intros P m Hm b Hin Hb.
+  rewrite bids_setf_bids in Hin. apply filter_In in Hin. apply Hm; tauto.
+Qed.
+
+Lemma merged_block_fold : forall (P : bid -> Prop)
+  (f : (obj * list (list string)) -> string -> obj * list (list string)),
+  (forall acc raw, merged_satisfy P (fst acc) -> merged_satisfy P (fst (f acc raw))) ->
+  forall txs acc, merged_satisfy P (fst acc) ->
+    merged_satisfy P (fst (fold_left f txs acc)).
+Proof.
+  intros P f Hf txs. induction txs; intros acc H; simpl; auto.
+Qed.
+
+(** Any property of Merged bids survives a block if authorized calls to
+    finalize preserve it. Every other transition preserves it on its own. *)
+Lemma apply_block_preserves_merged : forall P,
+  (forall m p, pending m = Some p -> merged_satisfy P m ->
+    3 <= approvals p (mheight m - pat p) (param m "fallback_blocks") ->
+    merged_satisfy P (fst (finalize m p))) ->
+  forall m h txs, merged_satisfy P m ->
+    merged_satisfy P (fst (apply_block m h txs)).
+Proof.
+  intros P Hfinal m h txs Hm. unfold apply_block.
+  match goal with |- context [fold_left ?f txs ?initial] =>
+    assert (HF : merged_satisfy P (fst (fold_left f txs initial)))
+  end.
+  { apply merged_block_fold.
+    - intros [s outs] raw Hs. cbn [fst] in Hs.
+      destruct (decode_tx raw) as [|a [|n fields]]; cbn [fst]; try exact Hs.
+      destruct (num n =? nonce_of s a + 1); cbn [fst]; [|exact Hs].
+      assert (Hn : merged_satisfy P (setf s "nonces" (put a (num n) (nonces s))))
+        by (apply merged_setf_other; [reflexivity|exact Hs]).
+      pose proof (apply_preserves_merged P Hfinal _ a fields Hn) as Ha.
+      destruct (apply (setf s "nonces" (put a (num n) (nonces s))) a fields)
+        as [[s' o] why] eqn:E.
+      cbn [fst] in Ha |- *.
+      destruct (seq why "" && is_leader s' a); cbn [fst];
+        [apply merged_setf_other; [reflexivity|exact Ha]|exact Ha].
+    - cbn [fst]. apply merged_setf_other; [reflexivity|exact Hm]. }
+  match type of HF with merged_satisfy _ (fst ?acc) =>
+    destruct acc as [s outs] eqn:E
+  end.
+  cbn [fst] in HF |- *.
+  pose proof (settle_preserves_merged P Hfinal s HF) as HS.
+  destruct (settle s) as [s' o]. cbn [fst] in HS |- *.
+  apply prune_preserves_merged. apply draw_preserves_merged.
+  apply end_term_preserves_merged. exact HS.
+Qed.
+
+Lemma bid_eq_dec : forall (x y : bid), {x = y} + {x <> y}.
+Proof.
+  decide equality; repeat decide equality.
+Qed.
+
+(** A newly Merged bid in a block came from finalize, at a settlement state
+    with at least three approvals. Existing Merged bids may survive a block;
+    their presence alone does not assert a new finalization. *)
+Theorem merged_only_through_finalize_with_three_approvals :
+  forall (m : obj) (h : nat) (txs : list string) (b : bid),
+    In b (bids (fst (apply_block m h txs))) -> bst b = Merged ->
+    ~ In b (bids m) ->
+    exists (before : obj) (p : proposal),
+      3 <= approvals p (mheight before - pat p) (param before "fallback_blocks") /\
+      pending before = Some p /\ ~ In b (bids before) /\
+      In b (bids (fst (finalize before p))).
+Proof.
+  intros m h txs b Hin Hb Hnew.
+  let P := constr:(fun b => In b (bids m) \/
+    exists before p,
+      3 <= approvals p (mheight before - pat p) (param before "fallback_blocks") /\
+      pending before = Some p /\ ~ In b (bids before) /\
+      In b (bids (fst (finalize before p)))) in
+  assert (H : merged_satisfy P (fst (apply_block m h txs))).
+  { apply apply_block_preserves_merged.
+    - intros before p Hp Hbefore Hyes x Hx Hmerged.
+      destruct (in_dec bid_eq_dec x (bids before)) as [Hold|Hfresh].
+      + exact (Hbefore x Hold Hmerged).
+      + right. exists before, p. auto.
+    - intros x Hx Hmerged. left. exact Hx. }
+  destruct (H b Hin Hb) as [Hold|Hfinal]; [contradiction|exact Hfinal].
+Qed.
