@@ -1052,7 +1052,7 @@ and node init step home flags =
         (match status with
          | Unix.WEXITED 0 -> j.jdone (if out = "" then "pending" else out)
          | _ -> let n = String.length out in
-                j.jdone ("!process failed: " ^ (if n > 600 then "..." ^ String.sub out (n - 600) 600 else out)));
+                j.jdone ("!process failed: " ^ (if n > 3000 then "..." ^ String.sub out (n - 3000) 3000 else out)));
         j.jclean ())
       (List.rev !finished);
     List.iter (fun p ->
