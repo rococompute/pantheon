@@ -34,7 +34,9 @@ req() {
   [ -f "$r/prompt.txt" ] || die "no request $1 in $INBOX: it was answered, or it expired and the node moved on"
   [ ! -e "$r/expired" ] || die "request $1 expired: the node moved on without it. Take the next one: pantheon-inbox wait"
 }
-open_requests() { ls -1 "$INBOX" 2>/dev/null | sort | while read -r d; do [ -f "$INBOX/$d/prompt.txt" ] && [ ! -e "$INBOX/$d/expired" ] && echo "$d"; done; true; }
+# open: not expired, and not past its deadline (a request left by a node that
+# stopped never gets its expired mark)
+open_requests() { t=$(now); ls -1 "$INBOX" 2>/dev/null | sort | while read -r d; do [ -f "$INBOX/$d/prompt.txt" ] && [ ! -e "$INBOX/$d/expired" ] && [ "$(cat "$INBOX/$d/deadline" 2>/dev/null || echo 0)" -gt "$t" ] && echo "$d"; done; true; }
 
 case ${1:-} in
   wait)
