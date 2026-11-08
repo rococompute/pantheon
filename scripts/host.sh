@@ -2,12 +2,15 @@
 # A whole Pantheon network on one Linux host, for agents that work from
 # elsewhere: four nodes as systemd user services, CI in a sandbox
 # (deploy/host/ci-sandbox), each agent's inbox served over HTTP
-# (scripts/inbox-http.py), and a Cloudflare tunnel that gives that server a
-# public HTTPS hostname. No VMs and no Docker: it fits a small machine.
+# (scripts/inbox-http.py) on localhost, behind something that gives it a
+# public HTTPS name: Tailscale Funnel (tailscale funnel --bg 8787, then
+# `url`) or a Cloudflare tunnel (`tunnel`). No VMs and no Docker: it fits a
+# small machine.
 #
 #   scripts/host.sh network            keys, the network and its genesis (once), for Pantheon at HEAD
 #   scripts/host.sh token AGENT        a new inbox token for AGENT, printed once
-#   scripts/host.sh tunnel HOSTNAME    the Cloudflare tunnel to HOSTNAME (after: cloudflared tunnel login)
+#   scripts/host.sh url URL            the inbox's public URL, as agents reach it (https://zucc.example.ts.net)
+#   scripts/host.sh tunnel HOSTNAME    or a Cloudflare tunnel to HOSTNAME (after: cloudflared tunnel login)
 #   scripts/host.sh start              write the services and (re)start them all
 #   scripts/host.sh stop               stop the nodes, the inbox server and the tunnel
 #   scripts/host.sh status             each node's chain, limits, inbox, and the services
@@ -72,18 +75,27 @@ ingress:
     service: http://127.0.0.1:$PORT
   - service: http_status:404
 Y
-  [ -f "$P/inbox.json" ] || printf '{"listen": "127.0.0.1:%s", "url": "", "agents": {}}\n' "$PORT" > "$P/inbox.json"
-  python3 - "$P/inbox.json" "https://$h" <<'PY'
-import json, sys
-c = json.load(open(sys.argv[1])); c['url'] = sys.argv[2]; json.dump(c, open(sys.argv[1], 'w'), indent=1)
-PY
+  set_url "https://$h"
   say "tunnel pantheon ($id) to https://$h. Next: scripts/host.sh start"
+}
+
+set_url() {
+  [ -f "$P/inbox.json" ] || printf '{"listen": "127.0.0.1:%s", "url": "", "agents": {}}\n' "$PORT" > "$P/inbox.json"
+  python3 - "$P/inbox.json" "$1" <<'PY'
+import json, sys
+c = json.load(open(sys.argv[1])); c['url'] = sys.argv[2].rstrip('/'); json.dump(c, open(sys.argv[1], 'w'), indent=1)
+PY
+}
+
+cmd_url() {
+  case ${1:-} in https://*) ;; *) die "usage: scripts/host.sh url https://NAME (where agents reach the inbox)" ;; esac
+  set_url "$1"; say "the inbox's public URL is $1. Next: scripts/host.sh start (patch prompts and instructions name it)"
 }
 
 cmd_start() {
   need_bin
   [ -d "$NET" ] || die "no network yet: scripts/host.sh network"
-  u=$(url); [ -n "$u" ] || say "no public URL yet (scripts/host.sh tunnel HOSTNAME): patch prompts will say http://127.0.0.1:$PORT"
+  u=$(url); [ -n "$u" ] || say "no public URL yet (scripts/host.sh url URL, or tunnel HOSTNAME): patch prompts will say http://127.0.0.1:$PORT"
   [ -n "$u" ] || u=http://127.0.0.1:$PORT
   q() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
   for a in $AGENTS; do
@@ -170,6 +182,6 @@ cmd_logs() {
 
 c=${1:-}; [ $# -gt 0 ] && shift
 case $c in
-  network|token|tunnel|start|stop|status|logs) "cmd_$c" "$@" ;;
+  network|token|url|tunnel|start|stop|status|logs) "cmd_$c" "$@" ;;
   *) awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "$0"; [ -z "$c" ] || exit 1 ;;
 esac
