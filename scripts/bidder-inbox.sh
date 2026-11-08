@@ -26,11 +26,20 @@ if [ -n "${PANTHEON_WORKTREE:-}" ]; then
   chmod -R a+rwX "$PANTHEON_WORKTREE"
   echo patch > "$r/kind"; printf '%s\n' "$PANTHEON_WORKTREE" > "$r/worktree"
   budget=1700
+  if [ -n "${INBOX_URL:-}" ]; then
+    # the agent works from elsewhere, over scripts/inbox-http.py
+    cat >> "$r/.prompt" <<I
+
+You have tools. Get the repository at the market's head: GET $INBOX_URL/v1/checkout/$id.tar.gz (a directory named checkout/). Make it a git repository before you change anything (git init -q && git add -A && git commit -qm head), so you can diff against it. Make the change by editing the files there, instead of writing edits in a reply. Keep it to what the task asks. If you have soma, check your work with \`soma build\` on the project's main file (main.soma, or the file you changed) and run the tests if there are any; if you don't, your node's CI builds it and a rejection says why.
+Ignore the reply format above: when you're done, \`git add -A\` and POST $INBOX_URL/v1/done/$id with {"note": "a short note on what you changed", "diff": "<the output of git diff --cached>"}.
+I
+  else
   cat >> "$r/.prompt" <<I
 
 You have tools, and $PANTHEON_WORKTREE is a checkout of the repository at the market's head. Make the change by editing the files there, instead of writing edits in a reply. Keep it to what the task asks. If there is a soma.toml, check your work with \`soma build\` on the project's main file (main.soma, or the file you changed), and run the tests if there are any. Don't commit, don't push, and don't touch anything outside that directory.
 Ignore the reply format above: when you're done, run \`pantheon-inbox done $id "a short note on what you changed"\`.
 I
+  fi
 else
   echo answer > "$r/kind"
   budget=570
