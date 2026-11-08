@@ -155,42 +155,50 @@ install_muse() {
     printf "#!/bin/sh\n. /usr/local/lib/pantheon/model-env\nexec /home/bidder/.local/bin/muse \"\$@\"\n" > /usr/local/bin/muse && chmod 755 /usr/local/bin/muse'
 }
 
-# The model's login lives with the VM's bidder user, which runs the model.
-# Non-interactive when the key is in the environment.
+# The model's login lives with the VM's bidder user, which runs the model:
+# its subscription, by the CLI's own login for machines without a browser
+# (a URL or a device code you approve). With --api-key, the API key in the
+# environment instead, billed to the API.
 cmd_login() {
-  a=${1:?usage: scripts/sandbox.sh login AGENT}; v=$(vm "$a"); running "$v" || die "$v isn't running"
+  a=${1:?usage: scripts/sandbox.sh login AGENT [--api-key]}; v=$(vm "$a"); running "$v" || die "$v isn't running"
+  key=false; [ "${2:-}" = --api-key ] && key=true
   envf=/home/bidder/.config/pantheon/model.env
   put() { printf '%s\n' "$1" | in_vm "$v" sudo -u bidder sh -c "umask 077; cat > $envf"; }
+  as_bidder() { in_vm "$v" sudo -u bidder -H "$@"; }
+  [ -t 0 ] || $key || die "a subscription login is interactive: run it in a terminal (or use --api-key)"
+  put ""   # an API key in model.env would take precedence over the subscription
   case $a in
     claude)
-      if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then put "CLAUDE_CODE_OAUTH_TOKEN=$CLAUDE_CODE_OAUTH_TOKEN"
-      elif [ -n "${ANTHROPIC_API_KEY:-}" ]; then put "ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY"
-      else
-        say "run 'claude setup-token' on this Mac (it opens your browser), then:"
-        say "  CLAUDE_CODE_OAUTH_TOKEN=<the token> scripts/sandbox.sh login claude"
-        exit 1
-      fi ;;
+      if $key; then put "ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:?set ANTHROPIC_API_KEY}"
+      else say "log in with your Claude subscription: open the URL, then paste the code back here"; as_bidder claude auth login --claudeai
+      fi
+      as_bidder claude auth status ;;
     codex)
-      if [ -n "${OPENAI_API_KEY:-}" ]; then printf '%s\n' "$OPENAI_API_KEY" | in_vm "$v" sudo -u bidder -H codex login --with-api-key
-      else in_vm "$v" sudo -u bidder -H codex login --device-auth
-      fi ;;
+      if $key; then printf '%s\n' "${OPENAI_API_KEY:?set OPENAI_API_KEY}" | as_bidder codex login --with-api-key
+      else say "log in with your ChatGPT subscription: open the URL and enter the code"; as_bidder codex login --device-auth
+      fi
+      as_bidder codex login status ;;
     grok)
-      [ -n "${XAI_API_KEY:-}" ] || die "set XAI_API_KEY (an API key from console.x.ai)"
-      GROK_BUILD_MODEL=${GROK_BUILD_MODEL:-grok-build-0.1}
       in_vm "$v" test -x /usr/local/bin/grok || install_grok "$v"
-      # Grok Build runs as the bidder, with its key, and the Cursor CLI's if there is one
-      put "$(printf 'XAI_API_KEY=%s\n%s%s' "$XAI_API_KEY" "${GROK_BUILD_MODEL:+GROK_BUILD_MODEL=$GROK_BUILD_MODEL
-}" "${CURSOR_API_KEY:+CURSOR_API_KEY=$CURSOR_API_KEY}")"
-      # the built-in grok backend (start grok=grok) is the node's own call
-      printf 'XAI_API_KEY=%s\n%s' "$XAI_API_KEY" "${GROK_BUILD_MODEL:+GROK_BUILD_MODEL=$GROK_BUILD_MODEL
-}" | in_vm "$v" sudo sh -c 'umask 077; cat > /etc/pantheon/keys.env'
-      [ -n "${CURSOR_API_KEY:-}" ] || say "no CURSOR_API_KEY: Grok Build runs without the Cursor CLI's login. Set it and run login grok again, or log in inside the VM: scripts/sandbox.sh shell grok, then sudo -u bidder -H cursor-agent login" ;;
+      GROK_BUILD_MODEL=${GROK_BUILD_MODEL:-grok-build-0.1}
+      printf '%s\n' "GROK_BUILD_MODEL=$GROK_BUILD_MODEL" | in_vm "$v" sudo sh -c 'umask 077; cat > /etc/pantheon/keys.env'
+      if $key; then
+        put "$(printf 'XAI_API_KEY=%s\n%s' "${XAI_API_KEY:?set XAI_API_KEY}" "${CURSOR_API_KEY:+CURSOR_API_KEY=$CURSOR_API_KEY}")"
+        printf 'XAI_API_KEY=%s\n' "$XAI_API_KEY" | in_vm "$v" sudo sh -c 'cat >> /etc/pantheon/keys.env'
+      else
+        say "log in with your Grok subscription: open the URL and enter the code"
+        as_bidder grok login --device-auth
+        say "and the Cursor CLI with your Cursor subscription: open the URL"
+        as_bidder env NO_OPEN_BROWSER=1 cursor-agent login || say "the Cursor CLI isn't logged in: Grok Build bids without it. Run login grok again to retry"
+      fi
+      as_bidder grok models 2>&1 | head -3 ;;
     muse)
       in_vm "$v" test -x /usr/local/bin/muse || install_muse "$v"
-      if [ -n "${META_API_KEY:-}" ]; then put "META_API_KEY=$META_API_KEY"
-      else in_vm "$v" sudo -u bidder -H muse login
-      fi ;;
-    *) die "no login for $a: give it a cmd: backend whose program has its own key (see docs/SANDBOX.md)" ;;
+      if $key; then put "META_API_KEY=${META_API_KEY:?set META_API_KEY}"
+      else say "log in with your Meta account: open the URL and approve the code"; as_bidder muse login
+      fi
+      as_bidder muse usage 2>&1 | head -3 || true ;;
+    *) die "no login for $a: give it a cmd: backend whose program has its own login (see docs/SANDBOX.md)" ;;
   esac
   say "$a: logged in"
 }

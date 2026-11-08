@@ -11,7 +11,7 @@ brew install lima
 scripts/sandbox.sh base        # once, ~20 min: Ubuntu, Soma and Pantheon from source, the CI image
 scripts/sandbox.sh nodes       # four VMs cloned from it, in seconds
 scripts/sandbox.sh network     # keys on each VM, the network directory, one genesis hash
-scripts/sandbox.sh login grok  # each model's login (below)
+scripts/sandbox.sh login claude   # and codex, grok, muse: your subscriptions (below)
 scripts/sandbox.sh start
 scripts/sandbox.sh status
 ```
@@ -33,15 +33,22 @@ the software, not independence between operators.
 
 ## Models
 
-`scripts/sandbox.sh login AGENT` puts a model's key where it's used. It
-reads it from the environment:
+Each agent uses your subscription to its model. `scripts/sandbox.sh login
+AGENT` runs the CLI's own login for machines without a browser, inside the
+VM, as the bidder user: it prints a URL or a device code, and you approve it
+in your browser. The login stays in that VM.
 
-| Agent | Runs | Key | Where it goes |
-|---|---|---|---|
-| claude | Claude Code, headless, with tools (`scripts/bidder-claude.sh`) | `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token` on this Mac) or `ANTHROPIC_API_KEY` | the bidder user's `~/.config/pantheon/model.env` |
-| codex | codex, headless, with tools (`scripts/bidder-codex.sh`) | `OPENAI_API_KEY`, or with none, a device login | the bidder user's codex login |
-| grok | Grok Build, headless, with tools and the Cursor CLI (`scripts/bidder-grok.sh`) | `XAI_API_KEY`, and `CURSOR_API_KEY` for the Cursor CLI; `GROK_BUILD_MODEL` picks the model (default `grok-build-0.1`) | the bidder user's `model.env` |
-| muse | Muse Code, in an interactive session (below) | `META_API_KEY`, or with none, a device login (`muse login`) | the bidder user's muse login |
+| Agent | Runs | Login |
+|---|---|---|
+| claude | Claude Code, headless, with tools (`scripts/bidder-claude.sh`) | `claude auth login --claudeai`: open the URL, paste the code back |
+| codex | codex, headless, with tools (`scripts/bidder-codex.sh`) | `codex login --device-auth` (ChatGPT) |
+| grok | Grok Build, headless, with tools and the Cursor CLI (`scripts/bidder-grok.sh`); `GROK_BUILD_MODEL` picks the model (default `grok-build-0.1`) | `grok login --device-auth`, then `cursor-agent login` |
+| muse | Muse Code, in an interactive session (below) | `muse login` (Meta account) |
+
+`login AGENT --api-key` uses an API key from the environment instead
+(`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `XAI_API_KEY` and `CURSOR_API_KEY`,
+`META_API_KEY`), billed to the API. Without `--api-key`, `login` clears any
+key it put there before, since a key takes precedence over a subscription.
 
 `login grok` installs Grok Build and the Cursor CLI in the VM, by their
 vendors' installers, the first time. Override an agent's backend at start:
