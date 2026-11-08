@@ -32,6 +32,8 @@
 #   REMOTE        the GitHub repository workers share (default: this checkout's origin)
 #   CODEX_ENV     the Codex Cloud environment for codex's workers (codex cloud lists them)
 #   GROK_MODEL    the Cursor CLI's model for grok (default: grok; cursor-agent models lists them)
+#   SOMA_REMOTE   Soma's repository, for the agents to read (default: https://github.com/yevbar/soma.git)
+#   SOMA_REF      the branch there at the commit SOMA_DIR is built from (default: pantheon/epoch-2)
 # or from PANTHEON_HOST/host.env (lines like CODEX_ENV=soma), read first.
 set -eu
 here=$(cd "$(dirname "$0")/.." && pwd)
@@ -49,6 +51,9 @@ REMOTE=${REMOTE:-$(git -C "$here" remote get-url origin 2>/dev/null || true)}
 BRANCH=pantheon/merged
 CODEX_ENV=${CODEX_ENV:-}
 GROK_MODEL=${GROK_MODEL:-grok}
+SOMA_REMOTE=${SOMA_REMOTE:-https://github.com/yevbar/soma.git}
+SOMA_REF=${SOMA_REF:-pantheon/epoch-2}
+soma_commit() { git -C "$SOMA" rev-parse HEAD 2>/dev/null || echo unknown; }
 UNITS=$HOME/.config/systemd/user
 export PATH="$HOME/.local/bin:$PATH"
 say() { printf 'host: %s\n' "$*"; }
@@ -98,7 +103,9 @@ t = t.replace("{{DELEGATE}}", d.strip())
 # the inbox command by its full path: the wrapper with this agent's settings
 t = t.replace("pantheon-inbox ", "{{DESK}}/pantheon-inbox ").replace("\`pantheon-inbox\`", "\`{{DESK}}/pantheon-inbox\`")
 for k, v in {"AGENT": "$a", "REMOTE": "$REMOTE", "BRANCH": "$BRANCH", "NET": "$NET",
-             "CODEX_ENV": "${CODEX_ENV:-ENV_ID}", "DESK": "$P/desk/$a", "GROK_MODEL": "$GROK_MODEL"}.items():
+             "CODEX_ENV": "${CODEX_ENV:-ENV_ID}", "DESK": "$P/desk/$a",
+             "SOMA_REMOTE": "$SOMA_REMOTE", "SOMA_REF": "$SOMA_REF", "SOMA_DIR": "$SOMA",
+             "SOMA_COMMIT": "$(soma_commit)", "SOMA_NOTES": "$P/soma-notes.md", "GROK_MODEL": "$GROK_MODEL"}.items():
     t = t.replace("{{%s}}" % k, v)
 open(sys.argv[3], "w").write(t)
 PY
@@ -201,22 +208,30 @@ cmd_vm() {
       m=$(command -v muse) || die "no muse on this host to copy its launcher from: install it here first"
       limactl copy "$m" "$v:/tmp/muse" && limactl shell "$v" sh -c 'mkdir -p ~/.local/bin && install -m 755 /tmp/muse ~/.local/bin/muse' ;;
   esac
+  # Soma's source, to read (the VM has no GitHub access): not built
+  if ! limactl shell "$v" test -f soma/GRADUAL.md 2>/dev/null; then
+    say "copying Soma's source ($(soma_commit | cut -c1-10)) into $v"
+    git -C "$SOMA" archive --format=tar HEAD | limactl shell "$v" sh -c 'mkdir -p ~/soma && tar -x -C ~/soma'
+  fi
   limactl shell "$v" sh -c 'command -v git >/dev/null && command -v jq >/dev/null || { sudo apt-get update -q && sudo apt-get install -y -q git jq curl; }' >/dev/null
   # a token for this agent's inbox only; the instructions, the token beside them
   mkdir -p "$P/inbox/$a"
   [ -f "$P/inbox.json" ] || printf '{"listen": "127.0.0.1:%s", "url": "", "agents": {}}\n' "$PORT" > "$P/inbox.json"
-  t=$(python3 "$here/scripts/inbox-http.py" token "$P/inbox.json" "$a" "$P/inbox/$a")
   tmp=$(mktemp -d); umask 077
-  printf '%s\n' "$t" > "$tmp/token"
+  # a token once; NEW_TOKEN=1 replaces it (a running session then loses its inbox)
+  if [ -n "${NEW_TOKEN:-}" ] || ! limactl shell "$v" test -s pantheon/token 2>/dev/null; then
+    python3 "$here/scripts/inbox-http.py" token "$P/inbox.json" "$a" "$P/inbox/$a" > "$tmp/token"; tok="a new token (the old one, if any, no longer works)"
+  else tok="its token as it was"; fi
   { sed -e "s|{{AGENT}}|$a|g" -e "s|{{URL}}|http://$VM_HOST:$PORT|g" "$here/deploy/cloud/agent.md"
-    printf '\nYour token is in the file ~/pantheon/token: send it as -H "Authorization: Bearer $(cat ~/pantheon/token)". This VM is your machine: work in it as you like.\n'; } > "$tmp/instructions.md"
+    printf '\nYour token is in the file ~/pantheon/token: send it as -H "Authorization: Bearer $(cat ~/pantheon/token)". This VM is your machine: work in it as you like.\n'
+    printf '\n## Soma, the language Pantheon is written in\n\nSoma is a fork of the Rocq Prover with gradual dependent types, and its source is its documentation: ~/soma is the commit the network builds with (%s; not built here). Start with README.md, GRADUAL.md, gradual-coverage.md, vision.md and examples/; test-suite/ and theories/ show how a feature behaves. When a task leans on a Soma feature, look it up there instead of guessing from Rocq you remember: this fork differs. This network changes Pantheon only; if you find a Soma bug or gap, say so in your patch note or reason, starting with "soma:".\n' "$(soma_commit)"; } > "$tmp/instructions.md"
   limactl shell "$v" sh -c 'mkdir -p ~/pantheon && chmod 700 ~/pantheon'
   case $a in
     muse) printf '#!/bin/sh\ncd ~/pantheon && exec ~/.local/bin/muse --yolo "Read ~/pantheon/instructions.md: it is your job. Follow it now."\n' > "$tmp/start.sh" ;;
   esac
-  limactl copy "$tmp/token" "$tmp/instructions.md" "$tmp/start.sh" "$v:pantheon/"; rm -rf "$tmp"
-  systemctl --user try-restart pantheon-inbox.service 2>/dev/null || true
-  say "$v is up, with $a's CLI, instructions and a new token (the old one, if any, no longer works)"
+  limactl copy "$tmp"/* "$v:pantheon/"; rm -rf "$tmp"
+  case $tok in "a new"*) systemctl --user try-restart pantheon-inbox.service 2>/dev/null || true ;; esac
+  say "$v is up, with $a's CLI, Soma's source, instructions and $tok"
   say "next: scripts/host.sh login $a (once), then scripts/host.sh diplomats"
 }
 
