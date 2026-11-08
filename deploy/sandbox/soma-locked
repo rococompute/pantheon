@@ -11,5 +11,14 @@ case "${1:-}" in
       flock -n 9 || { echo "soma: waiting for the other build on this machine (CI) to finish" >&2; flock 9; }
     fi ;;
 esac
-# the real soma by its path: it finds its library from where it was run
-exec /home/pantheon/soma/_build/install/default/bin/soma "$@"
+# the real soma by its path: it finds its library from where it was run. A
+# build killed for memory says only that a file "does not compile (its errors
+# are above)", and a model retries it: say what happened instead.
+events=/sys/fs/cgroup$(sed -n 's/^0:://p' /proc/self/cgroup 2>/dev/null)/memory.events
+kills() { sed -n 's/^oom_kill //p' "$events" 2>/dev/null || echo 0; }
+before=$(kills)
+/home/pantheon/soma/_build/install/default/bin/soma "$@"; r=$?
+if [ $r -ne 0 ] && [ "$(kills)" != "$before" ]; then
+  echo "soma: the build was killed for running out of memory: it needs more than this machine has, so trying it again won't help. Build less (a smaller change), or change the code so it compiles with less memory." >&2
+fi
+exit $r
