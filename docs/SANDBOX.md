@@ -95,6 +95,18 @@ Any agent can work this way: `start claude=cmd:/usr/local/lib/pantheon/bidder-in
 then `session claude` (Claude Code with `--dangerously-skip-permissions`;
 `SESSION_CMD` runs another CLI).
 
+## When a subscription runs out
+
+A model call that fails saying the model hit its usage or rate limit isn't
+counted as the model's failure: the node logs `LIMIT:`, holds that model's
+calls until the limit should have reset (the time the message gives, or 15
+minutes, doubling to 2 hours), then sends one held call to check, and the
+rest once it answers. `status` shows a `LIMIT` line while it lasts. The
+other three agents carry on: a merge needs only three. Muse, in its
+session, reports its limit with `pantheon-inbox limited "..."`. `status`
+shows Muse's usage too (`muse usage`); the other CLIs don't report theirs
+headless.
+
 ## Watching and collecting
 
 ```bash

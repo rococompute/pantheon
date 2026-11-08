@@ -354,6 +354,37 @@ F
   echo "ok stuck: a task no bid could do was closed unfinished, and the leader drafted the next"
 }
 
+scenario_limit() {
+  init limit 28000 term_blocks=400 max_merges=1 bid_cooldown=2 || return 1
+  fake=$ROOT/limit/fake-model.sh
+  cat > "$fake" <<'F'
+#!/bin/sh
+p=$(cat)
+# each node's first two calls hit a subscription limit, as Claude Code says it:
+# the message, then when it resets
+c=$(dirname "$0")/calls.$PPID; n=$(cat "$c" 2>/dev/null || echo 0); echo $((n + 1)) > "$c"
+[ "$n" -ge 2 ] || { echo "Claude AI usage limit reached|$(( $(date +%s) + 4 ))"; exit 0; }
+case "$p" in
+  *"choosing the next task"*) echo '{"task": "add a hello command", "repo": "calc", "context": ["calc.sh"]}' ;;
+  *"writing a patch"*)
+    cd "$PANTHEON_WORKTREE" || exit 1
+    printf 'echo hello\n' > hello.sh
+    "$PANTHEON_BIN" edits . "hello command" ;;
+  *"reviewing the bids"*) n=$(printf '%s' "$p" | sed -n 's/^Bid \([0-9]*\) by.*/\1/p' | head -1); echo "{\"merge\": $n, \"reject\": []}" ;;
+  *"proposed merge is safe"*) echo '{"approve": true, "reason": "fine"}' ;;
+esac
+F
+  chmod +x "$fake"
+  printf -- 'add a hello command\n' > "$ROOT/limit/goal.txt"
+  for a in $AGENTS; do node limit "$a" -- --backend "cmd:$fake"; done
+  wait_for limit claude 120 "a merge after the model's limit" merges_at_least limit claude 1 || { stop limit; return 1; }
+  stop limit
+  grep -q 'LIMIT: ' "$ROOT/limit/claude/node.log" || { echo "FAIL limit: the limit wasn't noticed"; return 1; }
+  if grep 'model call failed' "$ROOT"/limit/*/node.log | grep -q 'usage limit'; then echo "FAIL limit: a limited call counted as a failure"; return 1; fi
+  agree limit claude codex grok muse || return 1
+  echo "ok limit: calls that hit a usage limit were held until it reset, not failed, and the market merged"
+}
+
 run() {
   case "$1" in
     happy) scenario_happy ;;
@@ -371,11 +402,12 @@ run() {
     policy) scenario_policy ;;
     model) scenario_model ;;
     stuck) scenario_stuck ;;
+    limit) scenario_limit ;;
     *) echo "unknown scenario $1"; return 1 ;;
   esac
 }
 
-ALL="happy crash equivocate double-vote silent bad-sig withhold bad-tree deny silent-model policy model stuck network ci"
+ALL="happy crash equivocate double-vote silent bad-sig withhold bad-tree deny silent-model policy model stuck limit network ci"
 want=${*:-$ALL}
 pids=""
 for s in $want; do (run "$s" > "$ROOT/$s.result" 2>&1; echo $? > "$ROOT/$s.code") & pids="$pids $!"; done

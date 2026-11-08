@@ -308,6 +308,11 @@ cmd_status() {
     v=$(vm "$a")
     printf '== %s (%s)\n' "$a" "$(running "$v" && in_vm "$v" systemctl is-active pantheon-node 2>/dev/null || echo 'VM stopped')"
     running "$v" && as_node "$v" $NODE status $HOMEDIR 2>&1 | sed 's/^/   /' || true
+    # the subscription's usage, where the model's CLI can say it headless (a
+    # LIMIT line above means the node holds this model's calls)
+    case $a in
+      muse) running "$v" && in_vm "$v" sudo -u bidder -H muse usage 2>/dev/null | sed 's/^/   usage: /' || true ;;
+    esac
   done
 }
 

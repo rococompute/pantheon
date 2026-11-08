@@ -720,14 +720,56 @@ and node init step home flags =
   in
   (* a model call: a scratch directory, no keys in reach; built-in backends
      have no tools, and a cmd: backend asked for a patch gets a fresh checkout *)
-  let call_model id kind prompt ctx =
+  (* A model's subscription or rate limit: its calls are held, not failed, until
+     the limit should have reset (the time it gives, or a backoff from 15
+     minutes, doubling to 2 hours), then asked again. Failing them would spend
+     the agent's tries on calls bound to fail. *)
+  let limited_until = ref 0. and limit_reason = ref "" and limit_backoff = ref 900. and held = ref [] and probing = ref false in
+  let limit_words = [ "usage limit"; "rate limit"; "rate-limit"; "ratelimit"; "limit reached"; "limit exceeded"; "quota";
+                      "too many requests"; "429"; "hit your limit"; "out of credits"; "credit balance"; "resource_exhausted" ] in
+  let is_limit text = let t = String.lowercase_ascii text in List.exists (fun w -> contains t w) limit_words in
+  (* seconds until the limit resets, if the message says *)
+  let reset_in text =
+    let t = String.lowercase_ascii text and now = Unix.gettimeofday () in
+    let num_after i = let j = ref i in while !j < String.length t && t.[!j] >= '0' && t.[!j] <= '9' do incr j done;
+                      if !j > i then Some (float_of_string (String.sub t i (!j - i)), !j) else None in
+    let rec find_from k sub = if k + String.length sub > String.length t then None
+                              else if String.sub t k (String.length sub) = sub then Some (k + String.length sub) else find_from (k + 1) sub in
+    let unit_secs j = let rest = String.sub t j (min 12 (String.length t - j)) |> String.trim in
+                      if String.length rest > 0 && rest.[0] = 'h' then 3600. else if String.length rest > 0 && rest.[0] = 's' then 1. else 60. in
+    (* "...|1736000000": Claude Code's limit message ends with the reset time *)
+    match String.rindex_opt t '|' with
+    | Some i when (match num_after (i + 1) with Some (e, j) -> j = String.length (String.trim t) && e > now | None -> false) ->
+        (match num_after (i + 1) with Some (e, _) -> Some (e -. now) | None -> None)
+    | _ ->
+        let after phrase = match find_from 0 phrase with
+          | Some k -> let k = ref k in while !k < String.length t && t.[!k] = ' ' do incr k done;
+                      (match num_after !k with Some (n, j) -> Some (n *. unit_secs j) | None -> None)
+          | None -> None in
+        match after "try again in" with Some x -> Some x | None -> after "resets in" in
+  let note_limit text =
+    let wait = match reset_in text with Some x when x > 0. -> x +. 10. | _ -> !limit_backoff in
+    limit_backoff := min 7200. (!limit_backoff *. 2.);
+    limited_until := Unix.gettimeofday () +. wait;
+    limit_reason := String.sub text 0 (min 160 (String.length text));
+    probing := false;
+    say "LIMIT: %s says it has hit its limit, so its model calls are held for %.0f minutes: %s" !backend (wait /. 60.) !limit_reason in
+  let hold f = held := f :: !held in
+  let rec call_model id kind prompt0 ctx =
+    let prompt = prompt0 in
     let token = random_hex 8 in
     let prompt = replace_all prompt "{{F}}" token in
     let prompt = if contains prompt "{{REPOS}}" then replace_all prompt "{{REPOS}}" (repos_text token) else prompt in
     let prompt = match ctx with r :: paths when contains prompt "{{REPO}}" -> replace_all prompt "{{REPO}}" (repo_text token r paths) | _ -> prompt in
     let reply text =
-      if String.length text > 0 && text.[0] = '!' then push [ "llm_error"; id; String.sub text 1 (String.length text - 1) ]
-      else
+      let failed = String.length text > 0 && text.[0] = '!' in
+      if (failed || json_in_reply text = None) && is_limit text then begin
+        note_limit (if failed then String.sub text 1 (String.length text - 1) else text);
+        hold (fun () -> call_model id kind prompt0 ctx)
+      end
+      else if failed then (limit_backoff := 900.; probing := false; push [ "llm_error"; id; String.sub text 1 (String.length text - 1) ])
+      else begin
+      limit_backoff := 900.; probing := false;
         match json_in_reply text with
         | Some j -> push ("llm_reply" :: id :: flatten_reply j)
         | None ->
@@ -736,6 +778,7 @@ and node init step home flags =
             push [ "llm_error"; id;
                    if t = "" then "the reply was empty"
                    else Printf.sprintf "the reply had no JSON object: %s%s" (String.sub t 0 (min 200 (String.length t))) (if String.length t > 200 then "..." else "") ]
+      end
     in
     match !backend with
     | "claude" ->
@@ -900,7 +943,11 @@ and node init step home flags =
     | "status" :: ls ->
         let heads = List.map (fun (n, _, _, _) -> Printf.sprintf "checkout %s %s" n (git_out (rdir n) [ "rev-parse"; "--short"; "HEAD" ])) repos in
         let bad = List.map (fun (r, why) -> Printf.sprintf "DIVERGED %s at merge %s" r why) !diverged in
-        write_file (Filename.concat home "status.txt") (String.concat "\n" (ls @ heads @ bad) ^ "\n")
+        let lim = if Unix.gettimeofday () < !limited_until then
+            [ Printf.sprintf "LIMIT %s until %s, %d model requests held: %s" !backend
+                (let tm = Unix.localtime !limited_until in Printf.sprintf "%02d:%02d" tm.Unix.tm_hour tm.Unix.tm_min)
+                (List.length !held) !limit_reason ] else [] in
+        write_file (Filename.concat home "status.txt") (String.concat "\n" (ls @ heads @ bad @ lim) ^ "\n")
     | "merge" :: r :: v :: tree :: bid :: task :: bidder :: spec :: edits ->
         apply_merge r (int_of_string v) tree bid task bidder spec (triples_of edits)
     | [ "log"; text ] -> say "%s" text
@@ -913,6 +960,10 @@ and node init step home flags =
     | "llm" :: id :: kind :: prompt :: ctx ->
         incr calls;
         if !calls > !max_calls then push [ "llm_error"; id; Printf.sprintf "model call budget of %d used up: restart with a higher --max-llm-calls" !max_calls ]
+        else if Unix.gettimeofday () < !limited_until then begin
+          say "holding request %s (a %s): %s is limited for %.0f more minutes" id kind !backend ((!limited_until -. Unix.gettimeofday ()) /. 60.);
+          hold (fun () -> call_model id kind prompt ctx)
+        end
         else (say "asking %s for a %s (request %s, call %d of %d)" !backend kind id !calls !max_calls; call_model id kind prompt ctx)
     | "check" :: id :: r :: head :: edits -> run_check id r head edits
     | [ "reveal"; t ] ->
@@ -995,6 +1046,18 @@ and node init step home flags =
       List.iter (fun (_, f) -> send_consensus f) (List.rev !mine);
       my_txs := List.filter (fun (t, _) -> now -. t < 120.) !my_txs;
       List.iter (fun (_, raw) -> broadcast_fields [ "tx"; raw ]) !my_txs
+    end;
+    (* after a limit's wait, one held request first: only when it comes back
+       without the limit (which resets the backoff) do the rest go *)
+    if !held <> [] && now >= !limited_until && not !probing then begin
+      let hs = List.rev !held in
+      if !limit_backoff > 900. then begin
+        say "the limit's wait is over: asking %s one held request first (%d held)" !backend (List.length hs);
+        held := List.rev (List.tl hs); probing := true; (List.hd hs) ()
+      end else begin
+        say "%s answers again: asking its %d held requests" !backend (List.length hs);
+        held := []; List.iter (fun f -> f ()) hs
+      end
     end;
     if now -. !last_inbox > 1. then begin
       last_inbox := now;

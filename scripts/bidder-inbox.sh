@@ -37,6 +37,11 @@ mv "$r/.prompt" "$r/prompt.txt"
 
 end=$(( $(date +%s) + budget ))
 while [ "$(date +%s)" -lt "$end" ]; do
+  # the agent said its provider's usage limit is hit: the node holds requests
+  if [ -f "$INBOX/limited" ]; then
+    said=$(head -c 400 "$INBOX/limited"); rm -f "$INBOX/limited"
+    echo "!usage limit reached, as the interactive agent reports: $said"; exit 0
+  fi
   if [ -f "$r/reply.txt" ]; then cat "$r/reply.txt"; exit 0; fi
   if [ -f "$r/done" ]; then "$PANTHEON_BIN" edits "$PANTHEON_WORKTREE" "$(head -n 1 "$r/done")"; exit $?; fi
   sleep 2

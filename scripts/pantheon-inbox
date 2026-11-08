@@ -7,6 +7,8 @@
 #   pantheon-inbox reply ID < FILE     answer a request with the JSON object its prompt asks for
 #   pantheon-inbox done ID NOTE...     a patch request: the checkout is edited; NOTE says what changed
 #   pantheon-inbox list                what's in the inbox
+#   pantheon-inbox limited WHAT...     your provider says you've hit your usage limit: WHAT it said (with when it resets,
+#                                      if it said); your node holds its requests until then, and asks again
 #
 # PANTHEON_INBOX is the inbox (default /var/lib/pantheon-inbox).
 set -eu
@@ -59,6 +61,10 @@ case ${1:-} in
     [ "$(cat "$r/kind")" = patch ] || die "$id is not a patch request: answer it with pantheon-inbox reply $id"
     printf '%s\n' "$*" > "$r/.done" && mv "$r/.done" "$r/done"
     echo "handed in $id: the node turns the checkout's changes into the bid. Next: pantheon-inbox wait" ;;
+  limited)
+    [ $# -ge 2 ] || die "usage: pantheon-inbox limited WHAT YOUR PROVIDER SAID"
+    shift; printf '%s\n' "$*" > "$INBOX/.limited" && mv "$INBOX/.limited" "$INBOX/limited"
+    echo "told your node: it holds its requests until the limit should have reset, then asks again. Stop until then; when a request comes, the limit is over." ;;
   list)
     for d in $(open_requests); do
       printf '%s %s %ss left%s\n' "$d" "$(cat "$INBOX/$d/kind")" $(( $(cat "$INBOX/$d/deadline") - $(now) )) "$([ -e "$INBOX/$d/claimed" ] && echo ', taken')"
