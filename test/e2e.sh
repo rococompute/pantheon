@@ -5,6 +5,7 @@
 #
 #   test/e2e.sh            all scenarios, in parallel
 #   test/e2e.sh crash      one scenario
+#   KEEP=1 test/e2e.sh     keep the logs of a run that passes too
 #
 # Needs main.exe: build it with `soma build main.soma`.
 set -u
@@ -346,4 +347,4 @@ for s in $want; do
   cat "$ROOT/$s.result"
   [ "$(cat "$ROOT/$s.code")" = 0 ] || fails=$((fails + 1))
 done
-if [ $fails -eq 0 ]; then echo "PASS ($ROOT)"; rm -rf "$ROOT"; else echo "$fails failed; logs in $ROOT"; exit 1; fi
+if [ $fails -eq 0 ]; then echo "PASS ($ROOT)"; [ -n "${KEEP:-}" ] || rm -rf "$ROOT"; else echo "$fails failed; logs in $ROOT"; exit 1; fi

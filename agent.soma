@@ -20,6 +20,7 @@ sent_at (a : obj) : nat := getf a "sent_at".
 queue (a : obj) : list (list string) := getf a "queue".
 asked (a : obj) : list string := getf a "asked".
 attempts (a : obj) : list (string * nat) := getf a "attempts".
+retry_keys (a : obj) : list (string * string) := getf a "retry_keys".
 reqs (a : obj) : list (string * list string) := getf a "reqs".
 nreq (a : obj) : nat := getf a "nreq".
 bid_window (a : obj) : nat := getf a "bid_window".
@@ -29,7 +30,7 @@ new_agent (me : string) : obj :=
    ("goal", ([] : list string) : Any), ("perspective", "" : Any),
    ("deny", ([".git/", ".github/", ".gitmodules", ".gitattributes", "network/"] : list string) : Any),
    ("inflight", 0 : Any), ("sent_at", 0 : Any), ("queue", ([] : list (list string)) : Any),
-   ("asked", ([] : list string) : Any), ("attempts", ([] : list (string * nat)) : Any),
+   ("asked", ([] : list string) : Any), ("attempts", ([] : list (string * nat)) : Any), ("retry_keys", ([] : list (string * string)) : Any),
    ("reqs", ([] : list (string * list string)) : Any), ("nreq", 0 : Any), ("bid_window", 30 : Any)].
 
 is_merged (b : bid) : bool := match bst b with Merged => true | _ => false end.
@@ -200,24 +201,19 @@ with_ask (st : obj * list (list string)) (m : obj) (key : string) (data : list s
   let (a, o) := st in
   if ask_once a key then let (a', o') := ask_ctx (note_asked a key) m data prompt ctx in (a', o ++ o') else (a, o).
 
-(** whether a model is still answering a request for the same thing: the
-    same kind and, if there is one, the same first word after it *)
-asking (a : obj) (data : list string) : bool :=
-  existsb (fun r => match snd r, data with
-                    | k :: x :: _, k' :: x' :: _ => seq k k' && seq x x'
-                    | k :: [], k' :: [] => seq k k'
-                    | _, _ => false
-                    end) (reqs a).
-
-(** Asks for key up to three times, never while a model is still answering
-    it: a failed call (failed drops its request) is asked again, as a patch
-    is. with_ask alone asks once, so a leader whose first draft failed drafted
-    nothing for the rest of its term. *)
+(** Asks for key once, and again after each failed call (failed counts it),
+    up to three failures: a leader whose model's draft or pick failed asks
+    again, as a patch is. with_ask alone asks once, so a leader whose first
+    draft failed drafted nothing for the rest of its term. An answered request
+    is not asked again. *)
 with_retry (st : obj * list (list string)) (m : obj) (key : string) (data : list string) (prompt : string) (ctx : list string) : obj * list (list string) :=
   let (a, o) := st in
   let n := get_or 0 key (attempts a) in
-  if asking a data || (3 <=? n) then st else
-  with_ask (setf a "attempts" (put key (n + 1) (attempts a)), o) m (append key (append "." (show n))) data prompt ctx.
+  let k := append key (append "." (show n)) in
+  if (3 <=? n) || negb (ask_once a k) then st else
+  (* the request ask_ctx is about to make gets the next id *)
+  let a := setf a "retry_keys" (firstn 50 ((show (nreq a + 1), key) :: retry_keys a)) in
+  with_ask (a, o) m k data prompt ctx.
 
 lead (a m : obj) : obj * list (list string) :=
   if negb (is_leader m (me a)) || negb (pending_bid_id m =? 0) then (a, []) else
@@ -323,8 +319,15 @@ tick (a m : obj) : obj * list (list string) :=
 
 drop_req (a : obj) (id : string) : obj := setf a "reqs" (filter (fun r => negb (seq (fst r) id)) (reqs a)).
 
-(** A model call failed: forget the request, so the duty can ask again. *)
-failed (a : obj) (id : string) : obj := drop_req a id.
+(** A model call failed: forget the request, so the duty can ask again. A
+    request asked through with_retry counts a failure for its key, which is
+    what lets it be asked again. *)
+failed (a : obj) (id : string) : obj :=
+  let a := match lookup id (retry_keys a) with
+           | Some key => setf a "attempts" (put key (get_or 0 key (attempts a) + 1) (attempts a))
+           | None => a
+           end in
+  drop_req (setf a "retry_keys" (filter (fun r => negb (seq (fst r) id)) (retry_keys a))) id.
 
 (** A check that couldn't run on this node says nothing about the bid: the
     agent abstains, and says why. *)
