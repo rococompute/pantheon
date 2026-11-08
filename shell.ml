@@ -95,6 +95,9 @@ let write_file p s =
   Out_channel.with_open_bin tmp (fun oc -> output_string oc s);
   Unix.rename tmp p
 let rec mkdir_p d = if d <> "" && d <> "." && d <> "/" && not (Sys.file_exists d) then (mkdir_p (Filename.dirname d); Unix.mkdir d 0o755)
+(* A checkout removed in the background: one with a build in it is close to
+   a GB, and removing it in the main loop stalled consensus for minutes *)
+let remove_tree_later path = ignore (Sys.command ("rm -rf " ^ Filename.quote path ^ " >/dev/null 2>&1 &"))
 let append_line p s = Out_channel.with_open_gen [ Open_append; Open_creat; Open_binary ] 0o644 p (fun oc -> output_string oc (s ^ "\n"); flush oc)
 (* one write, then to disk: for what must survive a crash whole (a signed vote) *)
 let append_line_synced p s =
@@ -707,7 +710,7 @@ and node init step home flags =
     if pid > 0 then begin
       Unix.close w; Unix.close ifd; Unix.close devnull;
       jobs := { jfd = r; jpid = pid; jbuf = Buffer.create 4096; jdone = on_done; jstarted = Unix.gettimeofday (); jlimit = limit;
-                jclean = (fun () -> (try Sys.remove inp with _ -> ()); (try ignore (Sys.command ("rm -rf " ^ Filename.quote cwd)) with _ -> ()); clean ()) } :: !jobs
+                jclean = (fun () -> (try Sys.remove inp with _ -> ()); (try remove_tree_later cwd with _ -> ()); clean ()) } :: !jobs
     end
   in
   let model_env () =
@@ -833,8 +836,8 @@ and node init step home flags =
               let commit = git_out (rdir r) [ "rev-parse"; "HEAD" ] in
               if fst (capture "git" [ "clone"; "--quiet"; "--shared"; "--no-checkout"; rdir r; wt ]) && git_ok wt [ "checkout"; "-q"; "--detach"; commit ] then
                 ([ "PANTHEON_WORKTREE=" ^ wt; "PANTHEON_REPO=" ^ r; "PANTHEON_BIN=" ^ Sys.executable_name ],
-                 (fun () -> ignore (Sys.command ("rm -rf " ^ Filename.quote wt))), 1800.)
-              else ([], (fun () -> ignore (Sys.command ("rm -rf " ^ Filename.quote wt))), 600.)
+                 (fun () -> remove_tree_later wt), 1800.)
+              else ([], (fun () -> remove_tree_later wt), 600.)
           | _ -> ([], ignore, 600.)
         in
         start_job ~limit (String.sub b 4 (String.length b - 4)) [] ~stdin_text:prompt ~env:(Array.append (Array.of_list extra) (model_env ())) ~on_done:reply ~clean
@@ -854,7 +857,7 @@ and node init step home flags =
     let ef = Filename.temp_file "pantheon-edits" ".json" in
     write_file ef (Yojson.Safe.to_string (strings_json edits));
     let ci = ci_for r in
-    let rm_out () = ignore (Sys.command ("rm -rf " ^ Filename.quote out)) in
+    let rm_out () = remove_tree_later out in
     (* ok is true, false (the bid's fault), or error (this node's: the agent
        abstains rather than blame the bid) *)
     let result ok tree why = push [ "check_result"; id; "ok"; (if ok then "true" else if contains why "node problem:" then "error" else "false"); "tree"; tree; "why"; why ] in
