@@ -42,7 +42,9 @@ def open_requests(inbox):
     except OSError:
         return []
     return [d for d in names if ID.match(d) and os.path.isfile(os.path.join(inbox, d, 'prompt.txt'))
-            and not os.path.exists(os.path.join(inbox, d, 'expired'))]
+            and not os.path.exists(os.path.join(inbox, d, 'expired'))
+            # a request left by a node that stopped never gets its expired mark
+            and seconds_left(os.path.join(inbox, d)) > 0]
 
 
 def seconds_left(r):
