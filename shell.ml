@@ -670,6 +670,8 @@ and node init step home flags =
              Some fields)
     | _ -> Some fields
   in
+  (* jobs the node stopped for running past their time limit *)
+  let overtime = Hashtbl.create 8 in
   let start_job ?(limit = 600.) prog args ~stdin_text ~env ~on_done ~clean =
     let inp = Filename.temp_file "pantheon-in" ".txt" in
     write_file inp stdin_text;
@@ -1076,7 +1078,8 @@ and node init step home flags =
     timers := later;
     List.iter (fun (_, ev) -> push ev) (List.sort compare due);
     (* model calls that ran too long *)
-    List.iter (fun j -> if now -. j.jstarted > j.jlimit then (try Unix.kill j.jpid Sys.sigkill with _ -> ())) !jobs;
+    List.iter (fun j -> if now -. j.jstarted > j.jlimit && not (Hashtbl.mem overtime j.jpid) then begin
+        Hashtbl.replace overtime j.jpid j.jlimit; (try Unix.kill j.jpid Sys.sigkill with _ -> ()) end) !jobs;
     drain ();
     let wait = List.fold_left (fun m (t, _) -> min m (t -. now)) 0.2 !timers |> max 0. in
     let reads = listener :: List.map (fun c -> c.fd) !conns @ List.map (fun j -> j.jfd) !jobs in
@@ -1128,10 +1131,17 @@ and node init step home flags =
          | Unix.WEXITED 0 -> j.jdone (if out = "" then "pending" else out)
          | _ -> let n = String.length out in
                 (* how it ended: CI tells an exceeded budget (137, 124) from a broken build by it *)
+                (* OCaml numbers signals its own way (SIGKILL is -7): say their names *)
+                let signame sg = if sg = Sys.sigkill then "SIGKILL" else if sg = Sys.sigterm then "SIGTERM"
+                                 else if sg = Sys.sigsegv then "SIGSEGV" else if sg = Sys.sigabrt then "SIGABRT"
+                                 else if sg = Sys.sigint then "SIGINT" else Printf.sprintf "signal %d" sg in
                 let how = match status with
                   | Unix.WEXITED c -> Printf.sprintf "exit %d" c
-                  | Unix.WSIGNALED sg -> Printf.sprintf "killed by signal %d" sg
-                  | Unix.WSTOPPED sg -> Printf.sprintf "stopped by signal %d" sg in
+                  | Unix.WSIGNALED _ when Hashtbl.mem overtime j.jpid ->
+                      Printf.sprintf "it ran past its time limit of %.0f s, so the node stopped it" (Hashtbl.find overtime j.jpid)
+                  | Unix.WSIGNALED sg -> "killed by " ^ signame sg
+                  | Unix.WSTOPPED sg -> "stopped by " ^ signame sg in
+                Hashtbl.remove overtime j.jpid;
                 j.jdone (Printf.sprintf "!process failed (%s): %s" how (if n > 3000 then "..." ^ String.sub out (n - 3000) 3000 else out)));
         j.jclean ())
       (List.rev !finished);
