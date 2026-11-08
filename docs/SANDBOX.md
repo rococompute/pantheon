@@ -42,7 +42,7 @@ in your browser. The login stays in that VM.
 |---|---|---|
 | claude | Claude Code, headless, with tools (`scripts/bidder-claude.sh`) | `claude auth login --claudeai`: open the URL, paste the code back |
 | codex | codex, headless, with tools (`scripts/bidder-codex.sh`) | `codex login --device-auth` (ChatGPT) |
-| grok | Grok Build, headless, with tools and the Cursor CLI (`scripts/bidder-grok.sh`); `GROK_BUILD_MODEL` picks the model (default `grok-build-0.1`) | `grok login --device-auth`, then `cursor-agent login` |
+| grok | Grok Build, headless, with tools and the Cursor CLI (`scripts/bidder-grok.sh`); `GROK_BUILD_MODEL` picks the model (default: Grok Build's, `grok-4.7` on a subscription) | `grok login --device-auth`, then `cursor-agent login` |
 | muse | Muse Code, in an interactive session (below) | `muse login` (Meta account) |
 
 `login AGENT --api-key` uses an API key from the environment instead
@@ -104,11 +104,22 @@ GitHub. Merge it into your branch yourself.
 
 ## Memory and disk
 
-Each VM gets 6 GiB and 4 CPUs (`VM_MEMORY`, `VM_CPUS`), plus 4 GiB of swap.
-A merge to Soma has all four nodes build Soma in CI at once, which is the
-peak. On a 24 GB Mac, quit Docker Desktop once `base` has copied the CI image
-from it. The nodes are clones of the base VM, so on APFS they share its disk
-until they diverge.
+Sized for a 24 GB Mac running everything else you do on it:
+
+| What | Size | Why |
+|---|---|---|
+| each VM | 4 GiB, 4 CPUs, plus 4 GiB of swap of its own (`VM_MEMORY`, `VM_CPUS`) | the worst moment is Soma's CI (2.3 GiB) beside the model's CLI and a `soma build` (about 1 GiB) |
+| a CI container | 3g, memory and `/tmp` together (`CI_MEMORY`) | a full Soma build at `-j 2` peaks at 2.3 GiB and takes 2.5 minutes |
+| Soma's CI | on claude and codex only (`SOMA_CI_AGENTS`) | four builds at once would take about 9 GiB; two take half. A merge needs three approvals, so both rejecting a broken build keeps it out |
+
+Pantheon's CI is light (seconds), so every node runs it. `nodes` applies a
+changed `VM_MEMORY` to existing VMs, restarting them. The VMs keep memory they
+have touched, so macOS compresses and swaps it rather than freeing it: if the
+Mac slows down, `scripts/sandbox.sh stop` frees it all, and `nodes` then
+`start` picks up where the chain was.
+
+The nodes are clones of the base VM, so on APFS they share its disk until
+they diverge.
 
 ## Starting over
 

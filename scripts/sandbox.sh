@@ -22,14 +22,16 @@
 #   SOMA_COMMIT      Soma's commit to start from (default: the checkout's gradual)
 #   PANTHEON_COMMIT  Pantheon's commit to start from (default: HEAD)
 #   SANDBOX_DIR      where the network directory is kept on the Mac (default: ~/.pantheon-sandbox)
-#   VM_MEMORY        GiB per VM (default 6), VM_CPUS (default 4)
-#   CI_MEMORY        a CI container's memory and /tmp (default 6g)
+#   VM_MEMORY        GiB per VM (default 4), VM_CPUS (default 4); nodes applies a change
+#   CI_MEMORY        a CI container's memory and /tmp (default 3g: Soma's build peaks at 2.3)
+#   SOMA_CI_AGENTS   the agents that run Soma's CI (default: claude codex; see docs/SANDBOX.md)
 set -eu
 here=$(cd "$(dirname "$0")/.." && pwd)
 AGENTS=${AGENTS:-claude codex grok muse}
 SOMA_CHECKOUT=${SOMA_CHECKOUT:-$(cd "$here/.." && pwd)/soma}
 SANDBOX_DIR=${SANDBOX_DIR:-$HOME/.pantheon-sandbox}
-VM_MEMORY=${VM_MEMORY:-6} VM_CPUS=${VM_CPUS:-4} CI_MEMORY=${CI_MEMORY:-6g}
+VM_MEMORY=${VM_MEMORY:-4} VM_CPUS=${VM_CPUS:-4} CI_MEMORY=${CI_MEMORY:-3g}
+SOMA_CI_AGENTS=${SOMA_CI_AGENTS:-claude codex}
 BASE=pantheon-base
 HOMEDIR=/var/lib/pantheon/home
 NODE=/home/pantheon/pantheon/main.exe
@@ -80,6 +82,12 @@ cmd_nodes() {
   for a in $AGENTS; do
     v=$(vm "$a")
     if ! exists "$v"; then say "cloning $v"; limactl clone --tty=false $BASE "$v" >/dev/null; fi
+    mem=$(limactl list --format '{{.Memory}}' "$v")
+    if [ "$mem" != $((VM_MEMORY * 1024 * 1024 * 1024)) ]; then
+      say "$v: memory to ${VM_MEMORY} GiB"
+      running "$v" && limactl stop "$v" >/dev/null
+      limactl edit --tty=false --memory "$VM_MEMORY" --cpus "$VM_CPUS" "$v" >/dev/null
+    fi
     running "$v" || limactl start --tty=false "$v" >/dev/null
     in_vm "$v" sudo hostnamectl set-hostname "$v"
     say "$v: $(in_vm "$v" sh -c "ip -4 -o addr show eth0 | awk '{print \$4}'")"
@@ -180,8 +188,9 @@ cmd_login() {
       as_bidder codex login status ;;
     grok)
       in_vm "$v" test -x /usr/local/bin/grok || install_grok "$v"
-      GROK_BUILD_MODEL=${GROK_BUILD_MODEL:-grok-build-0.1}
-      printf '%s\n' "GROK_BUILD_MODEL=$GROK_BUILD_MODEL" | in_vm "$v" sudo sh -c 'umask 077; cat > /etc/pantheon/keys.env'
+      # Grok Build's own default model unless GROK_BUILD_MODEL says otherwise
+      printf '%s' "${GROK_BUILD_MODEL:+GROK_BUILD_MODEL=$GROK_BUILD_MODEL
+}" | in_vm "$v" sudo sh -c 'umask 077; cat > /etc/pantheon/keys.env'
       if $key; then
         put "$(printf 'XAI_API_KEY=%s\n%s' "${XAI_API_KEY:?set XAI_API_KEY}" "${CURSOR_API_KEY:+CURSOR_API_KEY=$CURSOR_API_KEY}")"
         printf 'XAI_API_KEY=%s\n' "$XAI_API_KEY" | in_vm "$v" sudo sh -c 'cat >> /etc/pantheon/keys.env'
@@ -265,7 +274,13 @@ cmd_start() {
     printf '%s\n' "$b" | put backend
     printf '%s\n' "$CI_MEMORY" | put ci-memory
     printf '%s\n' "${PANTHEON_CI:-soma build main.soma && test/edits.sh}" | put ci/pantheon
-    printf '%s\n' "${SOMA_CI:-eval \"\$(opam env --switch=soma-build --set-switch)\" && make dunestrap >/dev/null && dune build -j 2 soma-runtime.install soma-core.install}" | put ci/soma
+    # Soma's CI is a full build: on the agents in SOMA_CI_AGENTS only, to keep
+    # the Mac's memory in bounds. Both rejecting a broken build keeps it out,
+    # since a merge needs three approvals.
+    case " $SOMA_CI_AGENTS " in
+      *" $a "*) printf '%s\n' "${SOMA_CI:-eval \"\$(opam env --switch=soma-build --set-switch)\" && make dunestrap >/dev/null && dune build -j 2 soma-runtime.install soma-core.install}" | put ci/soma ;;
+      *) in_vm "$v" sudo rm -f /etc/pantheon/ci/soma ;;
+    esac
     printf '%s\n' --bid-window 900 --max-llm-calls 200 $flags | put flags
     put goal.txt < "${GOAL_FILE:-$here/examples/dogfood/goal.txt}"
     setup_inbox "$v"
