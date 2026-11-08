@@ -78,6 +78,9 @@ repos (m : obj) : list (string * string) := getf m "repos".
 paths (m : obj) : list (string * nat) := getf m "paths".
 tasks (m : obj) : list task := getf m "tasks".
 bids (m : obj) : list bid := getf m "bids".
+(** how many bids there have ever been: a bid's number, which pruning settled
+    bids (prune) must not make the next bid reuse *)
+nbids (m : obj) : nat := getf m "nbids".
 pending (m : obj) : option proposal := getf m "pending".
 nonces (m : obj) : list (string * nat) := getf m "nonces".
 lastbid (m : obj) : list (string * nat) := getf m "lastbid".
@@ -102,7 +105,7 @@ new_market (agents : list string) : obj :=
    ("awaiting", true : Any), ("asince", 0 : Any),
    ("reveals", ([] : list (string * string)) : Any), ("held_back", ([] : list string) : Any), ("tips", ([] : list (string * string)) : Any),
    ("version", 0 : Any), ("repos", ([] : list (string * string)) : Any), ("paths", ([] : list (string * nat)) : Any),
-   ("tasks", ([] : list task) : Any), ("bids", ([] : list bid) : Any), ("pending", (None : option proposal) : Any),
+   ("tasks", ([] : list task) : Any), ("bids", ([] : list bid) : Any), ("nbids", 0 : Any), ("pending", (None : option proposal) : Any),
    ("nonces", ([] : list (string * nat)) : Any), ("lastbid", ([] : list (string * nat)) : Any),
    ("counters", ([] : list (string * nat)) : Any), ("params", ([] : list (string * nat)) : Any)].
 
@@ -234,8 +237,8 @@ apply (m : obj) (a : string) (fields : list string) : obj * list (list string) *
             else if negb (forallb (fun e => safe_path (epath e)) w) then (m, [], "unsafe path")
             else if param m "max_pending_bids" <=? length (filter (fun b => seq (bidder b) a && is_pending (bst b)) (bids m)) then (m, [], "too many pending bids")
             else
-              let id := length (bids m) + 1 in
-              ok (setf m "bids" (bids m ++ [{| bidn := id; btask := tid tk; bidder := a; base := version m; edits := w;
+              let id := nbids m + 1 in
+              ok (setf (setf m "nbids" id) "bids" (bids m ++ [{| bidn := id; btask := tid tk; bidder := a; base := version m; edits := w;
                                                note := n; bst := Pending; stale := false; why := ""; votes := [] |}]))
       end
   | ["withdraw", i] =>

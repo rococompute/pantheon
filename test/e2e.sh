@@ -390,6 +390,23 @@ F
   echo "ok limit: calls that hit a usage limit were held until it reset, not failed, and the market merged"
 }
 
+scenario_prune() {
+  # settled bids pruned almost at once: bid numbers must still never repeat
+  init prune 28050 term_blocks=30 max_merges=2 bid_cooldown=2 keep_settled=2 || return 1
+  for a in $AGENTS; do node prune "$a"; done
+  # every half second, whether two live bids share a number
+  ( while [ ! -f "$ROOT/prune/done" ]; do
+      d=$(sed -n 's/^bid \([0-9]*\) .*/\1/p' "$ROOT/prune/claude/status.txt" 2>/dev/null | sort | uniq -d | head -1)
+      [ -n "$d" ] && echo "$d" >> "$ROOT/prune/reused"; sleep 0.5; done ) &
+  wait_for prune claude 150 "bids pruned and merges going on" sh -c "[ \$(grep -c 'merged bid' '$ROOT/prune/claude/node.log') -ge 4 ]" || { touch "$ROOT/prune/done"; stop prune; return 1; }
+  touch "$ROOT/prune/done"; sleep 1; stop prune
+  [ ! -s "$ROOT/prune/reused" ] || { echo "FAIL prune: two live bids shared a number: $(sort -u "$ROOT/prune/reused" | tr '\n' ' ')"; return 1; }
+  n=$(grep -o 'merged bid [0-9]*' "$ROOT"/prune/claude/node.log | sort | uniq -d)
+  [ -z "$n" ] || { echo "FAIL prune: a bid number merged twice: $n"; return 1; }
+  agree prune claude codex grok muse || return 1
+  echo "ok prune: bids pruned from the state, and every bid's number still its own"
+}
+
 run() {
   case "$1" in
     happy) scenario_happy ;;
@@ -408,11 +425,12 @@ run() {
     model) scenario_model ;;
     stuck) scenario_stuck ;;
     limit) scenario_limit ;;
+    prune) scenario_prune ;;
     *) echo "unknown scenario $1"; return 1 ;;
   esac
 }
 
-ALL="happy crash equivocate double-vote silent bad-sig withhold bad-tree deny silent-model policy model stuck limit network ci"
+ALL="happy crash equivocate double-vote silent bad-sig withhold bad-tree deny silent-model policy model stuck limit prune network ci"
 want=${*:-$ALL}
 pids=""
 for s in $want; do (run "$s" > "$ROOT/$s.result" 2>&1; echo $? > "$ROOT/$s.code") & pids="$pids $!"; done
