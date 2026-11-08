@@ -26,14 +26,14 @@
 #   SANDBOX_DIR      where the network directory is kept on the Mac (default: ~/.pantheon-sandbox)
 #   VM_MEMORY        GiB per VM (default 4), VM_CPUS (default 4); nodes applies a change
 #   CI_MEMORY        a CI container's memory and /tmp (default 3g: Soma's build peaks at 2.3)
-#   SOMA_CI_AGENTS   the agents that run Soma's CI (default: claude codex; see docs/SANDBOX.md)
+#   SOMA_CI_AGENTS   the agents that run Soma's CI (default: claude codex grok; see docs/SANDBOX.md)
 set -eu
 here=$(cd "$(dirname "$0")/.." && pwd)
 AGENTS=${AGENTS:-claude codex grok muse}
 SOMA_CHECKOUT=${SOMA_CHECKOUT:-$(cd "$here/.." && pwd)/soma}
 SANDBOX_DIR=${SANDBOX_DIR:-$HOME/.pantheon-sandbox}
 VM_MEMORY=${VM_MEMORY:-4} VM_CPUS=${VM_CPUS:-4} CI_MEMORY=${CI_MEMORY:-3g}
-SOMA_CI_AGENTS=${SOMA_CI_AGENTS:-claude codex}
+SOMA_CI_AGENTS=${SOMA_CI_AGENTS:-claude codex grok}
 BASE=pantheon-base
 HOMEDIR=/var/lib/pantheon/home
 NODE=/home/pantheon/pantheon/main.exe
@@ -285,9 +285,10 @@ cmd_start() {
     # Pantheon's build within a cloud agent's default command time (2 minutes):
     # a change that makes it slower fails CI, as a broken one does
     printf '%s\n' "${PANTHEON_CI:-timeout 120 soma build main.soma && timeout 120 test/edits.sh}" | put ci/pantheon
-    # Soma's CI is a full build: on the agents in SOMA_CI_AGENTS only, to keep
-    # the Mac's memory in bounds. Both rejecting a broken build keeps it out,
-    # since a merge needs three approvals.
+    # Soma's CI is a full build: on three agents (SOMA_CI_AGENTS), so whichever
+    # bids, two attestors run it, and two rejecting a broken build keep it out.
+    # On two, a bidder that was one of them left a single check, which one
+    # "no" can't enforce: a merge needs three approvals, a rejection two.
     case " $SOMA_CI_AGENTS " in
       # deploy/sandbox/soma-ci: Soma's build, then the CI image's Pantheon built
       # with it, so a change that breaks Soma's biggest user fails here

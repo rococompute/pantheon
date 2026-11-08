@@ -147,7 +147,7 @@ Sized for a 24 GB Mac running everything else you do on it:
 |---|---|---|
 | each VM | 4 GiB, 4 CPUs, plus 4 GiB of swap of its own (`VM_MEMORY`, `VM_CPUS`) | the worst moment is Soma's CI (2.3 GiB) beside the model's CLI and a `soma build` (about 1 GiB) |
 | a CI container | 3g, memory and `/tmp` together (`CI_MEMORY`) | a full Soma build at `-j 2` peaks at 2.3 GiB and takes 2.5 minutes |
-| Soma's CI | on claude and codex only (`SOMA_CI_AGENTS`) | four builds at once would take about 9 GiB; two take half. A merge needs three approvals, so both rejecting a broken build keeps it out |
+| Soma's CI | on claude, codex and grok (`SOMA_CI_AGENTS`) | whichever agent bids, two attestors run it, and two "no" votes reject a bid. On two nodes, a bid from one of them left one check, which a single "no" can't enforce (a merge needs three approvals, a rejection two): that's how a change that broke Pantheon merged |
 
 Pantheon's CI is light (seconds), so every node runs it. `nodes` applies a
 changed `VM_MEMORY` to existing VMs, restarting them. The VMs keep memory they
