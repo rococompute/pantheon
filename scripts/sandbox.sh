@@ -287,7 +287,9 @@ cmd_start() {
     # the Mac's memory in bounds. Both rejecting a broken build keeps it out,
     # since a merge needs three approvals.
     case " $SOMA_CI_AGENTS " in
-      *" $a "*) printf '%s\n' "${SOMA_CI:-eval \"\$(opam env --switch=soma-build --set-switch)\" && make dunestrap >/dev/null && dune build -j 2 soma-runtime.install soma-core.install}" | put ci/soma ;;
+      # deploy/sandbox/soma-ci: Soma's build, then the CI image's Pantheon built
+      # with it, so a change that breaks Soma's biggest user fails here
+      *" $a "*) printf '%s\n' "${SOMA_CI:-$(cat "$here/deploy/sandbox/soma-ci")}" | put ci/soma ;;
       *) in_vm "$v" sudo rm -f /etc/pantheon/ci/soma ;;
     esac
     printf '%s\n' --bid-window 900 --max-llm-calls 200 $flags | put flags

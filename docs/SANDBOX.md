@@ -122,6 +122,11 @@ that breaks it fails as a broken one does, with the reason in its rejection:
 The VMs stay at 4 GiB: the budget is what the work must fit in, not what the
 Mac has to spare.
 
+Soma's CI (`deploy/sandbox/soma-ci`) also builds Pantheon, the CI image's
+copy, with the Soma it just built, so a Soma change that breaks its biggest
+user fails CI with the error, rather than surfacing when the next epoch
+builds Pantheon with it.
+
 ## Memory and disk
 
 Sized for a 24 GB Mac running everything else you do on it:
