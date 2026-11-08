@@ -779,6 +779,12 @@ and node init step home flags =
         start_job ~limit (String.sub b 4 (String.length b - 4)) [] ~stdin_text:prompt ~env:(Array.append (Array.of_list extra) (model_env ())) ~on_done:reply ~clean
     | b -> push [ "llm_error"; id; "unknown backend " ^ b ]
   in
+  (* One CI job at a time on this node, the rest waiting their turn: two at
+     once (a leader's merge check beside an attest) can take more memory than
+     the machine has, and a build killed for memory reads as the bid's fault. *)
+  let ci_busy = ref false and ci_waiting = Queue.create () in
+  let ci_next () = match Queue.take_opt ci_waiting with Some f -> f () | None -> ci_busy := false in
+  let with_ci f = if !ci_busy then Queue.add f ci_waiting else (ci_busy := true; f ()) in
   (* A check for an attestor: the bid's edits on the head, in a fresh clone,
      give a tree; then the repository's CI, if this node has one, runs on it in
      a container with no network, a read-only root and nobody's uid. *)
@@ -800,6 +806,7 @@ and node init step home flags =
           else begin
             ignore (Sys.command ("chmod -R a+rX " ^ Filename.quote out));
             let name = "pantheon-ci-" ^ random_hex 6 in
+            with_ci @@ fun () ->
             start_job ~limit:3600. "docker"
               [ "run"; "--rm"; "--name"; name; "--network=none"; "--read-only"; "--tmpfs"; "/tmp:exec,size=" ^ !ci_memory; "--cap-drop=ALL";
                 "--security-opt=no-new-privileges"; "--pids-limit=512"; "--memory=" ^ !ci_memory; "--user=65534:65534"; "-e"; "HOME=/tmp";
@@ -810,7 +817,9 @@ and node init step home flags =
                 say "CI for request %s: %s" id (if ok then "passed" else "failed");
                 (* docker itself failing is this node's problem, not the bid's *)
                 let docker_down = (not ok) && (contains t "Cannot connect to the Docker daemon" || contains t "Unable to find image") in
-                result ok tree (if ok then "" else if docker_down then "node problem: docker: " ^ t else "CI failed"))
+                if not ok then say "CI for request %s said: %s" id (String.map (fun c -> if c = '\n' then ' ' else c) t);
+                result ok tree (if ok then "" else if docker_down then "node problem: docker: " ^ t else "CI failed");
+                ci_next ())
               ~clean:(fun () -> ignore (Sys.command ("docker rm -f " ^ name ^ " >/dev/null 2>&1")); rm_out ())
           end)
       ~clean:(fun () -> (try Sys.remove ef with _ -> ()); if ci = "" then rm_out ())
@@ -1041,7 +1050,8 @@ and node init step home flags =
         (* the reply first: codex's is a file that cleaning removes *)
         (match status with
          | Unix.WEXITED 0 -> j.jdone (if out = "" then "pending" else out)
-         | _ -> j.jdone ("!process failed: " ^ String.sub out 0 (min 300 (String.length out))));
+         | _ -> let n = String.length out in
+                j.jdone ("!process failed: " ^ (if n > 600 then "..." ^ String.sub out (n - 600) 600 else out)));
         j.jclean ())
       (List.rev !finished);
     List.iter (fun p ->
