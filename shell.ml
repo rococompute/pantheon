@@ -810,7 +810,8 @@ and node init step home flags =
             start_job ~limit:3600. "docker"
               [ "run"; "--rm"; "--name"; name; "--network=none"; "--read-only"; "--tmpfs"; "/tmp:exec,size=" ^ !ci_memory; "--cap-drop=ALL";
                 "--security-opt=no-new-privileges"; "--pids-limit=512"; "--memory=" ^ !ci_memory; "--user=65534:65534"; "-e"; "HOME=/tmp";
-                "-v"; out ^ ":/work:ro"; "-w"; "/work"; !ci_image; "sh"; "-c"; ci ]
+                (* its errors too: start_job keeps only stdout *)
+                "-v"; out ^ ":/work:ro"; "-w"; "/work"; !ci_image; "sh"; "-c"; "(" ^ ci ^ ") 2>&1" ]
               ~stdin_text:"" ~env:(Unix.environment ())
               ~on_done:(fun t ->
                 let ok = not (String.length t > 0 && t.[0] = '!') in
