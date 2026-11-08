@@ -129,6 +129,10 @@ scenario_crash() {
   for i in 1 2; do
     kill_node crash grok
     before=$(field crash height claude)
+    # a vote line cut short, as a node stopped mid-write leaves one, at a height
+    # grok will vote at once it's back: it must step past it, not stop there
+    [ $i = 1 ] && for h in $(seq $((before + 11)) $((before + 80))); do
+      printf 'prevote/%s/0 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca49599\n' "$h"; done >> "$ROOT/crash/grok/signed.log"
     wait_for crash claude 60 "3 of 4 to keep deciding" height_at_least crash claude $((before + 10)) || { stop crash; return 1; }
     node crash grok
     sleep 3
@@ -138,6 +142,7 @@ scenario_crash() {
   sleep 2; stop crash
   agree crash claude codex grok muse && agree_files crash claude codex grok muse || return 1
   grep -q 'replayed' "$ROOT/crash/grok/node.log" || { echo "FAIL crash: grok never replayed from disk"; return 1; }
+  grep -q 'a line cut short' "$ROOT/crash/grok/node.log" || { echo "FAIL crash: grok didn't notice its cut-short vote line"; return 1; }
   echo "ok crash: grok killed twice, caught up at $(field crash height grok)"
 }
 

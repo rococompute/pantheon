@@ -96,6 +96,14 @@ let write_file p s =
   Unix.rename tmp p
 let rec mkdir_p d = if d <> "" && d <> "." && d <> "/" && not (Sys.file_exists d) then (mkdir_p (Filename.dirname d); Unix.mkdir d 0o755)
 let append_line p s = Out_channel.with_open_gen [ Open_append; Open_creat; Open_binary ] 0o644 p (fun oc -> output_string oc (s ^ "\n"); flush oc)
+(* one write, then to disk: for what must survive a crash whole (a signed vote) *)
+let append_line_synced p s =
+  let fd = Unix.openfile p [ Unix.O_WRONLY; Unix.O_APPEND; Unix.O_CREAT ] 0o644 in
+  Fun.protect ~finally:(fun () -> Unix.close fd) (fun () ->
+      let b = Bytes.of_string (s ^ "\n") in
+      let n = Unix.write fd b 0 (Bytes.length b) in
+      if n <> Bytes.length b then failwith "signed.log: short write";
+      Unix.fsync fd)
 let read_json p = try Yojson.Safe.from_file p with _ -> fail "cannot read %s: is this a home made by `pantheon init`?" p
 let lines p = if Sys.file_exists p then String.split_on_char '\n' (read_file p) |> List.filter (( <> ) "") else []
 
@@ -593,11 +601,19 @@ and node init step home flags =
       | None -> ()
       | Some i ->
           let k = String.sub l 0 i and rest = String.sub l (i + 1) (String.length l - i - 1) in
+          (* A line cut short (a node stopped while writing it) is no vote: the
+             line is written before the vote is sent, so that vote never went
+             out. Taking it as signed, with nothing to send again, left a node
+             refusing to vote at that height, silent, and never caught up. *)
+          let cut why = say "signed.log: skipping %s, a line cut short (%s): that vote was never sent" k why in
           (match String.index_opt rest ' ' with
-           | None -> Hashtbl.replace signed k (rest, None)
+           | None -> cut "no vote in it"
            | Some j ->
                let v = String.sub rest 0 j and js = String.sub rest (j + 1) (String.length rest - j - 1) in
-               Hashtbl.replace signed k (v, (try Some (json_strings (Yojson.Safe.from_string js)) with _ -> None))))
+               if v <> "" && String.length v <> 64 then cut "its value id is cut"
+               else match (try Some (json_strings (Yojson.Safe.from_string js)) with _ -> None) with
+                 | Some f -> Hashtbl.replace signed k (v, Some f)
+                 | None -> cut "its vote doesn't parse"))
     (lines signed_path);
   let blocks_path = Filename.concat home "blocks.log" in
   (* the governed repositories: a checkout each, at genesis or later *)
@@ -666,7 +682,7 @@ and node init step home flags =
          | Some _ -> Some fields
          | None ->
              Hashtbl.replace signed slot (vid, Some fields);
-             append_line signed_path (slot ^ " " ^ vid ^ " " ^ Yojson.Safe.to_string (strings_json fields));
+             append_line_synced signed_path (slot ^ " " ^ vid ^ " " ^ Yojson.Safe.to_string (strings_json fields));
              Some fields)
     | _ -> Some fields
   in
