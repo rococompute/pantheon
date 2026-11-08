@@ -10,6 +10,14 @@
 # SOMA_JOBS: dune's jobs (default 2: a whole build peaks at 2.3 GiB with 2)
 set -eu
 [ -f dune-project ] && [ -f soma-runtime.opam ] || { echo "soma-dev-build: run it in a checkout of Soma (no dune-project and soma-runtime.opam here)" >&2; exit 1; }
+# One heavy build at a time on this machine: a Soma build beside the node's
+# CI building Soma runs a small VM out of memory. PANTHEON_BUILD_LOCK is the
+# lock the node's CI takes too (deploy/sandbox/pantheon-docker).
+lock=${PANTHEON_BUILD_LOCK:-/var/lib/pantheon-build/lock}
+if [ -r "$lock" ] && command -v flock >/dev/null; then
+  exec 9<"$lock"
+  flock -n 9 || { echo "soma-dev-build: waiting for the other build on this machine (CI) to finish"; flock 9; }
+fi
 eval "$(opam env --switch=soma-build --set-switch)"
 log=${TMPDIR:-/tmp}/soma-dev-build.$$.log   # outside the checkout: not part of a patch
 make dunestrap > "$log" 2>&1 || { tail -20 "$log"; echo "soma-dev-build: make dunestrap failed ($log)" >&2; exit 1; }
