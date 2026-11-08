@@ -16,6 +16,7 @@
 #   scripts/host.sh vm AGENT           AGENT's VM (Muse's): made and started, the agent's CLI in it, a token
 #   scripts/host.sh login AGENT        log AGENT's CLI in, in its VM (device code: you open the URL)
 #   scripts/host.sh diplomats          from a herdr pane: a workspace with one tab per agent, each session started
+#   scripts/host.sh mirror             push the market's head to GitHub now (the mirror service does it every 30s)
 #   scripts/host.sh check DIR          the nodes' CI on a checkout, in the sandbox (pantheon-inbox check uses it)
 #   scripts/host.sh stop               stop the nodes, the mirror and the inbox server (VMs: limactl stop)
 #   scripts/host.sh status             each node's chain, limits, inbox, and the services
@@ -154,19 +155,22 @@ U
   say "next: scripts/host.sh diplomats, from a herdr pane; watch it: scripts/host.sh status"
 }
 
-cmd_mirror_loop() {
+# the market's head (any node's: merges commit the same way on every node),
+# pushed fast-forward only
+cmd_mirror() {
+  [ -n "$REMOTE" ] || die "no REMOTE: set it to the GitHub repository workers share"
   r=$NET/claude/repos/pantheon
-  while :; do
-    if out=$(git -C "$r" push --quiet "$REMOTE" "HEAD:refs/heads/$BRANCH" 2>&1); then :
-    else
-      case $out in
-        *"non-fast-forward"*|*"fetch first"*|*rejected*) say "mirror: $BRANCH on $REMOTE isn't an ancestor of this network's head (an older network's?). Delete that branch on GitHub, or set REMOTE to another repository: $out" ;;
-        *) say "mirror: can't push to $REMOTE: $out. This machine needs a key that can write there (a deploy key with write access: $(cat "$HOME/.ssh/id_ed25519.pub" 2>/dev/null | cut -c1-60)...)" ;;
-      esac
-    fi
-    sleep 30
-  done
+  [ -d "$r" ] || die "no network yet: scripts/host.sh network"
+  if out=$(git -C "$r" push --quiet "$REMOTE" "HEAD:refs/heads/$BRANCH" 2>&1); then
+    [ -z "${quiet:-}" ] && say "mirror: $(git -C "$r" rev-parse --short HEAD) is $BRANCH on $REMOTE"; return 0
+  fi
+  case $out in
+    *"non-fast-forward"*|*"fetch first"*|*rejected*) say "mirror: $BRANCH on $REMOTE isn't an ancestor of this network's head (an older network's?). Delete that branch on GitHub, or set REMOTE to another repository: $out" ;;
+    *) say "mirror: can't push to $REMOTE: $out. This machine needs a key that can write there (gh auth login with SSH adds this machine's key to your account; or a deploy key with write access)" ;;
+  esac
+  return 1
 }
+cmd_mirror_loop() { while :; do quiet=1 cmd_mirror || true; sleep 30; done; }
 
 cmd_vm() {
   a=${1:-}; is_agent "$a" && in_vm_agents "$a" || die "usage: scripts/host.sh vm AGENT (one of VM_AGENTS: $VM_AGENTS)"
@@ -273,7 +277,7 @@ cmd_logs() {
 
 c=${1:-}; [ $# -gt 0 ] && shift
 case $c in
-  network|start|vm|login|diplomats|check|stop|status|logs) "cmd_$c" "$@" ;;
+  network|start|vm|login|diplomats|mirror|check|stop|status|logs) "cmd_$c" "$@" ;;
   mirror-loop) cmd_mirror_loop ;;
   *) awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "$0"; [ -z "$c" ] || exit 1 ;;
 esac

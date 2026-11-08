@@ -24,7 +24,7 @@ Nothing listens beyond localhost. The nodes talk on 127.0.0.1. Muse's VM (Lima o
 ## Set up once, by a person
 
 - **Logins on the host:** `claude`, `codex`, `cursor-agent login`; Muse's login happens in its VM.
-- **Write access to GitHub for the mirror:** the host's key (`~/.ssh/id_ed25519.pub`) as a deploy key with write access on the repository. Until then, `scripts/host.sh status` shows the mirror failing, workers can't see the market's head, and diplomats do patches by hand or skip them.
+- **Write access to GitHub for the mirror and the diplomats' pulls:** `gh auth login` on the host with SSH (it adds the host's key to your account), or the host's key as a deploy key with write access on the repository. Until then, `scripts/host.sh status` shows the mirror failing, workers can't see the market's head, and diplomats do patches by hand or skip them.
 - **Providers' access to the repository and their environments:**
   - Claude Code on the web needs its GitHub app on the repository.
   - Codex Cloud needs an environment for it: pass its id as `CODEX_ENV`.
