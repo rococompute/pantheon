@@ -71,7 +71,7 @@ case $MODEL in
     note=$(as_bidder grok --prompt-file "$prompt" --cwd "$PANTHEON_WORKTREE" $(grok_model) --no-subagents --disable-web-search \
       --allow "Read(./**)" --allow "Edit(./**)" --allow "Glob" --allow "Bash(soma build:*)" --allow "Bash(soma run:*)" --allow "Bash(soma explore:*)" \
       --allow "Bash(sh test.sh:*)" --allow "Bash(sh tests/:*)" --allow "Bash(sh test/:*)" --allow "Bash(git diff:*)" --allow "Bash(git status)" \
-      --allow "Bash(ls:*)" --allow "Bash(cursor-agent:*)" --permission-mode dontAsk --output-format plain | tail -n 1) ;;
+      --allow "Bash(ls:*)" --allow "Bash(cursor-agent:*)" --permission-mode dontAsk --output-format plain | sed '/^[[:space:]]*$/d' | tail -n 1) ;;
   *) echo "bidder.sh: unknown BIDDER_MODEL $MODEL (claude, codex or grok)" >&2; exit 1 ;;
 esac
 exec "$PANTHEON_BIN" edits . "$note"
