@@ -75,6 +75,10 @@ cmd_network() {
 # the instructions a diplomat on this host follows, for its provider
 render_diplomat() {
   a=$1; mkdir -p "$P/diplomats" "$P/desk/$a"
+  # a plain clone of the shared repository: cloud hand-offs start from the
+  # GitHub remote and branch of the directory they run in
+  [ -z "$REMOTE" ] || [ -d "$P/desk/$a/pantheon/.git" ] || git clone -q "$REMOTE" "$P/desk/$a/pantheon" \
+    || say "$a: can't clone $REMOTE into $P/desk/$a/pantheon: its cloud hand-offs need it"
   d=$here/deploy/host/delegate/$a.md
   python3 - "$here/deploy/host/diplomat.md" "$d" "$P/diplomats/$a.md" <<PY
 import sys, os
@@ -82,7 +86,7 @@ t = open(sys.argv[1]).read()
 d = open(sys.argv[2]).read() if os.path.exists(sys.argv[2]) else "## How you hand off\n\nYou have no workers elsewhere: do patches by hand, small, and skip what's too big."
 t = t.replace("{{DELEGATE}}", d.strip())
 for k, v in {"AGENT": "$a", "REMOTE": "$REMOTE", "BRANCH": "$BRANCH", "NET": "$NET",
-             "CODEX_ENV": "${CODEX_ENV:-ENV_ID}", "GROK_MODEL": "$GROK_MODEL"}.items():
+             "CODEX_ENV": "${CODEX_ENV:-ENV_ID}", "DESK": "$P/desk/$a", "GROK_MODEL": "$GROK_MODEL"}.items():
     t = t.replace("{{%s}}" % k, v)
 open(sys.argv[3], "w").write(t)
 PY
