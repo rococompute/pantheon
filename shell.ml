@@ -875,7 +875,13 @@ and node init step home flags =
                   else if docker_down then "node problem: docker: " ^ t
                   else if contains t "(exit 137)" then "CI went over its memory budget (" ^ !ci_memory ^ ", no swap): the build needs less memory than that to merge"
                   else if contains t "(exit 124)" then "CI went over its time budget: the build has to finish within the limit its CI command gives"
-                  else "CI failed" in
+                  else begin
+                    (* the end of what CI said, where its error is: a rejection carries it to
+                       the next bidder, who otherwise can't see why bids keep failing *)
+                    let one = String.trim (String.map (fun c -> if c = '\n' || c = '\r' then ' ' else c) t) in
+                    let n = String.length one in
+                    "CI failed: " ^ (if n > 400 then "..." ^ String.sub one (n - 400) 400 else one)
+                  end in
                 result ok tree why;
                 ci_next ())
               ~clean:(fun () -> ignore (Sys.command ("docker rm -f " ^ name ^ " >/dev/null 2>&1")); rm_out ())
