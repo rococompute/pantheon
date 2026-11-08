@@ -57,7 +57,7 @@ cmd_base() {
   tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
   git -C "$here" archive --format=tar "${PANTHEON_COMMIT:-HEAD}" > "$tmp/pantheon.tar"
   git -C "$SOMA_CHECKOUT" archive --format=tar "${SOMA_COMMIT:-gradual}" > "$tmp/soma.tar"
-  cp "$here/deploy/sandbox/provision.sh" "$here/deploy/sandbox/firewall.nft" "$here/deploy/sandbox/pantheon-docker" "$tmp/"
+  cp "$here/deploy/sandbox/provision.sh" "$here/deploy/sandbox/firewall.nft" "$here/deploy/sandbox/pantheon-docker" "$here/deploy/sandbox/model-env" "$tmp/"
   in_vm $BASE sh -c 'rm -rf /tmp/prov && mkdir /tmp/prov'
   limactl copy -r "$tmp/." $BASE:/tmp/prov/
   say "provisioning $BASE: packages, users, firewall, then Soma and Pantheon from source (the first time, ~20 min)"
@@ -111,6 +111,7 @@ cmd_update() {
 }
 
 cmd_network() {
+  for a in $AGENTS; do running "$(vm "$a")" && in_vm "$(vm "$a")" sudo systemctl disable -q --now pantheon-node; done
   cmd_update
   net=$SANDBOX_DIR/network
   mkdir -p "$net/parts" "$net/repos"
@@ -227,6 +228,7 @@ default_backend() {
 setup_inbox() {
   v=$1
   # the bidders, from this checkout, so a VM never runs a stale copy
+  in_vm "$v" sudo sh -c 'cat > /usr/local/lib/pantheon/model-env' < "$here/deploy/sandbox/model-env"
   for f in bidder.sh bidder-claude.sh bidder-codex.sh bidder-grok.sh; do
     in_vm "$v" sudo sh -c "cat > /usr/local/lib/pantheon/$f && chmod 755 /usr/local/lib/pantheon/$f" < "$here/scripts/$f"
   done
@@ -284,7 +286,7 @@ cmd_start() {
     printf '%s\n' --bid-window 900 --max-llm-calls 200 $flags | put flags
     put goal.txt < "${GOAL_FILE:-$here/examples/dogfood/goal.txt}"
     setup_inbox "$v"
-    printf '[Service]\nSyslogIdentifier=pantheon\n' | in_vm "$v" sudo sh -c 'mkdir -p /etc/systemd/system/pantheon-node.service.d && cat > /etc/systemd/system/pantheon-node.service.d/log.conf && systemctl daemon-reload'
+    printf '[Service]\nSyslogIdentifier=pantheon\nEnvironment="BIDDER_WRITABLE=/home/pantheon/.opam/log"\n' | in_vm "$v" sudo sh -c 'mkdir -p /etc/systemd/system/pantheon-node.service.d && cat > /etc/systemd/system/pantheon-node.service.d/log.conf && systemctl daemon-reload'
     in_vm "$v" sudo systemctl enable -q pantheon-node
     in_vm "$v" sudo systemctl restart pantheon-node
     say "$a: started, backend $b"
@@ -309,7 +311,9 @@ cmd_stop() { for a in $AGENTS; do v=$(vm "$a"); running "$v" && { in_vm "$v" sud
 cmd_reset() {
   for a in $AGENTS; do
     v=$(vm "$a"); running "$v" || continue
-    in_vm "$v" sudo systemctl stop pantheon-node
+    # disabled, so a VM's restart can't start a node on the next genesis with
+    # the last run's settings before start writes this run's
+    in_vm "$v" sudo systemctl disable -q --now pantheon-node
     in_vm "$v" sudo rm -rf $HOMEDIR /var/lib/pantheon/network
   done
   rm -rf "$SANDBOX_DIR/network"

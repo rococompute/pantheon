@@ -5,6 +5,10 @@
 #   pantheon node HOME --backend cmd:/path/to/scripts/bidder-codex.sh
 #   pantheon node HOME --backend cmd:/path/to/scripts/bidder-grok.sh
 #
+# BIDDER_WRITABLE: directories, space-separated, that a model's own sandbox
+# (codex's) should let it write besides the checkout: opam's log and locks
+# when Soma is another user's, say. Unix permissions still decide what it can.
+#
 # Grok Build uses GROK_BUILD_MODEL if it's set, and may call the Cursor CLI
 # (cursor-agent) as a tool when it's installed.
 #
@@ -35,9 +39,9 @@ if [ -z "${PANTHEON_WORKTREE:-}" ]; then
   case $MODEL in
     claude) as_bidder claude -p --tools "" --strict-mcp-config --no-session-persistence --setting-sources "" --output-format text < "$prompt" ;;
     codex)
-      out=$(mktemp)
+      outd=$(mktemp -d); chmod 777 "$outd"; out=$outd/reply.txt
       as_bidder codex exec --skip-git-repo-check --ephemeral --disable apps --sandbox read-only -c 'approval_policy="never"' -c 'mcp_servers={}' -o "$out" - < "$prompt" >/dev/null
-      cat "$out"; rm -f "$out" ;;
+      cat "$out" 2>/dev/null; rm -rf "$outd" ;;
     grok) as_bidder grok --prompt-file "$prompt" $(grok_model) --tools "" --no-subagents --disable-web-search --output-format plain ;;
     *) echo "bidder.sh: unknown BIDDER_MODEL $MODEL (claude, codex or grok)" >&2; exit 1 ;;
   esac
@@ -59,10 +63,11 @@ case $MODEL in
                      "Bash(sh test.sh:*)" "Bash(sh tests/:*)" "Bash(sh test/:*)" "Bash(git diff:*)" "Bash(git status)" "Bash(ls:*)" \
       --permission-mode dontAsk --strict-mcp-config --no-session-persistence --setting-sources "" --output-format text < "$prompt" | tail -n 1) ;;
   codex)
-    out=$(mktemp)
-    as_bidder codex exec --skip-git-repo-check --ephemeral --disable apps --sandbox workspace-write -C "$PANTHEON_WORKTREE" \
+    outd=$(mktemp -d); chmod 777 "$outd"; out=$outd/reply.txt
+    extra=""; for d in ${BIDDER_WRITABLE:-}; do extra="$extra --add-dir $d"; done
+    as_bidder codex exec --skip-git-repo-check --ephemeral --disable apps --sandbox workspace-write -C "$PANTHEON_WORKTREE" $extra \
       -c 'approval_policy="never"' -c 'mcp_servers={}' -o "$out" - < "$prompt" >/dev/null
-    note=$(tail -n 1 "$out"); rm -f "$out" ;;
+    note=$(sed '/^[[:space:]]*$/d' "$out" 2>/dev/null | tail -n 1); rm -rf "$outd" ;;
   grok)
     echo 'Run shell commands one at a time, not chained with ; && or ||: only these run, `soma build`, `soma run`, `soma explore`, `sh test.sh`, `sh tests/...`, `sh test/...`, `git diff`, `git status`, `ls`, and `cursor-agent`. Read and edit files with your file tools.' >> "$prompt"
     if as_bidder sh -c 'command -v cursor-agent' >/dev/null 2>&1; then

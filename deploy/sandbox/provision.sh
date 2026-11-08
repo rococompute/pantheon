@@ -18,7 +18,7 @@ say() { printf 'provision: %s\n' "$*"; }
 say "system packages"
 apt-get update -q >/dev/null
 apt-get install -y -q git build-essential opam jq curl m4 pkg-config libgmp-dev zlib1g-dev rsync ca-certificates \
-  docker.io nftables nodejs npm unzip >/dev/null
+  docker.io nftables nodejs npm unzip bubblewrap >/dev/null
 
 id pantheon >/dev/null 2>&1 || useradd -m -s /bin/bash pantheon
 id bidder >/dev/null 2>&1 || useradd -m -s /bin/bash bidder
@@ -32,6 +32,12 @@ if [ ! -f /swapfile ]; then
   echo '/swapfile none swap sw 0 0' >> /etc/fstab
 fi
 swapon -a 2>/dev/null || true
+
+# The models' own sandboxes (codex's, Muse's) are bubblewrap, which needs
+# unprivileged user namespaces; Ubuntu 24.04 restricts them. Inside this VM
+# they add a layer on top of the VM and the bidder user.
+echo 'kernel.apparmor_restrict_unprivileged_userns = 0' > /etc/sysctl.d/60-pantheon-userns.conf
+sysctl -q -p /etc/sysctl.d/60-pantheon-userns.conf || true
 
 say "firewall"
 sed -e "s/PANTHEON_UID/$(id -u pantheon)/g" -e "s/BIDDER_UID/$(id -u bidder)/g" "$here/firewall.nft" > /etc/pantheon/firewall.nft
@@ -105,11 +111,7 @@ codex_js=/usr/local/lib/node_modules/@openai/codex/bin/codex.js
 # What the bidder runs, through sudo (which resets the environment): its own
 # login from ~/.config/pantheon/model.env, and Soma from the node's build,
 # with its prebuilt switches, the way CI runs it.
-cat > /usr/local/lib/pantheon/model-env <<'E'
-export PATH=/home/pantheon/soma/_build/install/default/bin:/usr/local/bin:/usr/bin:/bin
-export OPAMROOT=/home/pantheon/.opam SOMA_OCAML_SWITCH=/home/pantheon/.cache/soma/ocaml
-[ -r "$HOME/.config/pantheon/model.env" ] && { set -a; . "$HOME/.config/pantheon/model.env"; set +a; }
-E
+install -m 644 "$here/model-env" /usr/local/lib/pantheon/model-env
 rm -f /usr/local/bin/codex
 printf '#!/bin/sh\n. /usr/local/lib/pantheon/model-env\nexec /home/bidder/.local/bin/claude "$@"\n' > /usr/local/bin/claude
 printf '#!/bin/sh\n. /usr/local/lib/pantheon/model-env\nexec node %s "$@"\n' "$codex_js" > /usr/local/bin/codex
