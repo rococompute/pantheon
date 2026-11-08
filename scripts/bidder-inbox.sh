@@ -16,7 +16,10 @@ INBOX=${PANTHEON_INBOX:-/var/lib/pantheon-inbox}
 id=$(date +%s)-$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')
 r=$INBOX/$id
 mkdir "$r" && chmod 2770 "$r" || { echo "!bidder-inbox: can't make $r"; exit 0; }
-trap 'rm -rf "$r"' EXIT
+# on the way out: the request, and the checkout made removable by the node
+# (what the agent made in it is the agent's user's, and a build is close to a GB)
+free() { rm -rf "$r"; [ -n "${PANTHEON_WORKTREE:-}" ] && sudo -n -u "${BIDDER_USER:-bidder}" chmod -R a+rwX "$PANTHEON_WORKTREE" 2>/dev/null; true; }
+trap free EXIT
 cat > "$r/.prompt"
 
 if [ -n "${PANTHEON_WORKTREE:-}" ]; then

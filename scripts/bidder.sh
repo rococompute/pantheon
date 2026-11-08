@@ -105,4 +105,8 @@ case $MODEL in
       --tools "read_file,grep,list_dir,search_replace,write,run_terminal_cmd" "$@" --output-format plain | sed '/^[[:space:]]*$/d' | tail -n 1) ;;
   *) echo "bidder.sh: unknown BIDDER_MODEL $MODEL (claude, codex or grok)" >&2; exit 1 ;;
 esac
+# what the model made in the checkout (a build's output) is the bidder's: let
+# the node remove the checkout afterwards, or each patch leaks it (a Soma
+# build is close to a GB)
+[ -n "${BIDDER_USER:-}" ] && as_bidder chmod -R a+rwX . 2>/dev/null
 exec "$PANTHEON_BIN" edits . "$note"
