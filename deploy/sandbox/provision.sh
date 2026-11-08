@@ -18,7 +18,7 @@ say() { printf 'provision: %s\n' "$*"; }
 say "system packages"
 apt-get update -q >/dev/null
 apt-get install -y -q git build-essential opam jq curl m4 pkg-config libgmp-dev zlib1g-dev rsync ca-certificates \
-  docker.io nftables nodejs npm unzip bubblewrap >/dev/null
+  docker.io docker-buildx nftables nodejs npm unzip bubblewrap >/dev/null
 
 id pantheon >/dev/null 2>&1 || useradd -m -s /bin/bash pantheon
 id bidder >/dev/null 2>&1 || useradd -m -s /bin/bash bidder
