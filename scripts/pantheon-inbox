@@ -6,11 +6,21 @@
 #   pantheon-inbox wait [SECONDS]      the next request (waits up to SECONDS, default 300)
 #   pantheon-inbox reply ID < FILE     answer a request with the JSON object its prompt asks for
 #   pantheon-inbox done ID NOTE...     a patch request: the checkout is edited; NOTE says what changed
+#   pantheon-inbox skip ID WHY...      a patch request you won't bid on (it can't be done in time, say)
 #   pantheon-inbox list                what's in the inbox
+#
+# For a patch you hand to a worker elsewhere (your provider's cloud machines):
+#   pantheon-inbox base ID             the branch a worker should start from, and whether it is at your checkout's commit
+#   pantheon-inbox pull ID BRANCH      the change a worker pushed to BRANCH, applied to the request's checkout
+#   pantheon-inbox apply ID [FILE]     a diff (FILE, or stdin) applied to the request's checkout
+#   pantheon-inbox check ID            your node's CI on the request's checkout, in the host's sandbox (one at a time)
 #   pantheon-inbox limited WHAT...     your provider says you've hit your usage limit: WHAT it said (with when it resets,
 #                                      if it said); your node holds its requests until then, and asks again
 #
-# PANTHEON_INBOX is the inbox (default /var/lib/pantheon-inbox).
+# PANTHEON_INBOX is the inbox (default /var/lib/pantheon-inbox). PANTHEON_REMOTE
+# is the git remote workers share (a GitHub URL), PANTHEON_BRANCH the branch
+# there that follows the market's head (default pantheon/merged), and
+# PANTHEON_CHECK the command that checks a checkout (scripts/host.sh check).
 set -eu
 INBOX=${PANTHEON_INBOX:-/var/lib/pantheon-inbox}
 now() { date +%s; }
@@ -61,10 +71,56 @@ case ${1:-} in
     [ "$(cat "$r/kind")" = patch ] || die "$id is not a patch request: answer it with pantheon-inbox reply $id"
     printf '%s\n' "$*" > "$r/.done" && mv "$r/.done" "$r/done"
     echo "handed in $id: the node turns the checkout's changes into the bid. Next: pantheon-inbox wait" ;;
+  skip)
+    [ $# -ge 3 ] || die "usage: pantheon-inbox skip ID WHY..."
+    id=$2; shift 2; req "$id"
+    [ "$(cat "$r/kind")" = patch ] || die "$id is not a patch request: answer it with pantheon-inbox reply $id"
+    why=$(printf '%s' "$*" | head -c 300 | sed 's/\\/\\\\/g; s/"/\\"/g' | tr '\n' ' ')
+    printf '{"edits": [], "note": "skipped: %s"}\n' "$why" > "$r/.reply" && mv "$r/.reply" "$r/reply.txt"
+    echo "skipped $id: your node bids nothing for it. Next: pantheon-inbox wait" ;;
   limited)
     [ $# -ge 2 ] || die "usage: pantheon-inbox limited WHAT YOUR PROVIDER SAID"
     shift; printf '%s\n' "$*" > "$INBOX/.limited" && mv "$INBOX/.limited" "$INBOX/limited"
     echo "told your node: it holds its requests until the limit should have reset, then asks again. Stop until then; when a request comes, the limit is over." ;;
+  base|pull|apply|check)
+    c=$1; [ $# -ge 2 ] || die "usage: pantheon-inbox $c ID ..."
+    id=$2; req "$id"
+    [ "$(cat "$r/kind")" = patch ] || die "$id is not a patch request"
+    wt=$(cat "$r/worktree"); head=$(git -C "$wt" rev-parse HEAD)
+    remote=${PANTHEON_REMOTE:-}; branch=${PANTHEON_BRANCH:-pantheon/merged}
+    case $c in
+      base)
+        [ -n "$remote" ] || die "no PANTHEON_REMOTE: there's no remote workers share. Do the patch here, or skip it"
+        at=$(git ls-remote "$remote" "refs/heads/$branch" 2>&1 | cut -f1) || die "can't reach $remote: $at"
+        echo "your checkout: $head"
+        echo "workers start from: $remote, branch $branch, at ${at:-nothing}"
+        if [ "$at" = "$head" ]; then echo "same commit: a worker's change on top of $branch applies to your checkout as is"
+        elif [ -z "$at" ]; then echo "$branch isn't on the remote yet (scripts/host.sh mirror pushes it): workers can't start from the market's head"
+        else echo "not the same commit: the mirror pushes the market's head every 30s, so wait a minute and look again; pull applies a change made on an older head if it doesn't conflict"
+        fi ;;
+      pull)
+        [ $# -eq 3 ] || die "usage: pantheon-inbox pull ID BRANCH"
+        [ -n "$remote" ] || die "no PANTHEON_REMOTE to pull from"
+        out=$(git -C "$wt" fetch --quiet "$remote" "refs/heads/$3" 2>&1) || die "can't fetch $3 from $remote: $out"
+        mb=$(git -C "$wt" merge-base HEAD FETCH_HEAD 2>/dev/null) || die "$3 doesn't share history with your checkout: it wasn't started from $branch"
+        git -C "$wt" diff --binary "$mb" FETCH_HEAD > "$r/pulled.diff"
+        [ -s "$r/pulled.diff" ] || die "$3 has no change on top of $(git -C "$wt" rev-parse --short "$mb")"
+        out=$(git -C "$wt" apply --3way "$r/pulled.diff" 2>&1) || die "$3's change doesn't apply to your checkout: $out"
+        git -C "$wt" reset -q; git -C "$wt" status --short | head -40
+        echo "applied $3's change (from $(git -C "$wt" rev-parse --short "$mb")). Check it (pantheon-inbox check $id), then: pantheon-inbox done $id \"note\"" ;;
+      apply)
+        f=${3:--}; [ "$f" = - ] && { cat > "$r/applied.diff"; f=$r/applied.diff; }
+        [ -s "$f" ] || die "the diff is empty"
+        out=$(git -C "$wt" apply --3way "$f" 2>&1) || die "the diff doesn't apply to your checkout ($head): $out"
+        git -C "$wt" reset -q; git -C "$wt" status --short | head -40
+        echo "applied. Check it (pantheon-inbox check $id), then: pantheon-inbox done $id \"note\"" ;;
+      check)
+        [ -n "${PANTHEON_CHECK:-}" ] || die "no PANTHEON_CHECK: there's no check on this machine; your node's CI checks the bid"
+        echo "checking $wt (it waits its turn if another check is running)"
+        $PANTHEON_CHECK "$wt"; s=$?
+        [ $s -eq 0 ] && echo "check passed" || echo "check failed ($s)$([ $s = 137 ] && echo ': over its memory budget')"
+        exit $s ;;
+    esac ;;
   list)
     for d in $(open_requests); do
       printf '%s %s %ss left%s\n' "$d" "$(cat "$INBOX/$d/kind")" $(( $(cat "$INBOX/$d/deadline") - $(now) )) "$([ -e "$INBOX/$d/claimed" ] && echo ', taken')"

@@ -1,37 +1,60 @@
 #!/bin/sh
-# A whole Pantheon network on one Linux host, for agents that work from
-# elsewhere: four nodes as systemd user services, CI in a sandbox
-# (deploy/host/ci-sandbox), each agent's inbox served over HTTP
-# (scripts/inbox-http.py) on localhost, behind something that gives it a
-# public HTTPS name: Tailscale Funnel (tailscale funnel --bg 8787, then
-# `url`) or a Cloudflare tunnel (`tunnel`). No VMs and no Docker: it fits a
-# small machine.
+# A whole Pantheon network on one small Linux host, with the agents as
+# diplomats: four nodes as systemd user services, and beside them, in herdr,
+# one interactive session per agent that works its node's inbox. The machine
+# is small and shared, so the diplomats only think, answer and judge here; real
+# coding work goes to each agent's own workers on its provider's machines
+# (Claude Code cloud sessions, Codex Cloud tasks, Cursor Cloud Agents), which
+# start from the market's head on GitHub and hand back a branch. An agent
+# whose provider has no machines of its own (Muse) gets a VM on this host
+# instead, and works its inbox from in there, over HTTP on the host's
+# localhost. CI runs one check at a time, in a sandbox (deploy/host/ci-sandbox).
+# Nothing listens beyond localhost.
 #
 #   scripts/host.sh network            keys, the network and its genesis (once), for Pantheon at HEAD
-#   scripts/host.sh token AGENT        a new inbox token for AGENT, printed once
-#   scripts/host.sh url URL            the inbox's public URL, as agents reach it (https://zucc.example.ts.net)
-#   scripts/host.sh tunnel HOSTNAME    or a Cloudflare tunnel to HOSTNAME (after: cloudflared tunnel login)
-#   scripts/host.sh start              write the services and (re)start them all
-#   scripts/host.sh stop               stop the nodes, the inbox server and the tunnel
+#   scripts/host.sh start              write the services and (re)start them all: nodes, mirror, inbox server
+#   scripts/host.sh vm AGENT           AGENT's VM (Muse's): made and started, the agent's CLI in it, a token
+#   scripts/host.sh login AGENT        log AGENT's CLI in, in its VM (device code: you open the URL)
+#   scripts/host.sh diplomats          from a herdr pane: a workspace with one tab per agent, each session started
+#   scripts/host.sh check DIR          the nodes' CI on a checkout, in the sandbox (pantheon-inbox check uses it)
+#   scripts/host.sh stop               stop the nodes, the mirror and the inbox server (VMs: limactl stop)
 #   scripts/host.sh status             each node's chain, limits, inbox, and the services
-#   scripts/host.sh logs [AGENT]       follow a node's log (or the inbox server's)
+#   scripts/host.sh logs [AGENT]       follow a node's log (or the mirror's and the inbox server's)
 #
 # Everything lives in PANTHEON_HOST (default ~/pantheon): soma/ and pantheon/
 # (built by scripts/setup-node.sh), net/ (the nodes' homes), inbox/ (one per
-# agent), inbox.json (the server's tokens, as hashes), goal.txt.
+# agent), diplomats/ (each one's instructions), desk/ (each one's working
+# directory), inbox.json (the inbox server's tokens, as hashes), goal.txt.
+#
+# Settings, from the environment:
+#   VM_AGENTS     the agents that work from a VM on this host (default: muse)
+#   REMOTE        the GitHub repository workers share (default: this checkout's origin)
+#   CODEX_ENV     the Codex Cloud environment for codex's workers (codex cloud lists them)
+#   GROK_MODEL    the Cursor CLI's model for grok (default: grok; cursor-agent models lists them)
 set -eu
 here=$(cd "$(dirname "$0")/.." && pwd)
 P=${PANTHEON_HOST:-$HOME/pantheon}
 NET=$P/net AGENTS="claude codex grok muse"
+VM_AGENTS=${VM_AGENTS:-muse}
 BIN=$here/main.exe SOMA=${SOMA_DIR:-$P/soma}
 CI_MEMORY=${CI_MEMORY:-1536m}
 CI_CMD=${PANTHEON_CI:-timeout 120 soma build main.soma && timeout 120 test/edits.sh}
 PORT=${INBOX_PORT:-8787}
+# a Lima VM (plain, user-mode network) reaches the host's localhost here
+VM_HOST=192.168.5.2
+REMOTE=${REMOTE:-$(git -C "$here" remote get-url origin 2>/dev/null || true)}
+BRANCH=pantheon/merged
+CODEX_ENV=${CODEX_ENV:-}
+GROK_MODEL=${GROK_MODEL:-grok}
 UNITS=$HOME/.config/systemd/user
+export PATH="$HOME/.local/bin:$PATH"
 say() { printf 'host: %s\n' "$*"; }
 die() { printf 'host: %s\n' "$*" >&2; exit 1; }
 need_bin() { [ -x "$BIN" ] || die "no $BIN: build Pantheon first (SOMA_DIR=$SOMA scripts/setup-node.sh)"; }
-url() { python3 -c "import json; print(json.load(open('$P/inbox.json')).get('url', ''))" 2>/dev/null || true; }
+in_vm_agents() { case " $VM_AGENTS " in *" $1 "*) return 0 ;; esac; return 1; }
+is_agent() { case " $AGENTS " in *" $1 "*) return 0 ;; esac; return 1; }
+vm() { printf 'pantheon-%s' "$1"; }
+q() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
 
 cmd_network() {
   need_bin
@@ -45,64 +68,34 @@ cmd_network() {
   [ -f "$P/goal.txt" ] || cp "$here/examples/cloud/goal.txt" "$P/goal.txt"
   mkdir -p "$P/inbox"; for a in $AGENTS; do mkdir -p "$P/inbox/$a"; done
   say "a network for Pantheon at $(git -C "$here" log -1 --format='%h %s' "$commit"); goals in $P/goal.txt"
-  say "next: scripts/host.sh token AGENT (each agent), scripts/host.sh tunnel HOSTNAME, scripts/host.sh start"
+  say "next: scripts/host.sh start, then scripts/host.sh vm muse, then scripts/host.sh diplomats (from a herdr pane)"
 }
 
-cmd_token() {
-  a=${1:-}; case " $AGENTS " in *" $a "*) ;; *) die "usage: scripts/host.sh token AGENT (one of: $AGENTS)" ;; esac
-  mkdir -p "$P/inbox/$a"
-  t=$(python3 "$here/scripts/inbox-http.py" token "$P/inbox.json" "$a" "$P/inbox/$a")
-  python3 - "$P/inbox.json" "127.0.0.1:$PORT" <<'PY'
-import json, sys
-c = json.load(open(sys.argv[1])); c['listen'] = sys.argv[2]; json.dump(c, open(sys.argv[1], 'w'), indent=1)
+# the instructions a diplomat on this host follows, for its provider
+render_diplomat() {
+  a=$1; mkdir -p "$P/diplomats" "$P/desk/$a"
+  d=$here/deploy/host/delegate/$a.md
+  python3 - "$here/deploy/host/diplomat.md" "$d" "$P/diplomats/$a.md" <<PY
+import sys, os
+t = open(sys.argv[1]).read()
+d = open(sys.argv[2]).read() if os.path.exists(sys.argv[2]) else "## How you hand off\n\nYou have no workers elsewhere: do patches by hand, small, and skip what's too big."
+t = t.replace("{{DELEGATE}}", d.strip())
+for k, v in {"AGENT": "$a", "REMOTE": "$REMOTE", "BRANCH": "$BRANCH", "NET": "$NET",
+             "CODEX_ENV": "${CODEX_ENV:-ENV_ID}", "GROK_MODEL": "$GROK_MODEL"}.items():
+    t = t.replace("{{%s}}" % k, v)
+open(sys.argv[3], "w").write(t)
 PY
-  say "$a's token (shown once; a new one replaces it; restart the inbox server with scripts/host.sh start):"
-  printf '%s\n' "$t"
-}
-
-cmd_tunnel() {
-  h=${1:-}; [ -n "$h" ] || die "usage: scripts/host.sh tunnel HOSTNAME (a name under a domain on your Cloudflare account)"
-  command -v cloudflared >/dev/null || die "no cloudflared: install it (pkg.cloudflare.com)"
-  [ -f "$HOME/.cloudflared/cert.pem" ] || die "not logged in to Cloudflare: run cloudflared tunnel login, open the URL it prints, and pick the domain"
-  cloudflared tunnel list -o json 2>/dev/null | grep -q '"name":"pantheon"' || cloudflared tunnel create pantheon
-  id=$(cloudflared tunnel list -o json | python3 -c "import json,sys; print([t['id'] for t in json.load(sys.stdin) if t['name'] == 'pantheon'][0])")
-  cloudflared tunnel route dns pantheon "$h" || say "(the DNS route may exist already)"
-  cat > "$HOME/.cloudflared/pantheon.yml" <<Y
-tunnel: $id
-credentials-file: $HOME/.cloudflared/$id.json
-ingress:
-  - hostname: $h
-    service: http://127.0.0.1:$PORT
-  - service: http_status:404
-Y
-  set_url "https://$h"
-  say "tunnel pantheon ($id) to https://$h. Next: scripts/host.sh start"
-}
-
-set_url() {
-  [ -f "$P/inbox.json" ] || printf '{"listen": "127.0.0.1:%s", "url": "", "agents": {}}\n' "$PORT" > "$P/inbox.json"
-  python3 - "$P/inbox.json" "$1" <<'PY'
-import json, sys
-c = json.load(open(sys.argv[1])); c['url'] = sys.argv[2].rstrip('/'); json.dump(c, open(sys.argv[1], 'w'), indent=1)
-PY
-}
-
-cmd_url() {
-  case ${1:-} in https://*) ;; *) die "usage: scripts/host.sh url https://NAME (where agents reach the inbox)" ;; esac
-  set_url "$1"; say "the inbox's public URL is $1. Next: scripts/host.sh start (patch prompts and instructions name it)"
 }
 
 cmd_start() {
   need_bin
   [ -d "$NET" ] || die "no network yet: scripts/host.sh network"
-  u=$(url); [ -n "$u" ] || say "no public URL yet (scripts/host.sh url URL, or tunnel HOSTNAME): patch prompts will say http://127.0.0.1:$PORT"
-  [ -n "$u" ] || u=http://127.0.0.1:$PORT
-  q() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
   for a in $AGENTS; do
     # the node strips PANTHEON_* from a backend's environment: the backend sets its own
+    if in_vm_agents "$a"; then url="INBOX_URL=http://$VM_HOST:$PORT "; else url=""; fi
     cat > "$NET/$a/backend.sh" <<B
 #!/bin/sh
-PANTHEON_INBOX=$P/inbox/$a INBOX_URL=$u exec $here/scripts/bidder-inbox.sh
+PANTHEON_INBOX=$P/inbox/$a ${url}exec $here/scripts/bidder-inbox.sh
 B
     cat > "$NET/$a/run.sh" <<R
 #!/bin/sh
@@ -110,6 +103,7 @@ exec $BIN node $NET/$a --backend cmd:$NET/$a/backend.sh --goal $P/goal.txt --lis
   --ci-repo pantheon $(q "$CI_CMD") --ci-sandbox $here/deploy/host/ci-sandbox --ci-memory $CI_MEMORY
 R
     chmod 755 "$NET/$a/backend.sh" "$NET/$a/run.sh"
+    in_vm_agents "$a" || render_diplomat "$a"
   done
   mkdir -p "$UNITS"
   cat > "$UNITS/pantheon-node@.service" <<U
@@ -123,9 +117,25 @@ RestartSec=10
 [Install]
 WantedBy=default.target
 U
-  cat > "$UNITS/pantheon-inbox.service" <<U
+  # the market's head on GitHub, where the agents' workers start from
+  cat > "$UNITS/pantheon-mirror.service" <<U
 [Unit]
-Description=Pantheon inbox over HTTP
+Description=Pantheon's merged head, pushed to $REMOTE as $BRANCH
+[Service]
+ExecStart=$here/scripts/host.sh mirror-loop
+Restart=on-failure
+RestartSec=60
+[Install]
+WantedBy=default.target
+U
+  units=""
+  [ -n "$REMOTE" ] && units="pantheon-mirror.service" || say "no REMOTE (this checkout has no origin): workers elsewhere can't see the market's head"
+  if [ -n "$VM_AGENTS" ]; then
+    # for the VMs: on the host's localhost, which a VM reaches and nothing outside does
+    [ -f "$P/inbox.json" ] || printf '{"listen": "127.0.0.1:%s", "url": "", "agents": {}}\n' "$PORT" > "$P/inbox.json"
+    cat > "$UNITS/pantheon-inbox.service" <<U
+[Unit]
+Description=Pantheon inbox over HTTP, for the agents' VMs
 [Service]
 ExecStart=/usr/bin/python3 $here/scripts/inbox-http.py serve $P/inbox.json
 Restart=on-failure
@@ -133,32 +143,111 @@ RestartSec=5
 [Install]
 WantedBy=default.target
 U
-  units="pantheon-inbox.service"
-  if [ -f "$HOME/.cloudflared/pantheon.yml" ]; then
-    cat > "$UNITS/pantheon-tunnel.service" <<U
-[Unit]
-Description=Cloudflare tunnel for the Pantheon inbox
-[Service]
-ExecStart=$(command -v cloudflared) --no-autoupdate tunnel --config $HOME/.cloudflared/pantheon.yml run pantheon
-Restart=on-failure
-RestartSec=10
-[Install]
-WantedBy=default.target
-U
-    units="$units pantheon-tunnel.service"
+    units="$units pantheon-inbox.service"
   fi
-  [ -f "$P/inbox.json" ] || say "no tokens yet (scripts/host.sh token AGENT): the inbox server answers no one"
-  [ -f "$P/inbox.json" ] || printf '{"listen": "127.0.0.1:%s", "url": "", "agents": {}}\n' "$PORT" > "$P/inbox.json"
   for a in $AGENTS; do units="$units pantheon-node@$a.service"; done
   systemctl --user daemon-reload
   # every node at once: restarting them one by one mid-height stalls the chain
   systemctl --user enable -q $units
   systemctl --user restart $units
   say "started: $units"
-  say "watch it: scripts/host.sh status"
+  say "next: scripts/host.sh diplomats, from a herdr pane; watch it: scripts/host.sh status"
 }
 
-cmd_stop() { systemctl --user stop pantheon-tunnel.service pantheon-inbox.service $(for a in $AGENTS; do printf 'pantheon-node@%s ' "$a"; done) 2>/dev/null; say "stopped"; }
+cmd_mirror_loop() {
+  r=$NET/claude/repos/pantheon
+  while :; do
+    if out=$(git -C "$r" push --quiet "$REMOTE" "HEAD:refs/heads/$BRANCH" 2>&1); then :
+    else
+      case $out in
+        *"non-fast-forward"*|*"fetch first"*|*rejected*) say "mirror: $BRANCH on $REMOTE isn't an ancestor of this network's head (an older network's?). Delete that branch on GitHub, or set REMOTE to another repository: $out" ;;
+        *) say "mirror: can't push to $REMOTE: $out. This machine needs a key that can write there (a deploy key with write access: $(cat "$HOME/.ssh/id_ed25519.pub" 2>/dev/null | cut -c1-60)...)" ;;
+      esac
+    fi
+    sleep 30
+  done
+}
+
+cmd_vm() {
+  a=${1:-}; is_agent "$a" && in_vm_agents "$a" || die "usage: scripts/host.sh vm AGENT (one of VM_AGENTS: $VM_AGENTS)"
+  command -v limactl >/dev/null || die "no limactl: install Lima (github.com/lima-vm/lima/releases: lima-VERSION-Linux-$(uname -m).tar.gz into ~/.local, bin/limactl on PATH)"
+  command -v qemu-system-"$(uname -m)" >/dev/null || die "no qemu-system-$(uname -m): install qemu"
+  v=$(vm "$a")
+  limactl list -q 2>/dev/null | grep -qx "$v" || { say "making $v"; limactl create --tty=false --name="$v" "$here/deploy/host/agent-vm.yaml"; }
+  [ "$(limactl list --format '{{.Status}}' "$v")" = Running ] || { say "starting $v"; limactl start --tty=false "$v"; }
+  case $a in
+    muse)
+      # Muse's launcher fetches its runtime itself, once logged in
+      m=$(command -v muse) || die "no muse on this host to copy its launcher from: install it here first"
+      limactl copy "$m" "$v:/tmp/muse" && limactl shell "$v" sh -c 'mkdir -p ~/.local/bin && install -m 755 /tmp/muse ~/.local/bin/muse' ;;
+  esac
+  limactl shell "$v" sh -c 'command -v git >/dev/null && command -v jq >/dev/null || { sudo apt-get update -q && sudo apt-get install -y -q git jq curl; }' >/dev/null
+  # a token for this agent's inbox only; the instructions, the token beside them
+  mkdir -p "$P/inbox/$a"
+  [ -f "$P/inbox.json" ] || printf '{"listen": "127.0.0.1:%s", "url": "", "agents": {}}\n' "$PORT" > "$P/inbox.json"
+  t=$(python3 "$here/scripts/inbox-http.py" token "$P/inbox.json" "$a" "$P/inbox/$a")
+  tmp=$(mktemp -d); umask 077
+  printf '%s\n' "$t" > "$tmp/token"
+  { sed -e "s|{{AGENT}}|$a|g" -e "s|{{URL}}|http://$VM_HOST:$PORT|g" "$here/deploy/cloud/agent.md"
+    printf '\nYour token is in the file ~/pantheon/token: send it as -H "Authorization: Bearer $(cat ~/pantheon/token)". This VM is your machine: work in it as you like.\n'; } > "$tmp/instructions.md"
+  limactl shell "$v" sh -c 'mkdir -p ~/pantheon && chmod 700 ~/pantheon'
+  case $a in
+    muse) printf '#!/bin/sh\ncd ~/pantheon && exec ~/.local/bin/muse --yolo "Read ~/pantheon/instructions.md: it is your job. Follow it now."\n' > "$tmp/start.sh" ;;
+  esac
+  limactl copy "$tmp/token" "$tmp/instructions.md" "$tmp/start.sh" "$v:pantheon/"; rm -rf "$tmp"
+  systemctl --user try-restart pantheon-inbox.service 2>/dev/null || true
+  say "$v is up, with $a's CLI, instructions and a new token (the old one, if any, no longer works)"
+  say "next: scripts/host.sh login $a (once), then scripts/host.sh diplomats"
+}
+
+cmd_login() {
+  a=${1:-}; in_vm_agents "$a" || die "usage: scripts/host.sh login AGENT (one of VM_AGENTS: $VM_AGENTS; the others log in on this host: claude, codex, cursor-agent login)"
+  case $a in muse) exec limactl shell "$(vm "$a")" sh -c 'exec ~/.local/bin/muse login' ;; esac
+}
+
+# start: AGENT KIND EXECUTABLE ARGS..., in a herdr tab of its own
+cmd_diplomats() {
+  command -v herdr >/dev/null || die "no herdr: install it (herdr.dev)"
+  [ "${HERDR_ENV:-}" = 1 ] || die "run this from a pane in herdr (start herdr on this host, then run it there)"
+  [ -d "$NET" ] || die "no network yet: scripts/host.sh network, then start"
+  # tabs in the workspace this runs from
+  ws=${HERDR_WORKSPACE_ID:?run this from a pane in herdr}
+  root=$(herdr tab create --workspace "$ws" --label status --cwd "$P" --no-focus | jq -r .result.root_pane.pane_id)
+  herdr pane run "$root" "while :; do clear; $here/scripts/host.sh status; sleep 20; done" >/dev/null
+  for a in $AGENTS; do
+    if in_vm_agents "$a"; then
+      p=$(herdr tab create --workspace "$ws" --label "$a (vm)" --cwd "$P" --no-focus | jq -r .result.root_pane.pane_id)
+      case $a in
+        muse) herdr pane run "$p" "limactl shell --workdir / $(vm "$a") sh -c 'exec sh \"\$HOME/pantheon/start.sh\"'" >/dev/null ;;
+      esac
+      say "$a: in its VM, tab \"$a (vm)\""; continue
+    fi
+    case $a in
+      claude) kind=claude exe=claude args="--dangerously-skip-permissions" ;;
+      codex)  kind=codex exe=codex args="--dangerously-bypass-approvals-and-sandbox" ;;
+      grok)   kind=cursor exe=cursor-agent args="--yolo --trust --model $GROK_MODEL" ;;
+      *) say "$a: no diplomat for it here"; continue ;;
+    esac
+    command -v "$exe" >/dev/null || { say "$a: no $exe on this host: install it and log it in, then run this again"; continue; }
+    render_diplomat "$a"
+    p=$(herdr tab create --workspace "$ws" --label "$a" --cwd "$P/desk/$a" --no-focus \
+      --env "PANTHEON_INBOX=$P/inbox/$a" --env "PANTHEON_REMOTE=$REMOTE" --env "PANTHEON_BRANCH=$BRANCH" \
+      --env "PANTHEON_CHECK=$here/scripts/host.sh check" --env "PATH=$here/scripts:$PATH" | jq -r .result.root_pane.pane_id)
+    # shellcheck disable=SC2086
+    herdr agent start "$a" --kind "$kind" --pane "$p" --timeout 60000 -- $args >/dev/null \
+      || { say "$a: $exe didn't come up ready (logged in? herdr pane read $p)"; continue; }
+    herdr agent prompt "$a" "Read $P/diplomats/$a.md: it is your job, as $a's diplomat in a Pantheon network. Follow it now." >/dev/null
+    say "$a: started in tab \"$a\""
+  done
+  say "in this workspace ($ws): a tab per agent, and one for status"
+}
+
+cmd_check() {
+  d=${1:-}; [ -d "$d" ] || die "usage: scripts/host.sh check DIR (a checkout of Pantheon)"
+  SOMA_DIR=$SOMA exec "$here/deploy/host/ci-sandbox" "$CI_MEMORY" "$d" "$CI_CMD"
+}
+
+cmd_stop() { systemctl --user stop pantheon-mirror.service pantheon-inbox.service $(for a in $AGENTS; do printf 'pantheon-node@%s ' "$a"; done) 2>/dev/null; say "stopped"; }
 
 cmd_status() {
   for a in $AGENTS; do
@@ -168,20 +257,23 @@ cmd_status() {
     n=$(ls "$P/inbox/$a" 2>/dev/null | grep -c '^[0-9]*-' || true); [ "$n" = 0 ] || printf '   inbox: %s waiting\n' "$n"
   done
   printf '== tasks and bids (claude'"'"'s view)\n'; grep -E '^(task|bid) ' "$NET/claude/status.txt" 2>/dev/null | cut -c1-160 | tail -12 | sed 's/^/   /' || true
-  printf '== services: inbox %s, tunnel %s; url %s\n' "$(systemctl --user is-active pantheon-inbox 2>/dev/null || true)" \
-    "$(systemctl --user is-active pantheon-tunnel 2>/dev/null || true)" "$(url)"
+  printf '== services: mirror %s, inbox %s; VMs: %s\n' "$(systemctl --user is-active pantheon-mirror 2>/dev/null || true)" \
+    "$(systemctl --user is-active pantheon-inbox 2>/dev/null || true)" \
+    "$(for a in $VM_AGENTS; do printf '%s %s ' "$(vm "$a")" "$(limactl list --format '{{.Status}}' "$(vm "$a")" 2>/dev/null || echo none)"; done)"
+  journalctl --user -u pantheon-mirror -n 1 -o cat 2>/dev/null | grep -q 'mirror:' && printf '   %s\n' "$(journalctl --user -u pantheon-mirror -n 1 -o cat | cut -c1-200)"
   printf '== memory: %s\n' "$(free -m | awk '/^Mem/ {print $7 " MB available of " $2}')"
 }
 
 cmd_logs() {
   case ${1:-} in
-    '') exec journalctl --user -f -u pantheon-inbox -u pantheon-tunnel ;;
+    '') exec journalctl --user -f -u pantheon-mirror -u pantheon-inbox ;;
     *) exec journalctl --user -f -u "pantheon-node@$1" ;;
   esac
 }
 
 c=${1:-}; [ $# -gt 0 ] && shift
 case $c in
-  network|token|url|tunnel|start|stop|status|logs) "cmd_$c" "$@" ;;
+  network|start|vm|login|diplomats|check|stop|status|logs) "cmd_$c" "$@" ;;
+  mirror-loop) cmd_mirror_loop ;;
   *) awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "$0"; [ -z "$c" ] || exit 1 ;;
 esac

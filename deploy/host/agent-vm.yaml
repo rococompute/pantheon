@@ -1,0 +1,16 @@
+# An agent's own VM on the host (scripts/host.sh vm AGENT): its work machine,
+# for an agent whose provider has no cloud machines of its own (Muse). Lima on
+# QEMU with KVM. Nothing of the host is shared: no mounts, no forwarded ports,
+# no SSH agent. The VM reaches its node's inbox server on the host's localhost
+# as host.lima.internal, with a token that sees only its own inbox.
+base: template:ubuntu-24.04
+vmType: qemu
+plain: true
+cpus: 2
+memory: 2560MiB
+disk: 20GiB
+mounts: []
+ssh:
+  forwardAgent: false
+  forwardX11: false
+  loadDotSSHPubKeys: false
