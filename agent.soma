@@ -243,7 +243,9 @@ lead (a m : obj) : obj * list (list string) :=
      rejected bids, or open too long), once nothing for them is pending: a task
      the agents can't finish would otherwise keep the leader from drafting *)
   let for_task t := filter (fun b => btask b =? tid t) (bids m) in
-  let stuck t := negb (existsb (fun b => is_pending (bst b)) (for_task t))
+  (* a leader's own pending bids don't count: no one reviews them this term,
+     so waiting for them would keep the task open for as long as it leads *)
+  let stuck t := negb (existsb (fun b => is_pending (bst b) && negb (seq (bidder b) (me a))) (for_task t))
                  && ((param m "task_rejects" <=? length (filter (fun b => match bst b with Rejected => true | _ => false end) (for_task t)))
                      || (param m "task_blocks" <=? h - posted_at t)) in
   let a := fold_left (fun a t => if existsb is_merged (for_task t) || stuck t
