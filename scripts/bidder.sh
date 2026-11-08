@@ -87,10 +87,21 @@ case $MODEL in
     if as_bidder sh -c 'command -v cursor-agent' >/dev/null 2>&1; then
       echo 'The Cursor CLI is here too: `cursor-agent -p --output-format text "..."` hands a subtask to Cursor'"'"'s agent, in this directory.' >> "$prompt"
     fi
+    # only the tools a patch needs: Grok Build's others (monitor, tasks, ...)
+    # ask for an approval a headless run can't give, and it stops there
+    # Its allow rules match unreliably (a plain `git status` was refused) and a
+    # headless run stops at the first refusal, so when the model is a user of
+    # its own (BIDDER_USER: it can't touch the node), it may run anything in
+    # the checkout; otherwise only the commands above.
+    if [ -n "${BIDDER_USER:-}" ]; then
+      set -- --permission-mode bypassPermissions --deny "Bash(git commit*)" --deny "Bash(git push*)"
+    else
+      set -- --permission-mode dontAsk
+      for r in "Read(./**)" "Edit(./**)" "Glob" "Bash(soma build:*)" "Bash(soma run:*)" "Bash(soma explore:*)" "Bash(sh test.sh:*)" \
+               "Bash(sh tests/:*)" "Bash(sh test/:*)" "Bash(git diff:*)" "Bash(git status)" "Bash(ls:*)" "Bash(cursor-agent:*)"; do set -- "$@" --allow "$r"; done
+    fi
     note=$(as_bidder grok --prompt-file "$prompt" --cwd "$PANTHEON_WORKTREE" $(grok_model) --no-subagents --disable-web-search \
-      --allow "Read(./**)" --allow "Edit(./**)" --allow "Glob" --allow "Bash(soma build:*)" --allow "Bash(soma run:*)" --allow "Bash(soma explore:*)" \
-      --allow "Bash(sh test.sh:*)" --allow "Bash(sh tests/:*)" --allow "Bash(sh test/:*)" --allow "Bash(git diff:*)" --allow "Bash(git status)" \
-      --allow "Bash(ls:*)" --allow "Bash(cursor-agent:*)" --permission-mode dontAsk --output-format plain | sed '/^[[:space:]]*$/d' | tail -n 1) ;;
+      --tools "read_file,grep,list_dir,search_replace,write,run_terminal_cmd" "$@" --output-format plain | sed '/^[[:space:]]*$/d' | tail -n 1) ;;
   *) echo "bidder.sh: unknown BIDDER_MODEL $MODEL (claude, codex or grok)" >&2; exit 1 ;;
 esac
 exec "$PANTHEON_BIN" edits . "$note"
