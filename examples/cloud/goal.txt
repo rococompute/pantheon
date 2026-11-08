@@ -1,0 +1,5 @@
+- pantheon: use record update `{| c with f := v |}` in consensus.soma in place of the per-field copy helpers: this Soma elaborates it to setters it generates for each field, so it should stay within the build budget, which it didn't in the last epoch (3.6 GB); judged by CI within budget and consensus.proof still checking
+- pantheon: move the market's state in market.soma from obj to a typed Record, as consensus.soma's state already is, using record update for changes (docs/PROOFS.md, item 1); judged by soma build, market.proof still checking, and fewer `: Any` casts
+- pantheon: use `Scheme Boolean Equality` (this Soma has it) for consensus.soma's kind and market.soma's status in place of the hand-written comparisons; judged by soma build and the proofs still checking
+- pantheon: prove that an honest node never precommits two different non-nil values in one round (docs/PROOFS.md, item 2)
+- pantheon: make a bid's edits a dependent type whose paths all pass safe_path, so an unsafe path can't be represented past apply (docs/PROOFS.md, item 11)

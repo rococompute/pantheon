@@ -1,0 +1,51 @@
+#!/bin/sh
+# CI for nodes on a shared Linux host, without Docker (the node's
+# --ci-sandbox): what the pantheon:dev container gives a check, from the host's
+# own toolchain.
+#
+#   ci-sandbox MEMORY CHECKOUT CMD      e.g. ci-sandbox 1536m /tmp/pantheon-check.x 'soma build main.soma'
+#
+# CMD runs on a copy of CHECKOUT, in bubblewrap: no network, nothing of the
+# host's but /usr and /etc (read-only), Soma's build and its OCaml switches
+# (read-only), and a fresh /tmp. The nodes' homes, keys included, aren't in
+# it: what CI prints goes on the chain, in a rejection. A systemd user scope
+# holds it to MEMORY with no swap; a build killed for memory ends as 137, as
+# a container's does, so the node says CI went over its memory budget.
+#
+# One check at a time on the whole host, every node's: they wait for
+# CI_LOCK (default ~/pantheon/.ci-lock). Four nodes' builds at once could take
+# more memory than a small host has.
+#
+# SOMA_DIR is Soma's checkout (default ~/pantheon/soma). Needs bwrap, flock, a user
+# systemd with the memory controller (cgroup v2), and unprivileged user
+# namespaces.
+set -eu
+[ $# -eq 3 ] || { echo "ci-sandbox: usage: ci-sandbox MEMORY CHECKOUT CMD" >&2; exit 2; }
+mem=$1 work=$2 cmd=$3
+soma=${SOMA_DIR:-$HOME/pantheon/soma}
+switch=$HOME/.cache/soma/ocaml
+for p in "$soma/_build/install/default/bin/soma" "$HOME/.opam" "$switch"; do
+  [ -e "$p" ] || { echo "ci-sandbox: no $p: build Soma and Pantheon on this host first (scripts/setup-node.sh)"; exit 3; }
+done
+command -v bwrap >/dev/null || { echo "ci-sandbox: no bwrap: install bubblewrap"; exit 3; }
+exec 9>>"${CI_LOCK:-$HOME/pantheon/.ci-lock}"
+flock 9
+# systemd-run's scope ends when its command does; the command reads its own
+# cgroup's oom_kill count before that, to tell a kill for memory from a failure
+exec systemd-run --user --scope --quiet --collect -p "MemoryMax=$mem" -p MemorySwapMax=0 -p TasksMax=512 -- \
+  sh -c '
+    soma=$1 switch=$2 work=$3 cmd=$4
+    cg=/sys/fs/cgroup$(sed -n "s/^0:://p" /proc/self/cgroup)
+    bwrap --unshare-all --die-with-parent --new-session --cap-drop ALL \
+      --ro-bind /usr /usr --ro-bind /etc /etc \
+      --symlink usr/bin /bin --symlink usr/sbin /sbin --symlink usr/lib /lib --symlink usr/lib64 /lib64 \
+      --proc /proc --dev /dev --tmpfs /tmp \
+      --ro-bind "$soma" "$soma" --ro-bind "$HOME/.opam" "$HOME/.opam" --ro-bind "$switch" "$switch" \
+      --ro-bind "$work" /work \
+      --clearenv --setenv HOME /tmp --setenv XDG_CACHE_HOME /tmp/cache --setenv OPAMROOT "$HOME/.opam" \
+      --setenv SOMA_OCAML_SWITCH "$switch" --setenv PATH "$soma/_build/install/default/bin:/usr/bin:/bin" \
+      --setenv LANG C.UTF-8 --chdir /tmp \
+      sh -c "cp -R /work /tmp/w && cd /tmp/w && ($cmd) 2>&1"
+    r=$?
+    if [ $r -ne 0 ] && grep -qs "oom_kill [1-9]" "$cg/memory.events"; then exit 137; fi
+    exit $r' ci-sandbox "$soma" "$switch" "$work" "$cmd"
