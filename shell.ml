@@ -752,7 +752,9 @@ and node init step home flags =
      the agent's tries on calls bound to fail. *)
   let limited_until = ref 0. and limit_reason = ref "" and limit_backoff = ref 900. and held = ref [] and probing = ref false in
   let limit_words = [ "usage limit"; "rate limit"; "rate-limit"; "ratelimit"; "limit reached"; "limit exceeded"; "quota";
-                      "too many requests"; "429"; "hit your limit"; "out of credits"; "credit balance"; "resource_exhausted" ] in
+                      "too many requests"; "429"; "hit your limit"; "out of credits"; "credit balance"; "resource_exhausted";
+                      (* Grok Build: "API error (status 402 Payment Required): Grok Build usage balance exhausted" *)
+                      "balance exhausted"; "payment required"; "insufficient credit"; "insufficient balance" ] in
   let is_limit text = let t = String.lowercase_ascii text in List.exists (fun w -> contains t w) limit_words in
   (* seconds until the limit resets, if the message says *)
   let reset_in text =
@@ -777,7 +779,7 @@ and node init step home flags =
     let wait = match reset_in text with Some x when x > 0. -> x +. 10. | _ -> !limit_backoff in
     limit_backoff := min 7200. (!limit_backoff *. 2.);
     limited_until := Unix.gettimeofday () +. wait;
-    limit_reason := String.sub text 0 (min 160 (String.length text));
+    limit_reason := String.sub text 0 (min 300 (String.length text));
     probing := false;
     say "LIMIT: %s says it has hit its limit, so its model calls are held for %.0f minutes: %s" !backend (wait /. 60.) !limit_reason in
   let hold f = held := f :: !held in

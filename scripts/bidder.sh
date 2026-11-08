@@ -25,8 +25,21 @@
 set -u
 MODEL=${BIDDER_MODEL:-claude}
 prompt=$(mktemp)
-trap 'rm -f "$prompt"' EXIT
+err=$(mktemp)
+trap 'rm -f "$prompt" "$err"' EXIT
 cat > "$prompt"
+# The model's CLI writes its errors to stderr, and the node doesn't keep a
+# backend's stderr: a usage limit or a lapsed login read as an empty reply,
+# which the node counts as a failure and asks again, though asking again can't
+# help. When the model gives no answer, what its CLI said is the reply instead,
+# as a failure (exit 1), so the node can tell a limit and hold its calls.
+# Whatever came on stdout goes last: Claude Code's limit message ends with
+# its reset time, which the node reads from the end.
+gave_up() {
+  [ -s "$err" ] || return 0
+  printf 'the %s CLI gave no answer. It said: %s %s\n' "$MODEL" "$(tail -c 600 "$err" | tr '\n' ' ')" "$(printf '%s' "${1:-}" | tr '\n' ' ')"
+  exit 1
+}
 # Grok Build reads its prompt from a file, as the bidder user
 [ -n "${BIDDER_USER:-}" ] && chmod 644 "$prompt"
 grok_model() { [ -n "${GROK_BUILD_MODEL:-}" ] && printf '%s\n' --model "$GROK_BUILD_MODEL"; true; }
@@ -37,11 +50,11 @@ as_bidder() {
 
 if [ -z "${PANTHEON_WORKTREE:-}" ]; then
   case $MODEL in
-    claude) as_bidder claude -p --tools "" --strict-mcp-config --no-session-persistence --setting-sources "" --output-format text < "$prompt" ;;
+    claude) reply=$(as_bidder claude -p --tools "" --strict-mcp-config --no-session-persistence --setting-sources "" --output-format text < "$prompt" 2>"$err") ;;
     codex)
       outd=$(mktemp -d); chmod 777 "$outd"; out=$outd/reply.txt
-      as_bidder codex exec --skip-git-repo-check --ephemeral --disable apps --sandbox read-only -c 'approval_policy="never"' -c 'mcp_servers={}' -o "$out" - < "$prompt" >/dev/null
-      cat "$out" 2>/dev/null; rm -rf "$outd" ;;
+      as_bidder codex exec --skip-git-repo-check --ephemeral --disable apps --sandbox read-only -c 'approval_policy="never"' -c 'mcp_servers={}' -o "$out" - < "$prompt" >/dev/null 2>"$err"
+      reply=$(cat "$out" 2>/dev/null); rm -rf "$outd" ;;
     # Grok Build: --tools "" leaves every tool on, and its coding system prompt
     # explores before answering, so both go. Even so it sometimes answers with
     # a plan and stops: asked again, it answers.
@@ -49,13 +62,16 @@ if [ -z "${PANTHEON_WORKTREE:-}" ]; then
       for try in 1 2 3; do
         reply=$(as_bidder grok --prompt-file "$prompt" $(grok_model) --no-subagents --output-format plain \
           --disallowed-tools "run_terminal_cmd,read_file,grep,list_dir,write,search_replace,web_search,web_fetch,task,Agent" \
-          --system-prompt-override "You answer the user directly from what the prompt gives you. You have no tools and nothing else to look at. Reply with exactly what the prompt asks for: one JSON object and nothing else.")
+          --system-prompt-override "You answer the user directly from what the prompt gives you. You have no tools and nothing else to look at. Reply with exactly what the prompt asks for: one JSON object and nothing else." 2>"$err")
         case $reply in *'{'*'}'*) break ;; esac
+        # nothing at all, with an error: the service refused, and asking again won't change that
+        [ -z "$reply" ] && [ -s "$err" ] && break
         printf '\n\nAnswer in this reply with only the JSON object the prompt asks for. You have no tools: there is nothing to look at or plan.\n' >> "$prompt"
-      done
-      printf '%s\n' "$reply" ;;
+      done ;;
     *) echo "bidder.sh: unknown BIDDER_MODEL $MODEL (claude, codex or grok)" >&2; exit 1 ;;
   esac
+  case $reply in *'{'*'}'*) ;; *) gave_up "$reply" ;; esac
+  printf '%s\n' "$reply"
   exit
 fi
 
@@ -74,12 +90,12 @@ case $MODEL in
       --allowedTools "Read(./**)" "Edit(./**)" "Glob" "Bash(soma build:*)" "Bash(soma run:*)" "Bash(soma explore:*)" \
                      "Bash(sh test.sh:*)" "Bash(sh tests/:*)" "Bash(sh test/:*)" "Bash(git diff:*)" "Bash(git status)" "Bash(ls:*)" \
                      "Bash(soma-dev-build)" "Bash(./_build/install/default/bin/soma:*)" \
-      --permission-mode dontAsk --strict-mcp-config --no-session-persistence --setting-sources "" --output-format text < "$prompt" | tail -n 1) ;;
+      --permission-mode dontAsk --strict-mcp-config --no-session-persistence --setting-sources "" --output-format text < "$prompt" 2>"$err" | tail -n 1) ;;
   codex)
     outd=$(mktemp -d); chmod 777 "$outd"; out=$outd/reply.txt
     extra=""; for d in ${BIDDER_WRITABLE:-}; do extra="$extra --add-dir $d"; done
     as_bidder codex exec --skip-git-repo-check --ephemeral --disable apps --sandbox workspace-write -C "$PANTHEON_WORKTREE" $extra \
-      -c 'approval_policy="never"' -c 'mcp_servers={}' -o "$out" - < "$prompt" >/dev/null
+      -c 'approval_policy="never"' -c 'mcp_servers={}' -o "$out" - < "$prompt" >/dev/null 2>"$err"
     note=$(sed '/^[[:space:]]*$/d' "$out" 2>/dev/null | tail -n 1); rm -rf "$outd"
     # codex sometimes ends with the reply format's JSON: its note, then
     case $note in '{'*) note=$(printf '%s' "$note" | jq -r '.note // empty' 2>/dev/null || printf '%s' "$note") ;; esac ;;
@@ -102,11 +118,13 @@ case $MODEL in
                "Bash(sh tests/:*)" "Bash(sh test/:*)" "Bash(git diff:*)" "Bash(git status)" "Bash(ls:*)" "Bash(cursor-agent:*)"; do set -- "$@" --allow "$r"; done
     fi
     note=$(as_bidder grok --prompt-file "$prompt" --cwd "$PANTHEON_WORKTREE" $(grok_model) --no-subagents --disable-web-search \
-      --tools "read_file,grep,list_dir,search_replace,write,run_terminal_cmd" "$@" --output-format plain | sed '/^[[:space:]]*$/d' | tail -n 1) ;;
+      --tools "read_file,grep,list_dir,search_replace,write,run_terminal_cmd" "$@" --output-format plain 2>"$err" | sed '/^[[:space:]]*$/d' | tail -n 1) ;;
   *) echo "bidder.sh: unknown BIDDER_MODEL $MODEL (claude, codex or grok)" >&2; exit 1 ;;
 esac
 # what the model made in the checkout (a build's output) is the bidder's: let
 # the node remove the checkout afterwards, or each patch leaks it (a Soma
 # build is close to a GB)
 [ -n "${BIDDER_USER:-}" ] && as_bidder chmod -R a+rwX . 2>/dev/null
+# no change and no note: the model never ran (a limit, a lapsed login)
+[ -z "$note" ] && [ -z "$(git status --porcelain 2>/dev/null)" ] && gave_up
 exec "$PANTHEON_BIN" edits . "$note"

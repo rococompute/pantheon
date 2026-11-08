@@ -396,6 +396,26 @@ F
   echo "ok limit: calls that hit a usage limit were held until it reset, not failed, and the market merged"
 }
 
+# A model CLI that writes its limit to stderr and nothing to stdout, as Grok
+# Build does, through the real scripts/bidder-grok.sh: the node must see a
+# limit and hold its calls, not read an empty reply and count a failure.
+scenario_limit_cli() {
+  init limit-cli 28150 term_blocks=400 || return 1
+  mkdir -p "$ROOT/limit-cli/bin"
+  cat > "$ROOT/limit-cli/bin/grok" <<'F'
+#!/bin/sh
+printf 'Error: Internal error: {\n  "message": "API error (status 402 Payment Required): Grok Build usage balance exhausted",\n  "http_status": 402\n}\n' >&2
+exit 1
+F
+  chmod +x "$ROOT/limit-cli/bin/grok"
+  for a in $AGENTS; do node limit-cli "$a" PATH="$ROOT/limit-cli/bin:$PATH" -- --backend "cmd:$PWD/scripts/bidder-grok.sh"; done
+  # only a leader asks its model, for a draft: any node's LIMIT will do
+  wait_for limit-cli claude 60 "the limit noticed" sh -c "cat '$ROOT'/limit-cli/*/node.log | grep -q 'LIMIT: .*balance exhausted'" || { stop limit-cli; return 1; }
+  stop limit-cli
+  if grep -q 'model call failed' "$ROOT"/limit-cli/*/node.log; then echo "FAIL limit-cli: a limited call counted as a failure"; grep 'model call failed' "$ROOT"/limit-cli/*/node.log | head -2; return 1; fi
+  echo "ok limit-cli: a CLI's limit on stderr reached the node through bidder.sh, and its calls were held"
+}
+
 scenario_prune() {
   # settled bids pruned almost at once: bid numbers must still never repeat
   init prune 28050 term_blocks=30 max_merges=2 bid_cooldown=2 keep_settled=2 || return 1
@@ -453,13 +473,14 @@ run() {
     model) scenario_model ;;
     stuck) scenario_stuck ;;
     limit) scenario_limit ;;
+    limit-cli) scenario_limit_cli ;;
     prune) scenario_prune ;;
     epoch) scenario_epoch ;;
     *) echo "unknown scenario $1"; return 1 ;;
   esac
 }
 
-ALL="happy crash equivocate double-vote silent bad-sig withhold bad-tree deny silent-model policy model stuck limit prune epoch network ci"
+ALL="happy crash equivocate double-vote silent bad-sig withhold bad-tree deny silent-model policy model stuck limit limit-cli prune epoch network ci"
 want=${*:-$ALL}
 pids=""
 for s in $want; do (run "$s" > "$ROOT/$s.result" 2>&1; echo $? > "$ROOT/$s.code") & pids="$pids $!"; done
