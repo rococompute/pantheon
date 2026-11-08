@@ -94,7 +94,7 @@ case $MODEL in
     # its own (BIDDER_USER: it can't touch the node), it may run anything in
     # the checkout; otherwise only the commands above.
     if [ -n "${BIDDER_USER:-}" ]; then
-      set -- --permission-mode bypassPermissions --deny "Bash(git commit*)" --deny "Bash(git push*)"
+      set -- --yolo --deny "Bash(git commit*)" --deny "Bash(git push*)"
     else
       set -- --permission-mode dontAsk
       for r in "Read(./**)" "Edit(./**)" "Glob" "Bash(soma build:*)" "Bash(soma run:*)" "Bash(soma explore:*)" "Bash(sh test.sh:*)" \
