@@ -630,7 +630,12 @@ and node init step home flags =
   let rdir n = repo_dir home n in
   (* the version of the last merge applied to a checkout: the merges
      replayed from blocks.log at startup are already in it *)
+  let genesis_commit n = match List.find_opt (fun (m, _, _, _) -> m = n) repos with Some (_, _, c, _) -> c | None -> "" in
   let applied_of n =
+    (* at genesis, none of this chain's merges: a genesis commit that is an
+       earlier chain's merge (a new epoch) carries that chain's version, and
+       taking it skipped this chain's first merges on every node *)
+    if git_out (rdir n) [ "rev-parse"; "HEAD" ] = git_out (rdir n) [ "rev-parse"; genesis_commit n ] then 0 else
     let body = snd (git (rdir n) [ "log"; "-1"; "--format=%B" ]) in
     List.fold_left (fun acc l -> match String.split_on_char ' ' l with [ "Pantheon-Version:"; v ] -> (try int_of_string v with _ -> acc) | _ -> acc) 0
       (String.split_on_char '\n' body)

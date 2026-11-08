@@ -407,6 +407,28 @@ scenario_prune() {
   echo "ok prune: bids pruned from the state, and every bid's number still its own"
 }
 
+scenario_epoch() {
+  # a new epoch's genesis is an earlier chain's merge commit, with that
+  # chain's Pantheon-Version: this chain's first merges must still apply
+  d=$ROOT/src/calc-epoch; mkdir -p "$d"; cp -R examples/calc/. "$d/"
+  (cd "$d" && git init -q . && git add -A && git -c user.name=t -c user.email=t@t -c commit.gpgsign=false commit -qm "Merge bid 64 for task 14 by muse
+
+an earlier chain's merge
+
+Pantheon-Version: 9
+Pantheon-Bid: 64")
+  REPOS="--repo calc=$d" init epoch 28100 term_blocks=40 max_merges=1 bid_cooldown=2 || return 1
+  for a in $AGENTS; do node epoch "$a"; done
+  wait_for epoch claude 90 "a merge in the new chain" merges_at_least epoch claude 1 || { stop epoch; return 1; }
+  sleep 3; stop epoch
+  grep -q 'merged bid' "$ROOT/epoch/claude/node.log" || { echo "FAIL epoch: the merge was decided but never applied to the checkout"; return 1; }
+  want=$(sed -n 's/^repo calc \([0-9a-f]*\).*/\1/p' "$ROOT/epoch/claude/status.txt")
+  have=$(git -C "$ROOT/epoch/claude/repos/calc" rev-parse HEAD^{tree})
+  [ "$want" = "$have" ] || { echo "FAIL epoch: the checkout's tree $have isn't the market's $want"; return 1; }
+  agree epoch claude codex grok muse && agree_files epoch claude codex grok muse || return 1
+  echo "ok epoch: a genesis carrying an earlier chain's version, and this chain's merges still applied"
+}
+
 run() {
   case "$1" in
     happy) scenario_happy ;;
@@ -426,11 +448,12 @@ run() {
     stuck) scenario_stuck ;;
     limit) scenario_limit ;;
     prune) scenario_prune ;;
+    epoch) scenario_epoch ;;
     *) echo "unknown scenario $1"; return 1 ;;
   esac
 }
 
-ALL="happy crash equivocate double-vote silent bad-sig withhold bad-tree deny silent-model policy model stuck limit prune network ci"
+ALL="happy crash equivocate double-vote silent bad-sig withhold bad-tree deny silent-model policy model stuck limit prune epoch network ci"
 want=${*:-$ALL}
 pids=""
 for s in $want; do (run "$s" > "$ROOT/$s.result" 2>&1; echo $? > "$ROOT/$s.code") & pids="$pids $!"; done
