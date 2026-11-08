@@ -7,7 +7,8 @@
 #
 # CMD runs on a copy of CHECKOUT, in bubblewrap: no network, nothing of the
 # host's but /usr and /etc (read-only), Soma's build and its OCaml switches
-# (read-only), and a fresh /tmp. The nodes' homes, keys included, aren't in
+# (read-only; opam's log directory, which opam writes even to list a
+# switch, is a scratch one), and a fresh /tmp. The nodes' homes, keys included, aren't in
 # it: what CI prints goes on the chain, in a rejection. A systemd user scope
 # holds it to MEMORY with no swap; a build killed for memory ends as 137, as
 # a container's does, so the node says CI went over its memory budget.
@@ -22,6 +23,8 @@
 set -eu
 [ $# -eq 3 ] || { echo "ci-sandbox: usage: ci-sandbox MEMORY CHECKOUT CMD" >&2; exit 2; }
 mem=$1 work=$2 cmd=$3
+# Docker's sizes (1536m, 3g) in systemd's spelling (1536M, 3G)
+mem=$(printf '%s' "$mem" | tr kmgt KMGT)
 soma=${SOMA_DIR:-$HOME/pantheon/soma}
 switch=$HOME/.cache/soma/ocaml
 for p in "$soma/_build/install/default/bin/soma" "$HOME/.opam" "$switch"; do
@@ -41,6 +44,7 @@ exec systemd-run --user --scope --quiet --collect -p "MemoryMax=$mem" -p MemoryS
       --symlink usr/bin /bin --symlink usr/sbin /sbin --symlink usr/lib /lib --symlink usr/lib64 /lib64 \
       --proc /proc --dev /dev --tmpfs /tmp \
       --ro-bind "$soma" "$soma" --ro-bind "$HOME/.opam" "$HOME/.opam" --ro-bind "$switch" "$switch" \
+      --tmpfs "$HOME/.opam/log" \
       --ro-bind "$work" /work \
       --clearenv --setenv HOME /tmp --setenv XDG_CACHE_HOME /tmp/cache --setenv OPAMROOT "$HOME/.opam" \
       --setenv SOMA_OCAML_SWITCH "$switch" --setenv PATH "$soma/_build/install/default/bin:/usr/bin:/bin" \
