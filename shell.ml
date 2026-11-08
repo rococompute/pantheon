@@ -809,9 +809,13 @@ and node init step home flags =
             with_ci @@ fun () ->
             start_job ~limit:3600. "docker"
               [ "run"; "--rm"; "--name"; name; "--network=none"; "--read-only"; "--tmpfs"; "/tmp:exec,size=" ^ !ci_memory; "--cap-drop=ALL";
-                "--security-opt=no-new-privileges"; "--pids-limit=512"; "--memory=" ^ !ci_memory; "--user=65534:65534"; "-e"; "HOME=/tmp";
-                (* its errors too: start_job keeps only stdout *)
-                "-v"; out ^ ":/work:ro"; "-w"; "/work"; !ci_image; "sh"; "-c"; "(" ^ ci ^ ") 2>&1" ]
+                "--security-opt=no-new-privileges"; "--pids-limit=512"; "--memory=" ^ !ci_memory; "--memory-swap=" ^ !ci_memory;
+                "--user=65534:65534"; "-e"; "HOME=/tmp";
+                (* its errors too, as start_job keeps only stdout; and a build the
+                   kernel killed for the container's memory (oom_kill in its cgroup)
+                   ends as 137, the way docker ends the container itself *)
+                "-v"; out ^ ":/work:ro"; "-w"; "/work"; !ci_image; "sh"; "-c";
+                "(" ^ ci ^ ") 2>&1; r=$?; if [ $r -ne 0 ] && grep -qs 'oom_kill [1-9]' /sys/fs/cgroup/memory.events; then exit 137; fi; exit $r" ]
               ~stdin_text:"" ~env:(Unix.environment ())
               ~on_done:(fun t ->
                 let ok = not (String.length t > 0 && t.[0] = '!') in
@@ -819,7 +823,15 @@ and node init step home flags =
                 (* docker itself failing is this node's problem, not the bid's *)
                 let docker_down = (not ok) && (contains t "Cannot connect to the Docker daemon" || contains t "Unable to find image") in
                 if not ok then say "CI for request %s said: %s" id (String.map (fun c -> if c = '\n' then ' ' else c) t);
-                result ok tree (if ok then "" else if docker_down then "node problem: docker: " ^ t else "CI failed");
+                (* over budget is the bid's fault, but say which budget: docker ends
+                   a container that passes its memory with 137, timeout with 124 *)
+                let why =
+                  if ok then ""
+                  else if docker_down then "node problem: docker: " ^ t
+                  else if contains t "(exit 137)" then "CI went over its memory budget (" ^ !ci_memory ^ ", no swap): the build needs less memory than that to merge"
+                  else if contains t "(exit 124)" then "CI went over its time budget: the build has to finish within the limit its CI command gives"
+                  else "CI failed" in
+                result ok tree why;
                 ci_next ())
               ~clean:(fun () -> ignore (Sys.command ("docker rm -f " ^ name ^ " >/dev/null 2>&1")); rm_out ())
           end)
@@ -1052,7 +1064,12 @@ and node init step home flags =
         (match status with
          | Unix.WEXITED 0 -> j.jdone (if out = "" then "pending" else out)
          | _ -> let n = String.length out in
-                j.jdone ("!process failed: " ^ (if n > 3000 then "..." ^ String.sub out (n - 3000) 3000 else out)));
+                (* how it ended: CI tells an exceeded budget (137, 124) from a broken build by it *)
+                let how = match status with
+                  | Unix.WEXITED c -> Printf.sprintf "exit %d" c
+                  | Unix.WSIGNALED sg -> Printf.sprintf "killed by signal %d" sg
+                  | Unix.WSTOPPED sg -> Printf.sprintf "stopped by signal %d" sg in
+                j.jdone (Printf.sprintf "!process failed (%s): %s" how (if n > 3000 then "..." ^ String.sub out (n - 3000) 3000 else out)));
         j.jclean ())
       (List.rev !finished);
     List.iter (fun p ->

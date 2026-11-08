@@ -280,7 +280,9 @@ cmd_start() {
     put node.sh < "$here/deploy/sandbox/node.sh"
     printf '%s\n' "$b" | put backend
     printf '%s\n' "$CI_MEMORY" | put ci-memory
-    printf '%s\n' "${PANTHEON_CI:-soma build main.soma && test/edits.sh}" | put ci/pantheon
+    # Pantheon's build within a cloud agent's default command time (2 minutes):
+    # a change that makes it slower fails CI, as a broken one does
+    printf '%s\n' "${PANTHEON_CI:-timeout 120 soma build main.soma && timeout 120 test/edits.sh}" | put ci/pantheon
     # Soma's CI is a full build: on the agents in SOMA_CI_AGENTS only, to keep
     # the Mac's memory in bounds. Both rejecting a broken build keeps it out,
     # since a merge needs three approvals.

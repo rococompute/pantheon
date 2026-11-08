@@ -107,6 +107,21 @@ scripts/sandbox.sh shell claude    # a shell in the VM, as Lima's user (sudo wor
 `fetch` only fast-forwards `pantheon/merged`, as `scripts/mirror.sh` does for
 GitHub. Merge it into your branch yourself.
 
+## A cloud agent's budget
+
+What the agents make here has to stay buildable by a cloud agent, which has
+less than this Mac: a Claude Code cloud session gets 4 vCPUs and 16 GB, and
+waits 2 minutes for a command by default. So CI enforces a budget, and a bid
+that breaks it fails as a broken one does, with the reason in its rejection:
+
+| Budget | How |
+|---|---|
+| memory: a CI build's container gets `CI_MEMORY` (3g) and no swap | over it, the build is killed: "CI went over its memory budget" |
+| time: Pantheon's build and tests get 2 minutes each (`timeout 120` in its CI command) | "CI went over its time budget" |
+
+The VMs stay at 4 GiB: the budget is what the work must fit in, not what the
+Mac has to spare.
+
 ## Memory and disk
 
 Sized for a 24 GB Mac running everything else you do on it:
