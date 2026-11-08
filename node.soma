@@ -3,31 +3,41 @@
     runs: it takes one event and gives back what to do. *)
 Import util shell consensus market agent.
 
-cons (n : obj) : obj := getf n "c".
-mkt (n : obj) : obj := getf n "m".
-ag (n : obj) : obj := getf n "a".
-pool (n : obj) : list string := getf n "pool".
-live (n : obj) : bool := getf n "live".
+Record node_state := { cons : consensus_state; mkt : obj; ag : obj; pool : list string; live : bool }.
 
-empty_node : obj :=
-  [("c", new_consensus "" [] 1 : Any), ("m", new_market [] : Any), ("a", new_agent "" : Any),
-   ("pool", ([] : list string) : Any), ("live", false : Any)].
+with_cons (c : node_state) (v : consensus_state) : node_state :=
+  {| cons := v; mkt := mkt c; ag := ag c; pool := pool c; live := live c |}.
+
+with_mkt (c : node_state) (v : obj) : node_state :=
+  {| cons := cons c; mkt := v; ag := ag c; pool := pool c; live := live c |}.
+
+with_ag (c : node_state) (v : obj) : node_state :=
+  {| cons := cons c; mkt := mkt c; ag := v; pool := pool c; live := live c |}.
+
+with_pool (c : node_state) (v : list string) : node_state :=
+  {| cons := cons c; mkt := mkt c; ag := ag c; pool := v; live := live c |}.
+
+with_live (c : node_state) (v : bool) : node_state :=
+  {| cons := cons c; mkt := mkt c; ag := ag c; pool := pool c; live := v |}.
+
+empty_node : node_state :=
+  {| cons := new_consensus "" [] 1; mkt := new_market []; ag := new_agent ""; pool := []; live := false |}.
 
 (** a transaction worth keeping: well formed, for a nonce not yet used *)
 poolable (m : obj) (raw : string) : bool :=
   match decode_tx raw with a :: n :: _ => nonce_of m a <? num n | _ => false end.
 
-and_status (n : obj) (outs : list (list string)) : obj * list (list string) :=
+and_status (n : node_state) (outs : list (list string)) : node_state * list (list string) :=
   (n, outs ++ [("status" :: status_lines (mkt n))]).
 
 (** A decided block: apply it, drop what it used from the pool, and let the
     agent react. *)
-on_decided (n : obj) (h : nat) (txs : list string) : obj * list (list string) :=
+on_decided (n : node_state) (h : nat) (txs : list string) : node_state * list (list string) :=
   let (m, o) := apply_block (mkt n) h txs in
-  let n := setf (setf n "m" m) "pool" (filter (fun raw => negb (mem raw txs) && poolable m raw) (pool n)) in
+  let n := with_pool (with_mkt n m) (filter (fun raw => negb (mem raw txs) && poolable m raw) (pool n)) in
   if live n then
     let (a, o') := tick (ag n) m in
-    and_status (setf n "a" a) (o ++ o')
+    and_status (with_ag n a) (o ++ o')
   else (n, o).
 
 Fixpoint decisions (outs : list (list string)) : list (nat * list string) :=
@@ -39,61 +49,64 @@ Fixpoint decisions (outs : list (list string)) : list (nat * list string) :=
 
 (** Runs consensus to rest, applying each block it decides before going on,
     so that the next height's proposals are judged against the new state. *)
-Fixpoint drive (fuel : nat) (n : obj) (outs : list (list string)) : obj * list (list string) :=
+Fixpoint drive (fuel : nat) (n : node_state) (outs : list (list string)) : node_state * list (list string) :=
   match fuel with
   | 0 => (n, outs)
   | Succ f =>
       let m := mkt n in
       let (c, o) := consensus.settle 64 (cons n) (block_ok m) (build_block m (pool n)) [] in
-      let n := setf n "c" c in
+      let n := with_cons n c in
       match decisions o with
       | (h, txs) :: _ => let (n, o') := on_decided n h txs in drive f n (outs ++ o ++ o')
       | [] => (n, outs ++ o)
       end
   end.
 
-consensus_event (n : obj) (r : obj * list (list string)) : obj * list (list string) :=
+consensus_event (n : node_state) (r : consensus_state * list (list string)) : node_state * list (list string) :=
   let (c, o) := r in
-  let (n, o') := drive 8 (setf n "c" c) [] in
+  let (n, o') := drive 8 (with_cons n c) [] in
   (n, o ++ o').
 
-set_agent (n : obj) (k : string) (v : Any) : obj := setf n "a" (setf (ag n) k v).
+set_agent (n : node_state) (k : string) (v : Any) : node_state := with_ag n (setf (ag n) k v).
 
-agent_event (n : obj) (r : obj * list (list string)) : obj * list (list string) :=
-  let (a, o) := r in (setf n "a" a, o).
+agent_event (n : node_state) (r : obj * list (list string)) : node_state * list (list string) :=
+  let (a, o) := r in (with_ag n a, o).
 
-step (n : obj) (ev : list string) : obj * list (list string) :=
+step (n : node_state) (ev : list string) : node_state * list (list string) :=
   match ev with
   (* setup, before "start": genesis, then the blocks already on disk *)
   | "agents" :: names =>
-      (setf (setf n "m" (new_market names)) "c" (setf (cons n) "nodes" names), [])
-  | ["tip", a, t] => (setf n "m" (setf (mkt n) "tips" (put a t (tips (mkt n)))), [])
+      let c := cons n in
+      (with_cons (with_mkt n (new_market names)) {| c with nodes := names |}, [])
+  | ["tip", a, t] => (with_mkt n (setf (mkt n) "tips" (put a t (tips (mkt n)))), [])
   | ["param", k, v] =>
-      if seq k "block_ms" then (setf n "c" (setf (cons n) "block_ms" (num v)), [])
-      else (setf n "m" (setf (mkt n) "params" (put k (num v) (params (mkt n)))), [])
-  | ["repo", r, tree] => (setf n "m" (setf (mkt n) "repos" (put r tree (repos (mkt n)))), [])
-  | ["me", who] => (setf (setf n "c" (setf (cons n) "me" who)) "a" (setf (ag n) "me" who), [])
+      let c := cons n in
+      if seq k "block_ms" then (with_cons n {| c with block_ms := num v |}, [])
+      else (with_mkt n (setf (mkt n) "params" (put k (num v) (params (mkt n)))), [])
+  | ["repo", r, tree] => (with_mkt n (setf (mkt n) "repos" (put r tree (repos (mkt n)))), [])
+  | ["me", who] => let c := cons n in (with_ag (with_cons n {| c with consensus.me := who |}) (setf (ag n) "me" who), [])
   | ["agent", "goal", line] => (set_agent n "goal" (goal (ag n) ++ [line] : Any), [])
   | ["agent", "deny", p] => (set_agent n "deny" (deny (ag n) ++ [p] : Any), [])
   | ["agent", "bid_window", v] => (set_agent n "bid_window" (num v : Any), [])
   | ["agent", k, v] => (set_agent n k (v : Any), [])
   | "replay" :: h :: txs =>
       let (n, o) := on_decided n (num h) txs in
-      (setf n "c" (setf (setf (cons n) "h" (num h + 1)) "log" ([] : list msg)), o)
+      let c := cons n in
+      (with_cons n {| c with height := num h + 1; log := ([] : list msg) |}, o)
   | ["start"] =>
-      let n := setf n "live" true in
+      let n := with_live n true in
       let h := height (cons n) in
       let (a, o) := tick (ag n) (mkt n) in
-      and_status (setf n "a" a) (o ++ [["height", show h], timer "commit" h 0 0])
+      and_status (with_ag n a) (o ++ [["height", show h], timer "commit" h 0 0])
   (* running *)
   | "msg" :: from :: fields => consensus_event n (receive (cons n) from fields)
   | "timeout" :: fields => consensus_event n (timeout (cons n) fields (build_block (mkt n) (pool n)))
   | ["tx", raw] =>
       if mem raw (pool n) || negb (poolable (mkt n) raw) || (500 <=? length (pool n)) then (n, [])
-      else (setf n "pool" (pool n ++ [raw]), [])
+      else (with_pool n (pool n ++ [raw]), [])
   | "local_tx" :: fields => agent_event n (flush (enqueue (ag n) fields) (mkt n))
   | "llm_reply" :: id :: kv => agent_event n (answered (ag n) (mkt n) id kv)
   | "check_result" :: id :: kv => agent_event n (answered (ag n) (mkt n) id kv)
-  | ["llm_error", id, why] => (setf n "a" (failed (ag n) id), [["log", append "model call failed: " why]])
+  | ["llm_error", id, why] => (with_ag n (failed (ag n) id), [["log", append "model call failed: " why]])
   | _ => (n, [])
   end.
