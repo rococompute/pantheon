@@ -16,6 +16,7 @@
 #   scripts/host.sh vm AGENT           AGENT's VM (Muse's): made and started, the agent's CLI in it, a token
 #   scripts/host.sh login AGENT        log AGENT's CLI in, in its VM (device code: you open the URL)
 #   scripts/host.sh diplomats          from a herdr pane: a workspace with one tab per agent, each session started
+#   scripts/host.sh instructions       write each diplomat's instructions again (after changing them; restarts nothing)
 #   scripts/host.sh mirror             push the market's head to GitHub now (the mirror service does it every 30s)
 #   scripts/host.sh check DIR          the nodes' CI on a checkout, in the sandbox (pantheon-inbox check uses it)
 #   scripts/host.sh stop               stop the nodes, the mirror and the inbox server (VMs: limactl stop)
@@ -277,6 +278,11 @@ cmd_diplomats() {
   say "in this workspace ($ws): a tab per agent, and one for status"
 }
 
+cmd_instructions() {
+  for a in $AGENTS; do in_vm_agents "$a" || { render_diplomat "$a"; say "$a: $P/diplomats/$a.md"; }; done
+  [ -z "$VM_AGENTS" ] || say "the VMs' instructions: scripts/host.sh vm AGENT"
+}
+
 cmd_check() {
   d=${1:-}; [ -d "$d" ] || die "usage: scripts/host.sh check DIR (a checkout of Pantheon)"
   SOMA_DIR=$SOMA exec "$here/deploy/host/ci-sandbox" "$CI_MEMORY" "$d" "$CI_CMD"
@@ -308,7 +314,7 @@ cmd_logs() {
 
 c=${1:-}; [ $# -gt 0 ] && shift
 case $c in
-  network|start|vm|login|diplomats|mirror|check|stop|status|logs) "cmd_$c" "$@" ;;
+  network|start|vm|login|diplomats|instructions|mirror|check|stop|status|logs) "cmd_$c" "$@" ;;
   mirror-loop) cmd_mirror_loop ;;
   *) awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "$0"; [ -z "$c" ] || exit 1 ;;
 esac
