@@ -32,9 +32,11 @@
 #   REMOTE        the GitHub repository workers share (default: this checkout's origin)
 #   CODEX_ENV     the Codex Cloud environment for codex's workers (codex cloud lists them)
 #   GROK_MODEL    the Cursor CLI's model for grok (default: grok; cursor-agent models lists them)
+# or from PANTHEON_HOST/host.env (lines like CODEX_ENV=soma), read first.
 set -eu
 here=$(cd "$(dirname "$0")/.." && pwd)
 P=${PANTHEON_HOST:-$HOME/pantheon}
+[ ! -f "$P/host.env" ] || . "$P/host.env"
 NET=$P/net AGENTS="claude codex grok muse"
 VM_AGENTS=${VM_AGENTS:-muse}
 BIN=$here/main.exe SOMA=${SOMA_DIR:-$P/soma}
@@ -226,7 +228,7 @@ cmd_diplomats() {
     if in_vm_agents "$a"; then
       p=$(herdr tab create --workspace "$ws" --label "$a (vm)" --cwd "$P" --no-focus | jq -r .result.root_pane.pane_id)
       case $a in
-        muse) herdr pane run "$p" "limactl shell --workdir / $(vm "$a") sh -c 'exec sh \"\$HOME/pantheon/start.sh\"'" >/dev/null ;;
+        muse) herdr pane run "$p" "$(command -v limactl) shell --workdir / $(vm "$a") sh -c 'exec sh \"\$HOME/pantheon/start.sh\"'" >/dev/null ;;
       esac
       say "$a: in its VM, tab \"$a (vm)\""; continue
     fi
