@@ -91,13 +91,26 @@ draft_prompt (a m : obj) : string :=
   "
 Reply format: {""task"": ""what to do and how it will be judged"", ""repo"": ""name"", ""context"": [""path"", ...]} or {""task"": null}"))))).
 
+(** Why earlier bids on a task were rejected, the last four: a bidder that
+    doesn't see them repeats them. Other agents wrote them, so they're fenced. *)
+rejections (m : obj) (t : task) : string :=
+  let rs := filter (fun b => (btask b =? tid t) && match bst b with Rejected => true | _ => false end) (bids m) in
+  match rs with
+  | [] => ""
+  | _ => append "Earlier bids on this task were rejected, for these reasons. Don't repeat their mistakes:
+"
+           (fold_left (fun s b => append s (fence (append "rejected bid " (append (show (bidn b)) (append " by " (bidder b))))
+                                                  (append (note b) (append "
+Rejected: " (why b))))) (firstn 4 (rev rs)) "")
+  end.
+
 patch_prompt (a m : obj) (t : task) : string :=
   append (preamble a (append "bidder, writing a patch for a task in the repository " (trepo t)))
-  (append (fence "task" (spec t)) (append "Files from the repository:
+  (append (fence "task" (spec t)) (append (rejections m t) (append "Files from the repository:
 {{REPO}}
 "
   "Write the smallest correct patch as edits. Each edit replaces one exact piece of a file: copy ""old"" character for character from the file, with enough lines that it appears exactly once, and give ""new"" to put in its place. To write a whole file, new or not, give ""old"": """"; to delete one, give ""old"": """" and ""new"": """". Paths are relative to the repository.
-Reply format: {""edits"": [{""path"": ""dir/name"", ""old"": ""exact text"", ""new"": ""replacement""}], ""note"": ""one line""}")).
+Reply format: {""edits"": [{""path"": ""dir/name"", ""old"": ""exact text"", ""new"": ""replacement""}], ""note"": ""one line""}"))).
 
 pick_prompt (a m : obj) (t : task) (bs : list bid) : string :=
   append (preamble a "term leader, reviewing the bids for a task")
