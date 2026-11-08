@@ -43,10 +43,17 @@ if [ -z "${PANTHEON_WORKTREE:-}" ]; then
       as_bidder codex exec --skip-git-repo-check --ephemeral --disable apps --sandbox read-only -c 'approval_policy="never"' -c 'mcp_servers={}' -o "$out" - < "$prompt" >/dev/null
       cat "$out" 2>/dev/null; rm -rf "$outd" ;;
     # Grok Build: --tools "" leaves every tool on, and its coding system prompt
-    # explores before answering, so both go
-    grok) as_bidder grok --prompt-file "$prompt" $(grok_model) --no-subagents --output-format plain \
-            --disallowed-tools "run_terminal_cmd,read_file,grep,list_dir,write,search_replace,web_search,web_fetch,task,Agent" \
-            --system-prompt-override "You answer the user directly from what the prompt gives you. You have no tools and nothing else to look at. Reply with exactly what the prompt asks for: one JSON object and nothing else." ;;
+    # explores before answering, so both go. Even so it sometimes answers with
+    # a plan and stops: asked again, it answers.
+    grok)
+      for try in 1 2 3; do
+        reply=$(as_bidder grok --prompt-file "$prompt" $(grok_model) --no-subagents --output-format plain \
+          --disallowed-tools "run_terminal_cmd,read_file,grep,list_dir,write,search_replace,web_search,web_fetch,task,Agent" \
+          --system-prompt-override "You answer the user directly from what the prompt gives you. You have no tools and nothing else to look at. Reply with exactly what the prompt asks for: one JSON object and nothing else.")
+        case $reply in *'{'*'}'*) break ;; esac
+        printf '\n\nAnswer in this reply with only the JSON object the prompt asks for. You have no tools: there is nothing to look at or plan.\n' >> "$prompt"
+      done
+      printf '%s\n' "$reply" ;;
     *) echo "bidder.sh: unknown BIDDER_MODEL $MODEL (claude, codex or grok)" >&2; exit 1 ;;
   esac
   exit

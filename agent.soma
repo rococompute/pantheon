@@ -200,6 +200,25 @@ with_ask (st : obj * list (list string)) (m : obj) (key : string) (data : list s
   let (a, o) := st in
   if ask_once a key then let (a', o') := ask_ctx (note_asked a key) m data prompt ctx in (a', o ++ o') else (a, o).
 
+(** whether a model is still answering a request for the same thing: the
+    same kind and, if there is one, the same first word after it *)
+asking (a : obj) (data : list string) : bool :=
+  existsb (fun r => match snd r, data with
+                    | k :: x :: _, k' :: x' :: _ => seq k k' && seq x x'
+                    | k :: [], k' :: [] => seq k k'
+                    | _, _ => false
+                    end) (reqs a).
+
+(** Asks for key up to three times, never while a model is still answering
+    it: a failed call (failed drops its request) is asked again, as a patch
+    is. with_ask alone asks once, so a leader whose first draft failed drafted
+    nothing for the rest of its term. *)
+with_retry (st : obj * list (list string)) (m : obj) (key : string) (data : list string) (prompt : string) (ctx : list string) : obj * list (list string) :=
+  let (a, o) := st in
+  let n := get_or 0 key (attempts a) in
+  if asking a data || (3 <=? n) then st else
+  with_ask (setf a "attempts" (put key (n + 1) (attempts a)), o) m (append key (append "." (show n))) data prompt ctx.
+
 lead (a m : obj) : obj * list (list string) :=
   if negb (is_leader m (me a)) || negb (pending_bid_id m =? 0) then (a, []) else
   let h := mheight m in
@@ -211,17 +230,19 @@ lead (a m : obj) : obj * list (list string) :=
       let cands := filter (fun b => (btask b =? tid t) && is_pending (bst b) && negb (seq (bidder b) (me a))) (bids m) in
       if (length cands =? 0) || ((length cands <? length (agents m) - 1) && (h <? posted_at t + bid_window (fst st))) then st else
       let key := append "pick." (append (show (tid t)) (append "." (append (hash_list (map (fun b => show (bidn b)) cands)) (append "." (show (version m)))))) in
-      if negb (ask_once (fst st) key) then st else
       let bad := filter (fun b => negb (seq (violation (fst st) m b) "")) cands in
       let good := filter (fun b => seq (violation (fst st) m b) "") cands in
-      let st := (fold_left (fun a b => enqueue a ["reject", show (bidn b), append "policy: " (violation a m b)]) bad (note_asked (fst st) key), snd st) in
+      (* the policy's rejections once; the pick, again if the model failed *)
+      let st := if ask_once (fst st) key
+                then (fold_left (fun a b => enqueue a ["reject", show (bidn b), append "policy: " (violation a m b)]) bad (note_asked (fst st) key), snd st)
+                else st in
       match good with
       | [] => st
-      | _ => with_ask st m (append key ".ask") ("pick" :: show (tid t) :: map (fun b => show (bidn b)) good) (pick_prompt (fst st) m t good) []
+      | _ => with_retry st m (append key ".ask") ("pick" :: show (tid t) :: map (fun b => show (bidn b)) good) (pick_prompt (fst st) m t good) []
       end) (open_tasks m) (a, []) in
   (* nothing open: draft the next task from the goal *)
   if (length (open_tasks m) =? 0) && negb (length (goal (fst st)) =? 0) then
-    with_ask st m (append "draft." (append (show (term m)) (append "." (show (length (tasks m)))))) ["draft"] (draft_prompt (fst st) m) []
+    with_retry st m (append "draft." (append (show (term m)) (append "." (show (length (tasks m)))))) ["draft"] (draft_prompt (fst st) m) []
   else st.
 
 bid_duty (a m : obj) : obj * list (list string) :=

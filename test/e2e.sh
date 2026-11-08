@@ -281,13 +281,18 @@ scenario_policy() {
 # the shell gives it and replies with `pantheon edits`. It only does so if the
 # prompt carried the task's context file, so that's tested too.
 scenario_model() {
-  init model 27900 term_blocks=40 max_merges=1 bid_cooldown=2 || return 1
+  init model 27900 term_blocks=400 max_merges=1 bid_cooldown=2 || return 1
   fake=$ROOT/model/fake-model.sh
   cat > "$fake" <<'F'
 #!/bin/sh
 p=$(cat)
 case "$p" in
-  *"choosing the next task"*) echo 'Sure! {"task": "add a hello command", "repo": "calc", "context": ["calc.sh"]}' ;;
+  *"choosing the next task"*)
+    # each node's first two drafts fail, as a flaky model's do: the leader
+    # has to ask again within its term
+    c=$(dirname "$0")/drafts.$PPID; n=$(cat "$c" 2>/dev/null || echo 0); echo $((n + 1)) > "$c"
+    [ "$n" -ge 2 ] || { echo "I'll look at the repository first."; exit 0; }
+    echo 'Sure! {"task": "add a hello command", "repo": "calc", "context": ["calc.sh"]}' ;;
   *"writing a patch"*)
     case "$p" in *"file calc.sh>>>"*"A tiny calculator"*) ;; *) echo '{"edits": []}'; exit 0 ;; esac
     cd "$PANTHEON_WORKTREE" || exit 1
@@ -308,7 +313,7 @@ F
   [ "$(cd "$r" && sh calc.sh hello)" = "hello" ] || { echo "FAIL model: calc.sh hello doesn't run hello.sh"; return 1; }
   [ "$(cd "$r" && sh calc.sh add 2 3)" = "5" ] || { echo "FAIL model: calc.sh add broke"; return 1; }
   agree model claude codex grok muse && agree_files model claude codex grok muse || return 1
-  echo "ok model: a fake model with tools edited a checkout, and its edits merged on every node"
+  echo "ok model: a fake model with tools edited a checkout, and its edits merged on every node, though its first drafts failed"
 }
 
 run() {
