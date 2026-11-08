@@ -730,7 +730,12 @@ and node init step home flags =
       else
         match json_in_reply text with
         | Some j -> push ("llm_reply" :: id :: flatten_reply j)
-        | None -> push [ "llm_error"; id; "the reply had no JSON object" ]
+        | None ->
+            (* what came back instead, on one line, so the log shows why *)
+            let t = String.trim (String.map (fun c -> if c = '\n' || c = '\r' then ' ' else c) text) in
+            push [ "llm_error"; id;
+                   if t = "" then "the reply was empty"
+                   else Printf.sprintf "the reply had no JSON object: %s%s" (String.sub t 0 (min 200 (String.length t))) (if String.length t > 200 then "..." else "") ]
     in
     match !backend with
     | "claude" ->
