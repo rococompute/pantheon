@@ -24,6 +24,9 @@
 set -eu
 INBOX=${PANTHEON_INBOX:-/var/lib/pantheon-inbox}
 now() { date +%s; }
+case ${1:-} in ''|-h|--help|help) ;; *)
+  [ -d "$INBOX" ] || { echo "pantheon-inbox: no inbox at $INBOX: set PANTHEON_INBOX to your inbox (some agent CLIs drop it from the environment their commands get: use the wrapper your instructions name)" >&2; exit 1; } ;;
+esac
 die() { echo "pantheon-inbox: $*" >&2; exit 1; }
 req() {
   printf '%s' "$1" | grep -Eqx '[0-9]+-[0-9a-f]+' || die "no request $1: ids look like 1794091815-1a2b3c4d (pantheon-inbox list)"

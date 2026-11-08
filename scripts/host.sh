@@ -82,11 +82,21 @@ render_diplomat() {
   [ -z "$REMOTE" ] || [ -d "$P/desk/$a/pantheon/.git" ] || git clone -q "$REMOTE" "$P/desk/$a/pantheon" \
     || say "$a: can't clone $REMOTE into $P/desk/$a/pantheon: its cloud hand-offs need it"
   d=$here/deploy/host/delegate/$a.md
+  # some agent CLIs (codex) give their commands only a few of their own
+  # environment variables: the inbox's settings go in a wrapper instead
+  cat > "$P/desk/$a/pantheon-inbox" <<W
+#!/bin/sh
+PANTHEON_INBOX=$P/inbox/$a PANTHEON_REMOTE=$REMOTE PANTHEON_BRANCH=$BRANCH PANTHEON_CHECK="$here/scripts/host.sh check" \\
+  exec $here/scripts/pantheon-inbox "\$@"
+W
+  chmod 755 "$P/desk/$a/pantheon-inbox"
   python3 - "$here/deploy/host/diplomat.md" "$d" "$P/diplomats/$a.md" <<PY
 import sys, os
 t = open(sys.argv[1]).read()
 d = open(sys.argv[2]).read() if os.path.exists(sys.argv[2]) else "## How you hand off\n\nYou have no workers elsewhere: do patches by hand, small, and skip what's too big."
 t = t.replace("{{DELEGATE}}", d.strip())
+# the inbox command by its full path: the wrapper with this agent's settings
+t = t.replace("pantheon-inbox ", "{{DESK}}/pantheon-inbox ").replace("\`pantheon-inbox\`", "\`{{DESK}}/pantheon-inbox\`")
 for k, v in {"AGENT": "$a", "REMOTE": "$REMOTE", "BRANCH": "$BRANCH", "NET": "$NET",
              "CODEX_ENV": "${CODEX_ENV:-ENV_ID}", "DESK": "$P/desk/$a", "GROK_MODEL": "$GROK_MODEL"}.items():
     t = t.replace("{{%s}}" % k, v)
