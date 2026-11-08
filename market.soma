@@ -238,10 +238,11 @@ apply (m : obj) (a : string) (fields : list string) : obj * list (list string) *
             else if param m "max_pending_bids" <=? length (filter (fun b => seq (bidder b) a && is_pending (bst b)) (bids m)) then (m, [], "too many pending bids")
             else
               let id := nbids m + 1 in
-              (* the counter outside: market.proof's lemma for an appended bid sees the
-                 bids update in the shape it states *)
-              ok (setf (setf m "bids" (bids m ++ [{| bidn := id; btask := tid tk; bidder := a; base := version m; edits := w;
-                                               note := n; bst := Pending; stale := false; why := ""; votes := [] |}])) "nbids" id)
+              (* counted first, then the bid appended to that state's bids: the shape
+                 market.proof's lemma for an appended bid states *)
+              let m := setf m "nbids" id in
+              ok (setf m "bids" (bids m ++ [{| bidn := id; btask := tid tk; bidder := a; base := version m; edits := w;
+                                               note := n; bst := Pending; stale := false; why := ""; votes := [] |}]))
       end
   | ["withdraw", i] =>
       match bid_by m (num i) with
