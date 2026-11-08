@@ -287,7 +287,9 @@ scenario_policy() {
 # the shell gives it and replies with `pantheon edits`. It only does so if the
 # prompt carried the task's context file, so that's tested too.
 scenario_model() {
-  init model 27900 term_blocks=400 max_merges=1 bid_cooldown=2 || return 1
+  # fallback and attest windows longer than the test: only the attestors'
+  # votes can merge, so a failed attestation must be asked again
+  init model 27900 term_blocks=400 max_merges=1 bid_cooldown=2 fallback_blocks=100000 attest_window=100000 || return 1
   fake=$ROOT/model/fake-model.sh
   cat > "$fake" <<'F'
 #!/bin/sh
@@ -306,7 +308,11 @@ case "$p" in
     sed -i.bak 's|^  \*) echo "usage|  hello) sh hello.sh ;;\n  *) echo "usage|' calc.sh && rm calc.sh.bak
     "$PANTHEON_BIN" edits . "hello command" ;;
   *"reviewing the bids"*) n=$(printf '%s' "$p" | sed -n 's/^Bid \([0-9]*\) by.*/\1/p' | head -1); echo "{\"merge\": $n, \"reject\": []}" ;;
-  *"proposed merge is safe"*) echo '{"approve": true, "reason": "fine"}' ;;
+  *"proposed merge is safe"*)
+    # each node's first attestation fails (an empty reply)
+    c=$(dirname "$0")/attests.$PPID; n=$(cat "$c" 2>/dev/null || echo 0); echo $((n + 1)) > "$c"
+    [ "$n" -ge 1 ] || exit 0
+    echo '{"approve": true, "reason": "fine"}' ;;
 esac
 F
   chmod +x "$fake"
@@ -319,7 +325,7 @@ F
   [ "$(cd "$r" && sh calc.sh hello)" = "hello" ] || { echo "FAIL model: calc.sh hello doesn't run hello.sh"; return 1; }
   [ "$(cd "$r" && sh calc.sh add 2 3)" = "5" ] || { echo "FAIL model: calc.sh add broke"; return 1; }
   agree model claude codex grok muse && agree_files model claude codex grok muse || return 1
-  echo "ok model: a fake model with tools edited a checkout, and its edits merged on every node, though its first drafts failed"
+  echo "ok model: a fake model with tools edited a checkout, and its edits merged on every node, though its first drafts and attestations failed"
 }
 
 scenario_stuck() {

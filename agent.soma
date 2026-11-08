@@ -294,6 +294,11 @@ check_req (a m : obj) (kind : string) (b : bid) (t : string) : obj * list (list 
   (setf (setf a "nreq" (nreq a + 1)) "reqs" ((id, [kind, show (bidn b), t]) :: reqs a),
    [("check" :: id :: r :: get_or "" r (repos m) :: flat_edits (edits b))]).
 
+(** what an attestation of bid b to the pending merge is asked under: a merge
+    proposed again is a new question *)
+attest_key (m : obj) (b : string) : string :=
+  append "attest." (append b (append "." (match pending m with Some p => show (pat p) | None => "0" end))).
+
 attest_duty (a m : obj) : obj * list (list string) :=
   match pending m with
   | None => (a, [])
@@ -302,8 +307,13 @@ attest_duty (a m : obj) : obj * list (list string) :=
       | None => (a, [])
       | Some b =>
           if seq (pby p) (me a) || seq (bidder b) (me a) || existsb (fun v => seq (fst v) (me a)) (pvotes p) then (a, []) else
-          let key := append "attest." (append (show (bidn b)) (append "." (show (pat p)))) in
-          if negb (ask_once a key) then (a, []) else
+          (* asked again after a failed model call, up to three failures, as a
+             draft is: a failure asked once left the merge waiting out the
+             whole attest window without this agent's vote *)
+          let base := attest_key m (show (bidn b)) in
+          let n := get_or 0 base (attempts a) in
+          let key := append base (append "." (show n)) in
+          if (3 <=? n) || negb (ask_once a key) then (a, []) else
           let a := note_asked a key in
           let v := violation a m b in
           if negb (seq v "") then (enqueue a ["attest", show (bidn b), "no"], [])
@@ -372,7 +382,9 @@ answered (a m : obj) (id : string) (kv : list string) : obj * list (list string)
       if seq (kv_at kv "ok") "error" then abstain a kv
       else if seq (kv_at kv "ok") "true" then
         match bid_by m (num b) with
-        | Some bd => let '(a, o) := ask a m ["attest", b, kv_at kv "tree"] (attest_prompt a m t bd) in
+        | Some bd => (* the model's call gets the next id; if it fails, attest_duty asks again *)
+                     let a := setf a "retry_keys" (firstn 50 ((show (nreq a + 1), attest_key m b) :: retry_keys a)) in
+                     let '(a, o) := ask a m ["attest", b, kv_at kv "tree"] (attest_prompt a m t bd) in
                      let '(a, o') := flush a m in (a, o ++ o')
         | None => (a, [])
         end
