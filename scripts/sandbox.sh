@@ -15,6 +15,8 @@
 #   scripts/sandbox.sh start [AGENT=BACKEND ...] [-- NODE FLAGS]
 #   scripts/sandbox.sh status | logs AGENT | fetch | stop | shell AGENT
 #   scripts/sandbox.sh reset                 discard the chain: every node's home and the network directory
+#   scripts/sandbox.sh epoch                 a new epoch: every VM's Soma and CI image from SOMA_COMMIT, its node
+#                                            from PANTHEON_COMMIT, and a new chain from both; logins stay
 #
 # Settings, from the environment:
 #   AGENTS           the four agents (default: claude codex grok muse)
@@ -334,6 +336,46 @@ cmd_reset() {
   say "the chain is gone. Next: scripts/sandbox.sh network"
 }
 
+# A new epoch, in place: what the last chain merged into Soma becomes the
+# toolchain, so Pantheon can use it. Each VM keeps its logins (a fresh base
+# VM would need every model logged in again): its Soma is rebuilt from
+# SOMA_COMMIT, the CI image is built once and copied to the others, its node
+# from PANTHEON_COMMIT, and a new chain starts at both commits.
+cmd_epoch() {
+  soma_commit=$(git -C "$SOMA_CHECKOUT" rev-parse "${SOMA_COMMIT:?set SOMA_COMMIT: the Soma commit the epoch builds, e.g. pantheon/merged}")
+  pantheon_commit=$(git -C "$here" rev-parse "${PANTHEON_COMMIT:?set PANTHEON_COMMIT: the Pantheon commit the epoch starts from}")
+  say "epoch: Soma $(git -C "$SOMA_CHECKOUT" log -1 --format='%h %s' "$soma_commit" | cut -c1-70)"
+  say "epoch: Pantheon $(git -C "$here" log -1 --format='%h %s' "$pantheon_commit" | cut -c1-70)"
+  for a in $AGENTS; do running "$(vm "$a")" || die "$(vm "$a") isn't running"; in_vm "$(vm "$a")" sudo systemctl disable -q --now pantheon-node; done
+  say "rebuilding Soma in every VM (a few minutes)"
+  mkdir -p "$SANDBOX_DIR"; rm -f "$SANDBOX_DIR"/epoch-*
+  pids=""
+  for a in $AGENTS; do
+    v=$(vm "$a")
+    ( git -C "$SOMA_CHECKOUT" archive --format=tar "$soma_commit" | in_vm "$v" sudo -u pantheon -H sh -c \
+        'cd ~/soma && find . -mindepth 1 -maxdepth 1 ! -name _build -exec rm -rf {} + && tar -x -f - && eval "$(opam env --switch=soma-build --set-switch)" && make dunestrap >/tmp/epoch-soma.log 2>&1 && dune build -j 2 soma-runtime.install soma-core.install >>/tmp/epoch-soma.log 2>&1' \
+      && in_vm "$v" sudo chmod -R a+rX /home/pantheon/soma && echo ok > "$SANDBOX_DIR/epoch-$a" ) &
+    pids="$pids $!"
+  done
+  wait $pids
+  for a in $AGENTS; do [ -f "$SANDBOX_DIR/epoch-$a" ] || die "Soma didn't build on $(vm "$a"): scripts/sandbox.sh shell $a, then: sudo cat /tmp/epoch-soma.log"; done
+  first=$(vm "$(echo $AGENTS | cut -d' ' -f1)")
+  say "building the CI image pantheon:dev in $first (a while), then copying it to the others"
+  tmp=$(mktemp -d); git -C "$here" archive --format=tar "$pantheon_commit" > "$tmp/pantheon.tar"; git -C "$SOMA_CHECKOUT" archive --format=tar "$soma_commit" > "$tmp/soma.tar"
+  in_vm "$first" sudo sh -c 'rm -rf /tmp/ci && mkdir -p /tmp/ci/pantheon /tmp/ci/soma'
+  in_vm "$first" sudo tar -x -C /tmp/ci/pantheon -f - < "$tmp/pantheon.tar"
+  in_vm "$first" sudo tar -x -C /tmp/ci/soma -f - < "$tmp/soma.tar"
+  rm -rf "$tmp"
+  in_vm "$first" sudo sh -c 'docker build -q -f /tmp/ci/pantheon/deploy/Dockerfile --build-context soma=/tmp/ci/soma -t pantheon:dev /tmp/ci/pantheon >/tmp/epoch-image.log 2>&1 && rm -rf /tmp/ci' \
+    || die "the CI image didn't build in $first: sudo cat /tmp/epoch-image.log there"
+  for a in $AGENTS; do v=$(vm "$a"); [ "$v" = "$first" ] && continue; in_vm "$first" sudo docker save pantheon:dev | in_vm "$v" sudo docker load >/dev/null; done
+  # every node rebuilt with the new Soma, whatever commit it had
+  for a in $AGENTS; do in_vm "$(vm "$a")" sudo -u pantheon sh -c 'rm -rf ~/pantheon/.commit ~/pantheon/.soma-cache'; done
+  cmd_reset
+  PANTHEON_COMMIT=$pantheon_commit SOMA_COMMIT=$soma_commit cmd_network
+  say "epoch ready. Start it: GOAL_FILE=... scripts/sandbox.sh start"
+}
+
 # Each governed repository's head on one node, as the branch pantheon/merged
 # of your checkout. Fast-forward only, like scripts/mirror.sh.
 cmd_fetch() {
@@ -349,6 +391,6 @@ cmd_fetch() {
 
 c=${1:-}; [ $# -gt 0 ] && shift
 case $c in
-  base|nodes|network|update|login|session|start|status|logs|shell|stop|fetch|reset) "cmd_$c" "$@" ;;
+  base|nodes|network|update|login|session|start|status|logs|shell|stop|fetch|reset|epoch) "cmd_$c" "$@" ;;
   *) awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "$0"; [ -z "$c" ] || exit 1 ;;
 esac
