@@ -20,8 +20,9 @@ synced before each vote is sent. `apply_edits` refuses `..`, absolute paths,
 and no homes. The HTTP inbox's tokens are 256-bit, stored hashed, compared in
 constant time, bound to localhost.
 
-**Fixed since (Nov 8):** C1, C2, H1, H3 and H7, each with a test (see each
-item). The rest stand.
+**Fixed since (Nov 8):** C1, C2, H3 and H7, each with a test (see each
+item); H1 only partly (below). The rest stand. A second review,
+docs/SECURITY-REVIEW-2.md, confirms these and adds more.
 
 ## Critical
 
@@ -72,6 +73,11 @@ node's git with a node-owned `--git-dir` and the checkout as `--work-tree`, add
 `PANTHEON_GITDIR`; `pantheon edits` and bidder.sh's `git status` use that,
 never the checkout's `.git`, and run with `core.fsmonitor=false`. Tested in
 test/edits.sh (a hostile config's fsmonitor and clean filter run nothing).
+*Partly:* that holds only when the model is a separate user. In `pantheon up`
+and scripts/host.sh the model is the node's user and can write the
+`PANTHEON_GITDIR` repository's config itself, adding a clean filter that
+`git add` runs; filters aren't turned off, and the test puts its hostile
+config in the checkout's `.git`, not there (docs/SECURITY-REVIEW-2.md, P-2).
 
 **H2. The host's diplomats run with approvals off, as the user that owns every
 secret.** host.sh:334-336 starts Claude Code, Codex and the Cursor CLI with
