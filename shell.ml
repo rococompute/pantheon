@@ -869,14 +869,16 @@ and node init step home flags =
     let ci = ci_for r in
     let rm_out () = remove_tree_later out in
     (* ok is true, false (the bid's fault), or error (this node's: the agent
-       abstains rather than blame the bid) *)
-    let result ok tree why = push [ "check_result"; id; "ok"; (if ok then "true" else if contains why "node problem:" then "error" else "false"); "tree"; tree; "why"; why ] in
+       abstains rather than blame the bid). stage is where a failure happened:
+       apply (no tree yet), ci (a tree, then CI), or node (this node's own
+       problem, which ok=error already sends the agent to abstain on) *)
+    let result ok tree why stage = push [ "check_result"; id; "ok"; (if ok then "true" else if contains why "node problem:" then "error" else "false"); "tree"; tree; "why"; why; "stage"; stage ] in
     start_job Sys.executable_name [ "check"; rdir r; head; ef; out ] ~stdin_text:"" ~env:(Unix.environment ())
       ~on_done:(fun t ->
-        if String.length t > 0 && t.[0] = '!' then (say "check of request %s failed: %s" id t; result false "" t)
+        if String.length t > 0 && t.[0] = '!' then (say "check of request %s failed: %s" id t; result false "" t (if contains t "node problem:" then "node" else "apply"))
         else
           let tree = if byz = "bad-tree" then (say "FAULT INJECTION: naming a wrong tree"; sha256 ("lie" ^ id)) |> fun x -> String.sub x 0 40 else String.trim t in
-          if ci = "" then result true tree ""
+          if ci = "" then result true tree "" ""
           else begin
             ignore (Sys.command ("chmod -R a+rX " ^ Filename.quote out));
             let name = "pantheon-ci-" ^ random_hex 6 in
@@ -914,7 +916,7 @@ and node init step home flags =
                     let n = String.length one in
                     "CI failed: " ^ (if n > 400 then "..." ^ String.sub one (n - 400) 400 else one)
                   end in
-                result ok tree why;
+                result ok tree why (if ok then "" else if docker_down then "node" else "ci");
                 ci_next ())
               ~clean:(fun () -> if !ci_sandbox = "" then ignore (Sys.command ("docker rm -f " ^ name ^ " >/dev/null 2>&1")); rm_out ())
           end)

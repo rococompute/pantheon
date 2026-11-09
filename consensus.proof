@@ -46,7 +46,220 @@ Proof.
           match type of x with option msg => destruct x eqn:? end
       end ].
   all: inversion Hr; subst;
-    cbn [height lockr new_consensus with_me with_nodes with_height with_round
-      with_step with_lockr with_lockv with_validr with_validv with_log with_once
-      with_block_ms] in *; auto; lia.
+    cbn [height lockr new_consensus set_round
+      set_step set_lockr set_lockv set_validr set_validv set_log set_once
+      set_block_ms] in *; auto; lia.
+Qed.
+
+(** Decisions need distinct senders (docs/PROOFS.md, item 4). First, what
+    the counting helpers mean: [distinct] counts [nodup_s], a list with no
+    repeats holding exactly the names of its input. *)
+Lemma mem_In : forall (x : string) (l : list string), mem x l = true <-> In x l.
+Proof.
+  intros x l. induction l as [|y r IH]; cbn [mem In].
+  - split; [intro H; discriminate H | intros []].
+  - unfold seq. destruct (Stdlib.Strings.String.eqb x y) eqn:E; cbn [orb].
+    + apply Stdlib.Strings.String.eqb_eq in E. subst y.
+      split; [intros _; left; reflexivity | intros _; reflexivity].
+    + apply Stdlib.Strings.String.eqb_neq in E. rewrite IH.
+      split; [intro H; right; exact H | intros [H|H]; [congruence | exact H]].
+Qed.
+
+Lemma nodup_s_In : forall (x : string) (l : list string), In x (nodup_s l) <-> In x l.
+Proof.
+  intros x l. induction l as [|y r IH]; cbn [nodup_s].
+  - split; intro H; exact H.
+  - destruct (mem y r) eqn:E.
+    + apply mem_In in E. rewrite IH. cbn [In].
+      split; [intro H; right; exact H | intros [H|H]; [subst x; exact E | exact H]].
+    + cbn [In]. rewrite IH. split; intros [H|H]; [left; exact H | right; exact H | left; exact H | right; exact H].
+Qed.
+
+Lemma nodup_s_NoDup : forall (l : list string), NoDup (nodup_s l).
+Proof.
+  intro l. induction l as [|y r IH]; cbn [nodup_s].
+  - constructor.
+  - destruct (mem y r) eqn:E; [exact IH|].
+    constructor; [|exact IH].
+    rewrite nodup_s_In. intro H. apply mem_In in H. rewrite E in H. discriminate H.
+Qed.
+
+Lemma senders_witness : forall (P : msg -> bool) (l : list msg) (s : string),
+  In s (nodup_s (map frm (filter P l))) -> exists m, In m l /\ P m = true /\ frm m = s.
+Proof.
+  intros P l s H. apply (proj1 (nodup_s_In s _)) in H. apply (proj1 (in_map_iff _ _ _)) in H.
+  destruct H as [m [Hf Hin]]. apply filter_In in Hin. destruct Hin as [Hin Hp].
+  exists m. split; [exact Hin | split; [exact Hp | exact Hf]].
+Qed.
+
+Lemma andb_split : forall a b : bool, (a && b) = true -> a = true /\ b = true.
+Proof. intros [|] [|] H; cbn in H; split; first [reflexivity | discriminate H]. Qed.
+
+Lemma find_some_in : forall (A : Type) (f : A -> bool) (l : list A) (x : A),
+  find f l = Some x -> In x l /\ f x = true.
+Proof.
+  intros A f l. induction l as [|y r IH]; intros x H; cbn [find] in H.
+  - discriminate H.
+  - destruct (f y) eqn:E.
+    + injection H as H. subst y. split; [left; reflexivity | exact E].
+    + destruct (IH x H) as [Hin Hx]. split; [right; exact Hin | exact Hx].
+Qed.
+
+(** r_decide decides the value of a proposal of this height, found in the
+    log, behind which a quorum of distinct validators precommitted in the
+    proposal's round: a list of sender names with no repeats, each the
+    sender of a matching precommit in the log. *)
+Theorem r_decide_needs_quorum : forall (c : consensus_state) (valid : list string -> bool)
+    (c' : consensus_state) (outs : list (list string)),
+  r_decide c valid = Some (c', outs) ->
+  exists p, In p (log c) /\ kind_eq (kd p) Proposal = true /\ mh p = height c /\
+    valid (value p) = true /\ (c', outs) = decide c (value p) /\
+    exists S, NoDup S /\ quorum c <= length S /\
+      forall s, In s S -> exists m, In m (log c) /\ kind_eq (kd m) Precommit = true /\
+        mh m = height c /\ mr m = mr p /\ seq (vid m) (vid p) = true /\ frm m = s.
+Proof.
+  intros c valid c' outs H. unfold r_decide in H. cbn zeta in H.
+  destruct (find _ (log c)) as [p|] eqn:Hf; [|discriminate H].
+  apply (f_equal (fun o => match o with Some x => x | None => (c', outs) end)) in H.
+  cbn beta iota in H.
+  apply find_some_in in Hf. destruct Hf as [Hin Hp]. cbn beta in Hp.
+  apply andb_split in Hp. destruct Hp as [Hp Hv].
+  apply andb_split in Hp. destruct Hp as [Hp Hq].
+  apply andb_split in Hp. destruct Hp as [Hp _].
+  apply andb_split in Hp. destruct Hp as [Hk Hh].
+  apply Nat.eqb_eq in Hh. apply Nat.leb_le in Hq.
+  exists p. split; [exact Hin|]. split; [exact Hk|]. split; [exact Hh|]. split; [exact Hv|].
+  split; [symmetry; exact H|].
+  exists (nodup_s (map frm (filter (fun m => kind_eq (kd m) Precommit && (mh m =? height c)
+            && (mr m =? mr p) && seq (vid m) (vid p)) (log c)))).
+  split; [apply nodup_s_NoDup|]. split; [exact Hq|].
+  intros s Hs. apply senders_witness in Hs. destruct Hs as [m [Hm [Hpm Hfm]]].
+  apply andb_split in Hpm. destruct Hpm as [Hpm Hid].
+  apply andb_split in Hpm. destruct Hpm as [Hpm Hr].
+  apply andb_split in Hpm. destruct Hpm as [Hk' Hh'].
+  apply Nat.eqb_eq in Hh'. apply Nat.eqb_eq in Hr.
+  exists m. split; [exact Hm|]. split; [exact Hk'|]. split; [exact Hh'|].
+  split; [exact Hr|]. split; [exact Hid | exact Hfm].
+Qed.
+
+(** With 4 validators, that is at least 3 distinct precommitters. *)
+Corollary r_decide_four_validators : forall (c : consensus_state) (valid : list string -> bool)
+    (c' : consensus_state) (outs : list (list string)),
+  length (nodes c) = 4 -> r_decide c valid = Some (c', outs) ->
+  exists p S, In p (log c) /\ (c', outs) = decide c (value p) /\ NoDup S /\ 3 <= length S /\
+    forall s, In s S -> exists m, In m (log c) /\ kind_eq (kd m) Precommit = true /\
+      mh m = height c /\ mr m = mr p /\ seq (vid m) (vid p) = true /\ frm m = s.
+Proof.
+  intros c valid c' outs H4 H.
+  destruct (r_decide_needs_quorum c valid c' outs H) as [p [Hin [_ [_ [_ [Hd [S [Hn [Hq Hs]]]]]]]]].
+  destruct (four_validators c H4) as [Hq3 _]. rewrite Hq3 in Hq.
+  exists p, S. split; [exact Hin|]. split; [exact Hd|]. split; [exact Hn|]. split; [exact Hq | exact Hs].
+Qed.
+
+(** r_catch_up decides the value of a Done message of this height, behind
+    which f + 1 distinct validators sent matching Done messages. *)
+Theorem r_catch_up_needs_weak : forall (c c' : consensus_state) (outs : list (list string)),
+  r_catch_up c = Some (c', outs) ->
+  exists d, In d (log c) /\ kind_eq (kd d) Done = true /\ mh d = height c /\
+    (c', outs) = decide c (value d) /\
+    exists S, NoDup S /\ weak c <= length S /\
+      forall s, In s S -> exists m, In m (log c) /\ kind_eq (kd m) Done = true /\
+        mh m = height c /\ mr m = 0 /\ seq (vid m) (vid d) = true /\ frm m = s.
+Proof.
+  intros c c' outs H. unfold r_catch_up in H.
+  destruct (find _ (log c)) as [d|] eqn:Hf; [|discriminate H].
+  apply (f_equal (fun o => match o with Some x => x | None => (c', outs) end)) in H.
+  cbn beta iota in H.
+  apply find_some_in in Hf. destruct Hf as [Hin Hp]. cbn beta in Hp.
+  apply andb_split in Hp. destruct Hp as [Hp Hq].
+  apply andb_split in Hp. destruct Hp as [Hk Hh].
+  apply Nat.eqb_eq in Hh. apply Nat.leb_le in Hq.
+  exists d. split; [exact Hin|]. split; [exact Hk|]. split; [exact Hh|].
+  split; [symmetry; exact H|].
+  exists (nodup_s (map frm (filter (fun m => kind_eq (kd m) Done && (mh m =? height c)
+            && (mr m =? 0) && seq (vid m) (vid d)) (log c)))).
+  split; [apply nodup_s_NoDup|]. split; [exact Hq|].
+  intros s Hs. apply senders_witness in Hs. destruct Hs as [m [Hm [Hpm Hfm]]].
+  apply andb_split in Hpm. destruct Hpm as [Hpm Hid].
+  apply andb_split in Hpm. destruct Hpm as [Hpm Hr].
+  apply andb_split in Hpm. destruct Hpm as [Hk' Hh'].
+  apply Nat.eqb_eq in Hh'. apply Nat.eqb_eq in Hr.
+  exists m. split; [exact Hm|]. split; [exact Hk'|]. split; [exact Hh'|].
+  split; [exact Hr|]. split; [exact Hid | exact Hfm].
+Qed.
+
+(** With 4 validators, that is at least 2 distinct Done senders. *)
+Corollary r_catch_up_four_validators : forall (c c' : consensus_state) (outs : list (list string)),
+  length (nodes c) = 4 -> r_catch_up c = Some (c', outs) ->
+  exists d S, In d (log c) /\ (c', outs) = decide c (value d) /\ NoDup S /\ 2 <= length S /\
+    forall s, In s S -> exists m, In m (log c) /\ kind_eq (kd m) Done = true /\
+      mh m = height c /\ mr m = 0 /\ seq (vid m) (vid d) = true /\ frm m = s.
+Proof.
+  intros c c' outs H4 H.
+  destruct (r_catch_up_needs_weak c c' outs H) as [d [Hin [_ [_ [Hd [S [Hn [Hq Hs]]]]]]]].
+  destruct (four_validators c H4) as [_ Hw2]. rewrite Hw2 in Hq.
+  exists d, S. split; [exact Hin|]. split; [exact Hd|]. split; [exact Hn|]. split; [exact Hq | exact Hs].
+Qed.
+
+(** Locks only move forward (docs/PROOFS.md, item 3). r_lock sets the lock
+    round to round c + 1 whatever it was, so the lock can only grow if it
+    was not already past that: a state with lockr c <= round c + 1, as every
+    state reached from new_consensus is (the lock is taken in the current
+    round, and rounds only grow within a height). That invariant is the
+    explicit hypothesis here. *)
+Lemma r_lock_change_moves_forward : forall c c' : consensus_state,
+  lockr c <= round c + 1 -> lockr c' = round c + 1 -> lockr c <= lockr c'.
+Proof.
+  intros c c' Hinv Hset. rewrite Hset. exact Hinv.
+Qed.
+
+Theorem locks_only_move_forward :
+  forall (c : consensus_state) (valid : list string -> bool)
+    (getv : list string) (c' : consensus_state) (outs : list (list string)),
+    lockr c <= round c + 1 ->
+    rule c valid getv = Some (c', outs) -> height c' = height c ->
+    lockr c <= lockr c' /\ (lockr c' = lockr c \/ lockr c' = round c + 1).
+Proof.
+  intros c valid getv c' outs Hinv Hr Hh.
+  destruct (lockr_changes_only_in_r_lock c valid getv c' outs Hr Hh) as [E|E].
+  - split; [rewrite E; apply le_n | left; exact E].
+  - split; [apply (r_lock_change_moves_forward c c' Hinv E) | right; exact E].
+Qed.
+
+(** Toward one precommit per round (docs/PROOFS.md, item 2): each rule
+    that broadcasts a precommit does so only from the prevote step, and
+    moves to the precommit step. *)
+Lemma r_lock_broadcast_precommit_step :
+  forall (c : consensus_state) (valid : list string -> bool) (c' : consensus_state)
+    (outs : list (list string)) (x : list string),
+    r_lock c valid = Some (c', outs) -> In x outs ->
+    nth 0 x "" = "broadcast" -> nth 1 x "" = "precommit" -> step c = 1 /\ step c' = 2.
+Proof.
+  intros c valid c' outs x H Hin Hb Hpc.
+  unfold r_lock, vote, send, mark in H.
+  repeat first
+    [ progress cbn beta iota zeta in H
+    | match type of H with
+      | context [if ?b then _ else _] => destruct b eqn:?
+      | context [match ?y with Some _ => _ | None => _ end] =>
+          match type of y with option msg => destruct y eqn:? end
+      end ].
+  all: inversion H; subst;
+    cbn [step set_round set_step set_lockr set_lockv set_validr set_validv
+      set_log set_once set_block_ms In] in *.
+  all: try contradiction.
+  all: split; [apply Nat.eqb_eq; assumption | reflexivity].
+Qed.
+
+Lemma r_nil_broadcast_precommit_step :
+  forall (c c' : consensus_state) (outs : list (list string)) (x : list string),
+    r_nil c = Some (c', outs) -> In x outs ->
+    nth 0 x "" = "broadcast" -> nth 1 x "" = "precommit" -> step c = 1 /\ step c' = 2.
+Proof.
+  intros c c' outs x H Hin Hb Hpc.
+  unfold r_nil, vote, send in H.
+  destruct ((step c =? 1) && _) eqn:Hg; [|discriminate H].
+  apply andb_split in Hg. destruct Hg as [Hs _]. apply Nat.eqb_eq in Hs.
+  cbn beta iota zeta in H. inversion H; subst.
+  cbn [step set_step set_log]. split; [exact Hs | reflexivity].
 Qed.
