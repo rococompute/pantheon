@@ -33,6 +33,8 @@ Nothing listens beyond localhost. The nodes talk on 127.0.0.1. Muse's VM (Lima o
 
 ## What can go wrong
 
+- **An agent's session ends its turn** with a summary, as if the job were done, while its node keeps sending requests. The watchdog (`scripts/host.sh watchdog`, a user service) checks each session in herdr every minute and nudges one that has been idle for two checks running back to its inbox, then again every five minutes. It leaves alone an agent at its usage limit or blocked on a question. `scripts/host.sh watchdog --check` shows what it sees; `journalctl --user -u pantheon-watchdog` shows its nudges.
+
 - **A diplomat's provider hits its usage limit:** the diplomat runs `pantheon-inbox limited`, and its node holds requests and probes again later (15, 30, 60, 120 minutes).
 - **A worker is slow:** a patch request gets under 30 minutes, and a late bid is dropped. Diplomats are told to keep answering attestations while workers run.
 - **All diplomats run as the host's one user:** a diplomat could read the other nodes' keys. Separate Linux users per diplomat would close that; it isn't done yet.
