@@ -263,3 +263,214 @@ Proof.
   cbn beta iota zeta in H. inversion H; subst.
   cbn [step set_step set_log]. split; [exact Hs | reflexivity].
 Qed.
+
+(** Keep rule-local case splits small: opaque message lookups are the only
+    option matches split here. *)
+Ltac precommit_local_cases H :=
+  repeat first
+    [ progress cbn beta iota zeta in H
+    | match type of H with
+      | context [if ?b then _ else _] => destruct b eqn:?
+      | context [match ?p with Some _ => _ | None => _ end] =>
+          match type of p with option msg => destruct p eqn:? end
+      end ].
+
+Ltac precommit_bad_header H expected :=
+  apply (f_equal (fun s => Stdlib.Strings.String.eqb s expected)) in H;
+  cbn in H; discriminate H.
+
+Ltac precommit_exclude_output H Hin Hb Hp :=
+  precommit_local_cases H;
+  inversion H; subst;
+  cbn [In List.app] in Hin;
+  repeat match type of Hin with _ \/ _ => destruct Hin as [Hin | Hin] end;
+  try contradiction;
+  subst;
+  cbn [nth out kind_name kd timer] in Hb, Hp;
+  first [precommit_bad_header Hb "broadcast" | precommit_bad_header Hp "precommit"].
+
+Lemma r_fresh_no_precommit : forall c valid c' outs x,
+  r_fresh c valid = Some (c', outs) -> In x outs ->
+  nth 0 x "" = "broadcast" -> nth 1 x "" = "precommit" -> False.
+Proof.
+  intros c valid c' outs x H Hin Hb Hp.
+  unfold r_fresh, vote, send in H. precommit_exclude_output H Hin Hb Hp.
+Qed.
+
+Lemma r_reproposal_no_precommit : forall c valid c' outs x,
+  r_reproposal c valid = Some (c', outs) -> In x outs ->
+  nth 0 x "" = "broadcast" -> nth 1 x "" = "precommit" -> False.
+Proof.
+  intros c valid c' outs x H Hin Hb Hp.
+  unfold r_reproposal, vote, send in H. precommit_exclude_output H Hin Hb Hp.
+Qed.
+
+Lemma r_prevote_timer_no_precommit : forall c c' outs x,
+  r_prevote_timer c = Some (c', outs) -> In x outs ->
+  nth 0 x "" = "broadcast" -> nth 1 x "" = "precommit" -> False.
+Proof.
+  intros c c' outs x H Hin Hb Hp.
+  unfold r_prevote_timer in H. precommit_exclude_output H Hin Hb Hp.
+Qed.
+
+Lemma r_precommit_timer_no_precommit : forall c c' outs x,
+  r_precommit_timer c = Some (c', outs) -> In x outs ->
+  nth 0 x "" = "broadcast" -> nth 1 x "" = "precommit" -> False.
+Proof.
+  intros c c' outs x H Hin Hb Hp.
+  unfold r_precommit_timer in H. precommit_exclude_output H Hin Hb Hp.
+Qed.
+
+Lemma start_round_no_precommit : forall c r getv c' outs x,
+  start_round c r getv = (c', outs) -> In x outs ->
+  nth 0 x "" = "broadcast" -> nth 1 x "" = "precommit" -> False.
+Proof.
+  intros c r getv c' outs x H Hin Hb Hp.
+  unfold start_round, send in H. precommit_exclude_output H Hin Hb Hp.
+Qed.
+
+Lemma r_skip_no_precommit : forall c getv c' outs x,
+  r_skip c getv = Some (c', outs) -> In x outs ->
+  nth 0 x "" = "broadcast" -> nth 1 x "" = "precommit" -> False.
+Proof.
+  intros c getv c' outs x H Hin Hb Hp. unfold r_skip in H.
+  destruct (find _ (log c)) as [m|] eqn:Hf; [|discriminate H].
+  injection H as H. eapply start_round_no_precommit; eauto.
+Qed.
+
+Lemma r_decide_advances_height : forall c valid c' outs,
+  r_decide c valid = Some (c', outs) -> height c' = height c + 1.
+Proof.
+  intros c valid c' outs H. unfold r_decide, decide in H.
+  precommit_local_cases H; inversion H; subst; reflexivity.
+Qed.
+
+Lemma r_catch_up_advances_height : forall c c' outs,
+  r_catch_up c = Some (c', outs) -> height c' = height c + 1.
+Proof.
+  intros c c' outs H. unfold r_catch_up, decide in H.
+  precommit_local_cases H; inversion H; subst; reflexivity.
+Qed.
+
+Lemma start_round_result_round : forall c r getv c' outs,
+  start_round c r getv = (c', outs) -> round c' = r.
+Proof.
+  intros c r getv c' outs H. unfold start_round, send in H.
+  precommit_local_cases H; inversion H; subst; reflexivity.
+Qed.
+
+Lemma r_skip_advances_round : forall c getv c' outs,
+  r_skip c getv = Some (c', outs) -> round c < round c'.
+Proof.
+  intros c getv c' outs H. unfold r_skip in H.
+  destruct (find _ (log c)) as [m|] eqn:Hf; [|discriminate H].
+  injection H as H.
+  pose proof (start_round_result_round c (mr m) getv c' outs H) as Hr.
+  apply find_some_in in Hf. destruct Hf as [_ Hp]. cbn beta in Hp.
+  apply andb_split in Hp. destruct Hp as [Hp _].
+  apply andb_split in Hp. destruct Hp as [_ Hlt].
+  apply Nat.ltb_lt in Hlt. lia.
+Qed.
+
+Theorem rule_broadcast_precommit_step :
+  forall (c : consensus_state) (valid : list string -> bool) (getv : list string)
+    (c' : consensus_state) (outs : list (list string)) (x : list string),
+    rule c valid getv = Some (c', outs) -> height c' = height c ->
+    In x outs -> nth 0 x "" = "broadcast" -> nth 1 x "" = "precommit" ->
+    step c = 1 /\ step c' = 2.
+Proof.
+  intros c valid getv c' outs x H Hh Hin Hb Hp. unfold rule, orelse in H.
+  destruct (r_fresh c valid) as [[d o]|] eqn:E0; cbn beta iota zeta in H.
+  { inversion H; subst. exfalso. eapply r_fresh_no_precommit; eauto. }
+  destruct (r_reproposal c valid) as [[d o]|] eqn:E1; cbn beta iota zeta in H.
+  { inversion H; subst. exfalso. eapply r_reproposal_no_precommit; eauto. }
+  destruct (r_prevote_timer c) as [[d o]|] eqn:E2; cbn beta iota zeta in H.
+  { inversion H; subst. exfalso. eapply r_prevote_timer_no_precommit; eauto. }
+  destruct (r_lock c valid) as [[d o]|] eqn:E3; cbn beta iota zeta in H.
+  { inversion H; subst. eapply r_lock_broadcast_precommit_step; eauto. }
+  destruct (r_nil c) as [[d o]|] eqn:E4; cbn beta iota zeta in H.
+  { inversion H; subst. eapply r_nil_broadcast_precommit_step; eauto. }
+  destruct (r_precommit_timer c) as [[d o]|] eqn:E5; cbn beta iota zeta in H.
+  { inversion H; subst. exfalso. eapply r_precommit_timer_no_precommit; eauto. }
+  destruct (r_decide c valid) as [[d o]|] eqn:E6; cbn beta iota zeta in H.
+  { inversion H; subst. pose proof (r_decide_advances_height _ _ _ _ E6); lia. }
+  destruct (r_catch_up c) as [[d o]|] eqn:E7; cbn beta iota zeta in H.
+  { inversion H; subst. pose proof (r_catch_up_advances_height _ _ _ E7); lia. }
+  exfalso. eapply r_skip_no_precommit; eauto.
+Qed.
+
+(** In the rules that do not advance height or round, the precommit step
+    cannot return to the prevote step. *)
+Ltac precommit_preserve_local H :=
+  precommit_local_cases H;
+  inversion H; subst;
+  cbn [step height round set_round set_step set_lockr set_lockv
+    set_validr set_validv set_log set_once set_block_ms] in *;
+  repeat match goal with
+  | Hb : (_ && _) = true |- _ => apply andb_split in Hb; destruct Hb
+  | Hb : (_ =? _) = true |- _ => apply Nat.eqb_eq in Hb
+  end; lia.
+
+Theorem rule_keeps_precommit_step :
+  forall (c : consensus_state) (valid : list string -> bool) (getv : list string)
+    (c' : consensus_state) (outs : list (list string)),
+    rule c valid getv = Some (c', outs) -> height c' = height c ->
+    round c' = round c -> step c = 2 -> step c' = 2.
+Proof.
+  intros c valid getv c' outs H Hh Hr Hs. unfold rule, orelse in H.
+  destruct (r_fresh c valid) as [[d o]|] eqn:E0; cbn beta iota zeta in H.
+  { inversion H; subst. unfold r_fresh, vote, send, mark in E0. precommit_preserve_local E0. }
+  destruct (r_reproposal c valid) as [[d o]|] eqn:E1; cbn beta iota zeta in H.
+  { inversion H; subst. unfold r_reproposal, vote, send, mark in E1. precommit_preserve_local E1. }
+  destruct (r_prevote_timer c) as [[d o]|] eqn:E2; cbn beta iota zeta in H.
+  { inversion H; subst. unfold r_prevote_timer, mark in E2. precommit_preserve_local E2. }
+  destruct (r_lock c valid) as [[d o]|] eqn:E3; cbn beta iota zeta in H.
+  { inversion H; subst. unfold r_lock, vote, send, mark in E3. precommit_preserve_local E3. }
+  destruct (r_nil c) as [[d o]|] eqn:E4; cbn beta iota zeta in H.
+  { inversion H; subst. unfold r_nil, vote, send, mark in E4. precommit_preserve_local E4. }
+  destruct (r_precommit_timer c) as [[d o]|] eqn:E5; cbn beta iota zeta in H.
+  { inversion H; subst. unfold r_precommit_timer, mark in E5. precommit_preserve_local E5. }
+  destruct (r_decide c valid) as [[d o]|] eqn:E6; cbn beta iota zeta in H.
+  { inversion H; subst. pose proof (r_decide_advances_height _ _ _ _ E6); lia. }
+  destruct (r_catch_up c) as [[d o]|] eqn:E7; cbn beta iota zeta in H.
+  { inversion H; subst. pose proof (r_catch_up_advances_height _ _ _ E7); lia. }
+  pose proof (r_skip_advances_round c getv c' outs H). lia.
+Qed.
+
+(** The reflexive-transitive closure of rule steps preserving this height
+    and round; each step may use its own validity function and input. *)
+Inductive same_round_steps : consensus_state -> consensus_state -> Prop :=
+| same_round_refl : forall c, same_round_steps c c
+| same_round_next : forall c d e valid getv outs,
+    rule c valid getv = Some (d, outs) -> height d = height c ->
+    round d = round c -> same_round_steps d e -> same_round_steps c e.
+
+Lemma same_round_steps_keep_precommit : forall c d,
+  same_round_steps c d -> step c = 2 -> step d = 2.
+Proof.
+  intros c d H. induction H as [c | c d e valid getv outs Hrule Hheight Hround Htail IH].
+  - intro Hs. exact Hs.
+  - intro Hs. apply IH. eapply rule_keeps_precommit_step; eauto.
+Qed.
+
+(** A precommit moves to step 2. A chain in the same height and round
+    retains step 2, whereas another precommit would require step 1. *)
+Theorem one_precommit_per_round :
+  forall (c : consensus_state) (valid : list string -> bool) (getv : list string)
+    (c1 : consensus_state) (o1 : list (list string)) (x : list string)
+    (c2 : consensus_state) (valid' : list string -> bool) (getv' : list string)
+    (c3 : consensus_state) (o3 : list (list string)),
+    rule c valid getv = Some (c1, o1) -> height c1 = height c ->
+    In x o1 -> nth 0 x "" = "broadcast" -> nth 1 x "" = "precommit" ->
+    same_round_steps c1 c2 -> round c2 = round c1 ->
+    rule c2 valid' getv' = Some (c3, o3) -> height c3 = height c2 ->
+    forall y, In y o3 -> nth 0 y "" = "broadcast" -> nth 1 y "" = "precommit" -> False.
+Proof.
+  intros c valid getv c1 o1 x c2 valid' getv' c3 o3
+    Hfirst Hh1 Hin Hb Hp Hsteps Hr Hlast Hh3 y Hy Hyb Hyp.
+  destruct (rule_broadcast_precommit_step c valid getv c1 o1 x Hfirst Hh1 Hin Hb Hp)
+    as [_ Hs1].
+  pose proof (same_round_steps_keep_precommit c1 c2 Hsteps Hs1) as Hs2.
+  destruct (rule_broadcast_precommit_step c2 valid' getv' c3 o3 y Hlast Hh3 Hy Hyb Hyp)
+    as [Hs _]. congruence.
+Qed.
