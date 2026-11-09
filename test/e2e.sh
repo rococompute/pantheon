@@ -87,7 +87,12 @@ agree_files() {
     want=$(git -C "$ROOT/$name/$ref/repos/$r" rev-parse HEAD)
     for a in "$@"; do
       got=$(git -C "$ROOT/$name/$a/repos/$r" rev-parse HEAD)
-      [ "$got" = "$want" ] || { echo "FAIL $name: $a and $ref have $r at different commits"; return 1; }
+      # merge commits are the same on every node (fixed author and date), so
+      # one node may be a single merge ahead: the stop killed the others
+      # while they applied it. Any other difference is a failure.
+      [ "$got" = "$want" ] || [ "$(git -C "$ROOT/$name/$ref/repos/$r" rev-parse -q --verify "$want^1")" = "$got" ] \
+        || [ "$(git -C "$ROOT/$name/$a/repos/$r" rev-parse -q --verify "$got^1")" = "$want" ] \
+        || { echo "FAIL $name: $a and $ref have $r at different commits"; return 1; }
     done
   done
   if grep -l DIVERGED "$ROOT/$name"/*/status.txt >/dev/null 2>&1; then echo "FAIL $name: a checkout diverged: $(grep -h DIVERGED "$ROOT/$name"/*/status.txt | head -1)"; return 1; fi

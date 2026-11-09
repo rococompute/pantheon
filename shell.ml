@@ -1371,16 +1371,30 @@ and node init step checkpoint restore home flags =
   let debug = (try Sys.getenv "PANTHEON_DEBUG" with Not_found -> "") <> "" in
   let brief l = String.concat " " (List.map (fun f -> if String.length f > 16 then String.sub f 0 16 else f) (List.filteri (fun i _ -> i < 7) l)) in
   let checkpoint_path = Filename.concat home "consensus.state" in
-  let participating = ref false in
+  let participating = ref false and saved = ref None in
+  (* Transactions the core refused since the last decided block. Until a block
+     changes the market, the pool only grows, so each stays refused: a peer
+     resending them (docs/SECURITY-REVIEW-2.md P-5) costs a table lookup, not
+     a signature check and a pass through the core. The core gives a refused
+     transaction's state back unchanged, which is how the shell can tell. *)
+  let refused = Hashtbl.create 1024 in
   let feed ev =
     if debug then say "event: %s" (brief ev);
     let s, outs = step !st ev in
     if debug then List.iter (fun o -> say "  out: %s" (brief o)) outs;
+    (match ev with [ "tx"; raw ] when s == !st && Hashtbl.length refused < 10000 -> Hashtbl.replace refused raw () | _ -> ());
+    if List.exists (function "decided" :: _ -> true | _ -> false) outs then Hashtbl.reset refused;
     (* Persist before any vote or other externally visible effect. Decisions
-       reach blocks.log first; a stale snapshot is ignored after replay. *)
+       reach blocks.log first; a stale snapshot is ignored after replay.
+       Only a changed snapshot is written: most events (a transaction for the
+       pool, a duplicate message) leave consensus as it was, and two fsyncs
+       for each let a peer resending refused transactions slow every node. *)
     if !participating then begin
       List.iter (function ("decided" :: _ as o) -> handle o | _ -> ()) outs;
-      save_consensus checkpoint_path (checkpoint s)
+      let c = checkpoint s in
+      match !saved with
+      | Some p when p == c || p = c -> ()
+      | _ -> save_consensus checkpoint_path c; saved := Some c
     end;
     st := s;
     List.iter handle outs
@@ -1430,6 +1444,7 @@ and node init step checkpoint restore home flags =
       let j = Yojson.Safe.from_string line in
       let from = to_string (member "from" j) and fields = json_strings (member "fields" j) and sg = to_string (member "sig" j) in
       match Hashtbl.find_opt pubkeys from with
+      | _ when (match fields with [ "tx"; raw ] -> Hashtbl.mem refused raw | _ -> false) -> ()
       | Some k when from <> me && verify k (msg_bytes from fields) sg ->
           (match fields with [ "tx"; raw ] -> push [ "tx"; raw ] | _ -> push ("msg" :: from :: fields))
       | _ -> ()
