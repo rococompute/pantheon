@@ -257,5 +257,6 @@ is to whoever runs them. In order:
 3. Say plainly in the README that Pantheon is research software: don't run it
    with real credentials, or with agents you don't trust, until H2 and the
    rest are done. Add a SECURITY.md with how to report a vulnerability.
-4. A license for Pantheon (Soma keeps Rocq's LGPL-2.1), and decide whether the
-   commit emails and the host details in the docs stay.
+4. ~~A license for Pantheon~~: done, MIT (`LICENSE`); Soma keeps Rocq's
+   LGPL-2.1. Still to decide whether the commit emails and the host details
+   in the docs stay.

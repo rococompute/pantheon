@@ -708,8 +708,9 @@ host, not in the repository; the repository itself is clean. Before public:
 - update the "Soma is private" statements (`docs/NETWORK.md:25`,
   `docs/DOGFOOD.md:18`, `scripts/setup-node.sh:10,21`, `README` of Soma) if
   Soma is becoming public;
-- consider a `SECURITY.md` and a license for Pantheon (Soma keeps Rocq's
-  LGPL-2.1).
+- consider a `SECURITY.md`;
+- ~~a license for Pantheon~~: done, MIT (`LICENSE`); Soma keeps Rocq's
+  LGPL-2.1.
 
 ---
 
