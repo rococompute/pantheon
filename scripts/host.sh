@@ -243,9 +243,9 @@ watch_agent() {
   a=$1 st=$P/watchdog; mkdir -p "$st"
   if grep -q '^LIMIT' "$NET/$a/status.txt" 2>/dev/null; then rm -f "$st/$a"; return 0; fi
   if in_vm_agents "$a"; then
-    # Muse marks what it's doing with ◇ (running, thinking) and a finished turn with ◆
+    # while Muse runs a command or thinks, its screen says "esc to interrupt"
     p=$(vm_pane "$a") || return 0
-    case $(herdr pane read "$p" 2>/dev/null | grep -E '^(◆|◇)' | tail -1) in "◆"*) idle=1 ;; *) idle=0 ;; esac
+    if herdr pane read "$p" --source visible 2>/dev/null | grep -q "esc to interrupt"; then idle=0; else idle=1; fi
     file="~/pantheon/instructions.md"
   else
     case $(herdr agent list 2>/dev/null | jq -r --arg a "$a" '.result.agents[] | select(.name == $a) | .agent_status') in
