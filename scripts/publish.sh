@@ -42,9 +42,12 @@ if [ -d "$remote" ] && [ "$(git -C "$remote" rev-parse --is-bare-repository 2>/d
 fi
 scratch=${PUBLISH_DIR:-$(cd "$repo/../.." && pwd)/publish}/$name.git
 [ -d "$scratch" ] || git init -q --bare "$scratch" || die "can't make $scratch"
-g() { git -C "$scratch" "$@"; }
-head=$(git -C "$repo" rev-parse HEAD) || die "$repo has no commits"
-short=$(git -C "$repo" rev-parse --short HEAD)
+# --git-dir, not -C, for a bare repository: git refuses -C on one under
+# safe.bareRepository=explicit, a hardening some machines set
+g() { git --git-dir="$scratch" "$@"; }
+if [ -d "$repo/.git" ]; then repo_git=$repo/.git; else repo_git=$repo; fi
+head=$(git --git-dir="$repo_git" rev-parse HEAD) || die "$repo has no commits"
+short=$(git --git-dir="$repo_git" rev-parse --short HEAD)
 g fetch -q "$repo" "+HEAD:refs/market/head" || die "can't read the market's head from $repo"
 push() { # COMMIT WHAT
   if $checkout; then

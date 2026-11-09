@@ -7,7 +7,9 @@ cd "$(dirname "$0")/.."
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 fail() { echo "FAIL publish: $*"; exit 1; }
 g() { git -c user.name=t -c user.email=t@t "$@"; }
-pub() { sh scripts/publish.sh "$@"; }
+# under safe.bareRepository=explicit, as some machines (and the Claude app's
+# terminals) set it: publish.sh must not use -C on a bare repository
+pub() { GIT_CONFIG_PARAMETERS="${GIT_CONFIG_PARAMETERS:+$GIT_CONFIG_PARAMETERS }'safe.bareRepository=explicit'" sh "${PUBLISH_SH:-scripts/publish.sh}" "$@"; }
 # the remote, and two nodes' copies of the governed repository (HOME/repos/NAME)
 git init -q --bare -b main "$T/remote.git"
 g init -q -b main "$T/seed"; printf 'one\n' > "$T/seed/a.txt"; g -C "$T/seed" add -A; g -C "$T/seed" commit -qm genesis

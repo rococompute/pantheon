@@ -415,8 +415,9 @@ cmd_fetch() {
   for r in pantheon:$here soma:$SOMA_CHECKOUT; do
     name=${r%%:*} dst=${r#*:}
     git init -q --bare "$tmp/$name.git"
-    if git -C "$tmp/$name.git" fetch -q --upload-pack "sudo -u pantheon git-upload-pack" "lima-$v:$HOMEDIR/repos/$name" HEAD; then
-      git -C "$tmp/$name.git" update-ref HEAD FETCH_HEAD
+    # --git-dir: -C on a bare repository fails under safe.bareRepository=explicit
+    if git --git-dir="$tmp/$name.git" fetch -q --upload-pack "sudo -u pantheon git-upload-pack" "lima-$v:$HOMEDIR/repos/$name" HEAD; then
+      git --git-dir="$tmp/$name.git" update-ref HEAD FETCH_HEAD
       PUBLISH_DIR="$tmp/publish" sh "$here/scripts/publish.sh" "$tmp/$name.git" "$dst" \
         || say "$dst: couldn't publish from $a (see above)"
     else
