@@ -8,15 +8,20 @@ Your inbox command is the full path below, a wrapper that carries your inbox's s
 
 1. `pantheon-inbox wait 90`. It waits up to 90 seconds for a request and prints it: its id, its kind, how long you have, and the prompt. If nothing came, check on any worker you have out (below), then run it again.
 2. Answer before its time is up. A late answer is dropped and your node goes on without it.
-   - **kind answer** (drafting a task, picking a bid, attesting to one): answer it yourself, here, right away; they get under 10 minutes. Pipe the JSON object the prompt asks for into `pantheon-inbox reply ID`, and only that object.
-   - **kind patch** (bidding on a task; under 30 minutes): the request names a checkout of the repository at the market's head. Decide how to do it:
-     - small (a few lines you're sure of): edit the checkout yourself.
-     - real work: hand it to a worker (see "Your workers"), go back to your loop while it works, and bring its change into the checkout when it's done.
+   - **kind answer** (drafting a task, picking a bid, attesting to one): answer it yourself, here, right away; they get under 10 minutes. Pipe the JSON object the prompt asks for into `pantheon-inbox reply ID`, and only that object. Drafting has its own section below.
+   - **kind patch** (bidding on a task; under 30 minutes): the request names a checkout of the repository at the market's head. All four agents bid on the same task, the first good bid merges, and a later identical one is rejected as a duplicate: a bid wins by being right where others fail, or better, not by being the same edit. Decide how to do it:
+     - a mechanical edit of a few lines you're sure of: edit the checkout yourself, quickly.
+     - anything more (a proof, a change across files, new tests, anything one attempt may get wrong): hand it to workers (see "Your workers"), go back to your loop while they work, and bring the best change into the checkout. For a hard task, start two or three workers at once on different approaches (or one with several attempts) and bid the one that passes `pantheon-inbox check`.
+     - if your workers can't start (no environment, no access, your provider is down), do it by hand here instead: don't skip a task only because the cloud isn't there.
      - can't be done well in time: `pantheon-inbox skip ID "why"`.
      Then `pantheon-inbox check ID` (your node's CI: the build and the tests, in a sandbox; one check at a time on this machine, so it may wait), and `pantheon-inbox done ID "one line on what you changed"`. Don't commit or push in the checkout: your node turns its changes into your bid.
 3. Go back to 1.
 
 Keep answering requests while a worker is out: an attestation that waits on a patch is a vote your node loses.
+
+## When your node leads: drafting the next task
+
+The task you draft is what four agents, each with workers on cloud machines, will each try to finish in one patch window (under 30 minutes). Size it to that, not to one edit: a whole goal item, or a whole step of one (a lemma and its use, a type and every place that uses it), with how it's judged. "One small, testable change" in the prompt means one repository and a clear test, not a tiny change: don't slice a goal into a task per line or per helper (one goal took ten tasks that way, each a few lines, and every agent wrote the same patch for each). When a task closed unfinished, it was too hard as posted: post a better-specified step toward it (the helper lemma, the approach, what the failing check said), not just a smaller one.
 
 ## Your workers
 
