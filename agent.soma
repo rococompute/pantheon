@@ -46,8 +46,8 @@ note_asked (a : obj) (key : string) : obj := setf a "asked" (firstn 500 (key :: 
 (** The policy: nothing is signed, merged or approved that edits too many
     files or touches a denied path. The market already refuses unsafe paths. *)
 violation (a : obj) (m : obj) (b : bid) : string :=
-  if param m "max_files" <? length (edit_paths (edits b)) then "edits too many files"
-  else match find (fun p => existsb (fun d => starts d p) (deny a)) (edit_paths (edits b)) with
+  if param m "max_files" <? length (edit_paths (bedits b)) then "edits too many files"
+  else match find (fun p => existsb (fun d => starts d p) (deny a)) (edit_paths (bedits b)) with
        | Some p => append p " is on the denied list"
        | None => ""
        end.
@@ -73,7 +73,7 @@ edit_text (e : edit) : string :=
   else if seq (enew e) "" then fence "delete" (epath e)
   else fence (append "write the whole file " (epath e)) (enew e).
 
-edits_text (b : bid) : string := fold_left (fun s e => append s (edit_text e)) (edits b) "".
+edits_text (b : bid) : string := fold_left (fun s e => append s (edit_text e)) (bedits b) "".
 
 repo_names (m : obj) : string := fold_left (fun s r => append s (append " " (fst r))) (repos m) "".
 
@@ -292,7 +292,7 @@ check_req (a m : obj) (kind : string) (b : bid) (t : string) : obj * list (list 
   let r := bid_repo m b in
   let id := show (nreq a + 1) in
   (setf (setf a "nreq" (nreq a + 1)) "reqs" ((id, [kind, show (bidn b), t]) :: reqs a),
-   [("check" :: id :: r :: get_or "" r (repos m) :: flat_edits (edits b))]).
+   [("check" :: id :: r :: get_or "" r (repos m) :: flat_edits (bedits b))]).
 
 (** what an attestation of bid b to the pending merge is asked under: a merge
     proposed again is a new question *)

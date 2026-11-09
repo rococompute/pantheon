@@ -347,12 +347,17 @@ scenario_policy() {
   "$BIN" tx "$ROOT/policy/$evil" post "a task from someone who isn't leading" >/dev/null
   "$BIN" tx "$ROOT/policy/$leader" post "make calc.sh print its version" >/dev/null
   wait_for policy claude 60 "the task" sh -c "grep -q '^task 1 \[open\]' $ROOT/policy/claude/status.txt" || { stop policy; return 1; }
+  # The dependent bid constructor rejects an unsafe raw path before a bid
+  # can enter the market. A safe but denied path must still reach policy.
+  "$BIN" tx "$ROOT/policy/$evil" bid 1 0 "unsafe path" ../escape.txt "" "escape" >/dev/null
+  wait_for policy claude 60 "unsafe path refused" sh -c "grep -q '$evil: unsafe path' $ROOT/policy/claude/node.log" || { stop policy; return 1; }
+  if grep -q '^bid ' "$ROOT/policy/claude/status.txt"; then echo "FAIL policy: unsafe edits entered the market"; stop policy; return 1; fi
   "$BIN" tx "$ROOT/policy/$evil" bid 1 0 "trust me" test.sh "" "exit 0" >/dev/null
   wait_for policy claude 60 "the policy rejection" sh -c "grep -q 'by $evil policy: test.sh is on the denied list' $ROOT/policy/claude/status.txt" || { stop policy; return 1; }
   sleep 2; stop policy
   grep -q "$evil: only the term leader posts tasks" "$ROOT/policy/claude/node.log" || { echo "FAIL policy: a non-leader's task wasn't refused"; return 1; }
   agree policy claude codex grok muse || return 1
-  echo "ok policy: $evil's bid on test.sh rejected by policy, its task refused by the market"
+  echo "ok policy: unsafe edits refused by the market, $evil's safe bid on test.sh rejected by policy, its task refused"
 }
 
 # The model path end to end, with a fake model that answers like a real one.

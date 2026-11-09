@@ -1,3 +1,5 @@
+From Stdlib Require Import Eqdep_dec.
+
 (** What is proved about the market, so far. Each theorem is checked whenever
     market.soma is built. docs/PROOFS.md lists what to prove next. *)
 
@@ -326,9 +328,22 @@ Proof.
   apply end_term_preserves_merged. exact HS.
 Qed.
 
+(** The safety evidence is an equality of booleans, whose proofs have
+    constructive uniqueness; no proof-irrelevance axiom is needed. *)
+Lemma edit_eq_dec : forall (x y : edit), {x = y} + {x <> y}.
+Proof. decide equality; repeat decide equality. Qed.
+
+Lemma safe_edits_eq_dec : forall (x y : safe_edits), {x = y} + {x <> y}.
+Proof.
+  intros [xs Hx] [ys Hy].
+  destruct (list_eq_dec edit_eq_dec xs ys) as [E|E].
+  - subst ys. left. f_equal. apply UIP_dec. decide equality.
+  - right. intro H. apply E. exact (f_equal (@proj1_sig _ _) H).
+Qed.
+
 Lemma bid_eq_dec : forall (x y : bid), {x = y} + {x <> y}.
 Proof.
-  decide equality; repeat decide equality.
+  decide equality; first [apply safe_edits_eq_dec | solve [repeat decide equality]].
 Qed.
 
 (** A newly Merged bid in a block came from finalize, at a settlement state
@@ -416,4 +431,28 @@ Proof.
       why_differs H.
   - exists b. split; [reflexivity|]. split; [|reflexivity].
     unfold seq in He. apply Stdlib.Strings.String.eqb_neq in He. exact He.
+Qed.
+
+Theorem bid_edits_safe : forall b : bid,
+  forallb (fun e => safe_path (epath e)) (bedits b) = true.
+Proof. intro b. exact (proj2_sig (edits b)). Qed.
+
+(** Generalize the proof-producing branch before eliminating its boolean:
+    destructing the concrete check inside [exist] would change its proof's
+    type without changing the fixed predicate of safe_edits. *)
+Lemma guarded_some_is_none : forall (A : Type) (b : bool) (make : b = true -> A),
+  (match b as checked return (b = checked -> option A) with
+   | true => fun H => Some (make H)
+   | false => fun _ => None
+   end) eq_refl = None <-> b = false.
+Proof.
+  intros A b. destruct b; intro make; cbn;
+    split; intro H; try reflexivity; discriminate H.
+Qed.
+
+Theorem safe_edits_of_spec : forall w : list edit,
+  safe_edits_of w = None <-> forallb (fun e => safe_path (epath e)) w = false.
+Proof.
+  intro w. exact (guarded_some_is_none safe_edits
+    (forallb (fun e => safe_path (epath e)) w) (fun H => exist _ w H)).
 Qed.

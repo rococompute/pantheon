@@ -84,3 +84,5 @@ echo '["a.txt", "not there\n", "x"]' > "$T/e6.json"
 "$BIN" apply-edits "$T/bad" "$T/e6.json" >/dev/null 2>&1 && fail "applied an edit whose old text is missing" || ok "missing old text refused"
 
 [ $fails -eq 0 ] && echo PASS || { echo "$fails failed"; exit 1; }
+
+bash test/e2e.sh equivocate double-vote silent bad-sig withhold bad-tree
