@@ -330,9 +330,31 @@ cmd_logs() { a=${1:?usage: scripts/sandbox.sh logs AGENT [LINES]}; in_vm "$(vm "
 cmd_shell() { a=${1:?usage: scripts/sandbox.sh shell AGENT}; limactl shell "$(vm "$a")"; }
 cmd_stop() { for a in $AGENTS; do v=$(vm "$a"); running "$v" && { in_vm "$v" sudo systemctl stop pantheon-node; limactl stop "$v" >/dev/null; say "$v stopped"; }; done; true; }
 
+# What the chain merged, saved before its homes go: each repository's head on
+# one node, as pantheon/saved-STAMP in your checkout, unless your checkout's
+# HEAD already has it. A reset that can't save stops, unless FORCE_RESET=1.
+save_chain() {
+  a=$(echo $AGENTS | cut -d' ' -f1); v=$(vm "$a")
+  running "$v" && in_vm "$v" sudo test -d $HOMEDIR/repos || return 0
+  stamp=$(date +%Y%m%d-%H%M%S)
+  export GIT_SSH_COMMAND="ssh -F $HOME/.lima/$v/ssh.config"
+  for r in pantheon:$here soma:$SOMA_CHECKOUT; do
+    name=${r%%:*} dst=${r#*:} ref=refs/heads/pantheon/saved-$stamp
+    if ! git -C "$dst" fetch -q --upload-pack "sudo -u pantheon git-upload-pack" "lima-$v:$HOMEDIR/repos/$name" "HEAD:$ref"; then
+      [ "${FORCE_RESET:-}" = 1 ] || die "couldn't save $name's chain head from $a before discarding the chain: fix that, or FORCE_RESET=1 to discard it anyway"
+      continue
+    fi
+    if git -C "$dst" merge-base --is-ancestor "$ref" HEAD; then git -C "$dst" update-ref -d "$ref"
+    else say "$name: the chain's merges are saved as pantheon/saved-$stamp ($(git -C "$dst" rev-list --count HEAD.."$ref") commits your checkout doesn't have): merge them into the default branch"
+    fi
+  done
+}
+
 # A new chain needs new homes, as on real machines: this discards every
 # node's keys, blocks and checkouts, and the network directory. The VMs stay.
+# What the chain merged is saved first (save_chain).
 cmd_reset() {
+  save_chain
   for a in $AGENTS; do
     v=$(vm "$a"); running "$v" || continue
     # disabled, so a VM's restart can't start a node on the next genesis with

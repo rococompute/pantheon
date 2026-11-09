@@ -176,7 +176,10 @@ scripts/sandbox.sh stop; pkill -f 'limactl usernet'; scripts/sandbox.sh nodes
 ## Starting over
 
 A new chain needs new homes, as on real machines. `reset` discards every
-node's keys, blocks and checkouts, and the network directory; the VMs stay.
+node's keys, blocks and checkouts, and the network directory; the VMs stay. Before
+it does, it saves what the chain merged as `pantheon/saved-STAMP` in your
+checkouts (unless they already have it) and stops if it can't; `epoch`
+resets too, so the same holds there.
 Then `network` makes a new genesis (from your checkouts' commits now), and
 `login` is still in place:
 
