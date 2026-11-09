@@ -16,6 +16,7 @@
 #   scripts/host.sh vm AGENT           AGENT's VM (Muse's): made and started, the agent's CLI in it, a token
 #   scripts/host.sh login AGENT        log AGENT's CLI in, in its VM (device code: you open the URL)
 #   scripts/host.sh diplomats          from a herdr pane: a workspace with one tab per agent, each session started
+#   scripts/host.sh watchdog [--check] (re)start the watchdog (--check: what it sees, nudging no one): it nudges an agent whose session stopped working its inbox
 #   scripts/host.sh instructions       write each diplomat's instructions again (after changing them; restarts nothing)
 #   scripts/host.sh mirror             push the market's head to GitHub now (the mirror service does it every 30s)
 #   scripts/host.sh check DIR          the nodes' CI on a checkout, in the sandbox (pantheon-inbox check uses it)
@@ -171,6 +172,7 @@ U
     units="$units pantheon-inbox.service"
   fi
   for a in $AGENTS; do units="$units pantheon-node@$a.service"; done
+  if command -v herdr >/dev/null; then write_watchdog_unit; units="$units pantheon-watchdog.service"; fi
   systemctl --user daemon-reload
   # every node at once: restarting them one by one mid-height stalls the chain
   systemctl --user enable -q $units
@@ -195,6 +197,78 @@ cmd_mirror() {
   return 1
 }
 cmd_mirror_loop() { while :; do quiet=1 cmd_mirror || true; sleep 30; done; }
+
+# The watchdog. An agent's session sometimes ends its turn (a summary, as if
+# the job were done) while its node keeps sending requests: nothing answers
+# them until someone looks. Every minute this looks at each agent's session in
+# herdr; one idle two checks running gets a nudge back to its loop, and again
+# every five minutes while it stays idle. An agent whose node holds requests
+# for a usage limit is left alone (it's right to stop), and so is one blocked
+# on a question (that needs a person).
+write_watchdog_unit() {
+  mkdir -p "$UNITS"
+  cat > "$UNITS/pantheon-watchdog.service" <<U
+[Unit]
+Description=Pantheon watchdog: nudges an agent whose session stopped working its inbox
+[Service]
+ExecStart=$here/scripts/host.sh watchdog-loop
+Restart=on-failure
+RestartSec=30
+[Install]
+WantedBy=default.target
+U
+}
+
+cmd_watchdog() {
+  command -v herdr >/dev/null || die "no herdr: the watchdog watches the agents' sessions in herdr"
+  # --check: what it sees now, nudging no one
+  if [ "${1:-}" = --check ]; then for a in $AGENTS; do dry=1 watch_agent "$a"; done; return 0; fi
+  write_watchdog_unit; systemctl --user daemon-reload
+  systemctl --user enable -q pantheon-watchdog.service; systemctl --user restart pantheon-watchdog.service
+  say "watchdog started; its nudges: journalctl --user -u pantheon-watchdog"
+}
+
+# the pane of AGENT's tab "AGENT (vm)", in any workspace
+vm_pane() {
+  for w in $(herdr workspace list 2>/dev/null | jq -r '.result.workspaces[].workspace_id'); do
+    t=$(herdr tab list --workspace "$w" | jq -r --arg l "$1 (vm)" '.result.tabs[] | select(.label == $l) | .tab_id' | head -1)
+    [ -n "$t" ] || continue
+    herdr pane list --workspace "$w" | jq -r --arg t "$t" '.result.panes[] | select(.tab_id == $t) | .pane_id' | head -1
+    return 0
+  done
+  return 1
+}
+
+watch_agent() {
+  a=$1 st=$P/watchdog; mkdir -p "$st"
+  if grep -q '^LIMIT' "$NET/$a/status.txt" 2>/dev/null; then rm -f "$st/$a"; return 0; fi
+  if in_vm_agents "$a"; then
+    # Muse marks what it's doing with ◇ (running, thinking) and a finished turn with ◆
+    p=$(vm_pane "$a") || return 0
+    case $(herdr pane read "$p" 2>/dev/null | grep -E '^(◆|◇)' | tail -1) in "◆"*) idle=1 ;; *) idle=0 ;; esac
+    file="~/pantheon/instructions.md"
+  else
+    case $(herdr agent list 2>/dev/null | jq -r --arg a "$a" '.result.agents[] | select(.name == $a) | .agent_status') in
+      idle|done) idle=1 ;; *) idle=0 ;;   # working, blocked (a person's call), or no session
+    esac
+    file=$P/diplomats/$a.md
+  fi
+  [ -z "${dry:-}" ] || { say "watchdog: $a $([ "$idle" = 1 ] && echo idle || echo busy)"; return 0; }
+  [ "$idle" = 1 ] || { rm -f "$st/$a"; return 0; }
+  n=$(( $(cat "$st/$a" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$st/$a"
+  [ "$n" -ge 2 ] && [ $(( (n - 2) % 5 )) -eq 0 ] || return 0
+  msg="You stopped working your inbox, and your node keeps sending requests that nothing answers. Keep at it for as long as this session runs: wait, answer, repeat, and don't end your turn between requests (your instructions: $file). If your provider says you've hit a usage limit, report it with limited as they say, then stop. Start now."
+  if in_vm_agents "$a"; then
+    herdr pane send-text "$p" "$msg" >/dev/null && sleep 1 && herdr pane send-keys "$p" Enter >/dev/null
+    # Muse sometimes keeps the text in its input after the first Enter
+    sleep 3; herdr pane read "$p" | grep -q '^❯ You stopped working' && herdr pane send-keys "$p" Enter >/dev/null
+  else
+    herdr agent prompt "$a" "$msg" >/dev/null
+  fi
+  say "watchdog: $a's session had stopped (idle for $n checks): nudged it back to its inbox"
+}
+
+cmd_watchdog_loop() { while :; do for a in $AGENTS; do watch_agent "$a" || true; done; sleep 60; done; }
 
 cmd_vm() {
   a=${1:-}; is_agent "$a" && in_vm_agents "$a" || die "usage: scripts/host.sh vm AGENT (one of VM_AGENTS: $VM_AGENTS)"
@@ -288,7 +362,7 @@ cmd_check() {
   SOMA_DIR=$SOMA exec "$here/deploy/host/ci-sandbox" "$CI_MEMORY" "$d" "$CI_CMD"
 }
 
-cmd_stop() { systemctl --user stop pantheon-mirror.service pantheon-inbox.service $(for a in $AGENTS; do printf 'pantheon-node@%s ' "$a"; done) 2>/dev/null; say "stopped"; }
+cmd_stop() { systemctl --user stop pantheon-watchdog.service pantheon-mirror.service pantheon-inbox.service $(for a in $AGENTS; do printf 'pantheon-node@%s ' "$a"; done) 2>/dev/null; say "stopped"; }
 
 cmd_status() {
   for a in $AGENTS; do
@@ -298,8 +372,8 @@ cmd_status() {
     n=$(ls "$P/inbox/$a" 2>/dev/null | grep -c '^[0-9]*-' || true); [ "$n" = 0 ] || printf '   inbox: %s waiting\n' "$n"
   done
   printf '== tasks and bids (claude'"'"'s view)\n'; grep -E '^(task|bid) ' "$NET/claude/status.txt" 2>/dev/null | cut -c1-160 | tail -12 | sed 's/^/   /' || true
-  printf '== services: mirror %s, inbox %s; VMs: %s\n' "$(systemctl --user is-active pantheon-mirror 2>/dev/null || true)" \
-    "$(systemctl --user is-active pantheon-inbox 2>/dev/null || true)" \
+  printf '== services: mirror %s, inbox %s, watchdog %s; VMs: %s\n' "$(systemctl --user is-active pantheon-mirror 2>/dev/null || true)" \
+    "$(systemctl --user is-active pantheon-inbox 2>/dev/null || true)" "$(systemctl --user is-active pantheon-watchdog 2>/dev/null || true)" \
     "$(for a in $VM_AGENTS; do printf '%s %s ' "$(vm "$a")" "$(limactl list --format '{{.Status}}' "$(vm "$a")" 2>/dev/null || echo none)"; done)"
   journalctl --user -u pantheon-mirror -n 1 -o cat 2>/dev/null | grep -q 'mirror:' && printf '   %s\n' "$(journalctl --user -u pantheon-mirror -n 1 -o cat | cut -c1-200)"
   printf '== memory: %s\n' "$(free -m | awk '/^Mem/ {print $7 " MB available of " $2}')"
@@ -314,7 +388,8 @@ cmd_logs() {
 
 c=${1:-}; [ $# -gt 0 ] && shift
 case $c in
-  network|start|vm|login|diplomats|instructions|mirror|check|stop|status|logs) "cmd_$c" "$@" ;;
+  network|start|vm|login|diplomats|watchdog|instructions|mirror|check|stop|status|logs) "cmd_$c" "$@" ;;
   mirror-loop) cmd_mirror_loop ;;
+  watchdog-loop) cmd_watchdog_loop ;;
   *) awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "$0"; [ -z "$c" ] || exit 1 ;;
 esac
