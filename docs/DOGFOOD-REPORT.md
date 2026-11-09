@@ -158,6 +158,15 @@ by name, as `test/e2e.sh NAME` (a few minutes each with real node processes
 on localhost, which `--network=none` still allows), or the attestors' check
 does.
 
+Soma's CI (`deploy/sandbox/soma-ci`) has the same gap: it builds Soma, then
+Pantheon with it, and never runs `test-suite/misc`, where every Soma bid put
+its tests. Run on the merged code, S-5 had silently broken `soma extract`
+for any project with a `soma.toml` (its `prog.ml` went to the project root),
+two tests failed only on macOS, and five failed on any second run because
+they shared `~/.cache/soma`. Fixed by hand in Soma's `9c88368872`. The CI
+should run the `test-suite/misc/soma_*.sh` a bid adds or changes (they take
+seconds to a minute each) with its own `SOMA_CACHE`.
+
 **D-2. Model calls and consensus timers use the wall clock.** `start_job`
 stamps a job with `Unix.gettimeofday` and the loop kills it when
 `now - jstarted > jlimit` (`shell.ml`); consensus timers are wall-clock
