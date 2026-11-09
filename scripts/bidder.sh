@@ -17,7 +17,11 @@
 # there, runs `soma build` and the tests, and this script replies with what
 # changed, as edits (`pantheon edits`). Nothing is committed or pushed: the
 # market decides what merges. Any other request (drafting a task, picking a bid,
-# attesting) is answered with tools off, as the built-in backends do.
+# attesting) is answered with tools off, as the built-in backends do, except
+# by Grok Build, which reads it from a file with read-only tools (below).
+# PANTHEON_REPOS: the node's HOME/repos, so Grok Build can read the code a bid
+# changes; GROK_ANSWER_FLAGS: its flags for answers (default --reasoning-effort
+# low: at its default effort a pick took over 10 minutes, at low 8).
 #
 # The model can read what the node's user can read. To keep it away from the
 # node's keys, run it as another user: set BIDDER_USER (needs passwordless sudo
@@ -55,18 +59,31 @@ if [ -z "${PANTHEON_WORKTREE:-}" ]; then
       outd=$(mktemp -d); chmod 777 "$outd"; out=$outd/reply.txt
       as_bidder codex exec --skip-git-repo-check --ephemeral --disable apps --sandbox read-only -c 'approval_policy="never"' -c 'mcp_servers={}' -o "$out" - < "$prompt" >/dev/null 2>"$err"
       reply=$(cat "$out" 2>/dev/null); rm -rf "$outd" ;;
-    # Grok Build: --tools "" leaves every tool on, and its coding system prompt
-    # explores before answering, so both go. Even so it sometimes answers with
-    # a plan and stops: asked again, it answers.
+    # Grok Build is a coding agent: on a long request (a pick or an attest
+    # with diffs in it) it goes to read the code first, and with its tools
+    # off it waits on a tool it can't call and prints nothing until the node
+    # stops it. So it gets files instead: the request in request.md, and each
+    # governed repository at the market's head under repos/ (from
+    # PANTHEON_REPOS, the node's HOME/repos), with read-only tools.
     grok)
+      qd=$(mktemp -d); trap 'rm -rf "$prompt" "$err" "$qd"' EXIT
+      cp "$prompt" "$qd/request.md"
+      for r in ${PANTHEON_REPOS:+"$PANTHEON_REPOS"/*}; do
+        [ -d "$r" ] || continue
+        mkdir -p "$qd/repos/$(basename "$r")" && git -C "$r" archive HEAD | tar -x -C "$qd/repos/$(basename "$r")" 2>/dev/null
+      done
+      chmod -R a+rX "$qd"
+      ask=$qd/ask.md
+      { echo 'You are answering one request from your Pantheon node. It is in request.md in the current directory: read all of it first.'
+        [ -d "$qd/repos" ] && echo 'repos/ holds each repository at the market'"'"'s head (repos/NAME), read-only, if you want to check the code a bid changes.'
+        echo 'Reply with exactly the JSON object request.md asks for, and nothing else: no plan, no commentary. You cannot change anything here.'; } > "$ask"
       for try in 1 2 3; do
-        reply=$(as_bidder grok --prompt-file "$prompt" $(grok_model) --no-subagents --output-format plain \
-          --disallowed-tools "run_terminal_cmd,read_file,grep,list_dir,write,search_replace,web_search,web_fetch,task,Agent" \
-          --system-prompt-override "You answer the user directly from what the prompt gives you. You have no tools and nothing else to look at. Reply with exactly what the prompt asks for: one JSON object and nothing else." 2>"$err")
+        reply=$(as_bidder grok --prompt-file "$ask" --cwd "$qd" $(grok_model) ${GROK_ANSWER_FLAGS---reasoning-effort low} --no-subagents --disable-web-search --output-format plain \
+          --tools "read_file,grep,list_dir" --permission-mode dontAsk --allow "Read(./**)" --allow "Glob" 2>"$err")
         case $reply in *'{'*'}'*) break ;; esac
         # nothing at all, with an error: the service refused, and asking again won't change that
         [ -z "$reply" ] && [ -s "$err" ] && break
-        printf '\n\nAnswer in this reply with only the JSON object the prompt asks for. You have no tools: there is nothing to look at or plan.\n' >> "$prompt"
+        printf '\nYour last reply had no JSON object. Reply now with only the JSON object request.md asks for.\n' >> "$ask"
       done ;;
     *) echo "bidder.sh: unknown BIDDER_MODEL $MODEL (claude, codex or grok)" >&2; exit 1 ;;
   esac

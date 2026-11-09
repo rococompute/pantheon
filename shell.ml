@@ -131,6 +131,21 @@ let append_line_synced p s =
 let read_json p = try Yojson.Safe.from_file p with _ -> fail "cannot read %s: is this a home made by `pantheon init`?" p
 let lines p = if Sys.file_exists p then String.split_on_char '\n' (read_file p) |> List.filter (( <> ) "") else []
 
+(* A .plan, in John Carmack's format (docs/PLAN.md): a dated section per day,
+   one item per line. An unmarked line is open; "* " marks one done that day,
+   "+ " one done later, "- " one dropped. "#" lines are notes, and a line that
+   is only a date (2026-11-09) starts a day. The open items, in order, at most
+   60 of them, each cut at 400 characters. *)
+let plan_open text =
+  let is_date l = String.length l = 10 && String.for_all (fun c -> (c >= '0' && c <= '9') || c = '-') l && l.[4] = '-' && l.[7] = '-' in
+  let marked l = String.length l >= 2 && (l.[0] = '*' || l.[0] = '+' || l.[0] = '-') && (l.[1] = ' ' || l.[1] = '\t') in
+  let marker_only l = l = "*" || l = "+" || l = "-" in
+  String.split_on_char '\n' text
+  |> List.map String.trim
+  |> List.filter (fun l -> l <> "" && l.[0] <> '#' && not (is_date l) && not (marked l) && not (marker_only l))
+  |> List.filteri (fun i _ -> i < 60)
+  |> List.map (fun l -> if String.length l > 400 then String.sub l 0 400 ^ "..." else l)
+
 (* a path an edit may touch: also checked by the market, checked again here.
    Nothing in a .git directory: writing there means running code. *)
 let safe_path p =
@@ -525,6 +540,11 @@ let rec run init step =
        | Ok (es, skipped) ->
            let note = String.concat " " rest ^ (if skipped = [] then "" else " (skipped, can't be edits: " ^ String.concat ", " skipped ^ ")") in
            print_endline (Yojson.Safe.to_string (edits_json es (String.trim note))))
+  | [ "plan" ] | [ "plan"; _ ] ->
+      (* a .plan's open items, one per line: what a leader drafts tasks from *)
+      let f = match argv with [ _; f ] -> f | _ -> ".plan" in
+      if not (Sys.file_exists f) then fail "no %s here: a repository's plan is .plan at its root (docs/PLAN.md)" f;
+      List.iter print_endline (plan_open (read_file f))
   | [ "apply-edits"; dir; file ] ->
       (match apply_edits dir (triples_of (json_strings (Yojson.Safe.from_file file))) with
        | Ok () -> say "applied"
@@ -583,6 +603,7 @@ let rec run init step =
          \  pantheon status HOME\n\
          \  pantheon tx HOME post REPO \"spec\" [CONTEXT-PATH...]   (or any market transaction's fields)\n\
          \  pantheon edits CHECKOUT [NOTE]     a checkout's changes as a patch reply (for models with tools)\n\
+         \  pantheon plan [FILE]              a .plan's open items (default ./.plan; see docs/PLAN.md)\n\
          \  pantheon apply-edits DIR EDITS.json\n\n\
          Backends: scripted, claude, codex, grok (XAI_API_KEY), cmd:PROGRAM (prompt on stdin, JSON reply on stdout;\n\
          a patch request also gets a scratch checkout in $PANTHEON_WORKTREE: see scripts/bidder.sh).\n"
@@ -782,6 +803,17 @@ and node init step home flags =
     String.concat "\n" shown ^ (if List.length fs > cap then Printf.sprintf "\n(and %d more)" (List.length fs - cap) else "")
   in
   let repos_text token = String.concat "" (List.map (fun (n, _, _, _) -> fence_text token ("files in " ^ n) (listing n 200)) repos) in
+  (* Each repository's .plan, at its head: only the open items go in a prompt,
+     the file itself stays in the repository (docs/PLAN.md) *)
+  let plan_text token =
+    let parts = List.filter_map (fun (n, _, _, _) ->
+        let ok, c = git (rdir n) [ "show"; "HEAD:.plan" ] in
+        if not ok then None
+        else match plan_open c with
+          | [] -> Some (fence_text token ("plan of " ^ n ^ ": open items") "(none: every item is done or dropped)")
+          | items -> Some (fence_text token ("plan of " ^ n ^ ": open items") (String.concat "\n" items))) repos in
+    if parts = [] then "(no repository has a .plan)\n" else String.concat "" parts
+  in
   let repo_text token r paths =
     if not (List.exists (fun (n, _, _, _) -> n = r) repos) then "(no repository " ^ r ^ ")\n"
     else
@@ -840,6 +872,7 @@ and node init step home flags =
     let token = random_hex 8 in
     let prompt = replace_all prompt "{{F}}" token in
     let prompt = if contains prompt "{{REPOS}}" then replace_all prompt "{{REPOS}}" (repos_text token) else prompt in
+    let prompt = if contains prompt "{{PLAN}}" then replace_all prompt "{{PLAN}}" (plan_text token) else prompt in
     let prompt = match ctx with r :: paths when contains prompt "{{REPO}}" -> replace_all prompt "{{REPO}}" (repo_text token r paths) | _ -> prompt in
     let reply text =
       let failed = String.length text > 0 && text.[0] = '!' in
@@ -903,7 +936,9 @@ and node init step home flags =
                 ([ "PANTHEON_WORKTREE=" ^ wt; "PANTHEON_GITDIR=" ^ gd; "PANTHEON_REPO=" ^ r; "PANTHEON_BIN=" ^ Sys.executable_name ],
                  gone, 1800.)
               else ([], gone, 600.)
-          | _ -> ([], ignore, 600.)
+          (* an answer: a model with tools may read the code a bid changes
+             first (Grok Build took 8 minutes over a pick) *)
+          | _ -> ([], ignore, 1200.)
         in
         start_job ~limit (String.sub b 4 (String.length b - 4)) [] ~stdin_text:prompt ~env:(Array.append (Array.of_list extra) (model_env ())) ~on_done:reply ~clean
     | b -> push [ "llm_error"; id; "unknown backend " ^ b ]

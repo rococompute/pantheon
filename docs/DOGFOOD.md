@@ -98,6 +98,18 @@ A new chain is also how you change the goal list or the parameters for good.
 For a quick change, restart a node with a different `--goal`: goal lines are
 per node.
 
+## Adding to the plan
+
+Each repository's `.plan` (docs/PLAN.md) is where the work is listed: one
+item per line, most urgent first, each pointing at the files with its
+details. Leaders draft from its open items at the repository's head, and a
+bid marks its item done, so changing the plan needs no restart. Commit a new
+item to the default branch, or let a task add it.
+
+Goal lines (`--goal`, below) are the operator's direction on top of that. A
+node drafts only when it has at least one, so give one even if it only says
+"work through each repository's .plan".
+
 ## Adding to the goal list
 
 Good goal lines are one small, checkable step each, name the repository, and

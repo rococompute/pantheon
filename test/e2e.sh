@@ -445,13 +445,19 @@ scenario_policy() {
 scenario_model() {
   # fallback and attest windows longer than the test: only the attestors'
   # votes can merge, so a failed attestation must be asked again
-  init model 27900 term_blocks=400 max_merges=1 bid_cooldown=2 fallback_blocks=100000 attest_window=100000 || return 1
+  # calc with a .plan: the leader's prompt has its open item, not its done one
+  rm -rf "$ROOT/src/calcplan"; git clone -q "$ROOT/src/calc" "$ROOT/src/calcplan"
+  printf '# a test plan\n2026-11-08\n* an old thing, done\n\n2026-11-09\nadd a hello command (calc.sh)\n- a dropped idea\n' > "$ROOT/src/calcplan/.plan"
+  git -C "$ROOT/src/calcplan" add .plan && git -C "$ROOT/src/calcplan" -c user.name=t -c user.email=t@t commit -qm plan
+  REPOS="--repo calc=$ROOT/src/calcplan" init model 27900 term_blocks=400 max_merges=1 bid_cooldown=2 fallback_blocks=100000 attest_window=100000 || return 1
   fake=$ROOT/model/fake-model.sh
   cat > "$fake" <<'F'
 #!/bin/sh
 p=$(cat)
 case "$p" in
   *"choosing the next task"*)
+    case "$p" in *"plan of calc: open items>>>"*"add a hello command (calc.sh)"*) ;; *) echo "no open plan item" >> "$(dirname "$0")/plan-errors" ;; esac
+    case "$p" in *"an old thing"*|*"a dropped idea"*) echo "a done or dropped item" >> "$(dirname "$0")/plan-errors" ;; esac
     # each node's first two drafts fail, as a flaky model's do: the leader
     # has to ask again within its term
     c=$(dirname "$0")/drafts.$PPID; n=$(cat "$c" 2>/dev/null || echo 0); echo $((n + 1)) > "$c"
@@ -476,12 +482,13 @@ F
   for a in $AGENTS; do node model "$a" -- --backend "cmd:$fake"; done
   wait_for model claude 90 "a merge through the model path" merges_at_least model claude 1 || { stop model; return 1; }
   sleep 2; stop model
+  [ ! -s "$ROOT/model/plan-errors" ] || { echo "FAIL model: the leader's prompt had the wrong plan: $(sort -u "$ROOT/model/plan-errors" | tr '\n' ' ')"; return 1; }
   r=$ROOT/model/claude/repos/calc
   [ "$(git -C "$r" show HEAD:hello.sh)" = "echo hello" ] || { echo "FAIL model: hello.sh is wrong"; return 1; }
   [ "$(cd "$r" && sh calc.sh hello)" = "hello" ] || { echo "FAIL model: calc.sh hello doesn't run hello.sh"; return 1; }
   [ "$(cd "$r" && sh calc.sh add 2 3)" = "5" ] || { echo "FAIL model: calc.sh add broke"; return 1; }
   agree model claude codex grok muse && agree_files model claude codex grok muse || return 1
-  echo "ok model: a fake model with tools edited a checkout, and its edits merged on every node, though its first drafts and attestations failed"
+  echo "ok model: a fake model with tools edited a checkout, and its edits merged on every node, though its first drafts and attestations failed; the leader drafted from the .plan's open items"
 }
 
 scenario_stuck() {

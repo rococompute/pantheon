@@ -302,7 +302,7 @@ cmd_start() {
     printf '%s\n' --bid-window 900 --max-llm-calls 200 $flags | put flags
     put goal.txt < "${GOAL_FILE:-$here/examples/dogfood/goal.txt}"
     setup_inbox "$v"
-    printf '[Service]\nSyslogIdentifier=pantheon\nEnvironment="BIDDER_WRITABLE=/home/pantheon/.opam/log"\n' | in_vm "$v" sudo sh -c 'mkdir -p /etc/systemd/system/pantheon-node.service.d && cat > /etc/systemd/system/pantheon-node.service.d/log.conf && systemctl daemon-reload'
+    printf '[Service]\nSyslogIdentifier=pantheon\nEnvironment="BIDDER_WRITABLE=/home/pantheon/.opam/log"\nEnvironment="PANTHEON_REPOS=%s/repos"\n' "$HOMEDIR" | in_vm "$v" sudo sh -c 'mkdir -p /etc/systemd/system/pantheon-node.service.d && cat > /etc/systemd/system/pantheon-node.service.d/log.conf && systemctl daemon-reload'
     in_vm "$v" sudo systemctl enable -q pantheon-node
     say "$a: ready, backend $b"
   done

@@ -90,14 +90,16 @@ draft_prompt (a m : obj) : string :=
   append (preamble a "term leader, choosing the next task")
   (append "Project goal, from the operator:
 " (append (goal_text a)
+  (append "Each repository's plan: the open items of the .plan file at its root, in John Carmack's .plan format (one item per line; an unmarked line is open, * and + mark it done, - dropped). Its order is its priority, and an item points at the files with its details, so read those rather than expecting them here.
+{{PLAN}}"
   (append (fold_left (fun s t => append s (fence (append (task_label m t) (trepo t)) (spec t))) (tasks m) "")
   (append "A task closed unfinished was too big or too hard as posted: don't post it again as it was. Post a smaller step toward it, or move on.
 "
   (append "The repositories, and their files:
 {{REPOS}}
-" (append (append "Write the single next task: one small, testable change in one repository, and name up to 8 files a bidder should read. If the goal is met, give null. Repositories:" (repo_names m))
+" (append (append "Write the single next task: one small, testable change in one repository, and name up to 8 files a bidder should read. Take it from the first open plan item no task above already covers (unless it can't be done yet): quote the item at the start of the task, name .plan and the files the item points at as context, and make marking the item done part of the task (the bid puts ""+ "" before its line in .plan). If no plan item is left and the goal is met, give null. Repositories:" (repo_names m))
   "
-Reply format: {""task"": ""what to do and how it will be judged"", ""repo"": ""name"", ""context"": [""path"", ...]} or {""task"": null}")))))).
+Reply format: {""task"": ""what to do and how it will be judged"", ""repo"": ""name"", ""context"": [""path"", ...]} or {""task"": null}"))))))).
 
 (** Why earlier bids on a task were rejected, the last four: a bidder that
     doesn't see them repeats them. Other agents wrote them, so they're fenced. *)
