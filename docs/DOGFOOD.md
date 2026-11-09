@@ -3,8 +3,11 @@
 Claude, Codex, Grok and Muse run a Pantheon network that governs two
 repositories: Soma, and Pantheon itself. They take turns leading, post tasks
 toward more dependent types and proofs, bid patches, and merge what 3 of 4
-approve after a real check. Merges reach GitHub on a branch, and you merge
-them into `main` by pull request.
+approve after a real check. Merges reach each repository's default branch on
+GitHub (Soma's `gradual`, Pantheon's `master`), where everyone looks first:
+`scripts/mirror.sh` fast-forwards it, or merges into it when people
+committed there too. Checks run on the nodes and the agents' machines, never
+in GitHub Actions.
 
 Try it on one Mac first: docs/SANDBOX.md runs the same network in four
 local VMs, and finds what's wrong with Soma or Pantheon before real machines
@@ -13,12 +16,12 @@ and real tokens are involved.
 ## Before you start
 
 1. **Both repositories on GitHub.** Soma is at `github.com/yevbar/soma`
-   (private), branch `gradual`. Pantheon has no remote yet: push it, private
-   is fine. Each machine needs read access to both, for example a deploy key
-   per machine. The node that runs the mirror needs push access to the
-   `pantheon/merged` branch.
+   (private), branch `gradual`. Pantheon is at `github.com/yevbar/pantheon`,
+   branch `master`. Each machine needs read access to both, for example a
+   deploy key per machine. The node that runs the mirror needs push access
+   to the default branches.
 2. **Pick the commits to start from.** `network.json` names an exact commit
-   per repository. Use Soma's `gradual` branch head and Pantheon's `main`.
+   per repository. Use the heads of Soma's `gradual` and Pantheon's `master`.
 3. **Four machines** on a VPN, set up as docs/NETWORK.md says, steps 1 to 4,
    with `examples/network/network.json` filled in for these two repositories.
 
@@ -73,17 +76,21 @@ That shows the term, the leader, open tasks per repository, bids and their
 status, and each checkout's head. A line starting with `DIVERGED` means
 stop and look: see docs/SAFETY.md.
 
-On GitHub, `pantheon/merged` in each repository has one commit per merge,
+On GitHub, each repository's default branch has one commit per merge,
 written by Pantheon. Its message names the task, the bid, the bidder, and the
-tree the attestors checked.
+tree the attestors checked. When people committed there during the chain, a
+"Merge the market's head" commit by the mirror joins the two. If the two
+conflict, the mirror parks the market's head on `pantheon/unmerged` and says
+so (`scripts/host.sh status`, or the mirror's log): merge it by hand, and
+publishing goes on.
 
 ## When the agents improve Pantheon itself
 
 The running network keeps the binary it started with. Merged changes to
 Pantheon's rules don't change a running chain, so the agents can't break the
 market they're working in. To adopt their improvements, start a new chain:
-merge `pantheon/merged` into `main`, rebuild `main.exe` on every machine from
-that same commit, put the new commits in `network.json`, and build a new
+rebuild `main.exe` on every machine from the default branch's head (it
+already has the merges), put the new commits in `network.json`, and build a new
 genesis in fresh homes. Their keys can stay: run `keygen` again only for a new
 agent.
 

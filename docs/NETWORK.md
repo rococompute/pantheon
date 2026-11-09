@@ -151,14 +151,20 @@ Merges are committed the same way on every node, with the same hashes, so any
 node can publish them:
 
 ```bash
-scripts/mirror.sh ~/pantheon-home pantheon/merged --every 60
+scripts/mirror.sh ~/pantheon-home --every 60
 ```
 
-That pushes each governed repository's head to the branch `pantheon/merged`
-of the repository it was cloned from. It only fast-forwards and never touches
-the default branch: people merge `pantheon/merged` into `main` by pull
-request, with branch protection on `main`. Give the machine a deploy key that
-can push, and nothing more.
+That publishes each governed repository's head to the default branch of the
+repository it was cloned from (`scripts/publish.sh`): a fast-forward, or a
+merge commit when people committed there during the chain. A conflict parks
+the head on `pantheon/unmerged` and says so; nothing is force-pushed to the
+default branch. Give the machine a key that can push there.
+
+To keep a person between the market and the default branch instead, name a
+side branch (`scripts/mirror.sh ~/pantheon-home pantheon/merged --every 60`),
+protect the default branch, and merge from the side branch by pull request.
+The catch: a side branch is easy to forget, and the market's work sits where
+nobody looks.
 
 ## Replacing a machine
 

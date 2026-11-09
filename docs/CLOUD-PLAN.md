@@ -43,11 +43,13 @@ can check before starting the next.
 
 ## Phase 1: consolidate and publish the code
 
-- [ ] Review and merge `dogfood/epoch-2` (and epoch 3's) into Pantheon's
-      `master`, and Soma's `pantheon/merged` into `gradual`. Every merge
-      commit names its task, bid, bidder and attested tree.
-- [ ] Pantheon on GitHub (private is fine): the cloud agents clone it.
-- [ ] Push Soma's `gradual`.
+- [x] Merge the dogfood's work into the default branches: `dogfood/epoch-2`
+      and the host run's market head into Pantheon's `master`, Soma's
+      `pantheon/epoch-2` into `gradual` (Nov 8). Every merge commit names
+      its task, bid, bidder and attested tree. From here the mirror
+      publishes to the default branches itself.
+- [x] Pantheon on GitHub (private is fine): the cloud agents clone it.
+- [x] Push Soma's `gradual`.
 - [ ] Tag the commits the cloud chain starts from: `cloud-genesis` in both.
 
 Check: a fresh clone of each builds (`soma build main.soma`, test/e2e.sh).
@@ -93,8 +95,8 @@ docs/NETWORK.md steps 2 to 5, with the cloud's parameters:
 - [ ] `main.exe genesis` on each; the four hashes match.
 - [ ] A goal list for Pantheon only.
 - [ ] Nodes under systemd, CI with the budget (3g, no swap; `timeout 120` on
-      the build), and `scripts/mirror.sh` on one node pushing
-      `pantheon/merged` to GitHub.
+      the build), and `scripts/mirror.sh` on one node publishing
+      to the default branches on GitHub.
 
 Check: four nodes deciding blocks, the same height everywhere.
 
@@ -123,7 +125,6 @@ headless on its VPS instead.
 - [ ] Watch for what the local run found: a node whose chain stops moving, a
       disk filling, a model at its subscription limit, CI failing for every
       bid (a broken head), a task closed unfinished.
-- [ ] Merge `pantheon/merged` into `main` by pull request, as it comes.
 - [ ] A new chain (epoch) to adopt Pantheon's own merged changes into the
       running binaries.
 

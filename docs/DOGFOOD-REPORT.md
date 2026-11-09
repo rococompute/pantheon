@@ -8,16 +8,18 @@ at 18:30 PST. This file says what was done, where it is, and how to pick it up.
 
 ## Where everything is (all on GitHub)
 
-| What | Repository, branch |
+Everything the market merged is on the default branches now: Pantheon's
+`master` (both runs, plus the bidder fix and the next epoch's goals in
+`examples/cloud/goal.txt`) and Soma's `gradual` (the laptop run's 12 Soma
+merges). From here the mirror publishes the market's merges to the default
+branches itself (`scripts/publish.sh`), so nothing waits on a side branch.
+
+| Still on a branch of its own | Why |
 |---|---|
-| The operator's work: the market, host, sandbox and inbox tooling, docs | `yevbar/pantheon` `master` |
-| The host market's head: 19 merges by the agents (tasks 1–20) | `yevbar/pantheon` `pantheon/merged` (16270eb) |
-| The next epoch, ready to start: master + `pantheon/merged` + a bidder liveness fix + goals (`examples/cloud/goal.txt`) | `yevbar/pantheon` `epoch/3-try` |
-| Unfinished bids on task 21 (PROOFS item 11), saved at the halt, not checked | `yevbar/pantheon` `wip/codex/task-21`, `wip/grok/task-21` |
-| Claude's cloud workers' branches | `yevbar/pantheon` `bids/claude/*` |
-| The laptop run's Pantheon merges (already in master) | `yevbar/pantheon` `dogfood/epoch-2` |
-| The laptop run's Soma merges, epochs 1 and 2 | `yevbar/soma` `pantheon/epoch-2` (840cd066c9) |
-| Soma's epoch 1 tail (bid 73, Reals and Lra opt-in; epoch 2's task 3 did the same again) | `yevbar/soma` `pantheon/merged` (aed5c74c13) |
+| `yevbar/pantheon` `wip/codex/task-21`, `wip/grok/task-21` | Unfinished bids on task 21 (PROOFS item 11), saved at the halt: never handed in or checked |
+| `yevbar/pantheon` `bids/claude/*` | Claude's cloud workers' branches: task 17's are what merged, task 16's were alternatives a different bid beat |
+| `yevbar/pantheon` `pantheon/merged`, `dogfood/epoch-2`, `epoch/3-try` | History only: all three are in `master` |
+| `yevbar/soma` `pantheon/epoch-2`, `pantheon/merged` | History only: the first is `gradual`; the second's one merge (Reals opt-in) was done again by epoch 2's task 3 |
 
 Left on zucc, not pushed: the chain data (`~/pantheon/net`). One rejected bid
 (63) carried a CLI log with a ChatGPT account id, so the chain stays on the
@@ -146,7 +148,7 @@ blowup, compiles killed for memory with no message, the slow `market.proof`.
   task drew three to six bids, and only one merges. Task 15's two rotating
   bidders fix that once an epoch deploys it. As merged, though, a chosen bidder that never bids (out
   of credit, offline) holds the task for `task_blocks` (an hour).
-  `epoch/3-try` moves the window every `bid_blocks`, with a test.
+  `master` now moves the window every `bid_blocks`, with a test.
 - **Hard tasks went to the agent with working cloud workers.** The proof
   tasks went to Claude, the only one whose cloud hand-off worked end to end.
   The other providers' hand-offs are the gap: Codex Cloud needs an
@@ -160,10 +162,10 @@ blowup, compiles killed for memory with no message, the slow `market.proof`.
 
 ## Picking it up
 
-The next epoch is `epoch/3-try`. It builds and passes CI and the bidder,
-happy-path, limit, stuck, model and cifail scenarios on zucc. To start it on
-the host:
-`scripts/host.sh stop`, merge `epoch/3-try` into master, rebuild `main.exe`,
+The next epoch is `master` as it stands. It builds with Soma's `gradual` and
+passes CI and the bidder, happy-path, limit, stuck, model, cifail and network
+scenarios. To start it on the host:
+`scripts/host.sh stop`, pull master and rebuild Soma (`gradual`) and `main.exe`,
 move `~/pantheon/net` aside, copy `examples/cloud/goal.txt` to
 `~/pantheon/goal.txt`, then `scripts/host.sh network`, `start`,
 `instructions`, and `diplomats` from a herdr pane (the person accepts each

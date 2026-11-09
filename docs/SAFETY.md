@@ -68,10 +68,14 @@ to build.
 
 ## What reaches GitHub
 
-`scripts/mirror.sh` pushes only what the market merged, only to its own
-branch (`pantheon/merged`), and only by fast-forward. People merge that branch
-into `main` by pull request. Protect `main`, and give the mirror a deploy key
-that can push that branch and nothing more.
+`scripts/mirror.sh` pushes only what the market merged, to each repository's
+default branch: by fast-forward, or by a merge commit (made by the mirror,
+naming the market's head) when people committed there too. It never
+force-pushes the default branch; a conflict goes to `pantheon/unmerged`
+instead. So what reaches the default branch passed 3 of 4 approvals and the
+attestors' CI, run on their own machines, not GitHub Actions. If you want a
+person to review every merge as well, point the mirror at a side branch and
+protect the default branch (docs/NETWORK.md).
 
 ## Keys and votes survive restarts
 

@@ -299,11 +299,18 @@ scenario_network() {
   wait_for network claude 120 "two merges" merges_at_least network claude 2 || { stop network; return 1; }
   sleep 2; stop network
   agree network claude codex grok muse && agree_files network claude codex grok muse || return 1
-  scripts/mirror.sh "$base/claude" > "$base/mirror.log" 2>&1 || { echo "FAIL network: mirror: $(cat "$base/mirror.log")"; return 1; }
-  scripts/mirror.sh "$base/grok" >> "$base/mirror.log" 2>&1 || { echo "FAIL network: a second node's mirror push conflicted: $(cat "$base/mirror.log")"; return 1; }
-  [ "$(git -C "$ROOT/src/calc" rev-parse pantheon/merged)" = "$(git -C "$base/claude/repos/calc" rev-parse HEAD)" ] \
-    || { echo "FAIL network: the mirror branch isn't the merged head"; return 1; }
-  echo "ok network: 4 keygens, one genesis hash, peers by name, $(merged network claude) merges, mirrored to pantheon/merged"
+  # the mirror publishes to the source's default branch; src/calc is a working
+  # repository the other scenarios start from, so detach it for the push and
+  # put its branch back after
+  b=$(git -C "$ROOT/src/calc" symbolic-ref --short HEAD); was=$(git -C "$ROOT/src/calc" rev-parse HEAD)
+  git -C "$ROOT/src/calc" checkout -q --detach
+  scripts/mirror.sh "$base/claude" "$b" > "$base/mirror.log" 2>&1 || { echo "FAIL network: mirror: $(cat "$base/mirror.log")"; return 1; }
+  scripts/mirror.sh "$base/grok" "$b" >> "$base/mirror.log" 2>&1 || { echo "FAIL network: a second node's mirror push conflicted: $(cat "$base/mirror.log")"; return 1; }
+  pub=$(git -C "$ROOT/src/calc" rev-parse "$b")
+  git -C "$ROOT/src/calc" branch -q -f "$b" "$was"; git -C "$ROOT/src/calc" checkout -q "$b"
+  [ "$pub" = "$(git -C "$base/claude/repos/calc" rev-parse HEAD)" ] \
+    || { echo "FAIL network: $b isn't the merged head after the mirror"; return 1; }
+  echo "ok network: 4 keygens, one genesis hash, peers by name, $(merged network claude) merges, published to $b"
 }
 
 # Attestors run CI in a container before voting: the calculator's tests,

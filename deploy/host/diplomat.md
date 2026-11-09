@@ -25,7 +25,7 @@ The task you draft is what four agents, each with workers on cloud machines, wil
 
 ## Your workers
 
-Workers start from the market's head on GitHub: `{{REMOTE}}`, branch `{{BRANCH}}`, which this machine pushes every 30 seconds. `pantheon-inbox base ID` says whether that branch is at your checkout's commit yet.
+Workers start from the repository's default branch on GitHub: `{{REMOTE}}`, branch `{{BRANCH}}`. This machine publishes the market's merges there every 30 seconds, so it has your checkout's commit, plus anything people committed there directly. `pantheon-inbox base ID` says whether it has caught up with your checkout yet. `pantheon-inbox pull` takes only what a worker changed since it started from `{{BRANCH}}`, so people's commits there never end up in your bid. Checks run on your workers' machines or with `pantheon-inbox check` here, never in GitHub Actions.
 
 Give each worker everything it needs in its prompt, since it sees nothing of this machine: the task's text, the files that matter, what done looks like, that it should check its work with `soma build main.soma` and `test/edits.sh` if it has Soma, and how to hand back. Workers hand back a branch: tell each one to start from `{{BRANCH}}` and push its change, as commits, to `bids/{{AGENT}}/ID` (the request's id, or `ID-2`, `ID-3` for more workers), and to change nothing else on the remote. Then `pantheon-inbox pull ID bids/{{AGENT}}/ID` applies it to the checkout. Several workers: pull each branch in turn.
 

@@ -35,7 +35,8 @@
 #   CODEX_ENV     the Codex Cloud environment for codex's workers (codex cloud lists them)
 #   GROK_MODEL    the Cursor CLI's model for grok (default: grok; cursor-agent models lists them)
 #   SOMA_REMOTE   Soma's repository, for the agents to read (default: https://github.com/yevbar/soma.git)
-#   SOMA_REF      the branch there at the commit SOMA_DIR is built from (default: pantheon/epoch-2)
+#   BRANCH        the branch of REMOTE the market publishes to and workers start from (default: its default branch)
+#   SOMA_REF      the branch there at the commit SOMA_DIR is built from (default: gradual, Soma's default branch)
 # or from PANTHEON_HOST/host.env (lines like CODEX_ENV=soma), read first.
 set -eu
 here=$(cd "$(dirname "$0")/.." && pwd)
@@ -50,11 +51,14 @@ PORT=${INBOX_PORT:-8787}
 # a Lima VM (plain, user-mode network) reaches the host's localhost here
 VM_HOST=192.168.5.2
 REMOTE=${REMOTE:-$(git -C "$here" remote get-url origin 2>/dev/null || true)}
-BRANCH=pantheon/merged
+# the branch the market publishes to and workers start from: REMOTE's default
+# branch, so the market's work is where everyone looks
+BRANCH=${BRANCH:-$( [ -n "$REMOTE" ] && git ls-remote --symref "$REMOTE" HEAD 2>/dev/null | sed -n 's|^ref: refs/heads/\(.*\)	HEAD$|\1|p')}
+BRANCH=${BRANCH:-master}
 CODEX_ENV=${CODEX_ENV:-}
 GROK_MODEL=${GROK_MODEL:-grok}
 SOMA_REMOTE=${SOMA_REMOTE:-https://github.com/yevbar/soma.git}
-SOMA_REF=${SOMA_REF:-pantheon/epoch-2}
+SOMA_REF=${SOMA_REF:-gradual}
 soma_commit() { git -C "$SOMA" rev-parse HEAD 2>/dev/null || echo unknown; }
 UNITS=$HOME/.config/systemd/user
 export PATH="$HOME/.local/bin:$PATH"
@@ -182,19 +186,13 @@ U
 }
 
 # the market's head (any node's: merges commit the same way on every node),
-# pushed fast-forward only
+# published to BRANCH: a fast-forward, or a merge when people committed there
+# too (scripts/publish.sh)
 cmd_mirror() {
   [ -n "$REMOTE" ] || die "no REMOTE: set it to the GitHub repository workers share"
   r=$NET/claude/repos/pantheon
   [ -d "$r" ] || die "no network yet: scripts/host.sh network"
-  if out=$(git -C "$r" push --quiet "$REMOTE" "HEAD:refs/heads/$BRANCH" 2>&1); then
-    [ -z "${quiet:-}" ] && say "mirror: $(git -C "$r" rev-parse --short HEAD) is $BRANCH on $REMOTE"; return 0
-  fi
-  case $out in
-    *"non-fast-forward"*|*"fetch first"*|*rejected*) say "mirror: $BRANCH on $REMOTE isn't an ancestor of this network's head (an older network's?). Delete that branch on GitHub, or set REMOTE to another repository: $out" ;;
-    *) say "mirror: can't push to $REMOTE: $out. This machine needs a key that can write there (gh auth login with SSH adds this machine's key to your account; or a deploy key with write access)" ;;
-  esac
-  return 1
+  QUIET=${quiet:-} PUBLISH_DIR=$P/publish "$here/scripts/publish.sh" "$r" "$REMOTE" "$BRANCH"
 }
 cmd_mirror_loop() { while :; do quiet=1 cmd_mirror || true; sleep 30; done; }
 

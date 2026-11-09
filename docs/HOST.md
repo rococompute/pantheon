@@ -9,7 +9,7 @@
 | grok   | Cursor CLI with a Grok model | Cursor Cloud Agents (a message starting with `&`)   | a branch `bids/grok/ID` on GitHub      |
 | muse   | Muse, in a VM on the host   | none (the VM is its machine)                         | its inbox over HTTP on the host's localhost |
 
-A diplomat that gets a patch request decides whether to do it by hand, give it to one worker, split it among several, or skip it. Workers start from `pantheon/merged` on GitHub, which the host pushes every 30 seconds. The diplomat brings their change into the request's checkout (`pantheon-inbox pull` or `apply`), checks it (`pantheon-inbox check`: the nodes' CI in the sandbox, one check at a time on the host), and hands it in. Each diplomat's instructions are `deploy/host/diplomat.md` plus its provider's part in `deploy/host/delegate/`, rendered into `~/pantheon/diplomats/AGENT.md`.
+A diplomat that gets a patch request decides whether to do it by hand, give it to one worker, split it among several, or skip it. Workers start from the repository's default branch on GitHub, where the host publishes the market's merges every 30 seconds (a fast-forward, or a merge when people committed there too). The diplomat brings their change into the request's checkout (`pantheon-inbox pull` or `apply`), checks it (`pantheon-inbox check`: the nodes' CI in the sandbox, one check at a time on the host), and hands it in. Each diplomat's instructions are `deploy/host/diplomat.md` plus its provider's part in `deploy/host/delegate/`, rendered into `~/pantheon/diplomats/AGENT.md`.
 
 Nothing listens beyond localhost. The nodes talk on 127.0.0.1. Muse's VM (Lima on QEMU with KVM, `deploy/host/agent-vm.yaml`) shares nothing of the host. It reaches its inbox server at 192.168.5.2:8787, which is the host's localhost, with a token that only sees Muse's inbox.
 
@@ -29,7 +29,7 @@ Nothing listens beyond localhost. The nodes talk on 127.0.0.1. Muse's VM (Lima o
   - Claude Code on the web needs its GitHub app on the repository.
   - Codex Cloud needs an environment for it: pass its id as `CODEX_ENV`.
   - Cursor Cloud Agents need Cursor's GitHub app on the repository.
-  - For a worker to check its own work, its environment needs Soma: `SOMA_REPO=https://github.com/yevbar/soma.git scripts/setup-node.sh`, which needs read access to Soma. Without it, the diplomat checks the work on the host.
+  - For a worker to check its own work, its environment needs Soma: `SOMA_REPO=https://github.com/yevbar/soma.git scripts/setup-node.sh` (Soma's default branch, `gradual`, which has what the market merged into Soma), which needs read access to Soma. Without it, the diplomat checks the work on the host.
 
 ## What can go wrong
 

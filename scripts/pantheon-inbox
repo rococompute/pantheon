@@ -10,8 +10,8 @@
 #   pantheon-inbox list                what's in the inbox
 #
 # For a patch you hand to a worker elsewhere (your provider's cloud machines):
-#   pantheon-inbox base ID             the branch a worker should start from, and whether it is at your checkout's commit
-#   pantheon-inbox pull ID BRANCH      the change a worker pushed to BRANCH, applied to the request's checkout
+#   pantheon-inbox base ID             the branch a worker should start from, and whether it has your checkout's commit
+#   pantheon-inbox pull ID BRANCH      the worker's own change on BRANCH (since it left the shared branch), applied to the request's checkout
 #   pantheon-inbox apply ID [FILE]     a diff (FILE, or stdin) applied to the request's checkout
 #   pantheon-inbox check ID            your node's CI on the request's checkout, in the host's sandbox (one at a time)
 #   pantheon-inbox limited WHAT...     your provider says you've hit your usage limit: WHAT it said (with when it resets,
@@ -19,7 +19,7 @@
 #
 # PANTHEON_INBOX is the inbox (default /var/lib/pantheon-inbox). PANTHEON_REMOTE
 # is the git remote workers share (a GitHub URL), PANTHEON_BRANCH the branch
-# there that follows the market's head (default pantheon/merged), and
+# there the market publishes to (default: the remote's default branch), and
 # PANTHEON_CHECK the command that checks a checkout (scripts/host.sh check).
 set -eu
 INBOX=${PANTHEON_INBOX:-/var/lib/pantheon-inbox}
@@ -92,27 +92,47 @@ case ${1:-} in
     id=$2; req "$id"
     [ "$(cat "$r/kind")" = patch ] || die "$id is not a patch request"
     wt=$(cat "$r/worktree"); head=$(git -C "$wt" rev-parse HEAD)
-    remote=${PANTHEON_REMOTE:-}; branch=${PANTHEON_BRANCH:-pantheon/merged}
+    remote=${PANTHEON_REMOTE:-}; branch=${PANTHEON_BRANCH:-}
+    if [ -z "$branch" ] && [ -n "$remote" ]; then
+      branch=$(git ls-remote --symref "$remote" HEAD 2>/dev/null | sed -n 's|^ref: refs/heads/\(.*\)	HEAD$|\1|p')
+    fi
+    branch=${branch:-master}
+    # the shared branch's commit, fetched into the checkout's repository
+    shared() {
+      out=$(git -C "$wt" fetch --quiet "$remote" "refs/heads/$branch" 2>&1) || die "can't fetch $branch from $remote: $out"
+      git -C "$wt" rev-parse FETCH_HEAD
+    }
     case $c in
       base)
         [ -n "$remote" ] || die "no PANTHEON_REMOTE: there's no remote workers share. Do the patch here, or skip it"
         at=$(git ls-remote "$remote" "refs/heads/$branch" 2>&1 | cut -f1) || die "can't reach $remote: $at"
         echo "your checkout: $head"
         echo "workers start from: $remote, branch $branch, at ${at:-nothing}"
-        if [ "$at" = "$head" ]; then echo "same commit: a worker's change on top of $branch applies to your checkout as is"
-        elif [ -z "$at" ]; then echo "$branch isn't on the remote yet (scripts/host.sh mirror pushes it): workers can't start from the market's head"
-        else echo "not the same commit: the mirror pushes the market's head every 30s, so wait a minute and look again; pull applies a change made on an older head if it doesn't conflict"
+        if [ -z "$at" ]; then echo "$branch isn't on the remote: workers can't start from the market's head"
+        elif [ "$at" = "$head" ]; then echo "same commit: a worker's change on top of $branch applies to your checkout as is"
+        else
+          at=$(shared)
+          if git -C "$wt" merge-base --is-ancestor "$head" "$at"; then
+            echo "$branch has your checkout's commit, and work from outside the market on top: pull takes only the worker's own change, so start workers from $branch"
+          elif git -C "$wt" merge-base --is-ancestor "$at" "$head"; then
+            echo "$branch is behind your checkout: the mirror publishes the market's head every 30s, so wait a minute and look again; pull still applies a change made on an older commit if it doesn't conflict"
+          else
+            echo "$branch doesn't have your checkout's commit (a conflict the mirror couldn't merge?): pull applies a worker's change if it doesn't conflict; or do the patch here"
+          fi
         fi ;;
       pull)
         [ $# -eq 3 ] || die "usage: pantheon-inbox pull ID BRANCH"
         [ -n "$remote" ] || die "no PANTHEON_REMOTE to pull from"
+        base=$(shared)
         out=$(git -C "$wt" fetch --quiet "$remote" "refs/heads/$3" 2>&1) || die "can't fetch $3 from $remote: $out"
-        mb=$(git -C "$wt" merge-base HEAD FETCH_HEAD 2>/dev/null) || die "$3 doesn't share history with your checkout: it wasn't started from $branch"
-        git -C "$wt" diff --binary "$mb" FETCH_HEAD > "$r/pulled.diff"
-        [ -s "$r/pulled.diff" ] || die "$3 has no change on top of $(git -C "$wt" rev-parse --short "$mb")"
+        tip=$(git -C "$wt" rev-parse FETCH_HEAD)
+        # where the worker left the shared branch: its change is what came after
+        mb=$(git -C "$wt" merge-base "$tip" "$base" 2>/dev/null) || die "$3 doesn't share history with $branch: it wasn't started from $branch"
+        git -C "$wt" diff --binary "$mb" "$tip" > "$r/pulled.diff"
+        [ -s "$r/pulled.diff" ] || die "$3 has no change on top of $branch ($(git -C "$wt" rev-parse --short "$mb"))"
         out=$(git -C "$wt" apply --3way "$r/pulled.diff" 2>&1) || die "$3's change doesn't apply to your checkout: $out"
         git -C "$wt" reset -q; git -C "$wt" status --short | head -40
-        echo "applied $3's change (from $(git -C "$wt" rev-parse --short "$mb")). Check it (pantheon-inbox check $id), then: pantheon-inbox done $id \"note\"" ;;
+        echo "applied $3's change (since $(git -C "$wt" rev-parse --short "$mb")). Check it (pantheon-inbox check $id), then: pantheon-inbox done $id \"note\"" ;;
       apply)
         f=${3:--}; [ "$f" = - ] && { cat > "$r/applied.diff"; f=$r/applied.diff; }
         [ -s "$f" ] || die "the diff is empty"

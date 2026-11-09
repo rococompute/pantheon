@@ -116,8 +116,11 @@ scripts/sandbox.sh fetch           # each repository's head as the branch panthe
 scripts/sandbox.sh shell claude    # a shell in the VM, as Lima's user (sudo works)
 ```
 
-`fetch` only fast-forwards `pantheon/merged`, as `scripts/mirror.sh` does for
-GitHub. Merge it into your branch yourself.
+`fetch` only fast-forwards `pantheon/merged` in your local checkout: the
+sandbox's network has no GitHub remote. Merge it into your default branch
+right after (`git merge pantheon/merged`), so the market's work doesn't sit on
+a branch nobody looks at; a network with a GitHub remote does this itself
+(`scripts/mirror.sh` publishes to the default branch).
 
 ## A cloud agent's budget
 
