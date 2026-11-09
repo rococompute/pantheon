@@ -121,6 +121,55 @@ scenario_happy() {
   echo "ok happy: $(field happy height claude) blocks, $(merged happy claude) merges, rotation $(sed -n 's/^history //p' "$ROOT/happy/claude/status.txt")"
 }
 
+# Eight completed tasks cross several leaders and worker windows. Retain all
+# bids so the status checks count every bid, including the losing one.
+scenario_bidders() {
+  init bidders 28250 term_blocks=60 max_merges=2 bid_cooldown=2 keep_settled=100 || return 1
+  for i in $(seq 5 8); do echo "- worker rotation task $i" >> "$ROOT/bidders/goal.txt"; done
+  for a in $AGENTS; do node bidders "$a"; done
+  wait_for bidders claude 150 "eight tasks merged" merges_at_least bidders claude 8 || { stop bidders; return 1; }
+  sleep 2; stop bidders
+  agree bidders claude codex grok muse && agree_files bidders claude codex grok muse || return 1
+  for a in $AGENTS; do
+    status=$ROOT/bidders/$a/status.txt
+    awk '/^bid / { for (i=1;i<=NF;i++) if ($i=="task") n[$(i+1)]++ }
+      END { for (t in n) if (n[t]>2) { print "FAIL bidders: task",t,"drew",n[t],"bids"; exit 1 } }' "$status" || return 1
+    for worker in $AGENTS; do
+      grep -q " by $worker " "$status" || { echo "FAIL bidders: $worker never bid on $a"; return 1; }
+    done
+  done
+  echo "ok bidders: at most two bids per task, all four agents worked, all nodes agree"
+}
+
+# Silent models let this scenario control the first pair and its rejection.
+# The excluded third worker must be refused before, and accepted after, both
+# selected workers' bids have failed, without a new task or a merge.
+scenario_bidder_fallback() {
+  init bidder-fallback 28300 term_blocks=1000 stall_blocks=900 task_rejects=100 bid_cooldown=1 || return 1
+  : > "$ROOT/bidder-fallback/goal.txt"
+  for a in $AGENTS; do node bidder-fallback "$a" -- --behavior silent; done
+  wait_for bidder-fallback claude 60 "a leader" sh -c "grep -qs 'leader [a-z]*$' $ROOT/bidder-fallback/claude/status.txt" || { stop bidder-fallback; return 1; }
+  leader=$(sed -n 's/.*leader \([a-z]*\)$/\1/p' "$ROOT/bidder-fallback/claude/status.txt")
+  pool=""; for a in $AGENTS; do [ "$a" != "$leader" ] && pool="$pool $a"; done
+  set -- $pool; outsider=$1; first=$2; second=$3
+  "$BIN" tx "$ROOT/bidder-fallback/$leader" post "exercise worker fallback" >/dev/null
+  wait_for bidder-fallback claude 60 "task 1" sh -c "grep -q '^task 1 ' $ROOT/bidder-fallback/claude/status.txt" || { stop bidder-fallback; return 1; }
+  "$BIN" tx "$ROOT/bidder-fallback/$outsider" bid 1 0 "too early" outsider.txt "" "no" >/dev/null
+  wait_for bidder-fallback claude 60 "outsider refused" sh -c "grep -q '$outsider: not an eligible bidder' $ROOT/bidder-fallback/claude/node.log" || { stop bidder-fallback; return 1; }
+  "$BIN" tx "$ROOT/bidder-fallback/$first" bid 1 0 "first worker" first.txt "" "one" >/dev/null
+  "$BIN" tx "$ROOT/bidder-fallback/$second" bid 1 0 "second worker" second.txt "" "two" >/dev/null
+  wait_for bidder-fallback claude 60 "two bids" sh -c "grep -q '^bid 2 ' $ROOT/bidder-fallback/claude/status.txt" || { stop bidder-fallback; return 1; }
+  "$BIN" tx "$ROOT/bidder-fallback/$leader" reject 1 "try next workers" >/dev/null
+  wait_for bidder-fallback claude 60 "first rejection" sh -c "grep -q '^bid 1 \[rejected\]' $ROOT/bidder-fallback/claude/status.txt" || { stop bidder-fallback; return 1; }
+  "$BIN" tx "$ROOT/bidder-fallback/$leader" reject 2 "try next workers" >/dev/null
+  wait_for bidder-fallback claude 60 "second rejection" sh -c "grep -q '^bid 2 \[rejected\]' $ROOT/bidder-fallback/claude/status.txt" || { stop bidder-fallback; return 1; }
+  "$BIN" tx "$ROOT/bidder-fallback/$outsider" bid 1 0 "next worker" outsider.txt "" "yes" >/dev/null
+  wait_for bidder-fallback claude 60 "next worker eligible" sh -c "grep -q '^bid 3 .* by $outsider ' $ROOT/bidder-fallback/claude/status.txt" || { stop bidder-fallback; return 1; }
+  sleep 2; stop bidder-fallback
+  agree bidder-fallback claude codex grok muse || return 1
+  echo "ok bidder-fallback: outsider refused, two bids rejected, next worker accepted"
+}
+
 # kill -9 a node twice, at whatever point it's at, and bring it back
 scenario_crash() {
   init crash 27300 term_blocks=25 max_merges=1 bid_cooldown=2 fallback_blocks=10 || return 1
@@ -248,6 +297,27 @@ scenario_ci() {
   echo "ok ci: $(merged ci claude) merges, $n CI runs passed in $img"
 }
 
+# A bid that applies cleanly but whose merged tree fails CI: the leader's
+# rejection must say CI failed, not that the edits don't apply. A fake
+# ci-sandbox runs the CI command in the checkout directly, so no docker
+# image is needed, and no merge can land to make a later bid stop applying.
+scenario_cifail() {
+  init cifail 28200 term_blocks=60 max_merges=1 bid_cooldown=2 attest_window=200 || return 1
+  fake=$ROOT/cifail/fake-ci
+  cat > "$fake" <<'F'
+#!/bin/sh
+cd "$2" || exit 2
+eval "$3"
+F
+  chmod +x "$fake"
+  for a in $AGENTS; do node cifail "$a" -- --ci-sandbox "$fake" --ci 'echo "calc is broken"; exit 1' --ci-memory 1g; done
+  wait_for cifail claude 180 "a rejection for CI" sh -c "grep -q 'CI failed on the merged tree' $ROOT/cifail/claude/status.txt" || { stop cifail; return 1; }
+  sleep 2; stop cifail
+  if grep -q "edits don't apply" "$ROOT/cifail/claude/status.txt"; then echo "FAIL cifail: a CI failure was worded as don't apply"; return 1; fi
+  agree cifail claude codex grok muse && agree_files cifail claude codex grok muse || return 1
+  echo "ok cifail: a bid that applies was rejected for failing CI, in those words, and no node diverged"
+}
+
 # one agent's model is compromised (votes no on everything) or dead (silent)
 scenario_bad_model() {
   behavior=$1 port=$2
@@ -270,7 +340,10 @@ scenario_policy() {
   for a in $AGENTS; do node policy "$a" -- --deny test.sh --behavior silent; done
   wait_for policy claude 60 "a leader" sh -c "grep -qs 'leader [a-z]*$' $ROOT/policy/claude/status.txt && ! grep -q '(drawing)' $ROOT/policy/claude/status.txt" || { stop policy; return 1; }
   leader=$(sed -n 's/.*leader \([a-z]*\)$/\1/p' "$ROOT/policy/claude/status.txt")
-  for a in $AGENTS; do [ "$a" != "$leader" ] && evil=$a; done
+  # Task 1 starts at offset 1 in the nonleader roster. Use an eligible
+  # worker so the bad bid reaches policy validation.
+  pool=""; for a in $AGENTS; do [ "$a" != "$leader" ] && pool="$pool $a"; done
+  set -- $pool; evil=$2
   "$BIN" tx "$ROOT/policy/$evil" post "a task from someone who isn't leading" >/dev/null
   "$BIN" tx "$ROOT/policy/$leader" post "make calc.sh print its version" >/dev/null
   wait_for policy claude 60 "the task" sh -c "grep -q '^task 1 \[open\]' $ROOT/policy/claude/status.txt" || { stop policy; return 1; }
@@ -458,6 +531,8 @@ Pantheon-Bid: 64")
 run() {
   case "$1" in
     happy) scenario_happy ;;
+    bidders) scenario_bidders ;;
+    bidder-fallback) scenario_bidder_fallback ;;
     crash) scenario_crash ;;
     equivocate) scenario_byz equivocate 27400 ;;
     double-vote) scenario_byz double-vote 27450 ;;
@@ -469,6 +544,7 @@ run() {
     bad-tree) scenario_bad_tree ;;
     network) scenario_network ;;
     ci) scenario_ci ;;
+    cifail) scenario_cifail ;;
     policy) scenario_policy ;;
     model) scenario_model ;;
     stuck) scenario_stuck ;;
@@ -480,7 +556,7 @@ run() {
   esac
 }
 
-ALL="happy crash equivocate double-vote silent bad-sig withhold bad-tree deny silent-model policy model stuck limit limit-cli prune epoch network ci"
+ALL="bidders bidder-fallback happy crash equivocate double-vote silent bad-sig withhold bad-tree deny silent-model policy model stuck limit limit-cli prune epoch network ci cifail"
 want=${*:-$ALL}
 pids=""
 for s in $want; do (run "$s" > "$ROOT/$s.result" 2>&1; echo $? > "$ROOT/$s.code") & pids="$pids $!"; done

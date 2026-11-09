@@ -250,10 +250,10 @@ lead (a m : obj) : obj * list (list string) :=
                      || (param m "task_blocks" <=? h - posted_at t)) in
   let a := fold_left (fun a t => if existsb is_merged (for_task t) || stuck t
                                  then enqueue a ["close", show (tid t)] else a) (open_tasks m) a in
-  (* review bids once everyone has bid or the window has passed *)
+  (* review bids once the chosen workers have bid or the window has passed *)
   let st := fold_left (fun (st : obj * list (list string)) (t : task) =>
       let cands := filter (fun b => (btask b =? tid t) && is_pending (bst b) && negb (seq (bidder b) (me a))) (bids m) in
-      if (length cands =? 0) || ((length cands <? length (agents m) - 1) && (h <? posted_at t + bid_window (fst st))) then st else
+      if (length cands =? 0) || ((length cands <? length (bidders_for m t)) && (h <? posted_at t + bid_window (fst st))) then st else
       let key := append "pick." (append (show (tid t)) (append "." (append (hash_list (map (fun b => show (bidn b)) cands)) (append "." (show (version m)))))) in
       let bad := filter (fun b => negb (seq (violation (fst st) m b) "")) cands in
       let good := filter (fun b => seq (violation (fst st) m b) "") cands in
@@ -281,7 +281,7 @@ bid_duty (a m : obj) : obj * list (list string) :=
        one waits to be sent *)
     let waiting := existsb (fun r => match snd r with "patch" :: x :: _ => seq x (show (tid t)) | _ => false end) (reqs a)
                    || existsb (fun q => match q with "bid" :: x :: _ => seq x (show (tid t)) | _ => false end) (queue a) in
-    if finished || waiting || (3 <=? n) then st else
+    if negb (mem (me a) (bidders_for m t)) || finished || waiting || (3 <=? n) then st else
     let a := setf a "attempts" (put (show (tid t)) (n + 1) (attempts a)) in
     with_ask (a, o) m (append "patch." (append (show (tid t)) (append "." (show n))))
       ["patch", show (tid t), show (version m)] (patch_prompt a m t) (trepo t :: tctx t)) (open_tasks m) (a, []).
@@ -392,7 +392,10 @@ answered (a m : obj) (id : string) (kv : list string) : obj * list (list string)
   | Some ("mcheck" :: b :: _) =>
       if seq (kv_at kv "ok") "error" then abstain a kv
       else if seq (kv_at kv "ok") "true" then flush (enqueue a ["merge", b, kv_at kv "tree"]) m
-      else flush (enqueue a ["reject", b, append "its edits don't apply to the head: " (kv_at kv "why")]) m
+      else if seq (kv_at kv "stage") "node" then abstain a kv
+      else flush (enqueue a ["reject", b,
+             (if seq (kv_at kv "stage") "ci" then append "CI failed on the merged tree: " (kv_at kv "why")
+              else append "its edits don't apply to the head: " (kv_at kv "why"))]) m
   | Some data => flush (on_answer a m data kv) m
   | None => (a, [])
   end.

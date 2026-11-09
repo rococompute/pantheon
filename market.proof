@@ -358,3 +358,62 @@ Proof.
     - intros x Hx Hmerged. left. exact Hx. }
   destruct (H b Hin Hb) as [Hold|Hfinal]; [contradiction|exact Hfinal].
 Qed.
+
+(** Selection is bounded even for malformed rosters or exhausted windows. *)
+Theorem bidders_for_at_most_two : forall (m : obj) (t : task),
+  length (bidders_for m t) <= 2.
+Proof.
+  intros m t. unfold bidders_for. apply firstn_le_length.
+Qed.
+
+Theorem bidders_for_excludes_leader : forall (m : obj) (t : task),
+  ~ In (leader m) (bidders_for m t).
+Proof.
+  intros m t Hin. unfold bidders_for in Hin.
+  match type of Hin with In _ (firstn 2 ?xs) =>
+    assert (H : In (leader m) xs) by
+      (rewrite <- (firstn_skipn 2 xs); apply in_or_app; left; exact Hin)
+  end.
+  apply filter_In in H. destruct H as [_ H].
+  unfold seq in H. rewrite Stdlib.Strings.String.eqb_refl in H. discriminate.
+Qed.
+
+(** A leader never merges its own bid (docs/PROOFS.md, item 8): a merge
+    naming a bid its sender made fails, with a reason, and leaves the whole
+    market as it was, an already pending proposal included. *)
+Theorem self_merge_makes_no_proposal : forall (m : obj) (a i tree : string) (b : bid),
+  bid_by m (num i) = Some b -> bidder b = a ->
+  exists why, why <> "" /\ apply m a ["merge", i, tree] = (m, [], why).
+Proof.
+  intros m a i tree b Hb Ha. subst a.
+  assert (Hs : seq (bidder b) (bidder b) = true)
+    by (unfold seq; apply Stdlib.Strings.String.eqb_refl).
+  assert (Ho : forall x : bool, (x || true) = true) by (intros [|]; reflexivity).
+  unfold apply. cbn beta iota zeta.
+  rewrite Hb, Hs, Ho.
+  repeat match goal with |- context [if ?c then _ else _] => destruct c eqn:? end.
+  all: match goal with |- exists w, _ /\ (_, _, ?r) = _ => exists r end;
+       split; [apply Stdlib.Strings.String.eqb_neq; reflexivity|reflexivity].
+Qed.
+
+(** And every merge that goes through names an existing bid made by
+    someone else, sent by the term leader. *)
+Theorem merge_needs_leader_and_others_bid : forall (m m' : obj) (a i tree : string) (outs : list (list string)),
+  apply m a ["merge", i, tree] = (m', outs, "") ->
+  exists b, bid_by m (num i) = Some b /\ bidder b <> a /\ is_leader m a = true.
+Proof.
+  intros m m' a i tree outs H.
+  unfold apply in H. cbn beta iota zeta in H.
+  Ltac why_differs H :=
+    apply (f_equal (fun p => Stdlib.Strings.String.eqb (snd p) "")) in H;
+    cbn in H; discriminate H.
+  destruct (bid_by m (num i)) as [b|] eqn:Hb; [|why_differs H].
+  destruct (is_leader m a) eqn:Hl; [|why_differs H].
+  destruct (seq (bidder b) a) eqn:He.
+  - assert (Ho : forall x : bool, (x || true) = true) by (intros [|]; reflexivity).
+    rewrite Ho in H.
+    repeat match type of H with context [if ?c then _ else _] => destruct c eqn:? end;
+      why_differs H.
+  - exists b. split; [reflexivity|]. split; [|reflexivity].
+    unfold seq in He. apply Stdlib.Strings.String.eqb_neq in He. exact He.
+Qed.
