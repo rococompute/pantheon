@@ -35,5 +35,5 @@ printf 'old := unk.\n' >> "$t/head/main.soma"
 python3 "$here/deploy/ci-command.py" "$t/head" 'sh test/check.sh' > "$t/command"
 reset
 run
-sed -i 's/old := unk/new := unk/' "$t/bid/main.soma"
+sed 's/old := unk/new := unk/' "$t/bid/main.soma" > "$t/main.soma.new" && mv "$t/main.soma.new" "$t/bid/main.soma"  # not sed -i: BSD's differs
 refuse 'traded existing assumption'

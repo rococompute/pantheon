@@ -280,13 +280,14 @@ elif mode == "votes":
         except (ValueError, IndexError, TypeError, KeyError): continue
 PY
   set -- $(python3 -I "$py" "$d" names); me=$1 p2=$2
-  set -- $(python3 -I "$py" "$d" ids); a=$1 b=$2
-  [ -n "$me" ] && [ -n "$b" ] || { echo "FAIL restart-lock: the message script failed"; return 1; }
+  # va and vb, not a and b: the node helper sets a
+  set -- $(python3 -I "$py" "$d" ids); va=$1 vb=$2
+  [ -n "$me" ] && [ -n "$vb" ] || { echo "FAIL restart-lock: the message script failed"; return 1; }
   votes() { python3 -I "$py" "$d" votes; }
   node restart-lock "$me" -- --behavior silent
   wait_for restart-lock "$me" 30 "$me listening" sh -c "grep -q ' listening;' $d/$me/node.log" || { stop restart-lock; return 1; }
   python3 -I "$py" "$d" lock || { echo "FAIL restart-lock: couldn't send the lock's messages"; stop restart-lock; return 1; }
-  wait_for restart-lock "$me" 30 "$me to lock on A and precommit it" sh -c "python3 -I '$py' '$d' votes | grep -qx 'precommit/1/0 $a'" || { stop restart-lock; return 1; }
+  wait_for restart-lock "$me" 30 "$me to lock on A and precommit it" sh -c "python3 -I '$py' '$d' votes | grep -qx 'precommit/1/0 $va'" || { stop restart-lock; return 1; }
   [ -s "$d/$me/consensus.state" ] || { echo "FAIL restart-lock: no consensus.state after the lock"; stop restart-lock; return 1; }
   [ -s "$d/$me/blocks.log" ] && { echo "FAIL restart-lock: a block was decided, so nothing is left locked"; stop restart-lock; return 1; }
   # restart it as crash does
@@ -298,7 +299,7 @@ PY
   sleep 1; stop restart-lock
   v=$(votes)
   echo "$v" | grep -qx 'prevote/1/2 nil' || { echo "FAIL restart-lock: no signed nil prevote at round 2: $v"; return 1; }
-  echo "$v" | grep -q " $b\$" && { echo "FAIL restart-lock: $me signed a vote for B: $v"; return 1; }
+  echo "$v" | grep -q " $vb\$" && { echo "FAIL restart-lock: $me signed a vote for B: $v"; return 1; }
   [ -s "$d/$me/blocks.log" ] && { echo "FAIL restart-lock: a block was decided"; return 1; }
   echo "ok restart-lock: $me locked on A, was killed and restarted, and refused B at round 2 for its lock"
 }
@@ -316,7 +317,7 @@ scenario_byz() {
   case $mode in
     equivocate) grep -q 'prevote nil: proposal from muse .* is not a valid block' "$ROOT/byz-$mode"/{claude,codex,grok}/node.log \
                   || { echo "FAIL byz-$mode: no honest node ever saw muse's bad proposal"; return 1; } ;;
-    silent|bad-sig) n=$(grep -c '"agent":"muse"' "$ROOT/byz-$mode/claude/blocks.log"); [ "$n" -eq 0 ] \
+    silent|bad-sig) n=$(grep -c '\\"agent\\":\\"muse\\"' "$ROOT/byz-$mode/claude/blocks.log"); [ "$n" -eq 0 ] \
                   || { echo "FAIL byz-$mode: muse's transactions reached the chain, so it wasn't cut off"; return 1; } ;;
   esac
   echo "ok byz-$mode: honest nodes agree at $(field "byz-$mode" height claude), $(merged "byz-$mode" claude) merges"
@@ -355,7 +356,7 @@ scenario_future_nonce() {
     p=$(field future-nonce pool "$a")
     [ -n "$p" ] && [ "$p" -le 32 ] || { echo "FAIL future-nonce: $a's pool holds ${p:-?} transactions"; return 1; }
   done
-  n=$(grep -c '"agent":"muse"' "$ROOT/future-nonce/claude/blocks.log")
+  n=$(grep -c '\\"agent\\":\\"muse\\"' "$ROOT/future-nonce/claude/blocks.log")
   [ "$n" -gt 0 ] || { echo "FAIL future-nonce: none of muse's next-nonce transactions landed"; return 1; }
   echo "ok future-nonce: 600 future nonces kept out of every pool, $n of muse's transactions landed, $(merged future-nonce claude) merges"
 }

@@ -40,6 +40,8 @@ let () =
   assert (try ignore (Shell.load_consensus path); false with _ -> true);
   print_endline "ok restart: lock and valid value survive disk load; conflicting proposal prevotes nil"
 ML
+# soma build finds its own switch; dune needs telling
+[ -n "${SOMA_OCAML_SWITCH:-}" ] || { [ -d "$cache/../_opam" ] && SOMA_OCAML_SWITCH=$(cd "$cache/.." && pwd); }
 if [ -n "${SOMA_OCAML_SWITCH:-}" ]; then
   export PATH="$SOMA_OCAML_SWITCH/_opam/bin:$PATH"
   export OCAMLPATH="$SOMA_OCAML_SWITCH/_opam/lib${OCAMLPATH:+:$OCAMLPATH}"

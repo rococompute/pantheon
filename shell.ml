@@ -1058,10 +1058,16 @@ and node init step checkpoint restore home flags =
      the agent's tries on calls bound to fail. *)
   let limited_until = ref 0. and limit_reason = ref "" and limit_backoff = ref 900. and held = ref [] and probing = ref false in
   let limit_words = [ "usage limit"; "rate limit"; "rate-limit"; "ratelimit"; "limit reached"; "limit exceeded"; "quota";
-                      "too many requests"; "429"; "hit your limit"; "out of credits"; "credit balance"; "resource_exhausted";
+                      "too many requests"; "hit your limit"; "out of credits"; "credit balance"; "resource_exhausted";
                       (* Grok Build: "API error (status 402 Payment Required): Grok Build usage balance exhausted" *)
                       "balance exhausted"; "payment required"; "insufficient credit"; "insufficient balance" ] in
-  let is_limit text = let t = String.lowercase_ascii text in List.exists (fun w -> contains t w) limit_words in
+  (* HTTP 429 only as a number of its own: a reply holding "k429" or "14290" is no limit *)
+  let has_number t w =
+    let n = String.length t and m = String.length w in
+    let alnum c = (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') in
+    let rec go i = i + m <= n && ((String.sub t i m = w && (i = 0 || not (alnum t.[i - 1])) && (i + m = n || not (alnum t.[i + m]))) || go (i + 1)) in
+    go 0 in
+  let is_limit text = let t = String.lowercase_ascii text in List.exists (fun w -> contains t w) limit_words || has_number t "429" in
   (* seconds until the limit resets, if the message says *)
   let reset_in text =
     let t = String.lowercase_ascii text and now = Unix.gettimeofday () in
