@@ -43,9 +43,23 @@ Record task := { tid : nat; spec : string; poster : string; posted_at : nat; top
     enew. eold = "": write the whole file, enew; with enew = "" too, delete it. *)
 Record edit := { epath : string; eold : string; enew : string }.
 
-Record bid := { bidn : nat; btask : nat; bidder : string; base : nat; edits : list edit;
+(** Edits that have already passed safe_path. An unsafe path cannot be
+    built as a value of this type, so it cannot sit in a bid past apply. *)
+safe_edits : Type := {w : list edit | forallb (fun e => safe_path (epath e)) w = true}.
+
+safe_edits_of (w : list edit) : option safe_edits :=
+  match forallb (fun e => safe_path (epath e)) w as ok
+        return (forallb (fun e => safe_path (epath e)) w = ok -> option safe_edits)
+  with
+  | true => fun pf => Some (exist _ w pf)
+  | false => fun _ => None
+  end eq_refl.
+
+Record bid := { bidn : nat; btask : nat; bidder : string; base : nat; edits : safe_edits;
                 note : string; bst : status; stale : bool; why : string;
                 votes : list (string * bool) }.
+
+bedits (b : bid) : list edit := proj1_sig (edits b).
 
 (** a merge waiting for attestations; ptree is the tree the leader's check gave *)
 Record proposal := { pbid : nat; pby : string; pat : nat; pvotes : list (string * bool); ptree : string }.
@@ -174,7 +188,7 @@ changed_since (m : obj) (r : string) (v : nat) (p : string) : bool :=
 
 bid_repo (m : obj) (b : bid) : string := match task_by m (btask b) with Some t => trepo t | None => "" end.
 
-conflicts (m : obj) (b : bid) : bool := existsb (changed_since m (bid_repo m b) (base b)) (edit_paths (edits b)).
+conflicts (m : obj) (b : bid) : bool := existsb (changed_since m (bid_repo m b) (base b)) (edit_paths (bedits b)).
 
 (** A merge: move the repository's head to the attested tree, mark the paths
     it changed, then clear what now conflicts. The shell applies the edits to
@@ -186,7 +200,7 @@ finalize (m : obj) (p : proposal) : obj * list (list string) :=
       let r := bid_repo m b in
       let spec_of := match task_by m (btask b) with Some t => spec t | None => "" end in
       let v := version m + 1 in
-      let ps := fold_left (fun ps x => put (path_key r x) v ps) (edit_paths (edits b)) (paths m) in
+      let ps := fold_left (fun ps x => put (path_key r x) v ps) (edit_paths (bedits b)) (paths m) in
       let m := setf (setf (setf m "paths" ps) "version" v) "repos" (put r (ptree p) (repos m)) in
       let m := set_bid m (with_votes (with_status b Merged "") (pvotes p)) in
       let m := setf (setf m "pending" (None : option proposal)) "merges" (merges m + 1) in
@@ -197,7 +211,7 @@ finalize (m : obj) (p : proposal) : obj * list (list string) :=
                    if conflicts m x then count (set_bid m (with_status x Cleared reason)) (bidder x) "cleared"
                    else set_bid m (mark_stale x)
                  else m) (bids m) m in
-      (m, [("merge" :: r :: show v :: ptree p :: show (bidn b) :: show (btask b) :: bidder b :: spec_of :: flat_edits (edits b))])
+      (m, [("merge" :: r :: show v :: ptree p :: show (bidn b) :: show (btask b) :: bidder b :: spec_of :: flat_edits (bedits b))])
   end.
 
 (** Three of four approve: the leader by proposing, each attestor by voting
@@ -265,15 +279,18 @@ apply (m : obj) (a : string) (fields : list string) : obj * list (list string) *
             if negb (num v =? version m) then (m, [], "bid is not on the current version: rebase")
             else if (length w =? 0) || negb (length es =? 3 * length w) then (m, [], "a bid's edits come in threes: path, old, new")
             else if (param m "max_files" <? length (edit_paths w)) || (5 * param m "max_files" <? length w) then (m, [], "a bid edits 1 to max_files files, with up to 5 edits each")
-            else if negb (forallb (fun e => safe_path (epath e)) w) then (m, [], "unsafe path")
-            else if param m "max_pending_bids" <=? length (filter (fun b => seq (bidder b) a && is_pending (bst b)) (bids m)) then (m, [], "too many pending bids")
-            else
-              let id := nbids m + 1 in
-              (* counted first, then the bid appended to that state's bids: the shape
-                 market.proof's lemma for an appended bid states *)
-              let m := setf m "nbids" id in
-              ok (setf m "bids" (bids m ++ [{| bidn := id; btask := tid tk; bidder := a; base := version m; edits := w;
-                                               note := n; bst := Pending; stale := false; why := ""; votes := [] |}]))
+            else match safe_edits_of w with
+            | None => (m, [], "unsafe path")
+            | Some sw =>
+                if param m "max_pending_bids" <=? length (filter (fun b => seq (bidder b) a && is_pending (bst b)) (bids m)) then (m, [], "too many pending bids")
+                else
+                  let id := nbids m + 1 in
+                  (* counted first, then the bid appended to that state's bids: the shape
+                     market.proof's lemma for an appended bid states *)
+                  let m := setf m "nbids" id in
+                  ok (setf m "bids" (bids m ++ [{| bidn := id; btask := tid tk; bidder := a; base := version m; edits := sw;
+                                                   note := n; bst := Pending; stale := false; why := ""; votes := [] |}]))
+            end
       end
   | ["withdraw", i] =>
       match bid_by m (num i) with

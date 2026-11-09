@@ -326,9 +326,43 @@ Proof.
   apply end_term_preserves_merged. exact HS.
 Qed.
 
+Lemma bool_eq_dec : forall a b : bool, {a = b} + {a <> b}.
+Proof. decide equality. Qed.
+
+Lemma edit_eq_dec : forall a b : edit, {a = b} + {a <> b}.
+Proof. decide equality; apply Stdlib.Strings.String.string_dec. Qed.
+
+Lemma safe_edits_eq_dec : forall a b : safe_edits, {a = b} + {a <> b}.
+Proof.
+  intros [w1 p1] [w2 p2].
+  destruct (list_eq_dec edit_eq_dec w1 w2) as [E|N].
+  - subst w2. left.
+    assert (p1 = p2) as Hp by apply (Eqdep_dec.UIP_dec bool_eq_dec).
+    rewrite Hp. reflexivity.
+  - right. intro H. apply N.
+    exact (f_equal (proj1_sig (P:=fun w => forallb (fun e => safe_path (epath e)) w = true)) H).
+Qed.
+
+Lemma status_eq_dec : forall a b : status, {a = b} + {a <> b}.
+Proof. decide equality. Qed.
+
+Lemma vote_eq_dec : forall a b : string * bool, {a = b} + {a <> b}.
+Proof. decide equality; try apply Stdlib.Strings.String.string_dec; apply bool_eq_dec. Qed.
+
 Lemma bid_eq_dec : forall (x y : bid), {x = y} + {x <> y}.
 Proof.
-  decide equality; repeat decide equality.
+  intros [n1 t1 a1 b1 e1 no1 st1 sl1 w1 v1] [n2 t2 a2 b2 e2 no2 st2 sl2 w2 v2].
+  destruct (Nat.eq_dec n1 n2) as [Hn|Hn]; [|right; intro H; apply Hn; exact (f_equal bidn H)].
+  destruct (Nat.eq_dec t1 t2) as [Ht|Ht]; [|right; intro H; apply Ht; exact (f_equal btask H)].
+  destruct (Stdlib.Strings.String.string_dec a1 a2) as [Ha|Ha]; [|right; intro H; apply Ha; exact (f_equal bidder H)].
+  destruct (Nat.eq_dec b1 b2) as [Hb|Hb]; [|right; intro H; apply Hb; exact (f_equal base H)].
+  destruct (safe_edits_eq_dec e1 e2) as [He|He]; [|right; intro H; apply He; exact (f_equal edits H)].
+  destruct (Stdlib.Strings.String.string_dec no1 no2) as [Hno|Hno]; [|right; intro H; apply Hno; exact (f_equal note H)].
+  destruct (status_eq_dec st1 st2) as [Hs|Hs]; [|right; intro H; apply Hs; exact (f_equal bst H)].
+  destruct (bool_eq_dec sl1 sl2) as [Hsl|Hsl]; [|right; intro H; apply Hsl; exact (f_equal stale H)].
+  destruct (Stdlib.Strings.String.string_dec w1 w2) as [Hw|Hw]; [|right; intro H; apply Hw; exact (f_equal why H)].
+  destruct (list_eq_dec vote_eq_dec v1 v2) as [Hv|Hv]; [|right; intro H; apply Hv; exact (f_equal votes H)].
+  subst. left. reflexivity.
 Qed.
 
 (** A newly Merged bid in a block came from finalize, at a settlement state
@@ -416,4 +450,26 @@ Proof.
       why_differs H.
   - exists b. split; [reflexivity|]. split; [|reflexivity].
     unfold seq in He. apply Stdlib.Strings.String.eqb_neq in He. exact He.
+Qed.
+
+Theorem bid_edits_safe : forall b : bid,
+  forallb (fun e => safe_path (epath e)) (bedits b) = true.
+Proof.
+  intros b. unfold bedits. exact (proj2_sig (edits b)).
+Qed.
+
+Lemma safe_edits_match : forall (w : list edit) (b : bool)
+  (e : forallb (fun e => safe_path (epath e)) w = b),
+  match b as ok return (forallb (fun e => safe_path (epath e)) w = ok -> option safe_edits) with
+  | true => fun pf => Some (exist _ w pf)
+  | false => fun _ => None
+  end e = None <-> b = false.
+Proof.
+  intros w [|] e; split; intro H; try discriminate H; reflexivity.
+Qed.
+
+Lemma safe_edits_of_spec : forall w : list edit,
+  safe_edits_of w = None <-> forallb (fun e => safe_path (epath e)) w = false.
+Proof.
+  intro w. unfold safe_edits_of. apply safe_edits_match.
 Qed.
