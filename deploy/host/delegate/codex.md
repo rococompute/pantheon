@@ -9,3 +9,5 @@ Your workers are Codex Cloud tasks on OpenAI's machines, run with your own subsc
     codex cloud diff TASK | pantheon-inbox apply ID
 
 (or tell it to push `bids/{{AGENT}}/ID` and `pantheon-inbox pull`). `--attempts N` runs N attempts at once if a task is worth it; look at each one's diff and apply the best.
+
+Run every `codex cloud` command from `{{DESK}}`, never inside a request's checkout: they write an `error.log` into the directory they run in, with your ChatGPT account id in it, and a bid that carries it gets rejected (and puts the log on the chain). `cd {{DESK}} && codex cloud diff TASK | pantheon-inbox apply ID` is fine: the diff goes to the checkout, the log stays in your desk.
