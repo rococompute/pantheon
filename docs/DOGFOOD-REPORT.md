@@ -139,6 +139,55 @@ provider fared:
 From the laptop run (in the goals then, now merged): record update's term
 blowup, compiles killed for memory with no message, the slow `market.proof`.
 
+## What the Lima sandbox run found (Nov 8 23:00 to Nov 9)
+
+Four Lima VMs on one Mac (`docs/SANDBOX.md`) worked through both repositories'
+`.plan` from the second security review. Besides the merges, the run turned
+up these, which `.plan` points at as D-1 to D-4.
+
+**D-1. The market's CI never runs the e2e scenarios a bid adds.** The CI
+command is `soma build main.soma && test/edits.sh && sh test/ci-policy.sh`
+(`scripts/sandbox.sh` and `scripts/host.sh`, `PANTHEON_CI`). The bids for
+P-4, P-5 and P-16 each added a scenario to `test/e2e.sh` that attestors only
+read. Run on the merged code, three failed though the fixes worked:
+restart-lock kept its block id in `$a`, which the `node` helper overwrites;
+future-nonce grepped `blocks.log` for unescaped JSON; and model's 5000-field
+reply held "k429", which the limit detector took for HTTP 429. Fixed by hand in
+`39e4ef3`. The fix for the gap: CI runs the scenarios a bid adds or changes,
+by name, as `test/e2e.sh NAME` (a few minutes each with real node processes
+on localhost, which `--network=none` still allows), or the attestors' check
+does.
+
+**D-2. Model calls and consensus timers use the wall clock.** `start_job`
+stamps a job with `Unix.gettimeofday` and the loop kills it when
+`now - jstarted > jlimit` (`shell.ml`); consensus timers are wall-clock
+deadlines too. When the Mac slept for 25 minutes the VMs paused with their
+clocks, and came back 25 minutes behind. Stepping them forward would have
+killed every running call at once (a patch older than 5 minutes, any answer),
+so time sync had to be held off until no call was running. A step backwards
+would let calls overrun and stall timers. The fix: a monotonic clock for job
+limits and timers (`CLOCK_MONOTONIC`, through a library such as `mtime` or a
+small stub), with a test that moves the wall clock under a running job.
+
+**D-3. A call the node kills leaves its children running.** On a time or
+output limit the node sends SIGKILL to the job's own pid (`shell.ml`,
+`Unix.kill j.jpid`), the `bidder.sh` shell. Its children live on: on Grok's
+VM, `bidder.sh` subshells from a call killed 38 minutes earlier were still
+there, reparented to pid 1. The model CLI under them runs as `BIDDER_USER`, a
+user the node can't signal. The fix: start each job in its own process group
+and kill the group, and have `bidder.sh` (which runs `sudo -u bidder`) end
+its model on SIGTERM, or wrap the model in `timeout` inside `sudo`; a test
+that kills a job with a grandchild and checks nothing is left.
+
+**D-4. Grok Build's patches.** Overnight Grok made 77 patch calls: 14 hit the
+30-minute patch limit, 32 became bids, and one merged (S-2). Its answers
+(picks, attestations) stopped timing out once it read the request from files
+at `--reasoning-effort low` (`1bc6380`, `GROK_ANSWER_FLAGS` in
+`scripts/bidder.sh`). Patches still run at the default effort. The fix:
+`GROK_PATCH_FLAGS` with a lower default effort, then read the rejection
+reasons of Grok's bids on the chain (`scripts/sandbox.sh status`) for what
+else they share.
+
 ## Lessons
 
 - **Performance first paid off.** After the laptop run, Pantheon builds in
