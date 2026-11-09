@@ -161,3 +161,9 @@ escape hatch, where static types are given up, and every assumption.
 
 [docs/DESIGN.md](docs/DESIGN.md) explains how it works and what changed from the Go
 version.
+
+## License
+
+Pantheon is under the MIT license: see [LICENSE](LICENSE). It's built with
+[Soma](https://github.com/yevbar/soma), a fork of the Rocq Prover, which keeps
+Rocq's LGPL 2.1.
