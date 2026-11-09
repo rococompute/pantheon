@@ -95,7 +95,11 @@ default_params : list (string * nat) :=
    ("reveal_window", 10), ("max_files", 20), ("keep_settled", 100), ("max_block_txs", 50),
    (* a leader closes a task no bid could do: this many rejected bids, or open
       this many blocks, with no bid pending *)
-   ("task_rejects", 6), ("task_blocks", 3600)].
+   ("task_rejects", 6), ("task_blocks", 3600),
+   (* a task's two-worker window moves on by one this often, so a chosen
+      worker that never bids (out of credit, offline) can't hold a task until
+      task_blocks closes it: past a patch request's deadline with room to spare *)
+   ("bid_blocks", 2400)].
 
 param (m : obj) (k : string) : nat := get_or (get_or 0 k default_params) k (params m).
 
@@ -131,10 +135,12 @@ Fixpoint next_bidders (fuel : nat) (m : obj) (t : task) (pool : list string) : l
   end.
 
 (** version advances on every merge and survives term changes. Consecutive
-    task ids therefore move the window even within the same term. *)
+    task ids therefore move the window even within the same term. The window
+    also moves on by one every bid_blocks while the task is open, so workers
+    chosen but silent give way to the next ones. *)
 bidders_for (m : obj) (t : task) : list string :=
   let pool := filter (fun a => negb (seq a (leader m))) (nodup_s (agents m)) in
-  let start := (tid t + version m) mod length pool in
+  let start := (tid t + version m + (mheight m - posted_at t) / param m "bid_blocks") mod length pool in
   let pool := skipn start pool ++ firstn start pool in
   firstn 2 (filter (fun a => negb (seq a (leader m)))
     (next_bidders (length pool) m t pool)).

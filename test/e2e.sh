@@ -170,6 +170,31 @@ scenario_bidder_fallback() {
   echo "ok bidder-fallback: outsider refused, two bids rejected, next worker accepted"
 }
 
+# Silent models: the chosen workers never bid. The excluded worker is refused
+# at first and accepted once bid_blocks have passed, with no bid, merge or new
+# task in between.
+scenario_bidder_timeout() {
+  init bidder-timeout 28350 term_blocks=1000 stall_blocks=900 task_blocks=900 bid_blocks=20 bid_cooldown=1 || return 1
+  : > "$ROOT/bidder-timeout/goal.txt"
+  for a in $AGENTS; do node bidder-timeout "$a" -- --behavior silent; done
+  wait_for bidder-timeout claude 60 "a leader" sh -c "grep -qs 'leader [a-z]*$' $ROOT/bidder-timeout/claude/status.txt" || { stop bidder-timeout; return 1; }
+  leader=$(sed -n 's/.*leader \([a-z]*\)$/\1/p' "$ROOT/bidder-timeout/claude/status.txt")
+  pool=""; for a in $AGENTS; do [ "$a" != "$leader" ] && pool="$pool $a"; done
+  set -- $pool; outsider=$1
+  "$BIN" tx "$ROOT/bidder-timeout/$leader" post "exercise the worker timeout" >/dev/null
+  wait_for bidder-timeout claude 60 "task 1" sh -c "grep -q '^task 1 ' $ROOT/bidder-timeout/claude/status.txt" || { stop bidder-timeout; return 1; }
+  posted=$(field bidder-timeout height claude)
+  "$BIN" tx "$ROOT/bidder-timeout/$outsider" bid 1 0 "too early" outsider.txt "" "no" >/dev/null
+  wait_for bidder-timeout claude 60 "outsider refused" sh -c "grep -q '$outsider: not an eligible bidder' $ROOT/bidder-timeout/claude/node.log" || { stop bidder-timeout; return 1; }
+  grep -q '^bid ' "$ROOT/bidder-timeout/claude/status.txt" && { echo "FAIL bidder-timeout: a bid before the window moved"; stop bidder-timeout; return 1; }
+  wait_for bidder-timeout claude 90 "the window to move" height_at_least bidder-timeout claude $((posted + 22)) || { stop bidder-timeout; return 1; }
+  "$BIN" tx "$ROOT/bidder-timeout/$outsider" bid 1 0 "after the timeout" outsider.txt "" "yes" >/dev/null
+  wait_for bidder-timeout claude 60 "outsider eligible" sh -c "grep -q '^bid 1 .* by $outsider ' $ROOT/bidder-timeout/claude/status.txt" || { stop bidder-timeout; return 1; }
+  sleep 2; stop bidder-timeout
+  agree bidder-timeout claude codex grok muse || return 1
+  echo "ok bidder-timeout: outsider refused, then accepted after bid_blocks with no other bid"
+}
+
 # kill -9 a node twice, at whatever point it's at, and bring it back
 scenario_crash() {
   init crash 27300 term_blocks=25 max_merges=1 bid_cooldown=2 fallback_blocks=10 || return 1
@@ -533,6 +558,7 @@ run() {
     happy) scenario_happy ;;
     bidders) scenario_bidders ;;
     bidder-fallback) scenario_bidder_fallback ;;
+    bidder-timeout) scenario_bidder_timeout ;;
     crash) scenario_crash ;;
     equivocate) scenario_byz equivocate 27400 ;;
     double-vote) scenario_byz double-vote 27450 ;;
@@ -556,7 +582,7 @@ run() {
   esac
 }
 
-ALL="bidders bidder-fallback happy crash equivocate double-vote silent bad-sig withhold bad-tree deny silent-model policy model stuck limit limit-cli prune epoch network ci cifail"
+ALL="bidders bidder-fallback bidder-timeout happy crash equivocate double-vote silent bad-sig withhold bad-tree deny silent-model policy model stuck limit limit-cli prune epoch network ci cifail"
 want=${*:-$ALL}
 pids=""
 for s in $want; do (run "$s" > "$ROOT/$s.result" 2>&1; echo $? > "$ROOT/$s.code") & pids="$pids $!"; done
