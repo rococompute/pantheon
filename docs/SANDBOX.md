@@ -161,6 +161,18 @@ Mac slows down, `scripts/sandbox.sh stop` frees it all, and `nodes` then
 The nodes are clones of the base VM, so on APFS they share its disk until
 they diverge.
 
+## When a VM won't come up
+
+If `nodes` (or `limactl start`) waits ten minutes and fails with "did not
+receive an event with the `running` status", while the VM's serial log
+(`~/.lima/pantheon-AGENT/serialv.log`) shows a login prompt, Lima's user-v2
+network daemon is stale: SSH to the VM resets. Stop the VMs, end the daemon,
+and start again; it comes up in seconds:
+
+```bash
+scripts/sandbox.sh stop; pkill -f 'limactl usernet'; scripts/sandbox.sh nodes
+```
+
 ## Starting over
 
 A new chain needs new homes, as on real machines. `reset` discards every
