@@ -20,6 +20,9 @@ synced before each vote is sent. `apply_edits` refuses `..`, absolute paths,
 and no homes. The HTTP inbox's tokens are 256-bit, stored hashed, compared in
 constant time, bound to localhost.
 
+**Fixed since (Nov 8):** C1, C2, H1, H3 and H7, each with a test (see each
+item). The rest stand.
+
 ## Critical
 
 **C1. A symlink in a checkout puts any host file in a signed bid.** *Reproduced
@@ -33,6 +36,9 @@ providers' models. On the host, every node's key, `~/.claude`, `~/.codex` and
 `~/.ssh` are reachable this way. *Fix:* take contents from the index (`git
 cat-file blob :path`) and skip anything whose mode isn't a regular file
 (120000, 160000); refuse symlink modes in `pull`, `apply` and the HTTP `done`.
+*Fixed:* `edits_of_checkout` reads contents from the index and takes only
+modes 100644 and 100755; `pantheon-inbox pull`/`apply` and the HTTP `done`
+refuse diffs that make a symlink or submodule. Tested in test/edits.sh.
 
 **C2. One signed message freezes every honest node.** *Checked in code;
 measured by the reviewer.* Peer messages' height and rounds are parsed by
@@ -44,6 +50,11 @@ height `999999999999999999`; each node's single-threaded loop spins forever,
 and again after every restart. *Fix:* reject numbers over about 12 digits
 before parsing, and extract `Nat.of_uint`/`uint_of_string` to OCaml's
 `int_of_string`; audit every `num_opt` and `num`.
+*Fixed:* `num_opt` takes 1 to 18 decimal digits and reads them in one pass
+(`num`), never `Nat.of_uint`; examples in consensus.proof check it. `num`,
+used on transaction fields, is linear but wraps past 18 digits; that's
+harmless where it's used (a wrapped nonce or bid id matches nothing) but
+worth a bound.
 
 ## High
 
@@ -56,6 +67,11 @@ not `core.fsmonitor` or clean/smudge filters, so a model that writes
 docs/SANDBOX.md doesn't hold. *Fix:* never give the model the `.git`: run the
 node's git with a node-owned `--git-dir` and the checkout as `--work-tree`, add
 `-c core.fsmonitor=false`, and don't chmod `.git`.
+*Fixed:* the node makes each patch checkout with its repository outside it
+(`--separate-git-dir`, readable by the model, not writable) and passes it as
+`PANTHEON_GITDIR`; `pantheon edits` and bidder.sh's `git status` use that,
+never the checkout's `.git`, and run with `core.fsmonitor=false`. Tested in
+test/edits.sh (a hostile config's fsmonitor and clean filter run nothing).
 
 **H2. The host's diplomats run with approvals off, as the user that owns every
 secret.** host.sh:334-336 starts Claude Code, Codex and the Cursor CLI with
@@ -75,6 +91,11 @@ newline, re-split on every read, and JSON is parsed before the signature is
 checked (a 20 MB line of `[` took 2.2 GB). *Fix:* cap connections overall and
 per address, catch accept/select errors, cap a line's length, scan only new
 bytes, and ideally authenticate peers with a signed handshake before parsing.
+*Fixed:* at most 64 inbound connections (16 per address; the quietest makes
+room), accept and select errors no longer end the node, only newly read bytes
+are scanned for a line's end, and a line nested more than 4 deep is dropped
+before parsing. Tested by the e2e scenario `flood`. Still open: a signed
+handshake.
 
 **H4. Locks are lost on restart, which can break safety.** consensus.soma:28-36
 keeps `lockr`/`lockv` in memory only; `signed.log` stops a second vote for the
@@ -111,6 +132,13 @@ memory cap covers the build, not the node. A bid whose test prints forever
 kills the leader's node each term, and the attestors' if they run it too,
 which halts the chain. *Fix:* keep only the last 64 KB, and kill a job past
 the cap.
+*Fixed:* a job (a model's reply or a check) may print 4 MB; past that the
+node keeps the last 64 KB, stops it, and reports "it printed more than 4 MB".
+A job the node stops (too much output, or past its time limit) now ends at
+once, rather than when its children close the pipe, which a killed check's
+`yes` never did. A check's ending (exit 137, 124, the cap) is read from the
+node's own prefix, not from the bid's output, which closes part of the low
+finding on text classification. Tested by the e2e scenario `ciflood`.
 
 **H8. A nested `.gitattributes` freezes a repository on every node.**
 *Reproduced with the node binary.* The deny list matches by prefix
@@ -217,7 +245,7 @@ shell's assumptions (transaction decoding, signature checks), extraction
 None of this leaks a secret by itself: the repositories are clean. The risk
 is to whoever runs them. In order:
 
-1. Fix C1, C2, H1, H3 and H7: each is small and local.
+1. ~~Fix C1, C2, H1, H3 and H7~~: done.
 2. Fix H8, H5, H4 and H6 (consensus rules: they need a new chain), and H9 in
    Soma.
 3. Say plainly in the README that Pantheon is research software: don't run it

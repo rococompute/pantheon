@@ -350,6 +350,57 @@ F
   echo "ok cifail: a bid that applies was rejected for failing CI, in those words, and no node diverged"
 }
 
+# a bid's CI prints forever (its test runs `yes`): the checking nodes stop the
+# check at the output cap, reject the bid for it, and keep going
+scenario_ciflood() {
+  init ciflood 28400 term_blocks=60 max_merges=1 bid_cooldown=2 attest_window=200 || return 1
+  fake=$ROOT/ciflood/fake-ci
+  printf '#!/bin/sh\ncd "$2" || exit 2\neval "$3"\n' > "$fake"; chmod +x "$fake"
+  for a in $AGENTS; do node ciflood "$a" -- --ci-sandbox "$fake" --ci 'yes calc' --ci-memory 1g; done
+  wait_for ciflood claude 180 "a rejection for flooding output" sh -c "grep -q 'printed more than' $ROOT/ciflood/claude/status.txt" || { stop ciflood; return 1; }
+  for a in $AGENTS; do kill -0 "$(cat "$ROOT/ciflood/$a/pid" 2>/dev/null)" 2>/dev/null || { echo "FAIL ciflood: $a's node died"; stop ciflood; return 1; }; done
+  sleep 2; stop ciflood
+  agree ciflood claude codex grok muse || return 1
+  echo "ok ciflood: a check printing forever was stopped at the cap and rejected; every node lived"
+}
+
+# someone with no key floods a node: hundreds of connections, a line of
+# deeply nested JSON, an endless line. The node stays up and the chain moves.
+scenario_flood() {
+  init flood 28450 term_blocks=30 max_merges=1 bid_cooldown=2 || return 1
+  for a in $AGENTS; do node flood "$a"; done
+  wait_for flood claude 60 "height 5" height_at_least flood claude 5 || { stop flood; return 1; }
+  port=$(sed -n 's/.*"addr": *"[^"]*:\([0-9]*\)".*/\1/p' "$ROOT/flood/claude/public.json" | head -1)
+  python3 - "$port" <<'PY' || { echo "FAIL flood: the flood script crashed"; stop flood; return 1; }
+import socket, sys, time
+port = int(sys.argv[1])
+def conn():
+    try: return socket.create_connection(("127.0.0.1", port), timeout=2)
+    except OSError: return None
+def send(s, data):
+    try: s.sendall(data); return True
+    except OSError: return False      # the node dropped it: what it should do
+# hundreds of connections at once (past the node's caps), then let go
+socks = [s for s in (conn() for _ in range(400)) if s]
+time.sleep(2)
+for s in socks: s.close()
+time.sleep(1)
+# a line of deeply nested JSON, then an endless line
+deep = conn(); deep and send(deep, b"[" * 5_000_000 + b"\n")
+endless = conn()
+if endless:
+    for _ in range(80):
+        if not send(endless, b"x" * 1_000_000): break
+time.sleep(2)
+PY
+  before=$(field flood height claude)
+  wait_for flood claude 60 "the chain to move after the flood" height_at_least flood claude $((before + 5)) || { stop flood; return 1; }
+  kill -0 "$(cat "$ROOT/flood/claude/pid" 2>/dev/null)" 2>/dev/null || { echo "FAIL flood: claude's node died"; stop flood; return 1; }
+  sleep 2; stop flood
+  agree flood claude codex grok muse || return 1
+  echo "ok flood: 400 connections, nested and endless lines; the node stayed up and the chain moved"
+}
+
 # one agent's model is compromised (votes no on everything) or dead (silent)
 scenario_bad_model() {
   behavior=$1 port=$2
@@ -578,6 +629,8 @@ run() {
     network) scenario_network ;;
     ci) scenario_ci ;;
     cifail) scenario_cifail ;;
+    ciflood) scenario_ciflood ;;
+    flood) scenario_flood ;;
     policy) scenario_policy ;;
     model) scenario_model ;;
     stuck) scenario_stuck ;;
@@ -589,7 +642,7 @@ run() {
   esac
 }
 
-ALL="bidders bidder-fallback bidder-timeout happy crash equivocate double-vote silent bad-sig withhold bad-tree deny silent-model policy model stuck limit limit-cli prune epoch network ci cifail"
+ALL="bidders bidder-fallback bidder-timeout happy crash equivocate double-vote silent bad-sig withhold bad-tree deny silent-model policy model stuck limit limit-cli prune epoch network ci cifail ciflood flood"
 want=${*:-$ALL}
 pids=""
 for s in $want; do (run "$s" > "$ROOT/$s.result" 2>&1; echo $? > "$ROOT/$s.code") & pids="$pids $!"; done

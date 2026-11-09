@@ -60,6 +60,9 @@ let random_hex n = hex (Cryptokit.Random.string (Lazy.force rng) n)
 let chain_id = ref ""
 let pubkeys : (string, Cryptokit.RSA.key) Hashtbl.t = Hashtbl.create 8
 let max_tx_bytes = 256 * 1024
+(* the most a job (a model's reply, a CI check) may print: well past any
+   reply a transaction can carry *)
+let max_job_output = 16 * max_tx_bytes
 
 let strings_json l = `List (List.map (fun s -> `String s) l)
 let json_strings = function `List l -> List.map (function `String s -> s | _ -> raise Exit) l | _ -> raise Exit
@@ -69,8 +72,26 @@ let tx_bytes agent nonce fields =
 
 let all_digits s = s <> "" && String.length s < 18 && String.for_all (fun c -> c >= '0' && c <= '9') s
 
+(* JSON nested at most [max] deep, by one cheap pass that skips strings.
+   Messages and transactions are flat (an object of strings and one list of
+   strings), and they're parsed before their signature can be checked: a
+   peer with no key could otherwise send a line of "[[[[..." that takes
+   gigabytes to parse. *)
+let shallow_json ?(max = 4) s =
+  let depth = ref 0 and ok = ref true and in_str = ref false and esc = ref false in
+  String.iter (fun c ->
+      if !ok then
+        if !in_str then (if !esc then esc := false else if c = '\\' then esc := true else if c = '"' then in_str := false)
+        else match c with
+          | '"' -> in_str := true
+          | '[' | '{' -> incr depth; if !depth > max then ok := false
+          | ']' | '}' -> decr depth
+          | _ -> ())
+    s;
+  !ok
+
 let decode_tx raw =
-  if String.length raw > max_tx_bytes then []
+  if String.length raw > max_tx_bytes || not (shallow_json raw) then []
   else
     try
       let j = Yojson.Safe.from_string raw in
@@ -214,9 +235,9 @@ let apply_edits dir edits =
 
 (* A modified file as edits, one per hunk of git's diff, when replaying them
    on the old content gives the new; otherwise one whole-file write. *)
-let hunk_edits dir p before now =
+let hunk_edits g p before now =
   let whole = [ (p, "", now) ] in
-  let ok, d = git dir [ "diff"; "--cached"; "-U3"; "--no-color"; "--no-ext-diff"; "HEAD"; "--"; p ] in
+  let ok, d = g [ "diff"; "--cached"; "-U3"; "--no-color"; "--no-ext-diff"; "HEAD"; "--"; p ] in
   if not ok then whole
   else begin
     let hunks = ref [] and cur = ref None and bad = ref false in
@@ -248,28 +269,45 @@ let hunk_edits dir p before now =
    new empty ones, can't be said as edits: they're listed as skipped. What
    the repository ignores (a build's output, from the model's soma build) is
    no part of it. Applying edits (check_tree, merges) still takes every path
-   the edits name, ignored or not, so the tree doesn't hang on .gitignore. *)
+   the edits name, ignored or not, so the tree doesn't hang on .gitignore.
+
+   The checkout is the model's to write, so nothing in it is trusted:
+   - contents come from git's index, never the filesystem, and only regular
+     files count: a symlink (mode 120000) would otherwise make the node read
+     whatever it points at (a key, a login) into a signed bid;
+   - with PANTHEON_GITDIR (the node made the checkout with its repository
+     outside it), git runs on that repository, not on the checkout's .git,
+     whose config a model could fill with commands (core.fsmonitor, filters);
+     either way core.fsmonitor is off. *)
 let edits_of_checkout dir =
-  if not (git_ok dir [ "add"; "-A" ]) then Error (dir ^ " is not a git checkout")
+  let gd = match Sys.getenv_opt "PANTHEON_GITDIR" with Some g when g <> "" -> [ "--git-dir=" ^ g; "--work-tree=." ] | _ -> [] in
+  let git dir args = git dir ("-c" :: "core.fsmonitor=false" :: gd @ args) in
+  if not (fst (git dir [ "add"; "-A" ])) then Error (dir ^ " is not a git checkout")
   else
-    let ok, out = git dir [ "diff"; "--cached"; "--no-renames"; "--name-status"; "-z"; "HEAD" ] in
+    let ok, out = git dir [ "diff"; "--cached"; "--no-renames"; "--raw"; "-z"; "HEAD" ] in
     if not ok then Error "git diff failed"
     else
-      let rec pairs = function st :: p :: r -> (st, p) :: pairs r | _ -> [] in
+      (* --raw -z: ":OLDMODE NEWMODE OLDSHA NEWSHA STATUS" NUL "PATH" NUL *)
+      let rec pairs = function meta :: p :: r -> (meta, p) :: pairs r | _ -> [] in
       let skipped = ref [] in
+      let blob spec = let ok, c = git dir [ "cat-file"; "blob"; spec ] in if ok then Some c else None in
       let edits =
-        List.concat_map (fun (st, p) ->
-            let f = Filename.concat dir p in
+        List.concat_map (fun (meta, p) ->
+            let f = String.split_on_char ' ' meta in
+            let st = if List.length f >= 5 then List.nth f 4 else "?" and mode = if List.length f >= 2 then List.nth f 1 else "" in
             match st.[0] with
             | 'D' -> [ (p, "", "") ]
             | ('A' | 'M') when not (safe_path p) -> skipped := p :: !skipped; []
-            | 'A' | 'M' ->
-                let now = read_file f in
-                if String.contains now '\000' then (skipped := p :: !skipped; [])
-                else if st.[0] = 'A' then (if now = "" then (skipped := p :: !skipped; []) else [ (p, "", now) ])
-                else
-                  let before = snd (git dir [ "show"; "HEAD:" ^ p ]) in
-                  if now = "" then [ (p, before, "") ] else hunk_edits dir p before now
+            | ('A' | 'M') when mode <> "100644" && mode <> "100755" -> skipped := p :: !skipped; []
+            | 'A' | 'M' -> (
+                match blob (":" ^ p) with
+                | None -> skipped := p :: !skipped; []
+                | Some now ->
+                    if String.contains now '\000' then (skipped := p :: !skipped; [])
+                    else if st.[0] = 'A' then (if now = "" then (skipped := p :: !skipped; []) else [ (p, "", now) ])
+                    else
+                      let before = Option.value ~default:"" (blob ("HEAD:" ^ p)) in
+                      if now = "" then [ (p, before, "") ] else hunk_edits (git dir) p before now)
             | _ -> skipped := p :: !skipped; [])
           (pairs (List.filter (( <> ) "") (String.split_on_char '\000' out)))
       in
@@ -430,7 +468,13 @@ let cmd_init args =
 type peer = { name : string; addr : string; mutable out : Unix.file_descr option; mutable connecting : bool;
               obuf : Buffer.t; mutable next_try : float }
 
-type conn = { fd : Unix.file_descr; ibuf : Buffer.t }
+type conn = { fd : Unix.file_descr; ibuf : Buffer.t; host : string; mutable last : float }
+
+(* inbound connections: peers are a handful, so these are generous *)
+let max_conns = 64
+let max_conns_per_host = 16
+(* a line's longest: a proposal of max_block_txs transactions, quoted *)
+let max_line = 2 * max_tx_bytes * 60
 
 type job = { jfd : Unix.file_descr; jpid : int; jbuf : Buffer.t; jdone : string -> unit; jstarted : float; jlimit : float; jclean : unit -> unit }
 
@@ -699,6 +743,11 @@ and node init step home flags =
   in
   (* jobs the node stopped for running past their time limit *)
   let overtime = Hashtbl.create 8 in
+  (* jobs stopped for printing more than any reply can be: the node holds a
+     job's output in memory, and a check that prints forever (a bid's test
+     running `yes`) would otherwise take the node down with it *)
+  let flooded = Hashtbl.create 8 in
+  let cut = Hashtbl.create 8 in
   let start_job ?(limit = 600.) prog args ~stdin_text ~env ~on_done ~clean =
     let inp = Filename.temp_file "pantheon-in" ".txt" in
     write_file inp stdin_text;
@@ -842,12 +891,18 @@ and node init step home flags =
         let extra, clean, limit =
           match kind, ctx with
           | "patch", r :: _ when List.exists (fun (n, _, _, _) -> n = r) repos ->
+              (* the checkout is the model's; its repository stays outside it,
+                 readable by the model but not writable, and the node's own git
+                 (pantheon edits) uses that, never the checkout's .git *)
               let wt = Filename.temp_dir "pantheon-work" "" in
+              let gd = wt ^ ".git" in
+              let gone () = remove_tree_later wt; remove_tree_later gd in
               let commit = git_out (rdir r) [ "rev-parse"; "HEAD" ] in
-              if fst (capture "git" [ "clone"; "--quiet"; "--shared"; "--no-checkout"; rdir r; wt ]) && git_ok wt [ "checkout"; "-q"; "--detach"; commit ] then
-                ([ "PANTHEON_WORKTREE=" ^ wt; "PANTHEON_REPO=" ^ r; "PANTHEON_BIN=" ^ Sys.executable_name ],
-                 (fun () -> remove_tree_later wt), 1800.)
-              else ([], (fun () -> remove_tree_later wt), 600.)
+              if fst (capture "git" [ "clone"; "--quiet"; "--shared"; "--no-checkout"; "--separate-git-dir=" ^ gd; rdir r; wt ])
+                 && git_ok wt [ "checkout"; "-q"; "--detach"; commit ] then
+                ([ "PANTHEON_WORKTREE=" ^ wt; "PANTHEON_GITDIR=" ^ gd; "PANTHEON_REPO=" ^ r; "PANTHEON_BIN=" ^ Sys.executable_name ],
+                 gone, 1800.)
+              else ([], gone, 600.)
           | _ -> ([], ignore, 600.)
         in
         start_job ~limit (String.sub b 4 (String.length b - 4)) [] ~stdin_text:prompt ~env:(Array.append (Array.of_list extra) (model_env ())) ~on_done:reply ~clean
@@ -904,11 +959,20 @@ and node init step home flags =
                 if not ok then say "CI for request %s said: %s" id (String.map (fun c -> if c = '\n' then ' ' else c) t);
                 (* over budget is the bid's fault, but say which budget: docker ends
                    a container that passes its memory with 137, timeout with 124 *)
+                (* how the check ended, from the node's own "!process failed (HOW): "
+                   prefix: the output after it is the bid's, and could say anything *)
+                let how =
+                  let pre = "!process failed (" in
+                  let lp = String.length pre in
+                  if String.length t > lp && String.sub t 0 lp = pre then
+                    match String.index_from_opt t lp ')' with Some i -> String.sub t lp (i - lp) | None -> ""
+                  else "" in
                 let why =
                   if ok then ""
                   else if docker_down then "node problem: " ^ (if !ci_sandbox <> "" then "ci-sandbox: " else "docker: ") ^ t
-                  else if contains t "(exit 137)" then "CI went over its memory budget (" ^ !ci_memory ^ ", no swap): the build needs less memory than that to merge"
-                  else if contains t "(exit 124)" then "CI went over its time budget: the build has to finish within the limit its CI command gives"
+                  else if contains how "printed more than" then "CI " ^ how ^ ": a check has to print less than that"
+                  else if how = "exit 137" then "CI went over its memory budget (" ^ !ci_memory ^ ", no swap): the build needs less memory than that to merge"
+                  else if how = "exit 124" then "CI went over its time budget: the build has to finish within the limit its CI command gives"
                   else begin
                     (* the end of what CI said, where its error is: a rejection carries it to
                        the next bidder, who otherwise can't see why bids keep failing *)
@@ -1056,6 +1120,7 @@ and node init step home flags =
   let last_rebroadcast = ref 0. and last_inbox = ref 0. in
   let close_peer p = (match p.out with Some fd -> (try Unix.close fd with _ -> ()) | None -> ()); p.out <- None; p.connecting <- false; Buffer.clear p.obuf in
   let on_line line =
+    if shallow_json line then
     try
       let j = Yojson.Safe.from_string line in
       let from = to_string (member "from" j) and fields = json_strings (member "fields" j) and sg = to_string (member "sig" j) in
@@ -1119,18 +1184,36 @@ and node init step home flags =
     List.iter (fun (_, ev) -> push ev) (List.sort compare due);
     (* model calls that ran too long *)
     List.iter (fun j -> if now -. j.jstarted > j.jlimit && not (Hashtbl.mem overtime j.jpid) then begin
-        Hashtbl.replace overtime j.jpid j.jlimit; (try Unix.kill j.jpid Sys.sigkill with _ -> ()) end) !jobs;
+        Hashtbl.replace overtime j.jpid j.jlimit; Hashtbl.replace cut j.jpid (); (try Unix.kill j.jpid Sys.sigkill with _ -> ()) end) !jobs;
     drain ();
     let wait = List.fold_left (fun m (t, _) -> min m (t -. now)) 0.2 !timers |> max 0. in
     let reads = listener :: List.map (fun c -> c.fd) !conns @ List.map (fun j -> j.jfd) !jobs in
     let writes = List.filter_map (fun p -> match p.out with Some fd when p.connecting || Buffer.length p.obuf > 0 -> Some fd | _ -> None) peers in
-    let r, w, _ = try Unix.select reads writes [] wait with Unix.Unix_error (EINTR, _, _) -> ([], [], []) in
+    (* a failed select (a descriptor past FD_SETSIZE, EBADF) waits a moment
+       and goes round again rather than ending the node *)
+    let r, w, _ = try Unix.select reads writes [] wait with
+      | Unix.Unix_error (EINTR, _, _) -> ([], [], [])
+      | Unix.Unix_error (e, _, _) -> say "select failed (%s): %d connections" (Unix.error_message e) (List.length !conns); Unix.sleepf 0.2; ([], [], []) in
     List.iter (fun fd ->
-        if fd = listener then begin
-          let c, _ = Unix.accept ~cloexec:true listener in
-          Unix.set_nonblock c;
-          conns := { fd = c; ibuf = Buffer.create 4096 } :: !conns
-        end)
+        if fd = listener then
+          match Unix.accept ~cloexec:true listener with
+          | exception Unix.Unix_error _ -> ()   (* out of descriptors, or the peer gave up *)
+          | c, addr ->
+              let host = match addr with Unix.ADDR_INET (a, _) -> Unix.string_of_inet_addr a | _ -> "" in
+              (* a few connections per address and a few dozen in all, so a
+                 peer with no key can't use up the node's descriptors; when
+                 full, the one quiet longest makes room (a real peer
+                 reconnects) *)
+              if List.length (List.filter (fun x -> x.host = host) !conns) >= max_conns_per_host then Unix.close c
+              else begin
+                if List.length !conns >= max_conns then begin
+                  let oldest = List.fold_left (fun o x -> if x.last < o.last then x else o) (List.hd !conns) !conns in
+                  (try Unix.close oldest.fd with _ -> ());
+                  conns := List.filter (fun x -> x != oldest) !conns
+                end;
+                Unix.set_nonblock c;
+                conns := { fd = c; ibuf = Buffer.create 4096; host; last = now } :: !conns
+              end)
       r;
     let buf = Bytes.create 65536 in
     conns := List.filter (fun c ->
@@ -1139,13 +1222,19 @@ and node init step home flags =
           match Unix.read c.fd buf 0 65536 with
           | 0 -> Unix.close c.fd; false
           | n ->
-              Buffer.add_subbytes c.ibuf buf 0 n;
-              let s = Buffer.contents c.ibuf in
-              let parts = String.split_on_char '\n' s in
-              let rec take = function [ rest ] -> rest | l :: more -> on_line l; take more | [] -> "" in
-              let rest = take parts in
-              Buffer.clear c.ibuf;
-              if String.length rest > 2 * max_tx_bytes * 60 then (Unix.close c.fd; false) else (Buffer.add_string c.ibuf rest; true)
+              c.last <- now;
+              (* only the new bytes are looked at for a line's end, so a long
+                 line costs its length once, not once per read *)
+              (match Bytes.index_opt (Bytes.sub buf 0 n) '\n' with
+               | None -> Buffer.add_subbytes c.ibuf buf 0 n
+               | Some _ ->
+                   Buffer.add_subbytes c.ibuf buf 0 n;
+                   let s = Buffer.contents c.ibuf in
+                   let parts = String.split_on_char '\n' s in
+                   let rec take = function [ rest ] -> rest | l :: more -> on_line l; take more | [] -> "" in
+                   let rest = take parts in
+                   Buffer.clear c.ibuf; Buffer.add_string c.ibuf rest);
+              if Buffer.length c.ibuf > max_line then (Unix.close c.fd; false) else true
           | exception Unix.Unix_error ((EAGAIN | EWOULDBLOCK), _, _) -> true
           | exception _ -> (try Unix.close c.fd with _ -> ()); false)
       !conns;
@@ -1153,7 +1242,18 @@ and node init step home flags =
        callback may start the next job *)
     let finished = ref [] in
     jobs := List.filter (fun j ->
-        if not (List.mem j.jfd r) then true
+        (* a job the node stopped (too long, too much output) ends now: its
+           children may still hold the pipe open (a check's shell killed, the
+           `yes` it ran still writing), and waiting for the pipe to close would
+           hold the job, and the CI turn, forever *)
+        if Hashtbl.mem cut j.jpid then begin
+          Hashtbl.remove cut j.jpid;
+          (try Unix.close j.jfd with _ -> ());
+          let _, status = Unix.waitpid [] j.jpid in
+          finished := (j, status) :: !finished;
+          false
+        end
+        else if not (List.mem j.jfd r) then true
         else
           match Unix.read j.jfd buf 0 65536 with
           | 0 ->
@@ -1161,14 +1261,23 @@ and node init step home flags =
               let _, status = Unix.waitpid [] j.jpid in
               finished := (j, status) :: !finished;
               false
-          | n -> Buffer.add_subbytes j.jbuf buf 0 n; true
+          | n ->
+              Buffer.add_subbytes j.jbuf buf 0 n;
+              if Buffer.length j.jbuf > max_job_output then begin
+                (* keep the end, which is what a failed check's message shows *)
+                let tail = Buffer.sub j.jbuf (Buffer.length j.jbuf - 65536) 65536 in
+                Buffer.clear j.jbuf; Buffer.add_string j.jbuf tail;
+                if not (Hashtbl.mem flooded j.jpid) then begin
+                  Hashtbl.replace flooded j.jpid (); Hashtbl.replace cut j.jpid (); (try Unix.kill j.jpid Sys.sigkill with _ -> ()) end
+              end;
+              true
           | exception _ -> true)
       !jobs;
     List.iter (fun (j, status) ->
         let out = Buffer.contents j.jbuf in
         (* the reply first: codex's is a file that cleaning removes *)
         (match status with
-         | Unix.WEXITED 0 -> j.jdone (if out = "" then "pending" else out)
+         | Unix.WEXITED 0 when not (Hashtbl.mem flooded j.jpid) -> j.jdone (if out = "" then "pending" else out)
          | _ -> let n = String.length out in
                 (* how it ended: CI tells an exceeded budget (137, 124) from a broken build by it *)
                 (* OCaml numbers signals its own way (SIGKILL is -7): say their names *)
@@ -1176,12 +1285,14 @@ and node init step home flags =
                                  else if sg = Sys.sigsegv then "SIGSEGV" else if sg = Sys.sigabrt then "SIGABRT"
                                  else if sg = Sys.sigint then "SIGINT" else Printf.sprintf "signal %d" sg in
                 let how = match status with
+                  | _ when Hashtbl.mem flooded j.jpid ->
+                      Printf.sprintf "it printed more than %d MB, so the node stopped it" (max_job_output / 1048576)
                   | Unix.WEXITED c -> Printf.sprintf "exit %d" c
                   | Unix.WSIGNALED _ when Hashtbl.mem overtime j.jpid ->
                       Printf.sprintf "it ran past its time limit of %.0f s, so the node stopped it" (Hashtbl.find overtime j.jpid)
                   | Unix.WSIGNALED sg -> "killed by " ^ signame sg
                   | Unix.WSTOPPED sg -> "stopped by " ^ signame sg in
-                Hashtbl.remove overtime j.jpid;
+                Hashtbl.remove overtime j.jpid; Hashtbl.remove flooded j.jpid;
                 j.jdone (Printf.sprintf "!process failed (%s): %s" how (if n > 3000 then "..." ^ String.sub out (n - 3000) 3000 else out)));
         j.jclean ())
       (List.rev !finished);

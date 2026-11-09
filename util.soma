@@ -45,11 +45,24 @@ Fixpoint digits (s : string) (acc : nat) : nat :=
 (** a decimal number; anything that isn't one reads as some number, never fails *)
 num (s : string) : nat := digits s 0.
 
-(** A nonempty decimal number from an untrusted message. *)
+(** at most k characters, every one a decimal digit *)
+Fixpoint short_digits (s : string) (k : nat) : bool :=
+  match s with
+  | SNil => true
+  | SCons c r => match k with
+                 | 0 => false
+                 | Succ k' => (48 <=? nat_of_ascii c) && (nat_of_ascii c <=? 57) && short_digits r k'
+                 end
+  end.
+
+(** A nonempty decimal number from an untrusted message, of up to 18 digits
+    (it fits an OCaml int). It's read in one pass: the standard library's
+    Nat.of_uint counts up in unary once extracted, so a peer's
+    "999999999999999999" would stop the node for good. *)
 num_opt (s : string) : option nat :=
   match s with
   | SNil => None
-  | _ => match NilEmpty.uint_of_string s with Some n => Some (Nat.of_uint n) | None => None end
+  | _ => if short_digits s 18 then Some (num s) else None
   end.
 
 show (n : nat) : string := to_string n.

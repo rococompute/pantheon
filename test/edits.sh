@@ -83,4 +83,26 @@ echo '["dup.txt", "same\n", "other\n"]' > "$T/e5.json"
 echo '["a.txt", "not there\n", "x"]' > "$T/e6.json"
 "$BIN" apply-edits "$T/bad" "$T/e6.json" >/dev/null 2>&1 && fail "applied an edit whose old text is missing" || ok "missing old text refused"
 
+# the checkout is the model's: a symlink in it must not bring what it points at
+# into the bid (a node's key), whether the model made it or a diff did
+printf 'PRIVATE-KEY-DATA\n' > "$T/secret"
+g clone -q "$T/origin" "$T/link"
+ln -s "$T/secret" "$T/link/notes.txt"; ln -sf "$T/secret" "$T/link/sub/d.txt"
+"$BIN" edits "$T/link" "links" > "$T/link.json" || fail "pantheon edits failed on a checkout with symlinks"
+grep -q PRIVATE-KEY-DATA "$T/link.json" && fail "a symlink's target went into the edits" || ok "symlinks don't bring their targets into a bid"
+jq -e '.note | test("notes.txt")' "$T/link.json" >/dev/null && ok "a symlink is reported as skipped" || fail "a symlink wasn't reported: $(cat "$T/link.json")"
+
+# ... nor can its .git run commands as the node: with PANTHEON_GITDIR (the
+# node keeps the repository outside the checkout), the checkout's own .git and
+# its config (core.fsmonitor, a clean filter) are never read
+g clone -q --separate-git-dir="$T/hostile.git" "$T/origin" "$T/hostile"
+rm "$T/hostile/.git"; g init -q "$T/hostile-own" && mv "$T/hostile-own/.git" "$T/hostile/.git"
+git -C "$T/hostile" config core.fsmonitor "touch $T/pwned-fsmonitor; false"
+git -C "$T/hostile" config filter.x.clean "touch $T/pwned-filter; cat"
+printf '* filter=x\n' > "$T/hostile/.git/info/attributes"
+printf 'changed\n' >> "$T/hostile/a.txt"
+PANTHEON_GITDIR="$T/hostile.git" "$BIN" edits "$T/hostile" "hostile" > "$T/hostile.json" || fail "pantheon edits failed with PANTHEON_GITDIR"
+[ ! -e "$T/pwned-fsmonitor" ] && [ ! -e "$T/pwned-filter" ] && ok "a checkout's .git config runs nothing" || fail "a checkout's .git config ran a command"
+jq -e '[.edits[].path] == ["a.txt"]' "$T/hostile.json" >/dev/null && ok "edits come from the node's repository" || fail "edits with PANTHEON_GITDIR: $(cat "$T/hostile.json")"
+
 [ $fails -eq 0 ] && echo PASS || { echo "$fails failed"; exit 1; }

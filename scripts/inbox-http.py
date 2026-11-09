@@ -14,6 +14,8 @@ creates it. The API, as an agent sees it, is in deploy/cloud/agent.md, and
 GET /v1/instructions serves it with the agent's name and URL filled in.
 """
 import hashlib, hmac, http.server, io, json, os, re, subprocess, sys, tarfile, time, secrets, threading
+# a diff line that makes or keeps a symlink (120000) or a submodule (160000)
+LINK_MODE = re.compile(r'^(?:new file mode|new mode|index [0-9a-f]+\.\.[0-9a-f]+) (?:120000|160000)$', re.M)
 
 ID = re.compile(r'^[0-9]+-[0-9a-f]+$')
 WAIT_MAX = 55            # Cloudflare ends a response at 100 s
@@ -234,6 +236,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
                              'so new files are in it) as "diff"; or POST /v1/skip/%s' % rid)
         if not note:
             return self.fail(400, 'no note: say in one line what you changed, as "note"')
+        # only regular files: a symlink would make the node read whatever it
+        # points at (its keys) into the bid; a submodule isn't a file at all
+        if LINK_MODE.search(diff):
+            return self.fail(400, 'the diff makes a symlink or a submodule (mode 120000 or 160000): bids carry regular files only; '
+                             'send the file itself instead')
         wt = read(os.path.join(r, 'worktree')).strip()
         if os.path.exists(os.path.join(r, 'done')):
             return self.fail(409, 'request %s was already handed in' % rid, 'GET /v1/wait')

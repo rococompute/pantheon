@@ -1,6 +1,15 @@
 (** What is proved about consensus, so far. Each theorem here is checked
     whenever consensus.soma is built. docs/PROOFS.md lists what to prove next. *)
 
+(** Peer messages' numbers: digits only, at most 18 of them, so a Byzantine
+    node's "999...9" is refused before it's read (docs/SECURITY-REVIEW.md, C2). *)
+Example num_opt_reads_digits : num_opt "120" = Some 120.
+Proof. reflexivity. Qed.
+Example num_opt_refuses_19_digits : num_opt "9999999999999999999" = None.
+Proof. reflexivity. Qed.
+Example num_opt_refuses_non_digits : num_opt "12a" = None /\ num_opt "" = None /\ num_opt "-1" = None.
+Proof. split; [|split]; reflexivity. Qed.
+
 (** Two quorums share at least f + 1 validators, so at least one honest one:
     the arithmetic Tendermint's safety rests on. An honest validator doesn't
     precommit two values in one round, so two values can't both gather a

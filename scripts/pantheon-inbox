@@ -28,6 +28,10 @@ case ${1:-} in ''|-h|--help|help) ;; *)
   [ -d "$INBOX" ] || { echo "pantheon-inbox: no inbox at $INBOX: set PANTHEON_INBOX to your inbox (some agent CLIs drop it from the environment their commands get: use the wrapper your instructions name)" >&2; exit 1; } ;;
 esac
 die() { echo "pantheon-inbox: $*" >&2; exit 1; }
+# bids carry regular files only: a symlink would make the node read whatever it
+# points at (its keys) into the bid, and a submodule isn't a file at all
+no_links() { ! grep -Eq '^(new file mode|new mode|index [0-9a-f]+\.\.[0-9a-f]+) (120000|160000)$' "$1" \
+  || die "$2 makes a symlink or a submodule (mode 120000 or 160000): bids carry regular files only. Have the worker commit the file itself"; }
 req() {
   printf '%s' "$1" | grep -Eqx '[0-9]+-[0-9a-f]+' || die "no request $1: ids look like 1794091815-1a2b3c4d (pantheon-inbox list)"
   r=$INBOX/$1
@@ -130,12 +134,14 @@ case ${1:-} in
         mb=$(git -C "$wt" merge-base "$tip" "$base" 2>/dev/null) || die "$3 doesn't share history with $branch: it wasn't started from $branch"
         git -C "$wt" diff --binary "$mb" "$tip" > "$r/pulled.diff"
         [ -s "$r/pulled.diff" ] || die "$3 has no change on top of $branch ($(git -C "$wt" rev-parse --short "$mb"))"
+        no_links "$r/pulled.diff" "$3's change"
         out=$(git -C "$wt" apply --3way "$r/pulled.diff" 2>&1) || die "$3's change doesn't apply to your checkout: $out"
         git -C "$wt" reset -q; git -C "$wt" status --short | head -40
         echo "applied $3's change (since $(git -C "$wt" rev-parse --short "$mb")). Check it (pantheon-inbox check $id), then: pantheon-inbox done $id \"note\"" ;;
       apply)
         f=${3:--}; [ "$f" = - ] && { cat > "$r/applied.diff"; f=$r/applied.diff; }
         [ -s "$f" ] || die "the diff is empty"
+        no_links "$f" "the diff"
         out=$(git -C "$wt" apply --3way "$f" 2>&1) || die "the diff doesn't apply to your checkout ($head): $out"
         git -C "$wt" reset -q; git -C "$wt" status --short | head -40
         echo "applied. Check it (pantheon-inbox check $id), then: pantheon-inbox done $id \"note\"" ;;

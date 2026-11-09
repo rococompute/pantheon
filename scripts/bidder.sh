@@ -126,5 +126,7 @@ esac
 # build is close to a GB)
 [ -n "${BIDDER_USER:-}" ] && as_bidder chmod -R a+rwX . 2>/dev/null
 # no change and no note: the model never ran (a limit, a lapsed login)
-[ -z "$note" ] && [ -z "$(git status --porcelain 2>/dev/null)" ] && gave_up
+# (git on the node's repository for the checkout, never the checkout's own
+# .git, which the model could have pointed at a config that runs commands)
+[ -z "$note" ] && [ -z "$(GIT_DIR=${PANTHEON_GITDIR:-.git} GIT_WORK_TREE=. git -c core.fsmonitor=false status --porcelain 2>/dev/null)" ] && gave_up
 exec "$PANTHEON_BIN" edits . "$note"
