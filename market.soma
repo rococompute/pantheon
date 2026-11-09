@@ -231,9 +231,11 @@ settle (m : obj) : obj * list (list string) :=
       else (m, [])
   end.
 
-(** hashing v at most 64 times reaches the agent's last revealed link *)
-Fixpoint reaches (v tip : string) (k : nat) : bool :=
-  match k with 0 => false | Succ k' => let x := sha256 v in seq x tip || reaches x tip k' end.
+(** v is the link just before the agent's tip: hashed once, not up to 64
+    times, so an agent has one value to reveal in each draw and can't choose
+    the seed among older links (docs/SECURITY-REVIEW-2.md P-8; market.proof
+    accepted_reveals_for_a_draw_are_equal) *)
+next_link (v tip : string) : bool := seq (sha256 v) tip.
 
 (** One transaction's effect. A string is the reason it failed, "" for none. *)
 apply (m : obj) (a : string) (fields : list string) : obj * list (list string) * string :=
@@ -250,6 +252,7 @@ apply (m : obj) (a : string) (fields : list string) : obj * list (list string) *
                           end in
       if negb lead then fail "only the term leader posts tasks"
       else if seq s "" then fail "empty task, or no repository named: post REPO SPEC [CONTEXT-PATH...]"
+      else if negb (plain_text s) then fail "a task's spec has a NUL or control character"
       else if negb (existsb (fun x => seq (fst x) r) (repos m)) then fail "no such repository"
       else if (8 <? length ctx) || negb (forallb safe_path ctx) then fail "context is up to 8 safe paths"
       else if param m "max_open_tasks" <=? length (open_tasks m) then fail "too many open tasks"
@@ -259,6 +262,7 @@ apply (m : obj) (a : string) (fields : list string) : obj * list (list string) *
                                            trepo := r; tctx := ctx |}]))
   | "bid" :: t :: v :: n :: es =>
       let w := triples es in
+      if negb (plain_text n) then fail "a bid's note has a NUL or control character" else
       match task_by m (num t) with
       | None => fail "no such task"
       | Some tk =>
@@ -317,6 +321,7 @@ apply (m : obj) (a : string) (fields : list string) : obj * list (list string) *
       | _, _ => fail "nothing to attest"
       end
   | ["reject", i, why] =>
+      if negb (plain_text why) then fail "a rejection's reason has a NUL or control character" else
       match bid_by m (num i) with
       | Some b => if lead && is_pending (bst b) && negb (bidn b =? pending_bid_id m)
                   then ok (count (set_bid m (with_status b Rejected why)) (bidder b) "rejected") else fail "can't reject that bid"
@@ -336,7 +341,7 @@ apply (m : obj) (a : string) (fields : list string) : obj * list (list string) *
   | ["reveal", v] =>
       if negb (awaiting m) then fail "no draw under way"
       else if existsb (fun r => seq (fst r) a) (reveals m) then fail "already revealed"
-      else if negb (reaches v (get_or "" a (tips m)) 64) then fail "not a link of this agent's hash chain"
+      else if negb (next_link v (get_or "" a (tips m))) then fail "not a link of this agent's hash chain"
       else ok (setf (setf m "reveals" (reveals m ++ [(a, v)])) "tips" (put a v (tips m)))
   | _ => fail "unknown transaction"
   end.

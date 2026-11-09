@@ -54,4 +54,39 @@ git init -q --bare -b main "$T/rel.git"; git -C "$T/seed" push -q "$T/rel.git" m
 git -C "$T/n2/repos/calc" remote set-url origin ../../../rel.git
 sh scripts/mirror.sh "$T/n2" > "$T/out" 2>&1 || fail "mirror.sh with a relative origin failed: $(cat "$T/out")"
 [ "$(git -C "$T/rel.git" rev-parse main)" = "$(git -C "$T/n2/repos/calc" rev-parse HEAD)" ] || fail "mirror.sh didn't publish to the relative origin's main"
+# Local non-bare destinations: the sandbox uses this same publish path.
+g clone -q "$T/seed" "$T/checkout"
+pub "$T/n1/repos/calc" "$T/checkout" > "$T/out" 2>&1 || fail "checkout fast-forward: $(cat "$T/out")"
+[ "$(git -C "$T/checkout" rev-parse main)" = "$(head1)" ] || fail "checkout didn't fast-forward main"
+[ "$(cat "$T/checkout/a.txt")" = ours ] || fail "checkout work tree didn't fast-forward"
+( cd "$T/checkout" && printf 'local\n' > local.txt && g add -A && g commit -qm local )
+local_head=$(git -C "$T/checkout" rev-parse HEAD)
+merge next.txt next
+pub "$T/n1/repos/calc" "$T/checkout" > "$T/out" 2>&1 || fail "checkout merge: $(cat "$T/out")"
+for parent in "$local_head" "$(head1)"; do
+  git -C "$T/checkout" merge-base --is-ancestor "$parent" HEAD || fail "checkout merge lost a parent"
+done
+[ "$(git -C "$T/checkout" show -s --format=%P HEAD | wc -w)" -eq 2 ] || fail "no merge commit"
+[ -f "$T/checkout/local.txt" ] && [ -f "$T/checkout/next.txt" ] || fail "merge work tree lost a side"
+printf 'dirty\n' >> "$T/checkout/a.txt"
+printf 'untracked\n' > "$T/checkout/untracked"
+g -C "$T/checkout" add a.txt
+before=$(git -C "$T/checkout" rev-parse HEAD)
+git -C "$T/checkout" diff HEAD > "$T/dirty"
+status=$(git -C "$T/checkout" status --porcelain)
+pub "$T/n1/repos/calc" "$T/checkout" > "$T/out" 2>&1
+[ "$(git -C "$T/checkout" rev-parse HEAD)" = "$before" ] || fail "dirty HEAD moved"
+git -C "$T/checkout" diff HEAD > "$T/after"
+cmp "$T/dirty" "$T/after" && [ "$status" = "$(git -C "$T/checkout" status --porcelain)" ] && [ "$(cat "$T/checkout/untracked")" = untracked ] || fail "dirty work changed"
+grep -F "$T/checkout" "$T/out" | grep -q 'uncommitted changes' || fail "no dirty checkout message"
+git -C "$T/checkout" reset -q --hard HEAD
+rm "$T/checkout/untracked"
+( cd "$T/checkout" && printf 'local conflict\n' > a.txt && g commit -qam conflict )
+before=$(git -C "$T/checkout" rev-parse HEAD)
+merge a.txt 'market conflict'
+pub "$T/n1/repos/calc" "$T/checkout" > "$T/out" 2>&1
+[ "$(git -C "$T/checkout" rev-parse HEAD)" = "$before" ] && [ "$(cat "$T/checkout/a.txt")" = 'local conflict' ] && [ -z "$(git -C "$T/checkout" status --porcelain)" ] || fail "conflicting checkout changed"
+! git -C "$T/checkout" rev-parse --verify MERGE_HEAD >/dev/null 2>&1 || fail "merge left in progress"
+grep -F "$T/checkout" "$T/out" | grep -q conflicts || fail "no conflicting checkout message"
+! git -C "$T/checkout" show-ref --verify refs/heads/pantheon/merged >/dev/null 2>&1 || fail "created pantheon/merged"
 echo "ok publish: fast-forward, a merge over a person's commit, no double merges, a conflict parked on pantheon/unmerged, relative remotes"

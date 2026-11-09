@@ -47,9 +47,12 @@ note_asked (a : obj) (key : string) : obj := setf a "asked" (firstn 500 (key :: 
     files or touches a denied path. The market already refuses unsafe paths. *)
 violation (a : obj) (m : obj) (b : bid) : string :=
   if param m "max_files" <? length (edit_paths (edits b)) then "edits too many files"
-  else match find (fun p => existsb (fun d => starts d p) (deny a)) (edit_paths (edits b)) with
+  else match find (fun p => git_meta_component p) (edit_paths (edits b)) with
        | Some p => append p " is on the denied list"
-       | None => ""
+       | None => match find (fun p => existsb (fun d => starts d p) (deny a)) (edit_paths (edits b)) with
+                 | Some p => append p " is on the denied list"
+                 | None => ""
+                 end
        end.
 
 (** Prompts. {{F}} is replaced by the shell with a fresh random token, so
@@ -189,16 +192,16 @@ on_answer (a m : obj) (data kv : list string) : obj :=
   | "draft" :: _ =>
       let t := kv_at kv "task" in
       let r := match kv_at kv "repo", repos m with "", [(r, _)] => r | r, _ => r end in
-      if seq t "" || seq t "null" then a else enqueue a ("post" :: r :: t :: firstn 8 (list_from kv "context" 0 8))
+      if seq t "" || seq t "null" then a else enqueue a ("post" :: r :: clean_text t :: firstn 8 (list_from kv "context" 0 8))
   | "patch" :: t :: v :: _ =>
       let es := edits_from kv 0 (5 * param m "max_files") in
       let r := match task_by m (num t) with Some tk => trepo tk | None => "" end in
       (* the version may have moved while the model thought: rebase when the
          patch's paths haven't changed since, and give up when they have *)
       if seq (hash_list es) (hash_list []) || existsb (changed_since m r (num v)) (edit_paths (triples es)) then a
-      else enqueue a ("bid" :: t :: show (version m) :: kv_at kv "note" :: es)
+      else enqueue a ("bid" :: t :: show (version m) :: clean_text (kv_at kv "note") :: es)
   | "pick" :: t :: cands =>
-      let a := fold_left (fun a r => if mem (fst r) cands then enqueue a ["reject", fst r, snd r] else a) (rejects_from kv 0 10) a in
+      let a := fold_left (fun a r => if mem (fst r) cands then enqueue a ["reject", fst r, clean_text (snd r)] else a) (rejects_from kv 0 10) a in
       let pick := kv_at kv "merge" in
       if mem pick cands && negb (mem pick (map fst (rejects_from kv 0 10))) then enqueue a ["merge", pick] else a
   | "attest" :: b :: tree :: _ =>
@@ -261,7 +264,7 @@ lead (a m : obj) : obj * list (list string) :=
       let good := filter (fun b => seq (violation (fst st) m b) "") cands in
       (* the policy's rejections once; the pick, again if the model failed *)
       let st := if ask_once (fst st) key
-                then (fold_left (fun a b => enqueue a ["reject", show (bidn b), append "policy: " (violation a m b)]) bad (note_asked (fst st) key), snd st)
+                then (fold_left (fun a b => enqueue a ["reject", show (bidn b), clean_text (append "policy: " (violation a m b))]) bad (note_asked (fst st) key), snd st)
                 else st in
       match good with
       | [] => st
@@ -395,7 +398,7 @@ answered (a m : obj) (id : string) (kv : list string) : obj * list (list string)
       if seq (kv_at kv "ok") "error" then abstain a kv
       else if seq (kv_at kv "ok") "true" then flush (enqueue a ["merge", b, kv_at kv "tree"]) m
       else if seq (kv_at kv "stage") "node" then abstain a kv
-      else flush (enqueue a ["reject", b,
+      else flush (enqueue a ["reject", b, clean_text
              (if seq (kv_at kv "stage") "ci" then append "CI failed on the merged tree: " (kv_at kv "why")
               else append "its edits don't apply to the head: " (kv_at kv "why"))]) m
   | Some data => flush (on_answer a m data kv) m

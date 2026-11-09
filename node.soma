@@ -20,15 +20,36 @@ with_pool (c : node_state) (v : list string) : node_state :=
 with_live (c : node_state) (v : bool) : node_state :=
   {| cons := cons c; mkt := mkt c; ag := ag c; pool := pool c; live := v |}.
 
+(** A snapshot from a completed height may remain if the process crashed
+    after syncing blocks.log. Never roll the replayed chain back. *)
+restore_cons (n : node_state) (c : consensus_state) : node_state :=
+  if height c =? height (cons n) then with_cons n c else n.
+
 empty_node : node_state :=
   {| cons := new_consensus "" [] 1; mkt := new_market []; ag := new_agent ""; pool := []; live := false |}.
 
-(** a transaction worth keeping: well formed, for a nonce not yet used *)
+(** How far ahead of an agent's next nonce the pool looks, and how many of
+    one agent's transactions it keeps (docs/SECURITY-REVIEW-2.md P-5). A block
+    only takes the next nonce, so a transaction further ahead could sit in
+    the pool for good; a flood of them would fill it. *)
+nonce_window : nat := 4.
+max_pool_per_agent : nat := 8.
+
+(** a transaction worth keeping: well formed, for a nonce not yet used and
+    at most nonce_window ahead of the sender's next *)
 poolable (m : obj) (raw : string) : bool :=
-  match decode_tx raw with a :: n :: _ => nonce_of m a <? num n | _ => false end.
+  match decode_tx raw with
+  | a :: n :: _ => (nonce_of m a <? num n) && (num n <=? nonce_of m a + nonce_window)
+  | _ => false
+  end.
+
+tx_sender (raw : string) : string := match decode_tx raw with a :: _ => a | _ => "" end.
+
+(** how many of the pool's transactions agent a sent *)
+pooled_by (p : list string) (a : string) : nat := length (filter (fun raw => seq (tx_sender raw) a) p).
 
 and_status (n : node_state) (outs : list (list string)) : node_state * list (list string) :=
-  (n, outs ++ [("status" :: status_lines (mkt n))]).
+  (n, outs ++ [("status" :: status_lines (mkt n) ++ [append "pool " (show (length (pool n)))])]).
 
 (** A decided block: apply it, drop what it used from the pool, and let the
     agent react. *)
@@ -97,12 +118,17 @@ step (n : node_state) (ev : list string) : node_state * list (list string) :=
       let n := with_live n true in
       let h := height (cons n) in
       let (a, o) := tick (ag n) (mkt n) in
-      and_status (with_ag n a) (o ++ [["height", show h], timer "commit" h 0 0])
+      if (round (cons n) =? 0) && (step (cons n) =? 0) && (lockr (cons n) =? 0) then
+        and_status (with_ag n a) (o ++ [["height", show h], timer "commit" h 0 0])
+      else
+        let (c, co) := start_round (cons n) (round (cons n) + 1) (build_block (mkt n) (pool n)) in
+        and_status (with_cons (with_ag n a) c) (o ++ [["height", show h]] ++ co)
   (* running *)
   | "msg" :: from :: fields => consensus_event n (receive (cons n) from fields)
   | "timeout" :: fields => consensus_event n (timeout (cons n) fields (build_block (mkt n) (pool n)))
   | ["tx", raw] =>
-      if mem raw (pool n) || negb (poolable (mkt n) raw) || (500 <=? length (pool n)) then (n, [])
+      if mem raw (pool n) || negb (poolable (mkt n) raw) || (500 <=? length (pool n))
+         || (max_pool_per_agent <=? pooled_by (pool n) (tx_sender raw)) then (n, [])
       else (with_pool n (pool n ++ [raw]), [])
   | "local_tx" :: fields => agent_event n (flush (enqueue (ag n) fields) (mkt n))
   | "llm_reply" :: id :: kv => agent_event n (answered (ag n) (mkt n) id kv)

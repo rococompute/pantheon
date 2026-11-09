@@ -77,14 +77,19 @@ let all_digits s = s <> "" && String.length s < 18 && String.for_all (fun c -> c
    strings), and they're parsed before their signature can be checked: a
    peer with no key could otherwise send a line of "[[[[..." that takes
    gigabytes to parse. *)
-let shallow_json ?(max = 4) s =
+(* Optional structural budget bounds object fields and array entries before
+   allocating a JSON tree. Colons, commas and containers each spend one. *)
+let shallow_json ?(max = 4) ?(max_items = max_int) s =
+  let items = ref 0 in
+  let spend () = incr items; !items <= max_items in
   let depth = ref 0 and ok = ref true and in_str = ref false and esc = ref false in
   String.iter (fun c ->
       if !ok then
         if !in_str then (if !esc then esc := false else if c = '\\' then esc := true else if c = '"' then in_str := false)
         else match c with
           | '"' -> in_str := true
-          | '[' | '{' -> incr depth; if !depth > max then ok := false
+          | '[' | '{' -> incr depth; if !depth > max || not (spend ()) then ok := false
+          | ':' | ',' -> if not (spend ()) then ok := false
           | ']' | '}' -> decr depth
           | _ -> ())
     s;
@@ -115,6 +120,15 @@ let write_file p s =
   let tmp = p ^ ".tmp" in
   Out_channel.with_open_bin tmp (fun oc -> output_string oc s);
   Unix.rename tmp p
+(* The node's own binary, as an absolute path, fixed when the program starts
+   and before anything changes directory (docs/SECURITY-REVIEW-2.md P-10):
+   started as ./main.exe, a check or a model's PANTHEON_BIN run from a
+   scratch directory would otherwise miss it. The path it was invoked as when
+   that names a file (has a /), else what the system says it is. *)
+let self_exe =
+  let e = if Array.length Sys.argv > 0 && String.contains Sys.argv.(0) '/' then Sys.argv.(0) else Sys.executable_name in
+  if Filename.is_relative e then Filename.concat (Sys.getcwd ()) e else e
+
 let rec mkdir_p d = if d <> "" && d <> "." && d <> "/" && not (Sys.file_exists d) then (mkdir_p (Filename.dirname d); Unix.mkdir d 0o755)
 (* A checkout removed in the background: one with a build in it is close to
    a GB, and removing it in the main loop stalled consensus for minutes *)
@@ -128,6 +142,22 @@ let append_line_synced p s =
       let n = Unix.write fd b 0 (Bytes.length b) in
       if n <> Bytes.length b then failwith "signed.log: short write";
       Unix.fsync fd)
+(* Atomic, synced consensus snapshots. A malformed snapshot aborts startup. *)
+let save_consensus path state =
+  let tmp = path ^ ".tmp" in
+  let oc = open_out_bin tmp in
+  Fun.protect ~finally:(fun () -> close_out oc) (fun () ->
+      Marshal.to_channel oc state [];
+      flush oc;
+      Unix.fsync (Unix.descr_of_out_channel oc));
+  Unix.rename tmp path;
+  let fd = Unix.openfile (Filename.dirname path) [Unix.O_RDONLY] 0 in
+  Fun.protect ~finally:(fun () -> Unix.close fd) (fun () -> Unix.fsync fd)
+
+let load_consensus path =
+  let ic = open_in_bin path in
+  Fun.protect ~finally:(fun () -> close_in ic) (fun () -> Marshal.from_channel ic)
+
 let read_json p = try Yojson.Safe.from_file p with _ -> fail "cannot read %s: is this a home made by `pantheon init`?" p
 let lines p = if Sys.file_exists p then String.split_on_char '\n' (read_file p) |> List.filter (( <> ) "") else []
 
@@ -147,21 +177,36 @@ let plan_open text =
   |> List.map (fun l -> if String.length l > 400 then String.sub l 0 400 ^ "..." else l)
 
 (* a path an edit may touch: also checked by the market, checked again here.
-   Nothing in a .git directory: writing there means running code. *)
+   Nothing in a .git directory: writing there means running code. Nor a
+   .gitattributes or .gitmodules in any component, in any case: they change
+   how git reads every later edit. *)
 let safe_path p =
   p <> "" && p.[0] <> '/' && not (String.contains p '\\') && not (String.contains p '\000')
-  && List.for_all (fun x -> x <> "" && x <> "." && x <> ".." && String.lowercase_ascii x <> ".git") (String.split_on_char '/' p)
+  && List.for_all (fun x -> x <> "" && x <> "." && x <> ".."
+                            && not (List.mem (String.lowercase_ascii x) [ ".git"; ".gitattributes"; ".gitmodules" ]))
+       (String.split_on_char '/' p)
 
 (* ---------- processes and git ---------- *)
 
-(* run a program; its stdout, and whether it succeeded *)
-let capture ?(env = Unix.environment ()) prog args =
+(* run a program; its stdout, and whether it succeeded. With [stdin], the
+   program reads that text on its standard input (from a temporary file, so
+   no pipe can fill up while its output is read) instead of /dev/null *)
+let capture ?(env = Unix.environment ()) ?stdin prog args =
   let r, w = Unix.pipe ~cloexec:true () in
   let devnull = Unix.openfile "/dev/null" [ O_RDWR; O_CLOEXEC ] 0 in
-  match Unix.create_process_env prog (Array.of_list (prog :: args)) env devnull w devnull with
-  | exception e -> Unix.close r; Unix.close w; Unix.close devnull; (false, Printexc.to_string e)
+  let inp, cleanup =
+    match stdin with
+    | None -> (devnull, fun () -> ())
+    | Some text ->
+        let f = Filename.temp_file "pantheon-stdin" ".txt" in
+        Out_channel.with_open_bin f (fun oc -> output_string oc text);
+        let fd = Unix.openfile f [ O_RDONLY; O_CLOEXEC ] 0 in
+        (fd, fun () -> Unix.close fd; (try Sys.remove f with _ -> ()))
+  in
+  match Unix.create_process_env prog (Array.of_list (prog :: args)) env inp w devnull with
+  | exception e -> Unix.close r; Unix.close w; Unix.close devnull; cleanup (); (false, Printexc.to_string e)
   | pid ->
-      Unix.close w; Unix.close devnull;
+      Unix.close w; Unix.close devnull; cleanup ();
       let ic = Unix.in_channel_of_descr r in
       let out = In_channel.input_all ic in
       close_in ic;
@@ -172,16 +217,20 @@ let capture ?(env = Unix.environment ()) prog args =
    signing, so every node does exactly the same thing *)
 let git_env extra =
   Array.of_list
-    ([ "GIT_CONFIG_NOSYSTEM=1"; "GIT_CONFIG_GLOBAL=/dev/null"; "GIT_TERMINAL_PROMPT=0" ] @ extra
+    (extra @ [ "GIT_CONFIG_NOSYSTEM=1"; "GIT_CONFIG_GLOBAL=/dev/null"; "GIT_TERMINAL_PROMPT=0" ]
      @ List.filter (fun kv -> not (String.length kv > 4 && String.sub kv 0 4 = "GIT_")) (Array.to_list (Unix.environment ())))
 
-let git ?(extra = []) dir args =
-  capture ~env:(git_env extra) "git"
+let git ?(extra = []) ?stdin dir args =
+  capture ~env:(git_env extra) ?stdin "git"
     ("-C" :: dir :: "-c" :: "core.hooksPath=/dev/null" :: "-c" :: "commit.gpgsign=false" :: "-c" :: "core.autocrlf=false"
      :: "-c" :: "core.fileMode=true" :: "-c" :: "core.symlinks=true" :: args)
 
 let git_out dir args = String.trim (snd (git dir args))
-let git_ok ?(extra = []) dir args = fst (git ~extra dir args)
+let git_ok ?(extra = []) ?stdin dir args = fst (git ~extra ?stdin dir args)
+
+(* text with every control character but tab and newline made a space: what
+   the market's plain_text accepts (docs/SECURITY-REVIEW-2.md P-17) *)
+let plain_text s = String.map (fun c -> if (c < ' ' && c <> '\t' && c <> '\n') || c = '\127' then ' ' else c) s
 
 (* a clone from anywhere git can fetch: here the user's own git config
    applies, for credentials to a private repository *)
@@ -252,7 +301,7 @@ let apply_edits dir edits =
    on the old content gives the new; otherwise one whole-file write. *)
 let hunk_edits g p before now =
   let whole = [ (p, "", now) ] in
-  let ok, d = g [ "diff"; "--cached"; "-U3"; "--no-color"; "--no-ext-diff"; "HEAD"; "--"; p ] in
+  let ok, d = g [ "diff"; "--cached"; "-U3"; "--no-color"; "--no-ext-diff"; "--no-textconv"; "HEAD"; "--"; p ] in
   if not ok then whole
   else begin
     let hunks = ref [] and cur = ref None and bad = ref false in
@@ -287,61 +336,204 @@ let hunk_edits g p before now =
    the edits name, ignored or not, so the tree doesn't hang on .gitignore.
 
    The checkout is the model's to write, so nothing in it is trusted:
-   - contents come from git's index, never the filesystem, and only regular
-     files count: a symlink (mode 120000) would otherwise make the node read
-     whatever it points at (a key, a login) into a signed bid;
-   - with PANTHEON_GITDIR (the node made the checkout with its repository
-     outside it), git runs on that repository, not on the checkout's .git,
-     whose config a model could fill with commands (core.fsmonitor, filters);
-     either way core.fsmonitor is off. *)
+   - only regular files count: a symlink (mode 120000) would otherwise make
+     the node read whatever it points at (a key, a login) into a signed bid;
+   - the snapshot is built in a node-owned temporary repository whose
+     config (and global/system config) is an empty file the node wrote:
+     the checkout's .git and PANTHEON_GITDIR are only read, as plain files,
+     for their HEAD and their object store (through alternates), so no
+     config they hold is ever used -- no clean/smudge filters, fsmonitor,
+     textconv or external diff can run. Each worktree file is hashed with
+     [git hash-object -w --no-filters] into that snapshot, and changed
+     files are staged there with [update-index --cacheinfo], never with
+     [git add] on a repository the model can configure. *)
 let edits_of_checkout dir =
-  let gd = match Sys.getenv_opt "PANTHEON_GITDIR" with Some g when g <> "" -> [ "--git-dir=" ^ g; "--work-tree=." ] | _ -> [] in
-  let git dir args = git dir ("-c" :: "core.fsmonitor=false" :: gd @ args) in
-  if not (fst (git dir [ "add"; "-A" ])) then Error (dir ^ " is not a git checkout")
-  else
-    let ok, out = git dir [ "diff"; "--cached"; "--no-renames"; "--raw"; "-z"; "HEAD" ] in
-    if not ok then Error "git diff failed"
-    else
-      (* --raw -z: ":OLDMODE NEWMODE OLDSHA NEWSHA STATUS" NUL "PATH" NUL *)
-      let rec pairs = function meta :: p :: r -> (meta, p) :: pairs r | _ -> [] in
-      let skipped = ref [] in
-      let blob spec = let ok, c = git dir [ "cat-file"; "blob"; spec ] in if ok then Some c else None in
-      let edits =
-        List.concat_map (fun (meta, p) ->
-            let f = String.split_on_char ' ' meta in
-            let st = if List.length f >= 5 then List.nth f 4 else "?" and mode = if List.length f >= 2 then List.nth f 1 else "" in
-            match st.[0] with
-            | 'D' -> [ (p, "", "") ]
-            | ('A' | 'M') when not (safe_path p) -> skipped := p :: !skipped; []
-            | ('A' | 'M') when mode <> "100644" && mode <> "100755" -> skipped := p :: !skipped; []
-            | 'A' | 'M' -> (
-                match blob (":" ^ p) with
-                | None -> skipped := p :: !skipped; []
-                | Some now ->
-                    if String.contains now '\000' then (skipped := p :: !skipped; [])
-                    else if st.[0] = 'A' then (if now = "" then (skipped := p :: !skipped; []) else [ (p, "", now) ])
-                    else
-                      let before = Option.value ~default:"" (blob ("HEAD:" ^ p)) in
-                      if now = "" then [ (p, before, "") ] else hunk_edits (git dir) p before now)
-            | _ -> skipped := p :: !skipped; [])
-          (pairs (List.filter (( <> ) "") (String.split_on_char '\000' out)))
+  let abs_dir = if Filename.is_relative dir then Filename.concat (Sys.getcwd ()) dir else dir in
+  let read_opt p = try Some (read_file p) with _ -> None in
+  let has_prefix s pre = String.length s >= String.length pre && String.sub s 0 (String.length pre) = pre in
+  let resolve_rel base p = if Filename.is_relative p then Filename.concat base p else p in
+  let is_hex s =
+    s <> "" && String.for_all (fun c -> (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) s
+  in
+  (* the repository that holds HEAD and the objects: the checkout's .git
+     (a directory, or a gitdir: file), or PANTHEON_GITDIR when the node
+     kept the repository outside the checkout *)
+  let orig_gitdir =
+    match Sys.getenv_opt "PANTHEON_GITDIR" with
+    | Some g when g <> "" -> resolve_rel abs_dir g
+    | _ ->
+        let dot = Filename.concat abs_dir ".git" in
+        (match (try Some (Unix.stat dot).st_kind with _ -> None) with
+         | Some Unix.S_DIR -> dot
+         | _ ->
+             (match read_opt dot with
+              | Some c ->
+                  let t = String.trim c in
+                  if has_prefix t "gitdir:" then resolve_rel abs_dir (String.trim (String.sub t 7 (String.length t - 7))) else dot
+              | None -> dot))
+  in
+  let common_gitdir =
+    match read_opt (Filename.concat orig_gitdir "commondir") with
+    | Some c -> resolve_rel orig_gitdir (String.trim c)
+    | None -> orig_gitdir
+  in
+  (* HEAD's commit, from the ref files alone: no git command runs on
+     this repository, so nothing its config names can run either *)
+  let head_commit =
+    let from_ref refname =
+      match List.find_map read_opt [ Filename.concat orig_gitdir refname; Filename.concat common_gitdir refname ] with
+      | Some c when is_hex (String.trim c) -> Some (String.trim c)
+      | _ ->
+          (match List.find_map read_opt [ Filename.concat orig_gitdir "packed-refs"; Filename.concat common_gitdir "packed-refs" ] with
+           | None -> None
+           | Some content ->
+               List.find_map
+                 (fun line ->
+                   let line = String.trim line in
+                   if line = "" || line.[0] = '#' || line.[0] = '^' then None
+                   else
+                     match String.index_opt line ' ' with
+                     | Some i when String.sub line (i + 1) (String.length line - i - 1) = refname && is_hex (String.sub line 0 i) ->
+                         Some (String.sub line 0 i)
+                     | _ -> None)
+                 (String.split_on_char '\n' content))
+    in
+    match read_opt (Filename.concat orig_gitdir "HEAD") with
+    | None -> None
+    | Some c ->
+        let t = String.trim c in
+        if has_prefix t "ref:" then from_ref (String.trim (String.sub t 4 (String.length t - 4)))
+        else if is_hex t then Some t
+        else None
+  in
+  match head_commit with
+  | None -> Error (dir ^ " is not a git checkout")
+  | Some head_commit ->
+      let snapshot = Filename.temp_dir "pantheon-snapshot" "" in
+      let result =
+        try
+          let snap_git = Filename.concat snapshot "gitdir" in
+          mkdir_p (Filename.concat (Filename.concat snap_git "objects") "info");
+          mkdir_p (Filename.concat snap_git "refs");
+          write_file (Filename.concat snap_git "config") "";
+          write_file (Filename.concat snap_git "HEAD") (head_commit ^ "\n");
+          write_file (Filename.concat (Filename.concat (Filename.concat snap_git "objects") "info") "alternates")
+            (Filename.concat common_gitdir "objects" ^ "\n");
+          let empty_config = Filename.concat snapshot "gitconfig" in
+          write_file empty_config "";
+          let sgit args =
+            git ~extra:[ "GIT_CONFIG_GLOBAL=" ^ empty_config; "GIT_CONFIG_SYSTEM=" ^ empty_config;
+                         "GIT_INDEX_FILE=" ^ Filename.concat snap_git "index" ]
+              abs_dir
+              ("-c" :: "core.fsmonitor=false" :: ("--git-dir=" ^ snap_git) :: ("--work-tree=" ^ abs_dir) :: args)
+          in
+          let blob spec = let ok, c = sgit [ "cat-file"; "blob"; spec ] in if ok then Some c else None in
+          let ok, out = sgit [ "ls-tree"; "-r"; "-z"; "HEAD" ] in
+          if not ok then Error (dir ^ " is not a git checkout")
+          else
+            let head_tbl = Hashtbl.create 64 in
+            let head_paths =
+              List.filter_map
+                (fun entry ->
+                  match String.index_opt entry '\t' with
+                  | Some tab ->
+                      let meta = String.split_on_char ' ' (String.sub entry 0 tab) in
+                      let p = String.sub entry (tab + 1) (String.length entry - tab - 1) in
+                      (match meta with mode :: _ :: sha :: _ -> Hashtbl.replace head_tbl p (mode, sha) | _ -> ());
+                      Some p
+                  | None -> None)
+                (List.filter (( <> ) "") (String.split_on_char '\000' out))
+            in
+            let ok, out = sgit [ "ls-files"; "--others"; "--exclude-standard"; "-z" ] in
+            if not ok then Error "git ls-files failed"
+            else
+              let paths =
+                List.sort_uniq String.compare (List.filter (( <> ) "") (String.split_on_char '\000' out) @ head_paths)
+              in
+              let skipped = ref [] and edits = ref [] in
+              List.iter
+                (fun p ->
+                  if List.exists (fun x -> String.lowercase_ascii x = ".git") (String.split_on_char '/' p) then ()
+                  else if not (safe_path p) then skipped := p :: !skipped
+                  else
+                    let f = Filename.concat abs_dir p in
+                    let head_entry = Hashtbl.find_opt head_tbl p in
+                    match (try Some (Unix.lstat f) with _ -> None) with
+                    | None -> (match head_entry with Some _ -> edits := !edits @ [ (p, "", "") ] | None -> ())
+                    | Some st when st.st_kind <> Unix.S_REG -> skipped := p :: !skipped
+                    | Some st when not (no_symlink abs_dir p) -> skipped := p :: !skipped
+                    | Some st ->
+                        let mode = if st.st_perm land 0o100 <> 0 then "100755" else "100644" in
+                        let ok, hout = sgit [ "hash-object"; "-w"; "--no-filters"; "--"; p ] in
+                        let hash = String.trim hout in
+                        if not ok || not (is_hex hash) then skipped := p :: !skipped
+                        else
+                          (match head_entry with
+                           | None ->
+                               let now = read_file f in
+                               if String.contains now '\000' || now = "" then skipped := p :: !skipped
+                               else edits := !edits @ [ (p, "", now) ]
+                           | Some (hmode, _) when hmode <> "100644" && hmode <> "100755" -> skipped := p :: !skipped
+                           | Some (hmode, hsha) when hash = hsha && mode = hmode -> ()
+                           | Some (_, hsha) ->
+                               let now = read_file f in
+                               if String.contains now '\000' then skipped := p :: !skipped
+                               else if hash = hsha then edits := !edits @ [ (p, "", now) ]
+                               else if now = "" then
+                                 edits := !edits @ [ (p, Option.value ~default:"" (blob ("HEAD:" ^ p)), "") ]
+                               else if fst (sgit [ "update-index"; "--add"; "--cacheinfo"; mode; hash; p ]) then
+                                 edits := !edits @ hunk_edits sgit p (Option.value ~default:"" (blob ("HEAD:" ^ p))) now
+                               else edits := !edits @ [ (p, "", now) ]))
+                paths;
+              Ok (!edits, List.rev !skipped)
+        with e -> Error (Printexc.to_string e)
       in
-      Ok (edits, List.rev !skipped)
+      remove_tree_later snapshot;
+      result
 
 let edits_json edits note =
   `Assoc [ ("edits", `List (List.map (fun (p, o, n) -> `Assoc [ ("path", `String p); ("old", `String o); ("new", `String n) ]) edits));
            ("note", `String note) ]
 
-(* the tree a bid's edits give on a checkout's HEAD, in a fresh clone *)
+(* the tree a bid's edits give on a checkout's HEAD, in a fresh clone. An
+   error says whose it is: `Node (this node's checkout or git) or `Bid (the
+   edits don't apply), decided here, never read back from the message *)
 let check_tree repo head_tree edits out =
   let commit = git_out repo [ "rev-parse"; "HEAD" ] and tree = git_out repo [ "rev-parse"; "HEAD^{tree}" ] in
-  if tree <> head_tree then Error (Printf.sprintf "node problem: this node's checkout %s is at tree %s, not the market's head %s" repo tree head_tree)
-  else if not (fst (capture "git" [ "clone"; "--quiet"; "--shared"; "--no-checkout"; repo; out ])) then Error "node problem: cloning the checkout failed"
-  else if not (git_ok out [ "checkout"; "-q"; "--detach"; commit ]) then Error "node problem: checking out the head failed"
+  if tree <> head_tree then Error (`Node, Printf.sprintf "node problem: this node's checkout %s is at tree %s, not the market's head %s" repo tree head_tree)
+  else if not (fst (capture "git" [ "clone"; "--quiet"; "--shared"; "--no-checkout"; repo; out ])) then Error (`Node, "node problem: cloning the checkout failed")
+  else if not (git_ok out [ "checkout"; "-q"; "--detach"; commit ]) then Error (`Node, "node problem: checking out the head failed")
   else
     match apply_edits out edits with
-    | Error e -> Error e
-    | Ok () -> if git_ok out [ "add"; "-A"; "-f" ] then Ok (git_out out [ "write-tree" ]) else Error "node problem: git add failed"
+    | Error e -> Error (`Bid, e)
+    | Ok () -> if git_ok out [ "add"; "-A"; "-f" ] then Ok (git_out out [ "write-tree" ]) else Error (`Node, "node problem: git add failed")
+
+(* how `pantheon check` says the failure is the edits' (they don't apply):
+   any other failing exit is this node's *)
+let check_bid_failed = 1
+
+(* how a CI command, wrapped by the node, says the bid's CI failed. Any other
+   failing exit of the runner (docker's own 125-127, ci-sandbox's 2 and 3,
+   bwrap or systemd-run failing) is the runner's, so this node's. The bid's
+   exits are remapped to this inside the runner, except 124 and 137 (its
+   time and memory budgets, also the bid's) (docs/SECURITY-REVIEW-2.md P-6) *)
+let ci_bid_failed = 86
+let ci_wrap ci =
+  "(" ^ ci ^ ") 2>&1; r=$?; if [ $r -ne 0 ] && grep -qs 'oom_kill [1-9]' /sys/fs/cgroup/memory.events; then exit 137; fi; "
+  ^ "case $r in 0|124|137) exit $r;; esac; exit " ^ string_of_int ci_bid_failed
+
+(* how a job ended, from the node's own "!process failed (HOW): " prefix;
+   None when the job never started (the node couldn't spawn it). What follows
+   the prefix is the job's output, and could say anything *)
+let job_how t =
+  let pre = "!process failed (" in
+  let lp = String.length pre in
+  if String.length t > lp && String.sub t 0 lp = pre then
+    match String.index_from_opt t lp ')' with Some i -> Some (String.sub t lp (i - lp)) | None -> Some ""
+  else None
+
+let exit_code how =
+  if String.length how > 5 && String.sub how 0 5 = "exit " then int_of_string_opt (String.sub how 5 (String.length how - 5)) else None
 
 (* ---------- hash chains for the leader draw ---------- *)
 
@@ -413,11 +605,29 @@ let build_genesis home net =
   let netj = read_json (Filename.concat net "network.json") in
   let pdir = Filename.concat net "parts" in
   let files = if Sys.file_exists pdir then Sys.readdir pdir |> Array.to_list |> List.filter (fun f -> Filename.check_suffix f ".json") |> List.sort compare else [] in
-  if List.length files < 4 then fail "%s has %d parts; a network needs 4 (n = 3f + 1 with f = 1). Each agent runs `pantheon keygen` and adds its public.json there" pdir (List.length files);
-  let parts = List.map (fun f -> let j = read_json (Filename.concat pdir f) in
+  if List.length files <> 4 then
+    fail "genesis must have exactly 4 parts, got %d (%s has %d parts; a network needs 4 (n = 3f + 1 with f = 1). Each agent runs `pantheon keygen` and adds its public.json there)"
+      (List.length files) pdir (List.length files);
+  let raw_parts = List.map (fun f -> (f, read_json (Filename.concat pdir f))) files in
+  let seen_names = ref [] in
+  List.iter (fun (_, j) ->
+      let n = to_string (member "name" j) in
+      if List.mem n !seen_names then fail "duplicate part name %s in genesis parts in %s: each agent must add exactly one part under its own name" n pdir;
+      seen_names := n :: !seen_names) raw_parts;
+  let seen_keys = ref [] in
+  List.iter (fun (_, j) ->
+      let n = to_string (member "name" j) in
+      let k = match member "pubkey" j with
+        | `Assoc kv -> Yojson.Safe.to_string (`Assoc (List.sort (fun (a, _) (b, _) -> String.compare a b) kv))
+        | other -> Yojson.Safe.to_string other in
+      (match List.assoc_opt k !seen_keys with
+       | Some other -> fail "duplicate public key in genesis parts in %s: %s and %s share the same public key; each part must carry its own agent's key" pdir other n
+       | None -> ());
+      seen_keys := (k, n) :: !seen_keys) raw_parts;
+  let parts = List.map (fun (f, j) ->
                           let n = to_string (member "name" j) in
                           if n ^ ".json" <> f then fail "%s/%s is named %s inside: rename the file to %s.json" pdir f n n;
-                          `Assoc [ ("name", member "name" j); ("addr", member "addr" j); ("pubkey", member "pubkey" j); ("tip", member "tip" j) ]) files in
+                          `Assoc [ ("name", member "name" j); ("addr", member "addr" j); ("pubkey", member "pubkey" j); ("tip", member "tip" j) ]) raw_parts in
   let repos = List.map (fun r ->
       let name = to_string (member "name" r) and url = to_string (member "url" r) and commit = to_string (member "commit" r) in
       if not (safe_path name) || String.contains name '/' then fail "bad repository name %s" name;
@@ -474,7 +684,7 @@ let cmd_init args =
       write_file (Filename.concat (Filename.concat net "parts") (n ^ ".json")) (read_file pub))
     agents_default;
   List.iter (fun n -> build_genesis (Filename.concat !dir n) net) agents_default;
-  say "made a 4-agent network in %s. Run it with: %s up %s" !dir Sys.argv.(0) !dir
+  say "made a 4-agent network in %s. Run it with: %s up %s" !dir self_exe !dir
 
 (* ---------- the node ---------- *)
 
@@ -508,9 +718,16 @@ let resolve s =
 (* JSON reply -> flat [key; value; ...], arrays as indices: files.0.path *)
 let flatten_reply j =
   let out = ref [] in
-  let rec go prefix = function
-    | `Assoc kv -> List.iter (fun (k, v) -> go (if prefix = "" then k else prefix ^ "." ^ k) v) kv
-    | `List l -> List.iteri (fun i v -> go (prefix ^ "." ^ string_of_int i) v) l
+  let pending = Stack.create () in
+  Stack.push ("", j) pending;
+  while not (Stack.is_empty pending) do
+    let prefix, value = Stack.pop pending in
+    match value with
+    | `Assoc kv ->
+        List.iter (fun (k, v) -> Stack.push ((if prefix = "" then k else prefix ^ "." ^ k), v) pending) (List.rev kv)
+    | `List l ->
+        List.iter (fun (i, v) -> Stack.push (prefix ^ "." ^ string_of_int i, v) pending)
+          (List.rev (List.mapi (fun i v -> (i, v)) l))
     | `String s -> out := s :: prefix :: !out
     | `Bool b -> out := string_of_bool b :: prefix :: !out
     | `Null -> out := "null" :: prefix :: !out
@@ -518,16 +735,19 @@ let flatten_reply j =
     | `Intlit s -> out := s :: prefix :: !out
     | `Float f -> out := Printf.sprintf "%.0f" f :: prefix :: !out
     | _ -> ()
-  in
-  go "" j;
+  done;
   List.rev !out
 
 let json_in_reply text =
-  match String.index_opt text '{', String.rindex_opt text '}' with
-  | Some a, Some b when b > a -> (try Some (Yojson.Safe.from_string (String.sub text a (b - a + 1))) with _ -> None)
+  if String.length text > max_job_output then None
+  else match String.index_opt text '{', String.rindex_opt text '}' with
+  | Some a, Some b when b > a ->
+      let raw = String.sub text a (b - a + 1) in
+      if not (shallow_json ~max_items:4096 raw) then None
+      else (try Some (Yojson.Safe.from_string raw) with _ -> None)
   | _ -> None
 
-let rec run init step =
+let rec run init step checkpoint restore =
   let argv = Array.to_list Sys.argv |> List.tl in
   match argv with
   | "init" :: rest -> cmd_init rest
@@ -552,7 +772,8 @@ let rec run init step =
   | [ "check"; repo; head; file; out ] ->
       (match check_tree repo head (triples_of (json_strings (Yojson.Safe.from_file file))) out with
        | Ok t -> print_string t
-       | Error e -> print_string e; exit 1)
+       | Error (`Bid, e) -> print_string e; exit check_bid_failed
+       | Error (`Node, e) -> print_string e; exit 3)
   | [ "status"; home ] ->
       let p = Filename.concat home "status.txt" in
       if Sys.file_exists p then print_string (read_file p)
@@ -563,7 +784,7 @@ let rec run init step =
       write_file (Filename.concat d (Printf.sprintf "%.6f.json" (Unix.gettimeofday ()))) (Yojson.Safe.to_string (strings_json fields));
       say "queued for %s's agent: %s (it signs and sends it next; see `pantheon status %s`)" (Filename.basename home) (String.concat " " fields) home
   | "up" :: dir :: rest ->
-      let self = Sys.executable_name in
+      let self = self_exe in
       let backends = ref [] and pass = ref [] in
       let rec go = function
         | "--backends" :: b :: r ->
@@ -588,7 +809,7 @@ let rec run init step =
       Sys.set_signal Sys.sigint (Sys.Signal_handle stop);
       Sys.set_signal Sys.sigterm (Sys.Signal_handle stop);
       List.iter (fun p -> ignore (Unix.waitpid [] p)) pids
-  | "node" :: home :: flags -> node init step home flags
+  | "node" :: home :: flags -> node init step checkpoint restore home flags
   | _ ->
       print_string
         "pantheon: a private BFT labor market where LLM agents take turns as term leader.\n\n\
@@ -608,7 +829,7 @@ let rec run init step =
          Backends: scripted, claude, codex, grok (XAI_API_KEY), cmd:PROGRAM (prompt on stdin, JSON reply on stdout;\n\
          a patch request also gets a scratch checkout in $PANTHEON_WORKTREE: see scripts/bidder.sh).\n"
 
-and node init step home flags =
+and node init step checkpoint restore home flags =
   Sys.set_signal Sys.sigpipe Sys.Signal_ignore;
   (* jobs run from scratch directories: every path the node hands out is absolute *)
   let home = if Filename.is_relative home then Filename.concat (Sys.getcwd ()) home else home in
@@ -626,6 +847,7 @@ and node init step home flags =
   let addr_of_agent n = to_string (member "addr" (List.find (fun a -> to_string (member "name" a) = n) agents)) in
   let byz = try Sys.getenv "PANTHEON_BYZ" with Not_found -> "" in
   if byz <> "" then say "FAULT INJECTION: this node misbehaves on purpose (%s)" byz;
+  let nonce_flood_sent = ref false in
   (* flags: agent settings, given to Soma as events *)
   let backend = ref "scripted" and agent_events = ref [] and ci_cmd = ref "" and ci_repo = ref [] and ci_image = ref "alpine:3.20" and ci_sandbox = ref "" in
   let listen = ref "0.0.0.0" and ci_memory = ref "8g" in
@@ -933,7 +1155,7 @@ and node init step home flags =
               let commit = git_out (rdir r) [ "rev-parse"; "HEAD" ] in
               if fst (capture "git" [ "clone"; "--quiet"; "--shared"; "--no-checkout"; "--separate-git-dir=" ^ gd; rdir r; wt ])
                  && git_ok wt [ "checkout"; "-q"; "--detach"; commit ] then
-                ([ "PANTHEON_WORKTREE=" ^ wt; "PANTHEON_GITDIR=" ^ gd; "PANTHEON_REPO=" ^ r; "PANTHEON_BIN=" ^ Sys.executable_name ],
+                ([ "PANTHEON_WORKTREE=" ^ wt; "PANTHEON_GITDIR=" ^ gd; "PANTHEON_REPO=" ^ r; "PANTHEON_BIN=" ^ self_exe ],
                  gone, 1800.)
               else ([], gone, 600.)
           (* an answer: a model with tools may read the code a bid changes
@@ -962,10 +1184,18 @@ and node init step home flags =
        abstains rather than blame the bid). stage is where a failure happened:
        apply (no tree yet), ci (a tree, then CI), or node (this node's own
        problem, which ok=error already sends the agent to abstain on) *)
-    let result ok tree why stage = push [ "check_result"; id; "ok"; (if ok then "true" else if contains why "node problem:" then "error" else "false"); "tree"; tree; "why"; why; "stage"; stage ] in
-    start_job Sys.executable_name [ "check"; rdir r; head; ef; out ] ~stdin_text:"" ~env:(Unix.environment ())
+    (* why carries the bid's own output (its CI's): no control character of
+       it goes on to a rejection's reason *)
+    (* whose a failure is comes from stage alone, which the node decides from
+       its own signals (exit codes, a job that never started), never from
+       what the check or the bid's CI printed (docs/SECURITY-REVIEW-2.md P-6) *)
+    let result ok tree why stage = let why = plain_text why in push [ "check_result"; id; "ok"; (if ok then "true" else if stage = "node" then "error" else "false"); "tree"; tree; "why"; why; "stage"; stage ] in
+    start_job self_exe [ "check"; rdir r; head; ef; out ] ~stdin_text:"" ~env:(Unix.environment ())
       ~on_done:(fun t ->
-        if String.length t > 0 && t.[0] = '!' then (say "check of request %s failed: %s" id t; result false "" t (if contains t "node problem:" then "node" else "apply"))
+        if String.length t > 0 && t.[0] = '!' then (say "check of request %s failed: %s" id t; result false "" t
+              (match job_how t with
+               | None -> "node"
+               | Some h -> (match exit_code h with Some c when c <> check_bid_failed -> "node" | _ -> "apply")))
         else
           let tree = if byz = "bad-tree" then (say "FAULT INJECTION: naming a wrong tree"; sha256 ("lie" ^ id)) |> fun x -> String.sub x 0 40 else String.trim t in
           if ci = "" then result true tree "" ""
@@ -974,34 +1204,37 @@ and node init step home flags =
             let name = "pantheon-ci-" ^ random_hex 6 in
             with_ci @@ fun () ->
             let prog, args =
-              if !ci_sandbox <> "" then (!ci_sandbox, [ !ci_memory; out; ci ]) else
+              if !ci_sandbox <> "" then (!ci_sandbox, [ !ci_memory; out; ci_wrap ci ]) else
               ("docker", [ "run"; "--rm"; "--name"; name; "--network=none"; "--read-only"; "--tmpfs"; "/tmp:exec,size=" ^ !ci_memory; "--cap-drop=ALL";
                 "--security-opt=no-new-privileges"; "--pids-limit=512"; "--memory=" ^ !ci_memory; "--memory-swap=" ^ !ci_memory;
                 "--user=65534:65534"; "-e"; "HOME=/tmp";
                 (* its errors too, as start_job keeps only stdout; and a build the
                    kernel killed for the container's memory (oom_kill in its cgroup)
                    ends as 137, the way docker ends the container itself *)
-                "-v"; out ^ ":/work:ro"; "-w"; "/work"; !ci_image; "sh"; "-c";
-                "(" ^ ci ^ ") 2>&1; r=$?; if [ $r -ne 0 ] && grep -qs 'oom_kill [1-9]' /sys/fs/cgroup/memory.events; then exit 137; fi; exit $r" ]) in
+                "-v"; out ^ ":/work:ro"; "-w"; "/work"; !ci_image; "sh"; "-c"; ci_wrap ci ]) in
             start_job ~limit:3600. prog args
               ~stdin_text:"" ~env:(Unix.environment ())
               ~on_done:(fun t ->
                 let ok = not (String.length t > 0 && t.[0] = '!') in
                 say "CI for request %s: %s" id (if ok then "passed" else "failed");
-                (* docker itself failing is this node's problem, not the bid's *)
-                let docker_down = (not ok) && (contains t "Cannot connect to the Docker daemon" || contains t "Unable to find image"
-                                               || contains t "ci-sandbox: " || contains t "Failed to start transient scope") in
+                (* the runner itself failing (docker, ci-sandbox) is this node's
+                   problem, not the bid's: decided from the node's own signals --
+                   the job never started, or the runner exited with a code of its
+                   own, which ci_wrap keeps the bid's exits from using -- never
+                   from what the bid printed (docs/SECURITY-REVIEW-2.md P-6). A run
+                   ended by a signal (the node's time or output limit, or a bid
+                   killing its own shell) is the bid's. *)
+                let docker_down = (not ok) && (match job_how t with
+                                               | None -> true
+                                               | Some h -> (match exit_code h with
+                                                            | Some c -> c >= 1 && c < 128 && c <> ci_bid_failed && c <> 124
+                                                            | None -> false)) in
                 if not ok then say "CI for request %s said: %s" id (String.map (fun c -> if c = '\n' then ' ' else c) t);
                 (* over budget is the bid's fault, but say which budget: docker ends
                    a container that passes its memory with 137, timeout with 124 *)
                 (* how the check ended, from the node's own "!process failed (HOW): "
                    prefix: the output after it is the bid's, and could say anything *)
-                let how =
-                  let pre = "!process failed (" in
-                  let lp = String.length pre in
-                  if String.length t > lp && String.sub t 0 lp = pre then
-                    match String.index_from_opt t lp ')' with Some i -> String.sub t lp (i - lp) | None -> ""
-                  else "" in
+                let how = match job_how t with Some h -> h | None -> "" in
                 let why =
                   if ok then ""
                   else if docker_down then "node problem: " ^ (if !ci_sandbox <> "" then "ci-sandbox: " else "docker: ") ^ t
@@ -1042,7 +1275,10 @@ and node init step home flags =
                       "GIT_COMMITTER_EMAIL=pantheon@localhost"; "GIT_AUTHOR_DATE=" ^ date; "GIT_COMMITTER_DATE=" ^ date ] in
           let msg = Printf.sprintf "Merge bid %s for task %s by %s\n\n%s\n\nPantheon-Version: %d\nPantheon-Bid: %s\nPantheon-Tree: %s\n" bid task bidder spec v bid tree in
           ignore (git dir [ "add"; "-A"; "-f" ]);
-          if not (git_ok ~extra:who dir [ "commit"; "-q"; "--allow-empty"; "--no-verify"; "--cleanup=verbatim"; "-m"; msg ]) then diverge "git commit failed"
+          (* the message on stdin, not as an argument: the spec in it is the
+             leader's text, and an argument can't carry every string whole
+             (docs/SECURITY-REVIEW-2.md P-17) *)
+          if not (git_ok ~extra:who ~stdin:msg dir [ "commit"; "-q"; "--allow-empty"; "--no-verify"; "--cleanup=verbatim"; "-F"; "-" ]) then diverge "git commit failed"
           else
             let got = git_out dir [ "rev-parse"; "HEAD^{tree}" ] in
             if got <> tree then diverge (Printf.sprintf "got tree %s, attested %s" got tree)
@@ -1065,7 +1301,7 @@ and node init step home flags =
         let h = int_of_string h in
         if not (Hashtbl.mem blocks h) then begin
           Hashtbl.replace blocks h txs;
-          append_line blocks_path (Yojson.Safe.to_string (`Assoc [ ("h", `Int h); ("txs", strings_json txs) ]))
+          append_line_synced blocks_path (Yojson.Safe.to_string (`Assoc [ ("h", `Int h); ("txs", strings_json txs) ]))
         end
     | [ "behind"; who; h ] ->
         let h = int_of_string h and now = Unix.gettimeofday () in
@@ -1097,7 +1333,20 @@ and node init step home flags =
         my_txs := (Unix.gettimeofday (), raw) :: !my_txs;
         say "sending %s" (String.concat " " (List.map (fun f -> if String.length f > 60 then String.sub f 0 60 ^ "..." else f) fields));
         push [ "tx"; raw ];
-        broadcast_fields [ "tx"; raw ]
+        broadcast_fields [ "tx"; raw ];
+        if byz = "future-nonce" && not !nonce_flood_sent then begin
+          (* docs/SECURITY-REVIEW-2.md P-5: 600 signed transactions at nonces
+             past the pool's window, sent again with this node's own *)
+          nonce_flood_sent := true;
+          say "FAULT INJECTION: flooding 600 future-nonce transactions";
+          let n = int_of_string nonce in
+          for k = 4 to 603 do
+            let raw = encode_tx key me (string_of_int (n + k)) [ "withdraw"; "0" ] in
+            my_txs := (Unix.gettimeofday (), raw) :: !my_txs;
+            push [ "tx"; raw ];
+            broadcast_fields [ "tx"; raw ]
+          done
+        end
     | "llm" :: id :: kind :: prompt :: ctx ->
         incr calls;
         if !calls > !max_calls then push [ "llm_error"; id; Printf.sprintf "model call budget of %d used up: restart with a higher --max-llm-calls" !max_calls ]
@@ -1115,10 +1364,18 @@ and node init step home flags =
   in
   let debug = (try Sys.getenv "PANTHEON_DEBUG" with Not_found -> "") <> "" in
   let brief l = String.concat " " (List.map (fun f -> if String.length f > 16 then String.sub f 0 16 else f) (List.filteri (fun i _ -> i < 7) l)) in
+  let checkpoint_path = Filename.concat home "consensus.state" in
+  let participating = ref false in
   let feed ev =
     if debug then say "event: %s" (brief ev);
     let s, outs = step !st ev in
     if debug then List.iter (fun o -> say "  out: %s" (brief o)) outs;
+    (* Persist before any vote or other externally visible effect. Decisions
+       reach blocks.log first; a stale snapshot is ignored after replay. *)
+    if !participating then begin
+      List.iter (function ("decided" :: _ as o) -> handle o | _ -> ()) outs;
+      save_consensus checkpoint_path (checkpoint s)
+    end;
     st := s;
     List.iter handle outs
   in
@@ -1141,6 +1398,13 @@ and node init step home flags =
       with _ -> ())
     (lines blocks_path);
   if !replayed > 0 then say "replayed %d blocks from disk" !replayed;
+  if Sys.file_exists checkpoint_path then begin
+    let saved = load_consensus checkpoint_path in
+    st := restore !st saved
+  end;
+  if not (Sys.file_exists checkpoint_path) && Hashtbl.length signed > 0 then
+    fail "missing consensus.state with existing votes: start a new chain";
+  participating := true;
   feed [ "start" ];
   drain ();
   (* sockets *)

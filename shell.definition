@@ -17,5 +17,7 @@ hash_list : list string -> string.
 decode_tx : string -> list string.
 
 (** Runs a node: feeds the state machine its events, one at a time, and does
-    what each step's outputs say. Never returns. *)
-run : forall {S : Type}, S -> (S -> list string -> S * list (list string)) -> unit.
+    what each step's outputs say. The last two functions select the consensus
+    snapshot and restore it after block replay. The shell syncs that snapshot
+    before sending votes. Never returns. *)
+run : forall {S C : Type}, S -> (S -> list string -> S * list (list string)) -> (S -> C) -> (S -> C -> S) -> unit.

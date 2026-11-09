@@ -110,13 +110,41 @@ Fixpoint starts (p s : string) : bool :=
 Fixpoint contains (p s : string) : bool :=
   match s with SNil => starts p s | SCons _ s' => starts p s || contains p s' end.
 
+lower_char (c : ascii) : ascii :=
+  let n := nat_of_ascii c in if (65 <=? n) && (n <=? 90) then ascii_of_nat (n + 32) else c.
+
+Fixpoint lower (s : string) : string :=
+  match s with SNil => SNil | SCons c r => SCons (lower_char c) (lower r) end.
+
+(** a .gitattributes or .gitmodules in any component of [p], in any case:
+    writing one changes how git reads every later edit *)
+git_meta_component (p : string) : bool :=
+  let w := lower (append "/" (append p "/")) in
+  contains "/.gitattributes/" w || contains "/.gitmodules/" w.
+
 (** a path a patch may write: relative, no "..", no backslash, not empty *)
 (** a relative path inside a repository: no "..", no empty or "." part, and
     nothing in a .git directory, where writing would mean running code *)
 safe_path (p : string) : bool :=
   let w := append "/" (append p "/") in
   negb (seq p "") && negb (starts "/" p) && negb (contains ".." p) && negb (contains "\" p)
-  && negb (contains "//" w) && negb (contains "/./" w) && negb (contains "/.git/" w) && negb (contains "/.GIT/" w).
+  && negb (contains "//" w) && negb (contains "/./" w) && negb (contains "/.git/" w) && negb (contains "/.GIT/" w)
+  && negb (git_meta_component p).
+
+(** one character a spec, note or reason may hold: printable, a tab or a
+    newline, or a byte of a UTF-8 character; not NUL, DEL or another control
+    character (docs/SECURITY-REVIEW-2.md P-17) *)
+plain_char (c : ascii) : bool :=
+  let n := nat_of_ascii c in ((32 <=? n) && negb (n =? 127)) || (n =? 9) || (n =? 10).
+
+(** text a transaction may carry into the state, and from there into git *)
+Fixpoint plain_text (s : string) : bool :=
+  match s with SNil => true | SCons c r => plain_char c && plain_text r end.
+
+(** text made plain: each control character a space, for what this node
+    composes from a model's reply or a check's output *)
+Fixpoint clean_text (s : string) : string :=
+  match s with SNil => SNil | SCons c r => SCons (if plain_char c then c else " "%char) (clean_text r) end.
 
 (** pairs from a flat list: [a; b; c; d] is [(a, b); (c, d)] *)
 Fixpoint pairs (l : list string) : list (string * string) :=

@@ -220,6 +220,89 @@ scenario_crash() {
   echo "ok crash: grok killed twice, caught up at $(field crash height grok)"
 }
 
+# docs/SECURITY-REVIEW-2.md P-4: a node locks on a block, is killed and
+# restarted, and must still be locked. One node runs; the others' keys sign,
+# as they would, a proposal of block A at height 1 round 0 and a quorum of
+# prevotes for it, so it locks on A and precommits. Nothing else precommits,
+# so A is never decided. Restarted, it is shown block B at round 2 (with a
+# second sender, so it skips to that round at once, not on a timer): it must
+# prevote nil because B conflicts with its lock, not prevote B. A and B are
+# each one signed transaction at its agent's next nonce, so both are valid
+# blocks: the node precommits only a valid block, and says "conflicts with
+# our lock" only of one ("is not a valid block" otherwise).
+scenario_restart_lock() {
+  init restart-lock 28650 term_blocks=1000 stall_blocks=900 || return 1
+  d=$ROOT/restart-lock py=$ROOT/restart-lock/msg.py
+  : > "$d/goal.txt"
+  cat > "$py" <<'PY'
+import hashlib, json, socket, sys, time
+net, mode = sys.argv[1], sys.argv[2]
+gen = json.load(open(net + "/claude/genesis.json"))
+names = [a["name"] for a in gen["agents"]]
+chain = gen["chain_id"]
+me = names[0]   # the proposers of height 1, rounds 0 and 2, are names[1] and names[3]
+def compact(x): return json.dumps(x, separators=(",", ":"))
+def sign(who, data):
+    k = json.load(open("%s/%s/key.json" % (net, who)))["key"]
+    n, d, kb = int(k["n"], 16), int(k["d"], 16), k["size"] // 8
+    t = bytes.fromhex("3031300d060960864801650304020105000420") + hashlib.sha256(data).digest()
+    em = b"\x00\x01" + b"\xff" * (kb - len(t) - 3) + b"\x00" + t
+    return format(pow(int.from_bytes(em, "big"), d, n), "x").zfill(2 * kb)
+def tx(who, nonce, fields):
+    sg = sign(who, "\0".join(["tx", chain, who, nonce, compact(fields)]).encode())
+    return compact({"agent": who, "nonce": nonce, "fields": fields, "sig": sg})
+def hash_list(l): return hashlib.sha256("".join("%d:%s" % (len(x.encode()), x) for x in l).encode()).hexdigest()
+def wire(who, fields):
+    return compact({"from": who, "fields": fields, "sig": sign(who, "\0".join(["msg", chain, who, compact(fields)]).encode())}) + "\n"
+A = [tx(names[1], "1", ["post", "calc", "block A, locked before the restart"])]
+B = [tx(names[2], "1", ["post", "calc", "block B, offered after the restart"])]
+a, b = hash_list(A), hash_list(B)
+def send(lines):
+    gport = [x["addr"] for x in gen["agents"] if x["name"] == me][0].rsplit(":", 1)[1]
+    s = socket.create_connection(("127.0.0.1", int(gport)), timeout=5)
+    s.sendall("".join(lines).encode()); time.sleep(1); s.close()
+if mode == "names": print(me, names[3])
+elif mode == "ids": print(a, b)
+elif mode == "lock":
+    send([wire(names[1], ["proposal", "1", "0", "0", a] + A)]
+         + [wire(w, ["prevote", "1", "0", "0", a]) for w in names[1:4]])
+elif mode == "conflict":
+    send([wire(names[3], ["proposal", "1", "2", "0", b] + B), wire(names[1], ["prevote", "1", "2", "0", b])])
+elif mode == "votes":
+    # what the node signed: "SLOT VID" per vote, nil for a vote for nil
+    try: text = open("%s/%s/signed.log" % (net, me)).read()
+    except OSError: text = ""
+    for l in text.splitlines():
+        try:
+            slot, vid, js = l.split(" ", 2)
+            f = json.loads(js)
+            if f[4] == vid: print(slot, vid or "nil")
+        except (ValueError, IndexError, TypeError, KeyError): continue
+PY
+  set -- $(python3 -I "$py" "$d" names); me=$1 p2=$2
+  set -- $(python3 -I "$py" "$d" ids); a=$1 b=$2
+  [ -n "$me" ] && [ -n "$b" ] || { echo "FAIL restart-lock: the message script failed"; return 1; }
+  votes() { python3 -I "$py" "$d" votes; }
+  node restart-lock "$me" -- --behavior silent
+  wait_for restart-lock "$me" 30 "$me listening" sh -c "grep -q ' listening;' $d/$me/node.log" || { stop restart-lock; return 1; }
+  python3 -I "$py" "$d" lock || { echo "FAIL restart-lock: couldn't send the lock's messages"; stop restart-lock; return 1; }
+  wait_for restart-lock "$me" 30 "$me to lock on A and precommit it" sh -c "python3 -I '$py' '$d' votes | grep -qx 'precommit/1/0 $a'" || { stop restart-lock; return 1; }
+  [ -s "$d/$me/consensus.state" ] || { echo "FAIL restart-lock: no consensus.state after the lock"; stop restart-lock; return 1; }
+  [ -s "$d/$me/blocks.log" ] && { echo "FAIL restart-lock: a block was decided, so nothing is left locked"; stop restart-lock; return 1; }
+  # restart it as crash does
+  pid=$(cat "$d/$me/pid"); kill_node restart-lock "$me"; wait "$pid" 2>/dev/null
+  node restart-lock "$me" -- --behavior silent
+  wait_for restart-lock "$me" 30 "$me listening again" sh -c "[ \$(grep -c ' listening;' $d/$me/node.log) -ge 2 ]" || { stop restart-lock; return 1; }
+  python3 -I "$py" "$d" conflict || { echo "FAIL restart-lock: couldn't send the conflicting proposal"; stop restart-lock; return 1; }
+  wait_for restart-lock "$me" 30 "B refused for the lock" sh -c "grep -q 'prevote nil: proposal from $p2 at height 1 round 2 conflicts with our lock' $d/$me/node.log" || { stop restart-lock; return 1; }
+  sleep 1; stop restart-lock
+  v=$(votes)
+  echo "$v" | grep -qx 'prevote/1/2 nil' || { echo "FAIL restart-lock: no signed nil prevote at round 2: $v"; return 1; }
+  echo "$v" | grep -q " $b\$" && { echo "FAIL restart-lock: $me signed a vote for B: $v"; return 1; }
+  [ -s "$d/$me/blocks.log" ] && { echo "FAIL restart-lock: a block was decided"; return 1; }
+  echo "ok restart-lock: $me locked on A, was killed and restarted, and refused B at round 2 for its lock"
+}
+
 # one validator misbehaving at the consensus layer
 scenario_byz() {
   mode=$1 port=$2
@@ -255,6 +338,26 @@ scenario_withhold() {
   [ "${n:-0}" -ge 2 ] || { echo "FAIL withhold: muse held back ${n:-0} times, expected 2 or more"; return 1; }
   grep -q 'holding back my link' "$ROOT/withhold/muse/node.log" || { echo "FAIL withhold: muse never held back"; return 1; }
   echo "ok withhold: muse held back $n times and never led, rotation $hist"
+}
+
+# docs/SECURITY-REVIEW-2.md P-5: muse signs 600 transactions at nonces past
+# the pool's window and sends them with its first one. No pool keeps them,
+# muse's own next-nonce transactions still land, and work still merges.
+scenario_future_nonce() {
+  init future-nonce 28600 term_blocks=25 max_merges=1 bid_cooldown=2 fallback_blocks=10 || return 1
+  for a in claude codex grok; do node future-nonce "$a"; done
+  node future-nonce muse PANTHEON_BYZ=future-nonce
+  wait_for future-nonce muse 60 "muse's flood" sh -c "grep -q 'flooding 600 future-nonce' $ROOT/future-nonce/muse/node.log" || { stop future-nonce; return 1; }
+  wait_for future-nonce claude 150 "three merges after the flood" merges_at_least future-nonce claude 3 || { stop future-nonce; return 1; }
+  sleep 2; stop future-nonce
+  agree future-nonce claude codex grok muse && agree_files future-nonce claude codex grok muse || return 1
+  for a in $AGENTS; do
+    p=$(field future-nonce pool "$a")
+    [ -n "$p" ] && [ "$p" -le 32 ] || { echo "FAIL future-nonce: $a's pool holds ${p:-?} transactions"; return 1; }
+  done
+  n=$(grep -c '"agent":"muse"' "$ROOT/future-nonce/claude/blocks.log")
+  [ "$n" -gt 0 ] || { echo "FAIL future-nonce: none of muse's next-nonce transactions landed"; return 1; }
+  echo "ok future-nonce: 600 future nonces kept out of every pool, $n of muse's transactions landed, $(merged future-nonce claude) merges"
 }
 
 # muse's checks name a wrong tree: as an attestor its yes counts as a no, and
@@ -364,6 +467,23 @@ scenario_ciflood() {
   echo "ok ciflood: a check printing forever was stopped at the cap and rejected; every node lived"
 }
 
+# docs/SECURITY-REVIEW-2.md P-6: a bid's CI prints Docker's and ci-sandbox's
+# own errors, and the node's "node problem:" words, and exits 125 as docker
+# does when its daemon is down. Whether CI could run is the node's call, from
+# its own signals: this is a CI failure, rejected as one, and no node abstains.
+scenario_cispoof() {
+  init cispoof 28550 term_blocks=60 max_merges=1 bid_cooldown=2 attest_window=200 || return 1
+  fake=$ROOT/cispoof/fake-ci
+  printf '#!/bin/sh\ncd "$2" || exit 2\neval "$3"\n' > "$fake"; chmod +x "$fake"
+  ci='echo "docker: Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?"; echo "Unable to find image x locally"; echo "ci-sandbox: no bwrap"; echo "Failed to start transient scope"; echo "node problem: docker down"; exit 125'
+  for a in $AGENTS; do node cispoof "$a" -- --ci-sandbox "$fake" --ci "$ci" --ci-memory 1g; done
+  wait_for cispoof claude 180 "a rejection for CI" sh -c "grep -q 'CI failed on the merged tree' $ROOT/cispoof/claude/status.txt" || { stop cispoof; return 1; }
+  sleep 2; stop cispoof
+  if grep -q "a check couldn't run on this node" "$ROOT"/cispoof/*/node.log; then echo "FAIL cispoof: a node abstained on a bid whose CI printed Docker's error"; return 1; fi
+  agree cispoof claude codex grok muse || return 1
+  echo "ok cispoof: a bid's CI printing Docker's error and exiting 125 was rejected as a CI failure; no node abstained"
+}
+
 # someone with no key floods a node: hundreds of connections, a line of
 # deeply nested JSON, an endless line. The node stays up and the chain moves.
 scenario_flood() {
@@ -461,7 +581,19 @@ case "$p" in
     # each node's first two drafts fail, as a flaky model's do: the leader
     # has to ask again within its term
     c=$(dirname "$0")/drafts.$PPID; n=$(cat "$c" 2>/dev/null || echo 0); echo $((n + 1)) > "$c"
-    [ "$n" -ge 2 ] || { echo "I'll look at the repository first."; exit 0; }
+    # P-16: otherwise valid drafts with hostile structure must fail before
+    # parsing/flattening. Both fit within the model output byte cap.
+    if [ "$n" -lt 2 ]; then
+      python3 - "$n" <<'PYREPLY'
+import sys
+base = '{"task":"add a hello command","repo":"calc","context":["calc.sh"],'
+if sys.argv[1] == "0":
+    print(base + '"extra":' + '[' * 100000 + '0' + ']' * 100000 + '}')
+else:
+    print(base + '"extra":{' + ','.join('"k%d":0' % i for i in range(5000)) + '}}')
+PYREPLY
+      exit 0
+    fi
     echo 'Sure! {"task": "add a hello command", "repo": "calc", "context": ["calc.sh"]}' ;;
   *"writing a patch"*)
     case "$p" in *"file calc.sh>>>"*"A tiny calculator"*) ;; *) echo '{"edits": []}'; exit 0 ;; esac
@@ -483,6 +615,8 @@ F
   wait_for model claude 90 "a merge through the model path" merges_at_least model claude 1 || { stop model; return 1; }
   sleep 2; stop model
   [ ! -s "$ROOT/model/plan-errors" ] || { echo "FAIL model: the leader's prompt had the wrong plan: $(sort -u "$ROOT/model/plan-errors" | tr '\n' ' ')"; return 1; }
+  failures=$(grep -h 'model call failed.*the reply had no JSON object' "$ROOT"/model/*/node.log | wc -l)
+  [ "$failures" -ge 2 ] || { echo "FAIL model: hostile JSON drafts did not count as failures"; return 1; }
   r=$ROOT/model/claude/repos/calc
   [ "$(git -C "$r" show HEAD:hello.sh)" = "echo hello" ] || { echo "FAIL model: hello.sh is wrong"; return 1; }
   [ "$(cd "$r" && sh calc.sh hello)" = "hello" ] || { echo "FAIL model: calc.sh hello doesn't run hello.sh"; return 1; }
@@ -618,6 +752,61 @@ Pantheon-Bid: 64")
   echo "ok epoch: a genesis carrying an earlier chain's version, and this chain's merges still applied"
 }
 
+# docs/SECURITY-REVIEW-2.md P-17: a spec, note or reason with a NUL or another
+# control character is refused by the market; ordinary text (tabs, newlines,
+# quotes, UTF-8) is taken; and the merge commit's message reaches git on its
+# stdin, whole, never as an argument. A git wrapper on the nodes' PATH writes
+# down the arguments of every `git commit`.
+scenario_text() {
+  init text 28500 term_blocks=400 stall_blocks=300 max_merges=1 bid_cooldown=2 || return 1
+  : > "$ROOT/text/goal.txt"
+  real=$(command -v git)
+  mkdir -p "$ROOT/text/bin"
+  cat > "$ROOT/text/bin/git" <<F
+#!/bin/sh
+for a in "\$@"; do [ "\$a" = commit ] && { printf '%s\n' "\$@" >> "$ROOT/text/commit-args"; break; }; done
+exec "$real" "\$@"
+F
+  chmod +x "$ROOT/text/bin/git"
+  for a in $AGENTS; do node text "$a" PATH="$ROOT/text/bin:$PATH"; done
+  wait_for text claude 60 "a leader" sh -c "grep -qs 'leader [a-z]*$' $ROOT/text/claude/status.txt && ! grep -q '(drawing)' $ROOT/text/claude/status.txt" || { stop text; return 1; }
+  leader=$(sed -n 's/.*leader \([a-z]*\)$/\1/p' "$ROOT/text/claude/status.txt")
+  other=""; for a in $AGENTS; do [ "$a" != "$leader" ] && [ -z "$other" ] && other=$a; done
+  # a NUL, which an argument can't carry, straight into the leader's inbox
+  mkdir -p "$ROOT/text/$leader/inbox"
+  printf '["post", "calc", "nul\\u0000spec"]\n' > "$ROOT/text/$leader/inbox/0.000001.json"
+  wait_for text claude 60 "the NUL spec refused" sh -c "grep -c \"$leader: a task's spec has a NUL or control character\" $ROOT/text/claude/node.log | grep -q '^1$'" || { stop text; return 1; }
+  "$BIN" tx "$ROOT/text/$leader" post calc "$(printf 'escape\033[31m red')" >/dev/null
+  wait_for text claude 60 "the escape spec refused" sh -c "grep -c \"$leader: a task's spec has a NUL or control character\" $ROOT/text/claude/node.log | grep -q '^2$'" || { stop text; return 1; }
+  spec=$(printf 'add a sub command\n\t-m "quoted" $(not run) --amend ünïcode\n-F last line')
+  "$BIN" tx "$ROOT/text/$leader" post calc "$spec" >/dev/null
+  wait_for text claude 60 "the ordinary spec taken" sh -c "grep -q '^task 1 \[[a-z]*\] calc: add a sub command' $ROOT/text/claude/status.txt" || { stop text; return 1; }
+  grep -q '^task 2 ' "$ROOT/text/claude/status.txt" && { echo "FAIL text: a refused spec became a task"; stop text; return 1; }
+  "$BIN" tx "$ROOT/text/$other" bid 1 0 "$(printf 'bell\007note')" bell.txt "" "x" >/dev/null
+  wait_for text claude 60 "the control note refused" sh -c "grep -q \"$other: a bid's note has a NUL or control character\" $ROOT/text/claude/node.log" || { stop text; return 1; }
+  "$BIN" tx "$ROOT/text/$leader" reject 1 "$(printf 'reason\001here')" >/dev/null
+  wait_for text claude 60 "the control reason refused" sh -c "grep -q \"$leader: a rejection's reason has a NUL or control character\" $ROOT/text/claude/node.log" || { stop text; return 1; }
+  wait_for text claude 90 "the merge" merges_at_least text claude 1 || { stop text; return 1; }
+  sleep 2; stop text
+  grep -q 'bell.txt' "$ROOT/text/claude/status.txt" && { echo "FAIL text: a bid with a control character in its note was taken"; return 1; }
+  grep -q '^bid 1 \[rejected\]' "$ROOT/text/claude/status.txt" && { echo "FAIL text: a reason with a control character rejected a bid"; return 1; }
+  agree text claude codex grok muse && agree_files text claude codex grok muse || return 1
+  [ -s "$ROOT/text/commit-args" ] || { echo "FAIL text: no git commit went through the wrapper"; return 1; }
+  grep -q 'Merge bid\|add a sub command' "$ROOT/text/commit-args" && { echo "FAIL text: the merge message was a git argument"; return 1; }
+  for a in $AGENTS; do
+    body=$(git -C "$ROOT/text/$a/repos/calc" log -1 --format=%B)
+    case "$body" in
+      "Merge bid "*"for task 1 by "*"
+
+$spec
+
+Pantheon-Version: "*) ;;
+      *) echo "FAIL text: $a's merge message isn't whole: $body"; return 1 ;;
+    esac
+  done
+  echo "ok text: NUL and control characters refused in a spec, a note and a reason; the merge message reached git on stdin, whole"
+}
+
 run() {
   case "$1" in
     happy) scenario_happy ;;
@@ -625,6 +814,7 @@ run() {
     bidder-fallback) scenario_bidder_fallback ;;
     bidder-timeout) scenario_bidder_timeout ;;
     crash) scenario_crash ;;
+    restart-lock) scenario_restart_lock ;;
     equivocate) scenario_byz equivocate 27400 ;;
     double-vote) scenario_byz double-vote 27450 ;;
     silent) scenario_byz silent 27500 ;;
@@ -633,10 +823,12 @@ run() {
     silent-model) scenario_bad_model silent 27650 ;;
     withhold) scenario_withhold ;;
     bad-tree) scenario_bad_tree ;;
+    future-nonce) scenario_future_nonce ;;
     network) scenario_network ;;
     ci) scenario_ci ;;
     cifail) scenario_cifail ;;
     ciflood) scenario_ciflood ;;
+    cispoof) scenario_cispoof ;;
     flood) scenario_flood ;;
     policy) scenario_policy ;;
     model) scenario_model ;;
@@ -645,11 +837,12 @@ run() {
     limit-cli) scenario_limit_cli ;;
     prune) scenario_prune ;;
     epoch) scenario_epoch ;;
+    text) scenario_text ;;
     *) echo "unknown scenario $1"; return 1 ;;
   esac
 }
 
-ALL="bidders bidder-fallback bidder-timeout happy crash equivocate double-vote silent bad-sig withhold bad-tree deny silent-model policy model stuck limit limit-cli prune epoch network ci cifail ciflood flood"
+ALL="bidders bidder-fallback bidder-timeout happy crash restart-lock equivocate double-vote silent bad-sig withhold bad-tree future-nonce deny silent-model policy model stuck limit limit-cli prune epoch text network ci cifail ciflood cispoof flood"
 want=${*:-$ALL}
 pids=""
 for s in $want; do (run "$s" > "$ROOT/$s.result" 2>&1; echo $? > "$ROOT/$s.code") & pids="$pids $!"; done

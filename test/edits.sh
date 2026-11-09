@@ -82,6 +82,26 @@ echo '["dup.txt", "same\n", "other\n"]' > "$T/e5.json"
 "$BIN" apply-edits "$T/bad" "$T/e5.json" >/dev/null 2>&1 && fail "applied an ambiguous edit" || ok "ambiguous old text refused"
 echo '["a.txt", "not there\n", "x"]' > "$T/e6.json"
 "$BIN" apply-edits "$T/bad" "$T/e6.json" >/dev/null 2>&1 && fail "applied an edit whose old text is missing" || ok "missing old text refused"
+# .gitattributes and .gitmodules, in any component and any case, are refused:
+# they change how git reads every later edit, so no edit may write them
+for p in .gitattributes .gitmodules sub/.gitattributes SUB/.GitAttributes sub/.gitmodules SUB/.GITMODULES \
+         sub/.gitattributes/file.txt deep/.GitModules/file.txt; do
+  echo "[\"$p\", \"\", \"x\"]" > "$T/ga.json"
+  "$BIN" apply-edits "$T/bad" "$T/ga.json" >/dev/null 2>&1 && fail "wrote $p" || ok "$p refused"
+  [ -e "$T/bad/$p" ] && fail "$p exists after a refused edit"
+done
+# similar but distinct names are ordinary files
+for p in sub/gitattributes.txt sub/.gitattributes.txt sub/x.gitmodules sub/.gitmodules.bak; do
+  echo "[\"$p\", \"\", \"fine\n\"]" > "$T/ga.json"
+  "$BIN" apply-edits "$T/bad" "$T/ga.json" >/dev/null 2>&1 && [ -f "$T/bad/$p" ] && ok "$p allowed" || fail "$p was refused"
+done
+# and a model's checkout cannot sneak one into a bid either
+g clone -q "$T/origin" "$T/meta"
+printf '* text eol=crlf\n' > "$T/meta/sub/.gitattributes"
+printf 'changed\n' >> "$T/meta/a.txt"
+"$BIN" edits "$T/meta" "meta" > "$T/meta.json" || fail "pantheon edits failed on a checkout with sub/.gitattributes"
+jq -e '[.edits[].path] == ["a.txt"]' "$T/meta.json" >/dev/null && ok "sub/.gitattributes left out of a bid" \
+  || fail "edits with sub/.gitattributes: $(cat "$T/meta.json")"
 
 # the checkout is the model's: a symlink in it must not bring what it points at
 # into the bid (a node's key), whether the model made it or a diff did
@@ -104,5 +124,28 @@ printf 'changed\n' >> "$T/hostile/a.txt"
 PANTHEON_GITDIR="$T/hostile.git" "$BIN" edits "$T/hostile" "hostile" > "$T/hostile.json" || fail "pantheon edits failed with PANTHEON_GITDIR"
 [ ! -e "$T/pwned-fsmonitor" ] && [ ! -e "$T/pwned-filter" ] && ok "a checkout's .git config runs nothing" || fail "a checkout's .git config ran a command"
 jq -e '[.edits[].path] == ["a.txt"]' "$T/hostile.json" >/dev/null && ok "edits come from the node's repository" || fail "edits with PANTHEON_GITDIR: $(cat "$T/hostile.json")"
+
+# ... nor can PANTHEON_GITDIR itself: when node and model are one user the
+# model can write that repository's config too. A clean filter and an
+# fsmonitor there (routed to by .gitattributes in the worktree) must never
+# run when the snapshot reads the checkout, and edits are still read.
+g clone -q --separate-git-dir="$T/hostile2.git" "$T/origin" "$T/hostile2"
+git --git-dir="$T/hostile2.git" config filter.x.clean "touch $T/pwned-gitdir-filter; cat"
+git --git-dir="$T/hostile2.git" config core.fsmonitor "touch $T/pwned-gitdir-fsmonitor; false"
+git --git-dir="$T/hostile2.git" config core.hooksPath "$T/hostile2-hooks"
+printf '* filter=x\n' > "$T/hostile2/.gitattributes"
+printf 'changed\n' >> "$T/hostile2/a.txt"
+PANTHEON_GITDIR="$T/hostile2.git" "$BIN" edits "$T/hostile2" "hostile2" > "$T/hostile2.json" || fail "pantheon edits failed with a hostile PANTHEON_GITDIR"
+[ ! -e "$T/pwned-gitdir-filter" ] && [ ! -e "$T/pwned-gitdir-fsmonitor" ] && ok "a hostile PANTHEON_GITDIR config runs nothing" || fail "a hostile PANTHEON_GITDIR config ran a command"
+jq -e '[.edits[].path] | index("a.txt")' "$T/hostile2.json" >/dev/null && ok "edits still come from a hostile PANTHEON_GITDIR" || fail "edits with a hostile PANTHEON_GITDIR: $(cat "$T/hostile2.json")"
+
+# the node started as ./main.exe still finds its own binary once the
+# directory has changed (docs/SECURITY-REVIEW-2.md P-10): the path it gives
+# for itself, the one `up`, checks and PANTHEON_BIN use, works from elsewhere
+(cd "$(dirname "$BIN")" && ./main.exe init "$T/selfnet" --repo origin="$T/origin") > "$T/init.out" 2>&1 || fail "./main.exe init failed: $(tail -3 "$T/init.out")"
+self=$(sed -n 's/.*Run it with: \(.*\) up .*/\1/p' "$T/init.out")
+(cd "$T/selfnet" && [ -x "$self" ] && "$self" plan "$T/no-such-plan" 2>&1 | grep -q 'no .*no-such-plan here') \
+  && ok "./main.exe gives itself as a path that works from another directory ($self)" \
+  || fail "./main.exe names itself as '$self', which isn't there from another directory"
 
 [ $fails -eq 0 ] && echo PASS || { echo "$fails failed"; exit 1; }
