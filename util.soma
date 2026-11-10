@@ -131,6 +131,21 @@ safe_path (p : string) : bool :=
   && negb (contains "//" w) && negb (contains "/./" w) && negb (contains "/.git/" w) && negb (contains "/.GIT/" w)
   && negb (git_meta_component p).
 
+(** The shell's path policy, moved without changing its accepted paths.
+    Unlike the market's [safe_path], it permits ".." inside a filename,
+    rejects NUL, and rejects every ASCII case spelling of a .git component. *)
+Fixpoint shell_path_chars (p : string) : bool :=
+  match p with
+  | SNil => true
+  | SCons c r => negb (nat_of_ascii c =? 0) && negb (nat_of_ascii c =? 92) && shell_path_chars r
+  end.
+
+shell_safe_path (p : string) : bool :=
+  let w := append "/" (append p "/") in
+  negb (seq p "") && negb (starts "/" p) && shell_path_chars p
+  && negb (contains "//" w) && negb (contains "/./" w) && negb (contains "/../" w)
+  && negb (contains "/.git/" (lower w)) && negb (git_meta_component p).
+
 (** one character a spec, note or reason may hold: printable, a tab or a
     newline, or a byte of a UTF-8 character; not NUL, DEL or another control
     character (docs/SECURITY-REVIEW-2.md P-17) *)
@@ -255,3 +270,30 @@ Fixpoint replace_all_go (fuel : nat) (s sub replacement : string) : string :=
 
 replace_all (s sub replacement : string) : string :=
   if seq sub "" then s else replace_all_go (slen s) s sub replacement.
+
+(** ---- edit matching, moved from shell.ml (docs/SHELL-IN-SOMA.md) ---- *)
+
+(** the places [sub] starts in [s], from offset [i] on, after those in
+    [found]: it stops once two are found *)
+Fixpoint positions_go (s sub : string) (i : nat) (found : list nat) : list nat :=
+  if 2 <=? length found then found
+  else match s with
+       | SNil => found
+       | SCons _ r => positions_go r sub (Succ i) (if starts sub s then found ++ [i] else found)
+       end.
+
+(** Where [sub] occurs in [s]: the first two places at most, in order. An
+    edit applies only when its old text occurs exactly once. An empty [sub]
+    occurs nowhere. *)
+positions (s sub : string) : list nat :=
+  if seq sub "" then [] else positions_go s sub 0 [].
+
+(** [s] with the [old] at offset [i] replaced by [repl] *)
+replace_at (s : string) (i : nat) (old repl : string) : string :=
+  append (take_str i s) (append repl (drop_str (i + slen old) s)).
+
+(** A file's text after an edit: its one [old] replaced by [repl]. None
+    when [old] isn't in it, or appears more than once (the edit is then
+    ambiguous: it has to give more of the text), or is empty. *)
+edit_once (s old repl : string) : option string :=
+  match positions s old with [i] => Some (replace_at s i old repl) | _ => None end.

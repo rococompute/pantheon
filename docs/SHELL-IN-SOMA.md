@@ -55,6 +55,33 @@ worth a note in this file rather than a workaround.
   Next: edit matching (`matches_at`, `positions`, `replace_at`, and
   `apply_edits`' pure logic). I/O stays in the shell.
 
+- Edit matching: `positions` (the first two places at most), `replace_at`
+  and `edit_once` (the text with its one occurrence of the old text
+  replaced, `None` when it's missing or ambiguous) are in `util.soma`.
+  `shell.ml`'s `matches_at`, `positions` and `replace_at` are deleted.
+  `run` gets Soma's `edit_once` and `contains` as two more arguments and
+  stores them in two refs at its start, so `apply_edits`, `hunk_edits`,
+  `repo_url`, `check_tree` and the node loop use them without threading
+  them through every caller. `apply_edits` tells "isn't in the file" from
+  "appears more than once" with `contains`. Nat doesn't cross the binding
+  boundary (extracted code's `nat` is abstract to `shell.ml`), so the
+  bindings take `option string` and `bool`, not positions.
+  Next: `safe_path`'s OCaml copy (use `util.soma`'s, checking the two agree
+  on `test/edits.sh`'s cases first), then the JSON helpers
+  (`flatten_reply`, `json_in_reply`, `shallow_json`), then
+  `chain_len`/`iterate`. I/O stays in the shell.
+
+- Shell path validation: the OCaml `safe_path` logic is deleted and all its
+  callers use `shell_safe_path` in `util.soma`, passed through `run` and
+  stored in a ref like the edit helpers. The existing Soma `safe_path`
+  agrees on the edits script's cases, but differs on other paths: it rejects
+  filenames containing `..`, permits NUL, and misses mixed-case `.git`.
+  `shell_safe_path` preserves the shell's exact policy without changing the
+  market's policy: only whole components are forbidden, ASCII case is ignored
+  for git metadata, and NUL and backslash are refused.
+  Next: the JSON helpers (`flatten_reply`, `json_in_reply`, `shallow_json`),
+  then `chain_len`/`iterate`. I/O stays in the shell.
+
 ## How a bid is judged
 
 - `soma build main.soma` builds, and `test/edits.sh` and `test/e2e.sh` pass

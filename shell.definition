@@ -19,7 +19,8 @@ decode_tx : string -> list string.
 (** Runs a node: feeds the state machine its events, one at a time, and does
     what each step's outputs say. The two functions after [step] select the
     consensus snapshot and restore it after block replay; the shell syncs
-    that snapshot before sending votes. The last two functions are Soma's own
-    [plan_open] and [replace_all] (util.soma), handed in so the shell's
-    command line and node loop use the Soma versions. Never returns. *)
-run : forall {S C : Type}, S -> (S -> list string -> S * list (list string)) -> (S -> C) -> (S -> C -> S) -> (string -> list string) -> (string -> string -> string -> string) -> unit.
+    that snapshot before sending votes. The last five functions are Soma's
+    own [plan_open], [replace_all], [edit_once], [contains] and [shell_safe_path] (util.soma),
+    handed in so the shell's command line, edits and node loop use the Soma
+    versions. Never returns. *)
+run : forall {S C : Type}, S -> (S -> list string -> S * list (list string)) -> (S -> C) -> (S -> C -> S) -> (string -> list string) -> (string -> string -> string -> string) -> (string -> string -> string -> option string) -> (string -> string -> bool) -> (string -> bool) -> unit.
