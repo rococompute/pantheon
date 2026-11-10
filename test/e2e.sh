@@ -370,6 +370,9 @@ scenario_future_nonce() {
 # as leader its merges are voted down. No checkout ever diverges.
 scenario_bad_tree() {
   init bad-tree 27750 term_blocks=25 max_merges=1 bid_cooldown=2 fallback_blocks=10 || return 1
+  # muse's terms close their tasks unmerged, so four goal items can run out
+  # before three merges when the rotation gives muse many terms
+  for i in $(seq 5 10); do echo "- bad-tree task $i" >> "$ROOT/bad-tree/goal.txt"; done
   for a in claude codex grok; do node bad-tree "$a"; done
   node bad-tree muse PANTHEON_BYZ=bad-tree
   wait_for bad-tree claude 150 "three merges with muse lying about trees" merges_at_least bad-tree claude 3 || { stop bad-tree; return 1; }
