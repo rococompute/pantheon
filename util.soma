@@ -311,3 +311,37 @@ replace_at (s : string) (i : nat) (old repl : string) : string :=
     ambiguous: it has to give more of the text), or is empty. *)
 edit_once (s old repl : string) : option string :=
   match positions s old with [i] => Some (replace_at s i old repl) | _ => None end.
+
+(** Bounded structural scan before JSON parsing, moved from shell.ml.
+    This is deliberately not a JSON validator: unmatched closers can make
+    depth negative, and unfinished strings are left to the parser. Keeping
+    opening and closing counts separately preserves that signed depth.
+    Containers, colons and commas each spend one item outside strings. *)
+Fixpoint shallow_json_go (fuel : nat) (s : string) (i : nat) (max items opens closes : nat)
+    (in_str esc : bool) : bool :=
+  match fuel, char_at s i with
+  | Succ f, Some c =>
+      let n := nat_of_ascii c in
+      if in_str then
+        if esc then shallow_json_go f s (Succ i) max items opens closes true false
+        else if n =? 92 then shallow_json_go f s (Succ i) max items opens closes true true
+        else shallow_json_go f s (Succ i) max items opens closes (negb (n =? 34)) false
+      else if n =? 34 then shallow_json_go f s (Succ i) max items opens closes true false
+      else if (n =? 91) || (n =? 123) then
+        if (Succ opens <=? closes + max) && (0 <? items)
+        then shallow_json_go f s (Succ i) max (items - 1) (Succ opens) closes false false
+        else false
+      else if (n =? 58) || (n =? 44) then
+        if 0 <? items
+        then shallow_json_go f s (Succ i) max (items - 1) opens closes false false
+        else false
+      else if (n =? 93) || (n =? 125) then
+        shallow_json_go f s (Succ i) max items opens (Succ closes) false false
+      else shallow_json_go f s (Succ i) max items opens closes false false
+  | _, _ => true
+  end.
+
+(** Decimal limits avoid exposing extracted nat to shell.ml. Both callers
+    use depth 4; transactions/peer messages use max_int items, replies 4096. *)
+shallow_json (max max_items s : string) : bool :=
+  shallow_json_go (slen s) s 0 (num max) (num max_items) 0 0 false false.

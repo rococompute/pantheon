@@ -148,6 +148,16 @@ worth a note in this file rather than a workaround.
   Next: the JSON helpers (`flatten_reply`, `json_in_reply`, `shallow_json`),
   then `chain_len`/`iterate`. I/O stays in the shell.
 
+- `shallow_json`: the bounded string scan now lives in `util.soma`.
+  `run` installs it in a ref through `shell.definition`, including for
+  `decode_tx`, model replies and peer messages. The thin OCaml wrapper keeps
+  depth 4 and the default `max_int` item budget; replies still use 4096.
+  Limits cross the binding as decimal strings because extracted `nat` is
+  abstract to the shell. String escapes, container/colon/comma spending,
+  and even negative depth on malformed input retain the original behavior.
+  It walked the text a character at a time, a quadratic scan of every
+  peer message and transaction, and now reads it by offset (`char_at`).
+
 ## How a bid is judged
 
 - `soma build main.soma` builds, and `test/edits.sh` and `test/e2e.sh` pass

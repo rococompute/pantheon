@@ -19,4 +19,4 @@ Extract Inlined Constant Stdlib.Strings.String.get =>
 Extract Inlined Constant Stdlib.Strings.String.substring =>
   "(fun n m s -> let l = String.length s in if n >= l then """" else String.sub s n (min m (l - n)))".
 
-main := run empty_node step cons restore_cons plan_open replace_all edit_once contains shell_safe_path.
+main := run empty_node step cons restore_cons plan_open replace_all edit_once contains shell_safe_path shallow_json.
