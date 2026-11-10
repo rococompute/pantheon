@@ -31,11 +31,15 @@ words, then name the files that have the details: a review finding, a
 design note, the code, the test that will judge it.
 
 An item no bid can land goes in a `#` section of its own, as notes, so no
-leader posts it: Pantheon's CI refuses a bid that changes a file it pins
-(`deploy/ci-command.py`: the `test/` and `deploy/` files already there,
-`scripts/host.sh`, `scripts/sandbox.sh`), since those decide what CI is. The
-operator does those items, or moves a part that touches no pinned file up
-as an open line.
+leader posts it. Pantheon's CI refuses a bid that changes a test already in
+`test/` (those judge it: a new scenario goes in a new file) or adds an
+unproved assumption (`deploy/ci-command.py`). A bid may change the
+deployment (`deploy/`, `scripts/host.sh`, `scripts/sandbox.sh`): CI runs the
+deployed copies, never the bid's, says what the tree changes, and the change
+runs from the next deployment on, as the node code the market merged does.
+So the operator's items are few: changing a test that's there, or what needs
+a machine CI doesn't have (root, a provider's login), which a bid can still
+do as far as a dry run checks it.
 
 ## Pruning
 

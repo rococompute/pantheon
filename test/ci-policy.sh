@@ -65,3 +65,11 @@ printf '#!/bin/bash\n[[ -n x ]] && echo bash-test-ran\n' > "$t/bid/test/bashy.sh
 run > "$t/output" 2>&1 || { cat "$t/output"; echo "FAIL a bash test failed"; exit 1; }
 grep -q bash-test-ran "$t/output" || { cat "$t/output"; echo "FAIL the bash test didn't run in bash"; exit 1; }
 echo 'ok an added test that asks for bash runs in bash'
+# A bid may change the deployment (deploy/, scripts/host.sh, scripts/sandbox.sh):
+# CI ran the deployed copies, and says what the tree changes
+reset
+mkdir -p "$t/bid/scripts"; printf '#!/bin/sh\necho changed\n' > "$t/bid/scripts/host.sh"; printf '# changed\n' >> "$t/bid/deploy/ci-command.py"
+run > "$t/output" 2>&1 || { cat "$t/output"; echo "FAIL a deployment change failed CI"; exit 1; }
+grep -q 'this tree changes deploy/ci-command.py' "$t/output" && grep -q 'this tree changes scripts/host.sh' "$t/output" \
+  || { cat "$t/output"; echo "FAIL CI didn't say what the tree changes of the deployment"; exit 1; }
+echo 'ok a bid may change the deployment, and CI says so'

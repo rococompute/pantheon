@@ -69,7 +69,7 @@ repository's CI command.
 What CI runs on a bid's merged tree, by default:
 
 - **Pantheon:** the policy check (`deploy/ci-command.py`: no new `Admitted`
-  or axiom, no change to a pinned test or CI file), `soma build main.soma`,
+  or axiom, no change to a test already in `test/`; a change to the deployment, `deploy/`, `scripts/host.sh` or `scripts/sandbox.sh`, is allowed and said, since CI runs the deployed copies), `soma build main.soma`,
   the fast tests (`test/edits.sh`, `ci-policy.sh`, `cli.sh`, `genesis.sh`,
   `double-bid.sh`, `soma-misc-runner.sh`, `host-quoting.sh`, a few seconds
   each), then every `test/*.sh` the bid's tree adds, each within

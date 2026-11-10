@@ -141,6 +141,34 @@ release, put it at the top of `docs/SAFETY.md` and `README.md` and protect the
 default branch. The fix is not just documentation: the current `SAFETY.md`
 claim is stronger than the code.
 
+**The fix's design (for the market's bids).** Three kinds of user on the host:
+
+- **The node user** (`pantheon`, home `/var/lib/pantheon`, mode 0711) runs the
+  nodes, the mirror and the inbox server as system services (`User=`). It
+  owns `net/` (each node's home 0700: keys, logs), `inbox.json` (0600), the
+  push key in its `~/.ssh`, and its own builds of Soma and Pantheon (readable
+  by all). The node checkouts move out of the 0700 homes to `repos/AGENT`
+  (readable: a patch checkout shares their objects), which the node finds
+  through `PANTHEON_REPOS` (shell.ml `repo_dir`); `init` and `migrate` put
+  them there.
+- **A user per diplomat** (`pantheon-claude`, `pantheon-codex`,
+  `pantheon-grok`; homes 0700) holds that CLI's login, a read-only GitHub
+  key, its desk and instructions. It shares only its inbox,
+  `/var/lib/pantheon-inbox/AGENT`, owned `pantheon:inbox-AGENT`, mode 2770.
+  bidder-inbox.sh gives a patch checkout to that group. Its `check` runs
+  ci-sandbox with the node user's Soma and opam root read-only
+  (`CI_OPAMROOT`, `CI_SWITCH`) and the host's one lock (`CI_LOCK`).
+- **The operator** runs host.sh, herdr and the watchdog, and acts as the
+  others through a sudoers file the `users` command writes. `diplomats` starts
+  each session as its user (`sudo -iu pantheon-AGENT` in the pane); TIOCSTI
+  is off so a session can't type into the operator's terminal.
+
+A bid can't use root in CI, so a test checks what host.sh would do instead:
+a dry run (for example `HOST_DRY=DIR`) writes the root script, the unit
+files and the wrappers to DIR, and the test reads them (users, modes, `User=`,
+inbox paths, no key path a diplomat can read). Running it for real on a Linux
+host is the operator's, at deployment.
+
 ## P-2. Pantheon: the H1 fix leaves the git directory writable when node and model share a user
 
 **Severity: High.** `shell.ml:897-905` creates a patch checkout with

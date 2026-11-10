@@ -2,7 +2,12 @@
 """Generate a self-contained CI command from the operator's trusted checkout.
 
 The manifest and verifier travel in the command, never in the bid's files.
-Test/CI edits need operator review and a new trusted deployment.
+A bid can't change the tests that judge it (test/ files already there), and
+can't add an unproved assumption. It can change the deployment (deploy/,
+scripts/host.sh, scripts/sandbox.sh): CI runs the operator's deployed copies
+of those, never the bid's, so the change is code under test, attested like
+any other, until the next deployment (an epoch, host.sh start) runs it, as it
+runs the node's code the market merged (docs/PLAN.md).
 """
 import collections
 import hashlib
@@ -70,16 +75,31 @@ def files(root):
             and p.is_file()]
 
 
+def deployment_file(name):
+    return name.startswith('deploy/') or name in {'scripts/host.sh', 'scripts/sandbox.sh'}
+
+
 def manifest(root):
-    proofs, pinned = {}, {}
+    proofs, pinned, deployment = {}, {}, {}
     for p in files(root):
         name = p.relative_to(root).as_posix()
         if p.suffix in {'.soma', '.proof'}:
             proofs[name] = dict(assumptions(p.read_text()))
-        if name.startswith(('test/', 'deploy/')) or name in {
-                'scripts/host.sh', 'scripts/sandbox.sh'}:
-            pinned[name] = hashlib.sha256(p.read_bytes()).hexdigest()
-    return {'proofs': proofs, 'pinned': pinned}
+        digest = hashlib.sha256(p.read_bytes()).hexdigest()
+        if name.startswith('test/'):
+            pinned[name] = digest
+        elif deployment_file(name):
+            deployment[name] = digest
+    return {'proofs': proofs, 'pinned': pinned, 'deployment': deployment}
+
+
+def deployment_changes(root, baseline):
+    # what the tree changes of the deployment: allowed, and said, since it
+    # takes effect only when the operator deploys it
+    old = baseline.get('deployment', {})
+    new = {p.relative_to(root).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
+           for p in files(root) if deployment_file(p.relative_to(root).as_posix())}
+    return sorted(n for n in set(old) | set(new) if old.get(n) != new.get(n))
 
 
 def added_tests(root, baseline):
@@ -95,7 +115,7 @@ def verify(root, baseline):
     for name, digest in baseline['pinned'].items():
         p = root / name
         if p.is_symlink() or not p.is_file() or hashlib.sha256(p.read_bytes()).hexdigest() != digest:
-            raise ValueError('changed trusted test/CI file: ' + name)
+            raise ValueError('changed a test already there: ' + name + ' (a bid adds tests in new files; the ones there judge it)')
     for p in files(root):
         if p.suffix in {'.soma', '.proof'}:
             name = p.relative_to(root).as_posix()
@@ -108,6 +128,8 @@ if __name__ == '__main__':
         try:
             baseline = json.loads(sys.argv[2])
             verify(Path.cwd(), baseline)
+            for name in deployment_changes(Path.cwd(), baseline):
+                print('CI: this tree changes ' + name + ' (deployment: CI ran the deployed copy; it takes effect once the operator deploys it)', file=sys.stderr)
             for name in added_tests(Path.cwd(), baseline):
                 print(name)
         except (ValueError, OSError) as e:
