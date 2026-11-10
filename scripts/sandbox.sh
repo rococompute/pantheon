@@ -409,7 +409,15 @@ cmd_epoch() {
   rm -rf "$tmp"
   in_vm "$first" sudo sh -c 'docker build -q -f /tmp/ci/pantheon/deploy/Dockerfile --build-context soma=/tmp/ci/soma -t pantheon:dev /tmp/ci/pantheon >/tmp/epoch-image.log 2>&1 && rm -rf /tmp/ci' \
     || die "the CI image didn't build in $first: sudo cat /tmp/epoch-image.log there"
-  for a in $AGENTS; do v=$(vm "$a"); [ "$v" = "$first" ] && continue; in_vm "$first" sudo docker save pantheon:dev | in_vm "$v" sudo docker load >/dev/null; done
+  # each epoch's image replaces the last, which stays behind untagged: prune
+  # those, or a few epochs fill a VM's disk and the next load fails midway
+  in_vm "$first" sudo docker image prune -f >/dev/null
+  for a in $AGENTS; do v=$(vm "$a"); [ "$v" = "$first" ] && continue
+    in_vm "$v" sudo docker image prune -f >/dev/null
+    in_vm "$first" sudo docker save pantheon:dev | in_vm "$v" sudo docker load >/dev/null \
+      || die "copying the CI image to $v failed: check its disk (limactl shell $v df -h /), then run the epoch again"
+    in_vm "$v" sudo docker image prune -f >/dev/null
+  done
   # every node rebuilt with the new Soma, whatever commit it had
   for a in $AGENTS; do in_vm "$(vm "$a")" sudo -u pantheon sh -c 'rm -rf ~/pantheon/.commit ~/pantheon/.soma-cache'; done
   cmd_reset
