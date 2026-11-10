@@ -125,7 +125,7 @@ draft_prompt (a m : obj) : string :=
 "
   (append "The repositories, and their files:
 {{REPOS}}
-" (append (append "Write the next task: the first open plan item no task above already covers (unless it can't be done yet), whole, in one repository. Don't cut it down to a first piece: say what done looks like for the whole item and how it will be judged. Bidders may do all of it in one patch or a correct part of it, and the task stays open across merges until its leader judges it done. Quote the item at the start of the task, name .plan and the files the item points at as context (up to 8), and say that the bid that finishes the item puts ""+ "" before its line in .plan. If no plan item is left and the goal is met, give null. Repositories:" (repo_names m))
+" (append (append "Write the next task: the first open plan item no task above already covers (unless it can't be done yet), whole, in one repository. Don't cut it down to a first piece: say what done looks like for the whole item and how it will be judged. Judge by the floor: the least that does the item correctly (it builds, the tests pass, the behavior is right). Name what is welcome past it without requiring it; in a gradually typed language such as Soma, that's more precise types than Any and proofs of what the code does. A bid at the floor is as mergeable as one past it. Ask for tests a bidder can write and run: a pure function's results checked in the repository's own language, not a timing race against a running program. Bidders may do all of it in one patch or a correct part of it, and the task stays open across merges until its leader judges it done. Quote the item at the start of the task, name .plan and the files the item points at as context (up to 8), and say that the bid that finishes the item puts ""+ "" before its line in .plan. If no plan item is left and the goal is met, give null. Repositories:" (repo_names m))
   "
 Reply format: {""task"": ""what to do and how it will be judged"", ""repo"": ""name"", ""context"": [""path"", ...]} or {""task"": null}"))))))).
 
@@ -147,7 +147,7 @@ patch_prompt (a m : obj) (t : task) : string :=
   (append (fence "task" (spec t)) (append (merged_text m t) (append (rejections m t) (append "Files from the repository:
 {{REPO}}
 "
-  "Do as much of the task as you can do correctly in one patch: all of it if you can. A smaller patch is welcome too when it's a correct step on its own (it builds, the tests pass, nothing is left half-done); say in the note what it does and what of the task remains. Write it as edits. Each edit replaces one exact piece of a file: copy ""old"" character for character from the file, with enough lines that it appears exactly once, and give ""new"" to put in its place. To write a whole file, new or not, give ""old"": """"; to delete one, give ""old"": """" and ""new"": """". Paths are relative to the repository.
+  "Do as much of the task as you can do correctly in one patch: all of it if you can. A smaller patch is welcome too when it's a correct step on its own (it builds, the tests pass, nothing is left half-done); say in the note what it does and what of the task remains. The floor is code that works: in Soma, a bare implementation with loose types (Any) and no theorems is a bid, and so is one with precise types and proofs; don't state a theorem you can't prove (Admitted and axioms fail CI). Write it as edits. Each edit replaces one exact piece of a file: copy ""old"" character for character from the file, with enough lines that it appears exactly once, and give ""new"" to put in its place. To write a whole file, new or not, give ""old"": """"; to delete one, give ""old"": """" and ""new"": """". Paths are relative to the repository.
 Reply format: {""edits"": [{""path"": ""dir/name"", ""old"": ""exact text"", ""new"": ""replacement""}], ""note"": ""one line""}")))).
 
 pick_prompt (a m : obj) (t : task) (bs : list bid) : string :=
@@ -160,7 +160,7 @@ pick_prompt (a m : obj) (t : task) (bs : list bid) : string :=
 " (append (fence "note" (note b)) (edits_text b)))))))) bs "")
   (append "Each repository's plan, its open items:
 {{PLAN}}"
-  "Pick the bid that takes the task furthest correctly, if one is good enough, and reject wrong ones. A correct part of the task is good enough: the task stays open for the rest. merge 0 means none yet. Then judge whether the task is done: done is true only when the whole task is finished with the bid you merge (or with what's merged already, if you merge none). A bid that marks the plan item done when it isn't is wrong. When it's done and the task is a plan item still open above, give that item's line as plan_line, copied exactly, and you'll mark it done in .plan (a line shown cut with ... can't be: leave plan_line empty).
+  "Pick the bid that takes the task furthest correctly, if one is good enough, and reject wrong ones. A correct part of the task is good enough: the task stays open for the rest. A bid at the task's floor is good enough, and among correct bids prefer the one that goes further, in the task or past the floor (more precise types, proofs). Don't reject a bid for lacking what the task calls welcome but not required. merge 0 means none yet. Then judge whether the task is done: done is true only when the whole task is finished with the bid you merge (or with what's merged already, if you merge none). A bid that marks the plan item done when it isn't is wrong. When it's done and the task is a plan item still open above, give that item's line as plan_line, copied exactly, and you'll mark it done in .plan (a line shown cut with ... can't be: leave plan_line empty).
 Reply format: {""merge"": <bid number or 0>, ""reject"": [{""bid"": <number>, ""reason"": ""why""}], ""done"": true or false, ""plan_line"": ""the item's line, or empty""}"))))).
 
 attest_prompt (a m : obj) (t : string) (b : bid) : string :=
@@ -170,7 +170,7 @@ attest_prompt (a m : obj) (t : string) (b : bid) : string :=
            then append "This is the leader's mark: it only puts ""+ "" before the plan item's line in .plan. Approve it only if the task is done, judging by what merged on it, and the line is the task's plan item.
 " (match task_by m (btask b) with Some tk => merged_text m tk | None => "" end)
            else "") (append (edits_text b)
-  "The edits apply cleanly to the current head, and its CI passed if it has one. Approve only if they do the task and have nothing harmful or unrelated in them. When unsure, don't.
+  "The edits apply cleanly to the current head, and its CI passed if it has one. Approve only if they do the task, or a correct part of it, and have nothing harmful or unrelated in them. Code at the task's floor (working, loosely typed, without theorems) is fine; don't refuse it for lacking what the task only calls welcome. When unsure, don't.
 Reply format: {""approve"": true or false, ""reason"": ""one line""}")))).
 
 (** The scripted backend's answers, in the same flattened form the shell

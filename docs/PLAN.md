@@ -30,6 +30,13 @@ item one line and make it a pointer. Say what's wrong or wanted in a few
 words, then name the files that have the details: a review finding, a
 design note, the code, the test that will judge it.
 
+An item no bid can land goes in a `#` section of its own, as notes, so no
+leader posts it: Pantheon's CI refuses a bid that changes a file it pins
+(`deploy/ci-command.py`: the `test/` and `deploy/` files already there,
+`scripts/host.sh`, `scripts/sandbox.sh`), since those decide what CI is. The
+operator does those items, or moves a part that touches no pinned file up
+as an open line.
+
 ## Pruning
 
 Marked lines (`*`, `+`, `-`) are history, and the file keeps only what's

@@ -63,6 +63,24 @@ One task each, in order:
    tracked as now. The loop never ends; a binding `forever : (unit -> unit)
    -> unit` (OCaml's `while true`) runs its body, so Soma needs no fuel or
    general recursion.
+   **How to test the order.** Five bids on this step (Nov 10) were rejected
+   because their tests timed a running node, polling `signed.log` and
+   killing it, which can't show the snapshot came before the vote. Don't.
+   What moves is `shell.ml`'s `feed`: run `step`, note a refused
+   transaction (the state came back unchanged), perform the `decided`
+   outputs, save the snapshot if it changed, then perform the rest. Write
+   that order as a pure Soma function from the event, the old and new
+   state and the outputs to a list of effects (perform this output, save
+   this snapshot, refuse this transaction), and have the loop body only
+   carry the effects out. Then the order is checked like `util.proof`:
+   `Example`s that a vote event's effects save before they send, and that
+   a refused transaction is remembered and dropped next time, and,
+   past the floor, a theorem in a `.proof` for every event. The refused
+   set can stay an OCaml table behind two bindings at the floor. The
+   floor is the loop in Soma with its order checked by `Example`s; types
+   can be loose (`Any` for the snapshot or the handle) where precise ones
+   are a fight. When it lands, the bid rewrites the step 2 line in `.plan`
+   for step 3.
 3. **One record, not refs.** The Soma helpers OCaml still calls (`edit_once`,
    `contains`, `shell_safe_path`, `replace_all`) go to `node_open` once, as
    one record, instead of as `run` arguments kept in refs. Each one leaves
@@ -190,10 +208,30 @@ at the time; their `run` references are historical.
 
 ## How a bid is judged
 
+Soma is gradually typed (Soma's GRADUAL.md): code with loose types (`Any`)
+runs, with a cast checked when the value is used, and precise types and
+theorems can come later. So each step has a floor and room past it:
+
+- **The floor** is the move done and working: the code is in Soma, it
+  builds, the tests pass, and what the step says stays exactly as it is
+  (an order of effects, say) is checked by `Example`s on a pure function.
+  Types may be loose where precise ones are a fight, and there need be no
+  theorems. A bid at the floor is mergeable.
+- **Past the floor** is welcome, not required: precise types instead of
+  `Any`, and theorems in a `.proof` about what the moved code does. Among
+  correct bids the leader prefers the one that goes further.
+- What fails either way: an `Admitted`, an axiom or a cast escape
+  (`unk`, `err`) the CI policy refuses (`deploy/ci-command.py`). Leave a
+  theorem out rather than admit it.
+
+The rest:
+
 - `soma build main.soma` builds, and `test/edits.sh` and `test/e2e.sh` pass
   unchanged: the scenarios are the specification. The market's CI doesn't
-  run `test/e2e.sh` yet (D-1 in `.plan`), so a bidder runs it in its
-  checkout before bidding, and says so; an attestor with tools runs it too.
+  run `test/e2e.sh` yet (D-1, an operator item in `.plan`), so a bidder
+  runs it in its checkout if it can, and says in its note whether it did;
+  a sandboxed bidder may not be able to open sockets. Not having run it
+  isn't a reason to reject a bid whose other checks pass.
 - `soma explore main.soma` lists no new escape hatch the move didn't need,
   and the moved code adds no `Admitted` or axiom (the CI policy refuses them).
 - Numbers that may be large are `N` or OCaml ints by extraction, not unary
