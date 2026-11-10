@@ -248,8 +248,13 @@ whenever it judged the task done, checking only for its own mark bid), which
 would have made the line `+ + shell into Soma, step 2`; both attestors voted
 no, after two model calls and two CI runs. And Codex's patch for task 1,
 asked just before the merge and answered after the task closed, went out as
-a bid the chain refused ("task is closed"). The fix: no `markq` when the
-item's line at the head is already marked, and a node drops a patch reply
+a bid the chain refused ("task is closed"). It cost most with Muse, whose
+interactive session takes one request at a time: it worked 28 minutes on a
+patch for task 1, asked at 15:07 and closed at 15:09, until the node gave up
+at 1700 s, and both attestations asked meanwhile (bid 2, then step 3's bid 3)
+expired in its inbox at 570 s. The fix: no `markq` when the
+item's line at the head is already marked, a node withdraws a request whose
+task closed (an inbox request leaves the inbox) and drops a patch reply
 whose task is no longer open; a test for each.
 
 ## Lessons
