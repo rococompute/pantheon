@@ -43,7 +43,13 @@ One task each, in order:
    Each command stays an OCaml function, declared in `shell.definition`
    (`cmd_init : list string -> unit`, ...); `pantheon plan` calls Soma's
    `plan_open` directly. `run` is gone, and `node` is declared with what it
-   still needs. The smallest step, and after it Soma is the entry point.
+   still needs: the Soma helpers `run` takes today go to `node` instead,
+   until step 3. After it Soma is the entry point.
+   **One task, every command.** Moving one command's flag parsing into a
+   Soma function that `shell.ml` calls (as a first bid of this epoch did for
+   `keygen`) is the old direction: it adds an argument to `run` instead of
+   deleting it. A command's own flag parsing can stay in its OCaml function
+   for now; what moves is the choice of command, and `main`.
 2. **The node loop in Soma.** `node` splits into an abstract handle,
    `Node.t`, and three bindings: `node_open : string -> list string ->
    Node.t` (home and flags: keys, genesis, replay, the listener), `events :
