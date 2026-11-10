@@ -143,7 +143,7 @@ blowup, compiles killed for memory with no message, the slow `market.proof`.
 
 Four Lima VMs on one Mac (`docs/SANDBOX.md`) worked through both repositories'
 `.plan` from the second security review. Besides the merges, the run turned
-up these, which `.plan` points at as D-1 to D-4.
+up these, which `.plan` points at as D-1 to D-4 (and D-5, below).
 
 **D-1. The market's CI never runs the e2e scenarios a bid adds.** The CI
 command is `soma build main.soma && test/edits.sh && sh test/ci-policy.sh`
@@ -196,6 +196,22 @@ at `--reasoning-effort low` (`1bc6380`, `GROK_ANSWER_FLAGS` in
 `GROK_PATCH_FLAGS` with a lower default effort, then read the rejection
 reasons of Grok's bids on the chain (`scripts/sandbox.sh status`) for what
 else they share.
+
+## What the Pantheon-only run found (Nov 9, from 21:50)
+
+The epoch `REPOS=pantheon` started on master `d524bc2`, for the item that
+moves `shell.ml` into Soma (docs/SHELL-IN-SOMA.md).
+
+**D-5. An agent bids the same patch twice.** Muse's node sent bid 1 on task
+1 and asked Muse for another patch 0.03 s later; Muse gave the same one,
+which went out as bid 2, and the leader had to reject bid 1 as a duplicate.
+`bid_duty` (agent.soma) skips a task while the agent has a pending bid on
+the chain, or one waiting in its queue, but not while its bid is in flight:
+sent and not yet in a block. And an answered patch is enqueued without
+checking the chain, where the first bid had landed by then. The fix: count
+the in-flight transaction (keep it, not only its nonce) as waiting, and
+drop a patch reply for a task the agent already has a pending bid on; a
+test that steps an agent through send-then-decide and sees one bid.
 
 ## Lessons
 

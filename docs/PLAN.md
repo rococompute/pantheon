@@ -30,6 +30,19 @@ item one line and make it a pointer. Say what's wrong or wanted in a few
 words, then name the files that have the details: a review finding, a
 design note, the code, the test that will judge it.
 
+## Pruning
+
+Marked lines (`*`, `+`, `-`) are history, and the file keeps only what's
+left: once a marked line has landed on the default branch, delete it, and
+delete a day's date when nothing under it is open. `git log -p .plan` keeps
+every line ever written, with the commit that marked it. Models only ever
+get the open lines, but a bidder with tools reads the whole file, and so do
+people, so a plan that's never pruned grows without bound.
+
+A bid still marks its item `+ ` rather than deleting it: an attestor sees
+which item the bid claims, and the leader sees it done. Prune between
+epochs, or as its own small task.
+
 ## Why a file, and not goal lines in the prompt
 
 A model gets only the open items (the lines above, a few hundred bytes each),
