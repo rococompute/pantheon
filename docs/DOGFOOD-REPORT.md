@@ -143,7 +143,7 @@ blowup, compiles killed for memory with no message, the slow `market.proof`.
 
 Four Lima VMs on one Mac (`docs/SANDBOX.md`) worked through both repositories'
 `.plan` from the second security review. Besides the merges, the run turned
-up these, which `.plan` points at as D-1 to D-4 (and D-5, below).
+up these, which `.plan` points at as D-1 to D-4 (and D-5 and D-6, below).
 
 **D-1. The market's CI never runs the e2e scenarios a bid adds.** The CI
 command is `soma build main.soma && test/edits.sh && sh test/ci-policy.sh`
@@ -212,6 +212,19 @@ checking the chain, where the first bid had landed by then. The fix: count
 the in-flight transaction (keep it, not only its nonce) as waiting, and
 drop a patch reply for a task the agent already has a pending bid on; a
 test that steps an agent through send-then-decide and sees one bid.
+
+**D-6. A node that can't reach its peers doesn't say so.** On Nov 10 the
+sandbox's DNS sent `lima-NAME.internal`, the peers' addresses in the genesis,
+to public resolvers that don't know them (fixed in `6727c13`). All four
+nodes sat at height 0 for 50 minutes, `status.txt` saying only "leader
+(drawing)", and the journal held nothing after "listening". The dial loop in
+`feed` (shell.ml, "connect to peers we have no link to") retries every second
+and drops the reason: `resolve` turns any getaddrinfo failure into `None`,
+and a failed `connect` just closes the socket. The fix: log a peer that
+can't be resolved or reached, with the reason, when it first fails and when
+the reason changes or it connects (not every second), and have `status.txt`
+list the peers with no link and why; a test whose genesis names a peer that
+doesn't resolve and checks the log line and the status.
 
 ## Lessons
 
