@@ -86,6 +86,18 @@ only those. Pure helpers still in `shell.ml` (`flatten_reply`,
 `json_in_reply`, `shallow_json`, `chain_len`, `iterate`) move with their
 callers, in 4 to 6, not as pieces of their own.
 
+Past that, the end form is a unikernel. Once the node is Soma over a small
+set of I/O bindings, those bindings can have a second implementation in
+Soma's `Sandbox` (MirageOS), so an agent runs its node either as the binary
+or as a unikernel, built from the same source and agreeing on every block.
+The unikernel is the form to aim for: every line but `Sandbox`'s bindings is
+checked Soma, and the node runs isolated (the bonus line in `.plan`). Keep
+the bindings few and plain (bytes, files, sockets, time) with that in mind.
+A unikernel starts no processes, and today the node runs git, model calls
+and CI checks as processes: those go behind bindings for what they do
+(apply edits and give a tree, ask a model, run a check), which the binary
+does with a process and the unikernel asks a service for over the network.
+
 ## The first pieces, bottom-up (superseded by the section above)
 
 `shell.ml`'s sections, roughly from least to most I/O:

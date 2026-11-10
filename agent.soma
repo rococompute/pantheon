@@ -24,6 +24,12 @@ retry_keys (a : obj) : list (string * string) := getf a "retry_keys".
 reqs (a : obj) : list (string * list string) := getf a "reqs".
 nreq (a : obj) : nat := getf a "nreq".
 bid_window (a : obj) : nat := getf a "bid_window".
+(** a leader's judgment that a task is done: task id to the bid that finishes
+    it, "0" when what's merged already does *)
+done_marks (a : obj) : list (string * string) := getf a "done_marks".
+(** when this agent first saw a task's latest merge: task id and merge count
+    to the height *)
+merge_seen (a : obj) : list (string * nat) := getf a "merge_seen".
 
 new_agent (me : string) : obj :=
   [("me", me : Any), ("backend", "scripted" : Any), ("behavior", "honest" : Any),
@@ -31,7 +37,8 @@ new_agent (me : string) : obj :=
    ("deny", ([".git/", ".github/", ".gitmodules", ".gitattributes", "network/"] : list string) : Any),
    ("inflight", 0 : Any), ("sent_at", 0 : Any), ("queue", ([] : list (list string)) : Any),
    ("asked", ([] : list string) : Any), ("attempts", ([] : list (string * nat)) : Any), ("retry_keys", ([] : list (string * string)) : Any),
-   ("reqs", ([] : list (string * list string)) : Any), ("nreq", 0 : Any), ("bid_window", 30 : Any)].
+   ("reqs", ([] : list (string * list string)) : Any), ("nreq", 0 : Any), ("bid_window", 30 : Any),
+   ("done_marks", ([] : list (string * string)) : Any), ("merge_seen", ([] : list (string * nat)) : Any)].
 
 is_merged (b : bid) : bool := match bst b with Merged => true | _ => false end.
 
@@ -85,9 +92,21 @@ goal_text (a : obj) : string := fold_left (fun s l => append s (append l "
 
 (** what became of a task, for a leader drafting the next one *)
 task_label (m : obj) (t : task) : string :=
-  if existsb (fun b => (btask b =? tid t) && is_merged b) (bids m) then "task done, in "
-  else if topen t then "task open, in "
+  if topen t then "task open, in "
+  else if existsb (fun b => (btask b =? tid t) && is_merged b) (bids m) then "task done, in "
   else "task closed unfinished (no bid was good enough), in ".
+
+(** the notes of the bids merged on a task so far, for a bidder or leader
+    taking it further: a task stays open across merges until its leader
+    judges it done *)
+merged_text (m : obj) (t : task) : string :=
+  let ms := filter (fun b => (btask b =? tid t) && is_merged b) (bids m) in
+  match ms with
+  | [] => ""
+  | _ => append "Merged on this task so far (their edits are in the files):
+"
+           (fold_left (fun s b => append s (fence (append "merged bid " (append (show (bidn b)) (append " by " (bidder b)))) (note b))) ms "")
+  end.
 
 draft_prompt (a m : obj) : string :=
   append (preamble a "term leader, choosing the next task")
@@ -96,11 +115,11 @@ draft_prompt (a m : obj) : string :=
   (append "Each repository's plan: the open items of the .plan file at its root, in John Carmack's .plan format (one item per line; an unmarked line is open, * and + mark it done, - dropped). Its order is its priority, and an item points at the files with its details, so read those rather than expecting them here.
 {{PLAN}}"
   (append (fold_left (fun s t => append s (fence (append (task_label m t) (trepo t)) (spec t))) (tasks m) "")
-  (append "A task closed unfinished was too big or too hard as posted: don't post it again as it was. Post a smaller step toward it, or move on.
+  (append "A task closed unfinished got no bid good enough: don't post it again as it was. Post it with what its rejections show, or a part of it, or move on.
 "
   (append "The repositories, and their files:
 {{REPOS}}
-" (append (append "Write the single next task: one small, testable change in one repository, and name up to 8 files a bidder should read. Take it from the first open plan item no task above already covers (unless it can't be done yet): quote the item at the start of the task, name .plan and the files the item points at as context, and make marking the item done part of the task (the bid puts ""+ "" before its line in .plan). If no plan item is left and the goal is met, give null. Repositories:" (repo_names m))
+" (append (append "Write the next task: the first open plan item no task above already covers (unless it can't be done yet), whole, in one repository. Don't cut it down to a first piece: say what done looks like for the whole item and how it will be judged. Bidders may do all of it in one patch or a correct part of it, and the task stays open across merges until its leader judges it done. Quote the item at the start of the task, name .plan and the files the item points at as context (up to 8), and say that the bid that finishes the item puts ""+ "" before its line in .plan. If no plan item is left and the goal is met, give null. Repositories:" (repo_names m))
   "
 Reply format: {""task"": ""what to do and how it will be judged"", ""repo"": ""name"", ""context"": [""path"", ...]} or {""task"": null}"))))))).
 
@@ -119,20 +138,22 @@ Rejected: " (why b))))) (firstn 4 (rev rs)) "")
 
 patch_prompt (a m : obj) (t : task) : string :=
   append (preamble a (append "bidder, writing a patch for a task in the repository " (trepo t)))
-  (append (fence "task" (spec t)) (append (rejections m t) (append "Files from the repository:
+  (append (fence "task" (spec t)) (append (merged_text m t) (append (rejections m t) (append "Files from the repository:
 {{REPO}}
 "
-  "Write the smallest correct patch as edits. Each edit replaces one exact piece of a file: copy ""old"" character for character from the file, with enough lines that it appears exactly once, and give ""new"" to put in its place. To write a whole file, new or not, give ""old"": """"; to delete one, give ""old"": """" and ""new"": """". Paths are relative to the repository.
-Reply format: {""edits"": [{""path"": ""dir/name"", ""old"": ""exact text"", ""new"": ""replacement""}], ""note"": ""one line""}"))).
+  "Do as much of the task as you can do correctly in one patch: all of it if you can. A smaller patch is welcome too when it's a correct step on its own (it builds, the tests pass, nothing is left half-done); say in the note what it does and what of the task remains. Write it as edits. Each edit replaces one exact piece of a file: copy ""old"" character for character from the file, with enough lines that it appears exactly once, and give ""new"" to put in its place. To write a whole file, new or not, give ""old"": """"; to delete one, give ""old"": """" and ""new"": """". Paths are relative to the repository.
+Reply format: {""edits"": [{""path"": ""dir/name"", ""old"": ""exact text"", ""new"": ""replacement""}], ""note"": ""one line""}")))).
 
 pick_prompt (a m : obj) (t : task) (bs : list bid) : string :=
   append (preamble a "term leader, reviewing the bids for a task")
-  (append (fence "task" (spec t))
+  (append (fence "task" (spec t)) (append (merged_text m t)
+  (append (match bs with [] => "No bids are waiting.
+" | _ => "" end)
   (append (fold_left (fun s b => append s (append "Bid " (append (show (bidn b)) (append " by " (append (bidder b)
             (append ":
 " (append (fence "note" (note b)) (edits_text b)))))))) bs "")
-  "Pick the bid that does the task, if one is good enough, and reject wrong ones. merge 0 means none yet.
-Reply format: {""merge"": <bid number or 0>, ""reject"": [{""bid"": <number>, ""reason"": ""why""}]}")).
+  "Pick the bid that takes the task furthest correctly, if one is good enough, and reject wrong ones. A correct part of the task is good enough: the task stays open for the rest. merge 0 means none yet. Then judge whether the task is done: done is true only when the whole task is finished with the bid you merge (or with what's merged already, if you merge none), its .plan mark included if it names one. A bid that marks the plan item done when it isn't is wrong.
+Reply format: {""merge"": <bid number or 0>, ""reject"": [{""bid"": <number>, ""reason"": ""why""}], ""done"": true or false}")))).
 
 attest_prompt (a m : obj) (t : string) (b : bid) : string :=
   append (preamble a "attestor, deciding whether a proposed merge is safe")
@@ -154,7 +175,8 @@ scripted_answer (a m : obj) (data : list string) : list string :=
       let s := match task_by m (num t) with Some tk => spec tk | None => "" end in
       ["edits.0.path", append "work/task-" (append t ".txt"), "edits.0.old", "", "edits.0.new", append s (append "
 implemented by " (me a)), "note", append "scripted patch from " (me a)]
-  | "pick" :: _ :: first :: _ => ["merge", if seq (behavior a) "deny" then "0" else first]
+  | "pick" :: _ :: first :: _ => if seq (behavior a) "deny" then ["merge", "0", "done", "false"] else ["merge", first, "done", "true"]
+  | ["pick", _] => ["merge", "0", "done", if seq (behavior a) "deny" then "false" else "true"]
   | "attest" :: _ => ["approve", if seq (behavior a) "deny" then "false" else "true", "reason", append "scripted " (behavior a)]
   | _ => []
   end.
@@ -203,7 +225,10 @@ on_answer (a m : obj) (data kv : list string) : obj :=
   | "pick" :: t :: cands =>
       let a := fold_left (fun a r => if mem (fst r) cands then enqueue a ["reject", fst r, clean_text (snd r)] else a) (rejects_from kv 0 10) a in
       let pick := kv_at kv "merge" in
-      if mem pick cands && negb (mem pick (map fst (rejects_from kv 0 10))) then enqueue a ["merge", pick] else a
+      let merging := mem pick cands && negb (mem pick (map fst (rejects_from kv 0 10))) in
+      let a := if seq (kv_at kv "done") "true"
+               then setf a "done_marks" (put t (if merging then pick else "0") (done_marks a)) else a in
+      if merging then enqueue a ["merge", pick] else a
   | "attest" :: b :: tree :: _ =>
       enqueue a (if seq (kv_at kv "approve") "true" then ["attest", b, "yes", tree] else ["attest", b, "no"])
   | _ => a
@@ -250,15 +275,29 @@ lead (a m : obj) : obj * list (list string) :=
   let for_task t := filter (fun b => btask b =? tid t) (bids m) in
   (* a leader's own pending bids don't count: no one reviews them this term,
      so waiting for them would keep the task open for as long as it leads *)
+  (* a task stays open across merges: its rejections count from its last
+     merge, and each merge gives it task_blocks more *)
+  let merged_on t := filter is_merged (for_task t) in
+  let last_merge t := fold_left (fun n b => Nat.max n (bidn b)) (merged_on t) 0 in
   let stuck t := negb (existsb (fun b => is_pending (bst b) && negb (seq (bidder b) (me a))) (for_task t))
-                 && ((param m "task_rejects" <=? length (filter (fun b => match bst b with Rejected => true | _ => false end) (for_task t)))
-                     || (param m "task_blocks" <=? h - posted_at t)) in
-  let a := fold_left (fun a t => if existsb is_merged (for_task t) || stuck t
+                 && ((param m "task_rejects" <=? length (filter (fun b => (last_merge t <? bidn b) && match bst b with Rejected => true | _ => false end) (for_task t)))
+                     || (param m "task_blocks" * (1 + length (merged_on t)) <=? h - posted_at t)) in
+  (* done when this leader judged it so, and the bid it named has merged *)
+  let judged_done t := match lookup (show (tid t)) (done_marks a) with
+                       | Some b => seq b "0" || existsb (fun x => seq (show (bidn x)) b) (merged_on t)
+                       | None => false
+                       end in
+  let a := fold_left (fun a t => if judged_done t || stuck t
                                  then enqueue a ["close", show (tid t)] else a) (open_tasks m) a in
   (* review bids once the chosen workers have bid or the window has passed *)
   let st := fold_left (fun (st : obj * list (list string)) (t : task) =>
       let cands := filter (fun b => (btask b =? tid t) && is_pending (bst b) && negb (seq (bidder b) (me a))) (bids m) in
-      if (length cands =? 0) || ((length cands <? length (bidders_for m t)) && (h <? posted_at t + bid_window (fst st))) then st else
+      (* no bids waiting on a task that has merges: is it done? asked once a version *)
+      if (length cands =? 0) then
+        (if (0 <? length (merged_on t)) && negb (judged_done t)
+         then with_retry st m (append "review." (append (show (tid t)) (append "." (show (version m))))) ["pick", show (tid t)] (pick_prompt (fst st) m t []) []
+         else st) else
+      if (length cands <? length (bidders_for m t)) && (h <? posted_at t + bid_window (fst st)) then st else
       let key := append "pick." (append (show (tid t)) (append "." (append (hash_list (map (fun b => show (bidn b)) cands)) (append "." (show (version m)))))) in
       let bad := filter (fun b => negb (seq (violation (fst st) m b) "")) cands in
       let good := filter (fun b => seq (violation (fst st) m b) "") cands in
@@ -280,15 +319,23 @@ bid_duty (a m : obj) : obj * list (list string) :=
   if (0 <? get_or 0 (me a) (lastbid m)) && (mheight m <? get_or 0 (me a) (lastbid m) + param m "bid_cooldown") then (a, []) else
   fold_left (fun (st : obj * list (list string)) (t : task) =>
     let (a, o) := st in
-    let finished := existsb (fun b => (btask b =? tid t) && (is_merged b || (seq (bidder b) (me a) && is_pending (bst b)))) (bids m) in
-    let n := get_or 0 (show (tid t)) (attempts a) in
+    (* a task takes bids until its leader closes it: three tries per merge on it *)
+    let finished := existsb (fun b => (btask b =? tid t) && seq (bidder b) (me a) && is_pending (bst b)) (bids m) in
+    let k := append (show (tid t)) (append "." (show (length (filter (fun b => (btask b =? tid t) && is_merged b) (bids m))))) in
+    let n := get_or 0 k (attempts a) in
     (* one patch at a time per task: not while a model is writing one, nor while
        one waits to be sent *)
     let waiting := existsb (fun r => match snd r with "patch" :: x :: _ => seq x (show (tid t)) | _ => false end) (reqs a)
                    || existsb (fun q => match q with "bid" :: x :: _ => seq x (show (tid t)) | _ => false end) (queue a) in
-    if negb (mem (me a) (bidders_for m t)) || finished || waiting || (3 <=? n) then st else
-    let a := setf a "attempts" (put (show (tid t)) (n + 1) (attempts a)) in
-    with_ask (a, o) m (append "patch." (append (show (tid t)) (append "." (show n))))
+    (* after a merge on the task, wait bid_cooldown blocks: a leader who
+       judged it done closes it, and a bid then would be wasted *)
+    let merges := length (filter (fun b => (btask b =? tid t) && is_merged b) (bids m)) in
+    let a := if (0 <? merges) && negb (existsb (fun x => seq (fst x) k) (merge_seen a))
+             then setf a "merge_seen" (firstn 50 ((k, mheight m) :: merge_seen a)) else a in
+    let settling := (0 <? merges) && (mheight m <? get_or 0 k (merge_seen a) + param m "bid_cooldown") in
+    if negb (mem (me a) (bidders_for m t)) || finished || waiting || settling || (3 <=? n) then (a, o) else
+    let a := setf a "attempts" (put k (n + 1) (attempts a)) in
+    with_ask (a, o) m (append "patch." (append k (append "." (show n))))
       ["patch", show (tid t), show (version m)] (patch_prompt a m t) (trepo t :: tctx t)) (open_tasks m) (a, []).
 
 (** a check of a bid's edits on the head, by the shell: for an attest, or for
