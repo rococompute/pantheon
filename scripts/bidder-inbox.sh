@@ -18,12 +18,20 @@ r=$INBOX/$id
 mkdir "$r" && chmod 2770 "$r" || { echo "!bidder-inbox: can't make $r"; exit 0; }
 # on the way out: the request, and the checkout made removable by the node
 # (what the agent made in it is the agent's user's, and a build is close to a GB)
-free() { rm -rf "$r"; [ -n "${PANTHEON_WORKTREE:-}" ] && sudo -n -u "${BIDDER_USER:-bidder}" chmod -R a+rwX "$PANTHEON_WORKTREE" 2>/dev/null; true; }
+free() { rm -rf "$r"; [ -n "${PANTHEON_WORKTREE:-}" ] && sudo -n -u "${BIDDER_USER:-bidder}" chmod -R g+rwX "$PANTHEON_WORKTREE" 2>/dev/null; true; }
 trap free EXIT
 cat > "$r/.prompt"
 
 if [ -n "${PANTHEON_WORKTREE:-}" ]; then
-  chmod -R a+rwX "$PANTHEON_WORKTREE"
+  # the checkout is the inbox's group's: this node and its own agent, not the
+  # other agents on a shared host (docs/SECURITY-REVIEW-2.md P-1); new files
+  # in it keep the group
+  g=$(stat -c %G "$INBOX" 2>/dev/null || stat -f %Sg "$INBOX")
+  chgrp -R "$g" "$PANTHEON_WORKTREE" && chmod -R g+rwX,o-rwx "$PANTHEON_WORKTREE" \
+    && find "$PANTHEON_WORKTREE" -type d -exec chmod g+s {} + \
+    || { echo "!bidder-inbox: can't give the checkout to the inbox's group $g"; exit 0; }
+  # its git directory, beside it: the agent's git reads it (status, diff)
+  [ -z "${PANTHEON_GITDIR:-}" ] || { chgrp -R "$g" "$PANTHEON_GITDIR" && chmod -R g+rwX,o-rwx "$PANTHEON_GITDIR"; } 2>/dev/null || true
   echo patch > "$r/kind"; printf '%s\n' "$PANTHEON_WORKTREE" > "$r/worktree"
   budget=1700
   if [ -n "${INBOX_URL:-}" ]; then

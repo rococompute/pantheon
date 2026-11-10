@@ -536,7 +536,13 @@ let repo_url net url =
   if contains url "://" || (url <> "" && url.[0] = '/') || (String.length url > 4 && String.sub url 0 4 = "git@") then url
   else Filename.concat net url
 
-let repo_dir home name = Filename.concat (Filename.concat home "repos") name
+(* The governed repositories' checkouts: HOME/repos, or PANTHEON_REPOS when
+   set, so a host can keep them where the agents' users can read them (a patch
+   checkout shares their objects) while HOME, with the node's key, stays the
+   node user's alone (docs/SECURITY-REVIEW-2.md P-1). *)
+let repo_dir home name =
+  let base = match Sys.getenv_opt "PANTHEON_REPOS" with Some d when d <> "" -> d | _ -> Filename.concat home "repos" in
+  Filename.concat base name
 
 (* A checkout of a governed repository at its genesis commit, or a check that
    the one already there descends from it. *)
