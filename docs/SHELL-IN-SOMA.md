@@ -31,6 +31,30 @@ Each task moves one piece, keeps the same behaviour, and leaves the rest
 where it is. A piece that would need a binding Soma can't express yet is
 worth a note in this file rather than a workaround.
 
+## Done so far
+
+- `plan_open` (piece 1, in part): now `plan_open` in `util.soma`, with its
+  string helpers (`trim`, `split_lines`, `is_date_line`, `marked_line`,
+  `truncate_line`). `shell.ml`'s OCaml version is deleted; `run` takes the
+  Soma function as an extra argument (declared in `shell.definition`,
+  passed in `main.soma`) and hands it to `node`, so the `pantheon plan`
+  command and the node loop's plan prompts both use the Soma version.
+  Still in `shell.ml` from piece 1, next in roughly this order:
+  the edit matching (`matches_at`, `positions`,
+  `replace_at`, and `apply_edits`' pure logic), `safe_path`'s OCaml copy
+  (Soma already has one in `util.soma`), the JSON helpers
+  (`flatten_reply`, `json_in_reply`, `shallow_json`), and
+  `chain_len`/`iterate` (over the `sha256` binding).
+
+- `replace_all`: now in `util.soma`, with `drop_str` and a bounded scan.
+  The OCaml implementation is deleted; `main.soma` passes the Soma helper
+  through `shell.definition`'s `run` argument to the node's prompt expansion.
+  Replacement remains literal, left-to-right and non-overlapping; inserted
+  text is not scanned again. All shell patterns are nonempty (an empty
+  pattern now leaves the text alone, rather than looping forever).
+  Next: edit matching (`matches_at`, `positions`, `replace_at`, and
+  `apply_edits`' pure logic). I/O stays in the shell.
+
 ## How a bid is judged
 
 - `soma build main.soma` builds, and `test/edits.sh` and `test/e2e.sh` pass

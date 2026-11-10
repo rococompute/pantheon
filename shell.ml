@@ -43,15 +43,6 @@ let key_of_json j : Cryptokit.RSA.key =
   let g k = match member k j with `String s -> unhex s | _ -> "" in
   { size = to_int (member "size" j); n = g "n"; e = g "e"; d = g "d"; p = g "p"; q = g "q"; dp = g "dp"; dq = g "dq"; qinv = g "qinv" }
 
-let replace_all s sub by =
-  let b = Buffer.create (String.length s) and n = String.length sub in
-  let i = ref 0 in
-  while !i < String.length s do
-    if !i + n <= String.length s && String.sub s !i n = sub then (Buffer.add_string b by; i := !i + n)
-    else (Buffer.add_char b s.[!i]; incr i)
-  done;
-  Buffer.contents b
-
 let rng = lazy (Cryptokit.Random.device_rng "/dev/urandom")
 let random_hex n = hex (Cryptokit.Random.string (Lazy.force rng) n)
 
@@ -161,20 +152,8 @@ let load_consensus path =
 let read_json p = try Yojson.Safe.from_file p with _ -> fail "cannot read %s: is this a home made by `pantheon init`?" p
 let lines p = if Sys.file_exists p then String.split_on_char '\n' (read_file p) |> List.filter (( <> ) "") else []
 
-(* A .plan, in John Carmack's format (docs/PLAN.md): a dated section per day,
-   one item per line. An unmarked line is open; "* " marks one done that day,
-   "+ " one done later, "- " one dropped. "#" lines are notes, and a line that
-   is only a date (2026-11-09) starts a day. The open items, in order, at most
-   60 of them, each cut at 400 characters. *)
-let plan_open text =
-  let is_date l = String.length l = 10 && String.for_all (fun c -> (c >= '0' && c <= '9') || c = '-') l && l.[4] = '-' && l.[7] = '-' in
-  let marked l = String.length l >= 2 && (l.[0] = '*' || l.[0] = '+' || l.[0] = '-') && (l.[1] = ' ' || l.[1] = '\t') in
-  let marker_only l = l = "*" || l = "+" || l = "-" in
-  String.split_on_char '\n' text
-  |> List.map String.trim
-  |> List.filter (fun l -> l <> "" && l.[0] <> '#' && not (is_date l) && not (marked l) && not (marker_only l))
-  |> List.filteri (fun i _ -> i < 60)
-  |> List.map (fun l -> if String.length l > 400 then String.sub l 0 400 ^ "..." else l)
+(* A .plan's open items are computed in Soma: [plan_open] in util.soma,
+   handed to [run] (and on to [node]) as an argument (docs/SHELL-IN-SOMA.md). *)
 
 (* a path an edit may touch: also checked by the market, checked again here.
    Nothing in a .git directory: writing there means running code. Nor a
@@ -747,7 +726,7 @@ let json_in_reply text =
       else (try Some (Yojson.Safe.from_string raw) with _ -> None)
   | _ -> None
 
-let rec run init step checkpoint restore =
+let rec run init step checkpoint restore plan_open replace_all =
   let argv = Array.to_list Sys.argv |> List.tl in
   match argv with
   | "init" :: rest -> cmd_init rest
@@ -809,7 +788,7 @@ let rec run init step checkpoint restore =
       Sys.set_signal Sys.sigint (Sys.Signal_handle stop);
       Sys.set_signal Sys.sigterm (Sys.Signal_handle stop);
       List.iter (fun p -> ignore (Unix.waitpid [] p)) pids
-  | "node" :: home :: flags -> node init step checkpoint restore home flags
+  | "node" :: home :: flags -> node init step checkpoint restore plan_open replace_all home flags
   | _ ->
       print_string
         "pantheon: a private BFT labor market where LLM agents take turns as term leader.\n\n\
@@ -829,7 +808,7 @@ let rec run init step checkpoint restore =
          Backends: scripted, claude, codex, grok (XAI_API_KEY), cmd:PROGRAM (prompt on stdin, JSON reply on stdout;\n\
          a patch request also gets a scratch checkout in $PANTHEON_WORKTREE: see scripts/bidder.sh).\n"
 
-and node init step checkpoint restore home flags =
+and node init step checkpoint restore plan_open replace_all home flags =
   Sys.set_signal Sys.sigpipe Sys.Signal_ignore;
   (* jobs run from scratch directories: every path the node hands out is absolute *)
   let home = if Filename.is_relative home then Filename.concat (Sys.getcwd ()) home else home in
