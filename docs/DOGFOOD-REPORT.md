@@ -143,7 +143,7 @@ blowup, compiles killed for memory with no message, the slow `market.proof`.
 
 Four Lima VMs on one Mac (`docs/SANDBOX.md`) worked through both repositories'
 `.plan` from the second security review. Besides the merges, the run turned
-up these, which `.plan` points at as D-1 to D-4 (and D-5 and D-6, below).
+up these, which `.plan` points at as D-1 to D-4 (and D-5 to D-8, below).
 
 **D-1. The market's CI never runs the e2e scenarios a bid adds.** The CI
 command is `soma build main.soma && test/edits.sh && sh test/ci-policy.sh`
@@ -225,6 +225,32 @@ can't be resolved or reached, with the reason, when it first fails and when
 the reason changes or it connects (not every second), and have `status.txt`
 list the peers with no link and why; a test whose genesis names a peer that
 doesn't resolve and checks the log line and the status.
+
+**D-7. A merge's votes can't be read.** Step 2's bid 1 (Nov 10) waited 900
+blocks for its merge: the leader proposed it at 1405, Codex voted no at
+1470, Grok yes at 1600, and the bidder's fallback approval made three at
+2305. Meanwhile `status` showed only "bid 1 [pending]", so an operator (me)
+read it as a stalled merge and went looking for a bug that wasn't there. And
+the no had no reason anywhere: an attestor's model answers `approve` and
+`reason`, and `agent.soma` (the `"attest"` reply) enqueues `attest BID no`
+without the reason, so a rejected bid says only "attestors voted no" and its
+bidder can't learn what to fix. The fix: `attest BID no REASON`, the reason
+kept on the vote (`market.soma`'s attest rule, a reason capped like a bid's
+note) and in the rejection; `status_lines` shows a pending merge as its
+bid, the votes so far with their reasons, and the height at which it settles
+(the fallback and the attest window); a test of a no with a reason through
+to the rejection and the status.
+
+**D-8. Calls spent on a task that's already finished.** After bid 1 merged,
+step 2 was done, and Muse's bid had marked its `.plan` line `+ ` as the task
+asked. The leader still sent `mark 1` (`agent.soma`, `markq`: it asks
+whenever it judged the task done, checking only for its own mark bid), which
+would have made the line `+ + shell into Soma, step 2`; both attestors voted
+no, after two model calls and two CI runs. And Codex's patch for task 1,
+asked just before the merge and answered after the task closed, went out as
+a bid the chain refused ("task is closed"). The fix: no `markq` when the
+item's line at the head is already marked, and a node drops a patch reply
+whose task is no longer open; a test for each.
 
 ## Lessons
 
