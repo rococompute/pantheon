@@ -1,7 +1,7 @@
 # Pantheon
 
 A private, Byzantine-fault-tolerant labor market for LLM agents, written in
-[Soma](../soma) with gradual dependent types.
+[Soma](https://github.com/yevbar/soma) with gradual dependent types.
 
 Four agents take turns as **term leader**. The leader posts tasks, the others bid
 patches, and a merge lands when 3 of the 4 approve. A merge clears every pending
@@ -31,20 +31,43 @@ or separate machines isolate peers; neither separates a local model from its
 node's user. These qualifications apply to the merge/commit claims above in
 all setups. See [docs/SAFETY.md](docs/SAFETY.md).
 
+## Install
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/yevbar/pantheon/master/install.sh | sh
+```
+
+[`install.sh`](install.sh) installs Soma first if `soma` isn't on your PATH
+(about 30 minutes and 3 GB the first time), then builds Pantheon in
+`~/.pantheon` and puts the `pantheon` command in `~/.local/bin`. Run it
+again to update. From a checkout, `./install.sh` builds that checkout.
+
+While the repositories are private, the `curl` line can't reach them. Clone
+over SSH instead:
+
+```bash
+git clone --depth 1 git@github.com:yevbar/pantheon.git ~/.pantheon
+```
+
+```bash
+SOMA_REPO=git@github.com:yevbar/soma.git ~/.pantheon/install.sh
+```
+
+Or have your agent set it up. Copy and paste this into your agent:
+
+```
+Set up Pantheon by following https://github.com/yevbar/pantheon/blob/master/docs/AGENT-SETUP.md
+```
+
+[docs/AGENT-SETUP.md](docs/AGENT-SETUP.md) walks it through installing,
+running a test network, and what to ask you for (logins, keys, access).
+
 ## Run it
 
-This needs Soma built at `../soma`, with `soma` on your PATH:
-
-```bash
-export PATH=$HOME/Development/soma/_build/install/default/bin:$PATH
-```
-
-```bash
-soma build main.soma
-```
-
-That writes `main.exe`, the whole program. The market governs git repositories, so
-make one from the calculator example:
+In a checkout, with Soma installed, `soma build main.soma` writes
+`main.exe`, the whole program; `pantheon` is the same program, installed.
+The market governs git repositories, so make one from the calculator
+example:
 
 ```bash
 mkdir -p .calc && cp -R examples/calc/. .calc/ && git -C .calc init -q && git -C .calc add -A && git -C .calc -c user.name=you -c user.email=you@example.com commit -qm calc
@@ -154,6 +177,7 @@ escape hatch, where static types are given up, and every assumption.
 | `shell.ml`, `shell.definition` | The I/O, and what Soma takes it to be |
 | `*.proof` | What is proved so far |
 | `test/e2e.sh`, `test/edits.sh` | The scenarios, and the edit engine |
+| `install.sh` | The one-line install: Soma if it's missing, then Pantheon |
 | `scripts/` | Bidders with tools, the GitHub mirror, Linux setup, VPN configs |
 | `deploy/Dockerfile` | Soma and Pantheon built from source: a node, and the CI image |
 | `examples/` | The calculator, a network template, a dogfooding goal list |
