@@ -27,6 +27,8 @@
 #   VM_MEMORY        GiB per VM (default 4), VM_CPUS (default 4); nodes applies a change
 #   CI_MEMORY        a CI container's memory and /tmp (default 3g: Soma's build peaks at 2.3)
 #   SOMA_CI_AGENTS   the agents that run Soma's CI (default: claude codex grok; see docs/SANDBOX.md)
+#   REPOS            the repositories genesis governs (default: pantheon soma). REPOS=pantheon
+#                    runs a market on Pantheon alone: no Soma tasks, so no Soma CI builds
 set -eu
 here=$(cd "$(dirname "$0")/.." && pwd)
 AGENTS=${AGENTS:-claude codex grok muse}
@@ -34,6 +36,8 @@ SOMA_CHECKOUT=${SOMA_CHECKOUT:-$(cd "$here/.." && pwd)/soma}
 SANDBOX_DIR=${SANDBOX_DIR:-$HOME/.pantheon-sandbox}
 VM_MEMORY=${VM_MEMORY:-4} VM_CPUS=${VM_CPUS:-4} CI_MEMORY=${CI_MEMORY:-3g}
 SOMA_CI_AGENTS=${SOMA_CI_AGENTS:-claude codex grok}
+REPOS=${REPOS:-pantheon soma}
+for r in $REPOS; do case $r in pantheon|soma) ;; *) printf 'sandbox: REPOS has %s: it can name pantheon and soma\n' "$r" >&2; exit 1 ;; esac; done
 BASE=pantheon-base
 HOMEDIR=/var/lib/pantheon/home
 NODE=/home/pantheon/pantheon/main.exe
@@ -41,6 +45,9 @@ NODE=/home/pantheon/pantheon/main.exe
 say() { printf 'sandbox: %s\n' "$*"; }
 die() { printf 'sandbox: %s\n' "$*" >&2; exit 1; }
 vm() { printf 'pantheon-%s' "$1"; }
+# a governed repository's checkout on this Mac
+repo_src() { case $1 in pantheon) echo "$here" ;; soma) echo "$SOMA_CHECKOUT" ;; esac; }
+governs() { case " $REPOS " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
 exists() { limactl list -q 2>/dev/null | grep -qx "$1"; }
 running() { [ "$(limactl list --format '{{.Status}}' "$1" 2>/dev/null)" = Running ]; }
 in_vm() { v=$1; shift; limactl shell --workdir / "$v" "$@"; }
@@ -124,17 +131,19 @@ cmd_network() {
   done
   soma_commit=$(git -C "$SOMA_CHECKOUT" rev-parse "${SOMA_COMMIT:-gradual}")
   pantheon_commit=$(git -C "$here" rev-parse "${PANTHEON_COMMIT:-HEAD}")
-  # both repositories up to their genesis commits, which the VMs clone
-  for r in soma:$SOMA_CHECKOUT:$soma_commit pantheon:$here:$pantheon_commit; do
-    name=${r%%:*} rest=${r#*:}; src=${rest%%:*} commit=${rest#*:}
+  # each governed repository up to its genesis commit, which the VMs clone
+  rm -rf "$net/repos"
+  for name in $REPOS; do
+    src=$(repo_src "$name")
+    if [ "$name" = soma ]; then commit=$soma_commit; else commit=$pantheon_commit; fi
     rm -rf "$net/repos/$name.git"
     git init -q --bare "$net/repos/$name.git"
     git -C "$src" push -q "$net/repos/$name.git" "$commit:refs/heads/genesis"
     git -C "$net/repos/$name.git" symbolic-ref HEAD refs/heads/genesis
   done
   if [ ! -f "$net/network.json" ]; then
-    jq --arg s "$soma_commit" --arg p "$pantheon_commit" \
-      '.repos = [{name: "pantheon", url: "repos/pantheon.git", commit: $p}, {name: "soma", url: "repos/soma.git", commit: $s}]' \
+    jq --arg s "$soma_commit" --arg p "$pantheon_commit" --arg repos "$REPOS" \
+      '.repos = [($repos | split(" ") | map(select(. != "")))[] | {name: ., url: "repos/\(.).git", commit: (if . == "soma" then $s else $p end)}]' \
       "$here/examples/network/network.json" > "$net/network.json"
   fi
   hashes=""
@@ -294,6 +303,7 @@ cmd_start() {
     # bids, two attestors run it, and two rejecting a broken build keep it out.
     # On two, a bidder that was one of them left a single check, which one
     # "no" can't enforce: a merge needs three approvals, a rejection two.
+    governs soma || SOMA_CI_AGENTS=""
     case " $SOMA_CI_AGENTS " in
       # deploy/sandbox/soma-ci: Soma's build, then the CI image's Pantheon built
       # with it, so a change that breaks Soma's biggest user fails here
@@ -339,8 +349,8 @@ save_chain() {
   running "$v" && in_vm "$v" sudo test -d $HOMEDIR/repos || return 0
   stamp=$(date +%Y%m%d-%H%M%S)
   export GIT_SSH_COMMAND="ssh -F $HOME/.lima/$v/ssh.config"
-  for r in pantheon:$here soma:$SOMA_CHECKOUT; do
-    name=${r%%:*} dst=${r#*:} ref=refs/heads/pantheon/saved-$stamp
+  for name in $REPOS; do
+    dst=$(repo_src "$name") ref=refs/heads/pantheon/saved-$stamp
     if ! git -C "$dst" fetch -q --upload-pack "sudo -u pantheon git-upload-pack" "lima-$v:$HOMEDIR/repos/$name" "HEAD:$ref"; then
       [ "${FORCE_RESET:-}" = 1 ] || die "couldn't save $name's chain head from $a before discarding the chain: fix that, or FORCE_RESET=1 to discard it anyway"
       continue
@@ -412,8 +422,8 @@ cmd_fetch() {
   a=${1:-$(echo $AGENTS | cut -d' ' -f1)}; v=$(vm "$a")
   export GIT_SSH_COMMAND="ssh -F $HOME/.lima/$v/ssh.config"
   tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
-  for r in pantheon:$here soma:$SOMA_CHECKOUT; do
-    name=${r%%:*} dst=${r#*:}
+  for name in $REPOS; do
+    dst=$(repo_src "$name")
     git init -q --bare "$tmp/$name.git"
     # --git-dir: -C on a bare repository fails under safe.bareRepository=explicit
     if git --git-dir="$tmp/$name.git" fetch -q --upload-pack "sudo -u pantheon git-upload-pack" "lima-$v:$HOMEDIR/repos/$name" HEAD; then

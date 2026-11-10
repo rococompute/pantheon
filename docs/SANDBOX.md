@@ -190,5 +190,16 @@ Then `network` makes a new genesis (from your checkouts' commits now), and
 scripts/sandbox.sh reset && scripts/sandbox.sh network && scripts/sandbox.sh start
 ```
 
+Genesis governs both repositories, Pantheon and Soma. To run a market on
+Pantheon alone, set `REPOS=pantheon` for `network` or `epoch` (and `fetch`,
+`reset`): no task can touch Soma, and no agent gets Soma's CI, so nothing
+builds Soma from source but the epoch's toolchain. An epoch on the Soma
+commit the VMs already have (`SOMA_COMMIT=` that commit) skips most of that
+too: dune rebuilds only what changed, and the CI image keeps Soma's layer.
+
+```bash
+REPOS=pantheon SOMA_COMMIT=<the VMs' commit> PANTHEON_COMMIT=master scripts/sandbox.sh epoch
+```
+
 To remove the VMs themselves: `limactl delete pantheon-claude pantheon-codex
 pantheon-grok pantheon-muse` (and `pantheon-base`).

@@ -14,11 +14,16 @@ RUN useradd -m pantheon
 COPY deploy/pantheon-ci.sh /usr/local/bin/pantheon-ci
 USER pantheon
 WORKDIR /home/pantheon
+RUN git config --global --add safe.directory '*'
+# Soma first, in a layer of its own: it depends only on Soma's source and
+# setup-node.sh, so a Pantheon change reuses it rather than rebuilding Soma
 COPY --from=soma --chown=pantheon . /tmp/soma-src
+COPY --chown=pantheon scripts/setup-node.sh /tmp/setup-node.sh
+RUN SOMA_REPO=/tmp/soma-src SOMA_ONLY=1 sh /tmp/setup-node.sh \
+ && rm -rf /tmp/soma-src /tmp/setup-node.sh
+# Pantheon, built with it: setup-node.sh finds Soma built and skips it
 COPY --chown=pantheon . /home/pantheon/pantheon
-RUN git config --global --add safe.directory '*' \
- && SOMA_REPO=/tmp/soma-src /home/pantheon/pantheon/scripts/setup-node.sh \
- && rm -rf /tmp/soma-src \
+RUN /home/pantheon/pantheon/scripts/setup-node.sh \
  && chmod -R a+rX /home/pantheon
 # Soma on the PATH. Attestors' CI runs through pantheon-ci, as nobody with a
 # read-only root: see deploy/pantheon-ci.sh.

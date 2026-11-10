@@ -11,6 +11,8 @@
 #            key that can read it)
 # SOMA_REF   the branch or commit to build (default: gradual)
 # SOMA_DIR   where Soma is built (default: ~/soma)
+# SOMA_ONLY  1: stop once Soma is built (deploy/Dockerfile builds Soma in a
+#            layer of its own, so a Pantheon change doesn't rebuild it)
 #
 # When it's done, put Soma's bin directory on your PATH (it prints the line);
 # ./main.exe is the node. docs/NETWORK.md says what to do next.
@@ -67,6 +69,8 @@ fi
 [ -f _build/install/default/lib/coq/theories/Init/Prelude.vo ] || { echo "setup: Soma built without its standard library (no Prelude.vo): see $SOMA_DIR/setup-build.log" >&2; exit 1; }
 export PATH="$SOMA_DIR/_build/install/default/bin:$PATH"
 command -v soma >/dev/null || { echo "setup: Soma didn't build: see the output above" >&2; exit 1; }
+
+if [ "${SOMA_ONLY:-}" = 1 ]; then say "Soma is built: $SOMA_DIR/_build/install/default/bin/soma"; exit 0; fi
 
 # 5. Pantheon. The first build makes Soma's own OCaml switch
 # (~/.cache/soma/ocaml) and installs what shell.definition names, cryptokit
