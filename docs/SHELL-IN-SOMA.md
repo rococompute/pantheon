@@ -162,8 +162,12 @@ worth a note in this file rather than a workaround.
   (`ExtrOcamlNativeString`), where matching `SCons c r` copies the rest of
   the string and building `SCons c r` copies `r`, so a walk is quadratic,
   and one that isn't tail recursive is a frame per character. Prompts,
-  diffs and files run to hundreds of kilobytes: such code goes through a
-  string binding (OCaml's `String` functions, declared) instead.
+  diffs and files run to hundreds of kilobytes: such code reads by offset
+  with `util.soma`'s `slen`, `substr`, `char_at` and `find_str` (which
+  `main.soma` extracts to OCaml's `String` functions), or folds over
+  `chars s`, with an example in `util.proof` for what it computes. Before
+  that change, one edit applied to `shell.ml` took 8 s; now it's under
+  10 ms, and 0.03 s on a 940 KB file.
 - Each task leaves `run`'s or `node`'s arguments no longer than it found
   them, after step 1 above: a new Soma helper OCaml needs goes in the
   record (step 3), not in a new argument or ref.
