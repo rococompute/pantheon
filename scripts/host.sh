@@ -55,6 +55,13 @@ REMOTE=${REMOTE:-$(git -C "$here" remote get-url origin 2>/dev/null || true)}
 # branch, so the market's work is where everyone looks
 BRANCH=${BRANCH:-$( [ -n "$REMOTE" ] && git ls-remote --symref "$REMOTE" HEAD 2>/dev/null | sed -n 's|^ref: refs/heads/\(.*\)	HEAD$|\1|p')}
 BRANCH=${BRANCH:-master}
+# BRANCH reaches a shell wrapper, a unit file and git's command line, and
+# comes from the remote (docs/SECURITY-REVIEW-2.md P-11): a plain ref name or nothing
+valid_branch() {
+  case $1 in ''|-*|*[!A-Za-z0-9._/-]*) return 1 ;; esac
+  git check-ref-format --branch "$1" >/dev/null 2>&1
+}
+valid_branch "$BRANCH" || { printf 'host: BRANCH %s is not a plain git branch name (letters, digits, . _ / -): set BRANCH to one\n' "$(printf '%s' "$BRANCH" | tr -c 'A-Za-z0-9._/-' '?')" >&2; exit 1; }
 CODEX_ENV=${CODEX_ENV:-}
 GROK_MODEL=${GROK_MODEL:-grok}
 SOMA_REMOTE=${SOMA_REMOTE:-https://github.com/yevbar/soma.git}
@@ -95,24 +102,27 @@ render_diplomat() {
   d=$here/deploy/host/delegate/$a.md
   # some agent CLIs (codex) give their commands only a few of their own
   # environment variables: the inbox's settings go in a wrapper instead
+  # every value quoted: REMOTE and BRANCH come from the remote (P-11)
   cat > "$P/desk/$a/pantheon-inbox" <<W
 #!/bin/sh
-PANTHEON_INBOX=$P/inbox/$a PANTHEON_REMOTE=$REMOTE PANTHEON_BRANCH=$BRANCH PANTHEON_CHECK="$here/scripts/host.sh check" \\
-  exec $here/scripts/pantheon-inbox "\$@"
+PANTHEON_INBOX=$(q "$P/inbox/$a") PANTHEON_REMOTE=$(q "$REMOTE") PANTHEON_BRANCH=$(q "$BRANCH") PANTHEON_CHECK=$(q "$here/scripts/host.sh check") \\
+  exec $(q "$here/scripts/pantheon-inbox") "\$@"
 W
   chmod 755 "$P/desk/$a/pantheon-inbox"
-  python3 - "$here/deploy/host/diplomat.md" "$d" "$P/diplomats/$a.md" <<PY
+  # the values reach Python through its environment, never its source
+  R_AGENT=$a R_REMOTE=$REMOTE R_BRANCH=$BRANCH R_NET=$NET R_CODEX_ENV=${CODEX_ENV:-ENV_ID} R_DESK=$P/desk/$a \
+  R_SOMA_REMOTE=$SOMA_REMOTE R_SOMA_REF=$SOMA_REF R_SOMA_DIR=$SOMA R_SOMA_COMMIT=$(soma_commit) \
+  R_SOMA_NOTES=$P/soma-notes.md R_GROK_MODEL=$GROK_MODEL \
+  python3 - "$here/deploy/host/diplomat.md" "$d" "$P/diplomats/$a.md" <<'PY'
 import sys, os
 t = open(sys.argv[1]).read()
 d = open(sys.argv[2]).read() if os.path.exists(sys.argv[2]) else "## How you hand off\n\nYou have no workers elsewhere: do patches by hand, small, and skip what's too big."
 t = t.replace("{{DELEGATE}}", d.strip())
 # the inbox command by its full path: the wrapper with this agent's settings
-t = t.replace("pantheon-inbox ", "{{DESK}}/pantheon-inbox ").replace("\`pantheon-inbox\`", "\`{{DESK}}/pantheon-inbox\`")
-for k, v in {"AGENT": "$a", "REMOTE": "$REMOTE", "BRANCH": "$BRANCH", "NET": "$NET",
-             "CODEX_ENV": "${CODEX_ENV:-ENV_ID}", "DESK": "$P/desk/$a",
-             "SOMA_REMOTE": "$SOMA_REMOTE", "SOMA_REF": "$SOMA_REF", "SOMA_DIR": "$SOMA",
-             "SOMA_COMMIT": "$(soma_commit)", "SOMA_NOTES": "$P/soma-notes.md", "GROK_MODEL": "$GROK_MODEL"}.items():
-    t = t.replace("{{%s}}" % k, v)
+t = t.replace("pantheon-inbox ", "{{DESK}}/pantheon-inbox ").replace("`pantheon-inbox`", "`{{DESK}}/pantheon-inbox`")
+for k in ["AGENT", "REMOTE", "BRANCH", "NET", "CODEX_ENV", "DESK", "SOMA_REMOTE", "SOMA_REF",
+          "SOMA_DIR", "SOMA_COMMIT", "SOMA_NOTES", "GROK_MODEL"]:
+    t = t.replace("{{%s}}" % k, os.environ["R_" + k])
 open(sys.argv[3], "w").write(t)
 PY
 }
