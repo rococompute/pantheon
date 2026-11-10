@@ -45,7 +45,9 @@ image=${21}
 grep -qxF -- "$image" /etc/pantheon/ci-images 2>/dev/null || no "image $image is not in /etc/pantheon/ci-images"
 
 # one heavy build at a time on this VM, CI or a bidder's soma-dev-build:
-# the lock is held for as long as docker run is attached
+# the lock is held for as long as docker run is attached. The container
+# doesn't inherit the descriptor (dockerd starts it, not this process), so a
+# check can't release it (P-15)
 lock=/var/lib/pantheon-build/lock
 [ -r "$lock" ] && { exec 9<"$lock"; flock 9; }
 exec /usr/bin/docker run --rm --name "$name" --network=none --read-only --tmpfs "/tmp:exec,size=$tmpsize" \

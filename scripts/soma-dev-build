@@ -20,8 +20,9 @@ if [ -r "$lock" ] && command -v flock >/dev/null; then
 fi
 eval "$(opam env --switch=soma-build --set-switch)"
 log=${TMPDIR:-/tmp}/soma-dev-build.$$.log   # outside the checkout: not part of a patch
-make dunestrap > "$log" 2>&1 || { tail -20 "$log"; echo "soma-dev-build: make dunestrap failed ($log)" >&2; exit 1; }
+make dunestrap > "$log" 2>&1 9>&- || { tail -20 "$log"; echo "soma-dev-build: make dunestrap failed ($log)" >&2; exit 1; }
 rm -f "$log"
 start=$(date +%s)
-dune build -j "${SOMA_JOBS:-2}" soma-runtime.install soma-core.install
+# the build gets no lock descriptor: only this shell holds it (P-15)
+dune build -j "${SOMA_JOBS:-2}" soma-runtime.install soma-core.install 9>&-
 echo "built in $(( $(date +%s) - start ))s: $PWD/_build/install/default/bin/soma"

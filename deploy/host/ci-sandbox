@@ -6,7 +6,7 @@
 #   ci-sandbox MEMORY CHECKOUT CMD      e.g. ci-sandbox 1536m /tmp/pantheon-check.x 'soma build main.soma'
 #
 # CMD runs on a copy of CHECKOUT, in bubblewrap: no network, nothing of the
-# host's but /usr and /etc (read-only), Soma's build and its OCaml switches
+# host's but /usr and the few /etc files a build reads (read-only), Soma's build and its OCaml switches
 # (read-only; opam's log directory, which opam writes even to list a
 # switch, is a scratch one), and a fresh /tmp. The nodes' homes, keys included, aren't in
 # it: what CI prints goes on the chain, in a rejection. A systemd user scope
@@ -31,6 +31,11 @@ for p in "$soma/_build/install/default/bin/soma" "$HOME/.opam" "$switch"; do
   [ -e "$p" ] || { echo "ci-sandbox: no $p: build Soma and Pantheon on this host first (scripts/setup-node.sh)"; exit 3; }
 done
 command -v bwrap >/dev/null || { echo "ci-sandbox: no bwrap: install bubblewrap"; exit 3; }
+# The lock is held on descriptor 9 by this process, which becomes the
+# scope's shell below; bwrap gets no descriptor 9 (9>&-), so a check can't
+# unlock it and run builds beside other nodes' checks (docs/SECURITY-REVIEW-2.md
+# P-15). The shell is outside the sandbox's pid namespace, and the lock file
+# isn't in it.
 exec 9>>"${CI_LOCK:-$HOME/pantheon/.ci-lock}"
 flock 9
 # systemd-run's scope ends when its command does; the command reads its own
@@ -38,9 +43,16 @@ flock 9
 exec systemd-run --user --scope --quiet --collect -p "MemoryMax=$mem" -p MemorySwapMax=0 -p TasksMax=512 -- \
   sh -c '
     soma=$1 switch=$2 work=$3 cmd=$4
+    # only the /etc files a build reads, not the host /etc and the secrets it may
+    # hold (docs/SECURITY-REVIEW-2.md P-12): names, the loader, the time zone,
+    # and Debian'\''s alternatives (/usr/bin/awk is a link through them)
+    etc=
+    for f in passwd group nsswitch.conf ld.so.cache ld.so.conf ld.so.conf.d localtime alternatives; do
+      etc="$etc --ro-bind-try /etc/$f /etc/$f"
+    done
     cg=/sys/fs/cgroup$(sed -n "s/^0:://p" /proc/self/cgroup)
     bwrap --unshare-all --die-with-parent --new-session --cap-drop ALL \
-      --ro-bind /usr /usr --ro-bind /etc /etc \
+      --ro-bind /usr /usr $etc \
       --symlink usr/bin /bin --symlink usr/sbin /sbin --symlink usr/lib /lib --symlink usr/lib64 /lib64 \
       --proc /proc --dev /dev --tmpfs /tmp \
       --ro-bind "$soma" "$soma" --ro-bind "$HOME/.opam" "$HOME/.opam" --ro-bind "$switch" "$switch" \
@@ -49,7 +61,7 @@ exec systemd-run --user --scope --quiet --collect -p "MemoryMax=$mem" -p MemoryS
       --clearenv --setenv HOME /tmp --setenv XDG_CACHE_HOME /tmp/cache --setenv OPAMROOT "$HOME/.opam" \
       --setenv SOMA_OCAML_SWITCH "$switch" --setenv PATH "$soma/_build/install/default/bin:/usr/bin:/bin" \
       --setenv LANG C.UTF-8 --chdir /tmp \
-      sh -c "cp -R /work /tmp/w && cd /tmp/w && ($cmd) 2>&1"
+      sh -c "cp -R /work /tmp/w && cd /tmp/w && ($cmd) 2>&1" 9>&-
     r=$?
     if [ $r -ne 0 ] && grep -qs "oom_kill [1-9]" "$cg/memory.events"; then exit 137; fi
     exit $r' ci-sandbox "$soma" "$switch" "$work" "$cmd"
