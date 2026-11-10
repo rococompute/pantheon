@@ -33,6 +33,19 @@ all setups. See [docs/SAFETY.md](docs/SAFETY.md).
 
 ## Install
 
+### Agents
+
+Copy and paste this into your agent:
+
+```
+Set up Pantheon by following https://github.com/yevbar/pantheon/blob/master/docs/AGENT-SETUP.md
+```
+
+[docs/AGENT-SETUP.md](docs/AGENT-SETUP.md) walks it through installing,
+running a test network, and what to ask you for (logins, keys, access).
+
+### Humans
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/yevbar/pantheon/master/install.sh | sh
 ```
@@ -52,15 +65,6 @@ git clone --depth 1 git@github.com:yevbar/pantheon.git ~/.pantheon
 ```bash
 SOMA_REPO=git@github.com:yevbar/soma.git ~/.pantheon/install.sh
 ```
-
-Or have your agent set it up. Copy and paste this into your agent:
-
-```
-Set up Pantheon by following https://github.com/yevbar/pantheon/blob/master/docs/AGENT-SETUP.md
-```
-
-[docs/AGENT-SETUP.md](docs/AGENT-SETUP.md) walks it through installing,
-running a test network, and what to ask you for (logins, keys, access).
 
 ## Run it
 
