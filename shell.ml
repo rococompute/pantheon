@@ -780,7 +780,21 @@ let print_lines xs = List.iter print_endline xs
 let print_text s = print_string s
 let argv () = Array.to_list Sys.argv |> List.tl
 
-let cmd_node init step checkpoint restore plan_open replace_all edit_fn contains_fn path_fn json_fn home flags =
+(* The Soma node loop's handle: node_open registers the closures its setup
+   built, and the loop drives them by this name (docs/SHELL-IN-SOMA.md 2). *)
+type node_handle = { h_events : unit -> string list list; h_perform : string list -> unit;
+                     h_save : Obj.t -> unit; h_refuse : string -> unit; h_state : Obj.t }
+let node_handles : (string, node_handle) Hashtbl.t = Hashtbl.create 4
+let node_counter = ref 0
+let lookup_handle id = try Hashtbl.find node_handles id with Not_found -> fail "unknown node handle %s" id
+let events id = (lookup_handle id).h_events ()
+let perform id out = (lookup_handle id).h_perform out; true
+let save_snapshot id snap = (lookup_handle id).h_save (Obj.repr snap); true
+let note_refused id raw = (lookup_handle id).h_refuse raw; true
+let take_state id = Obj.obj (lookup_handle id).h_state
+let rec forever f s = forever f (f s)
+
+let node_open init step checkpoint restore plan_open replace_all edit_fn contains_fn path_fn json_fn home flags =
   soma_shallow_json := json_fn;
   soma_safe_path := path_fn;
   soma_edit_once := edit_fn;
@@ -1405,7 +1419,7 @@ let cmd_node init step checkpoint restore plan_open replace_all edit_fn contains
       | _ -> ()
     with _ -> ()
   in
-  while true do
+  let collect_events () =
     let now = Unix.gettimeofday () in
     (* connect to peers we have no link to *)
     List.iter (fun p ->
@@ -1460,7 +1474,7 @@ let cmd_node init step checkpoint restore plan_open replace_all edit_fn contains
     (* model calls that ran too long *)
     List.iter (fun j -> if now -. j.jstarted > j.jlimit && not (Hashtbl.mem overtime j.jpid) then begin
         Hashtbl.replace overtime j.jpid j.jlimit; Hashtbl.replace cut j.jpid (); (try Unix.kill j.jpid Sys.sigkill with _ -> ()) end) !jobs;
-    drain ();
+    ();
     let wait = List.fold_left (fun m (t, _) -> min m (t -. now)) 0.2 !timers |> max 0. in
     let reads = listener :: List.map (fun c -> c.fd) !conns @ List.map (fun j -> j.jfd) !jobs in
     let writes = List.filter_map (fun p -> match p.out with Some fd when p.connecting || Buffer.length p.obuf > 0 -> Some fd | _ -> None) peers in
@@ -1586,5 +1600,19 @@ let cmd_node init step checkpoint restore plan_open replace_all edit_fn contains
               | exception _ -> close_peer p
             end
         | _ -> ())
-      peers
-  done
+      peers;
+    let evs = ref [] in
+    while not (Queue.is_empty queue) do evs := Queue.pop queue :: !evs done;
+    if debug then List.iter (fun ev -> say "event: %s" (brief ev)) (List.rev !evs);
+    List.rev !evs
+  in
+  let handle_id = string_of_int !node_counter in
+  incr node_counter;
+  Hashtbl.replace node_handles handle_id
+    { h_events = collect_events; h_perform = handle;
+      h_save = (fun snap -> let c = Obj.obj snap in
+                match !saved with Some p when p == c || p = c -> () | _ -> save_consensus checkpoint_path c; saved := Some c);
+      h_refuse = (fun raw -> if Hashtbl.length refused < 10000 then Hashtbl.replace refused raw ());
+      h_state = Obj.repr !st };
+  handle_id
+

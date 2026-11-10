@@ -147,6 +147,26 @@ The following entries describe the earlier bottom-up moves and their wiring
 at the time; their `run` references are historical.
 
 
+- The node loop (step 2): `run_node` in `node.soma` holds the state and
+  drives `step`; `shell.ml` binds only `node_open` (keys, genesis, replay,
+  the listener, the setup feeds), `events` (one select turn), `perform`
+  (one output), `save_snapshot`, `note_refused`, `take_state` and
+  `forever`. The setup still feeds through the shell's old `feed` inside
+  `node_open`; every running event goes through the Soma loop. Its order
+  is `order_effects` in `node.soma`, a pure function from the event, the
+  state before and after `step`, and the outputs to effects (perform this
+  output, save this snapshot, refuse this transaction): decided outputs
+  first, then the snapshot when consensus changed (`cons_eq`), then the
+  rest; a refused transaction is one whose raw form did not enter the
+  pool. `node.proof` checks that order with `Example`s (decided, snapshot
+  and rest together; a refused and an accepted transaction; an empty
+  step; steps with only some kinds; a vote saving before it sends), not
+  by timing a node. Effects return `bool` and the loop keeps the new
+  state only when they were carried out: a `unit` result is a value the
+  extraction can erase, and with it the call. The handle is a string
+  naming the shell's side; the snapshot crosses as consensus state and
+  the shell still writes it only when it changed. Next: step 3 above.
+
 - `plan_open` (piece 1, in part): now `plan_open` in `util.soma`, with its
   string helpers (`trim`, `split_lines`, `is_date_line`, `marked_line`,
   `truncate_line`). `shell.ml`'s OCaml version is deleted; `run` takes the
