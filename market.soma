@@ -237,6 +237,16 @@ settle (m : obj) : obj * list (list string) :=
     accepted_reveals_for_a_draw_are_equal) *)
 next_link (v tip : string) : bool := seq (sha256 v) tip.
 
+(** A leader's mark: when a leader judges a task done, it may put "+ "
+    before the plan item's line in the repository's .plan. Leaders don't bid,
+    so the mark is a bid of its own: one edit, of that one line, made by the
+    leader and proposed for merge at once. It merges like any bid, with the
+    attestors' yes on the tree they get; the bidder fallback counts the
+    leader, so it still needs an attestor (fallback_still_needs_an_attestor). *)
+mark_note : string := "leader's mark: the task is done, so its plan item is marked done in .plan".
+
+mark_edit (line : string) : edit := {| epath := ".plan"; eold := line; enew := append "+ " line |}.
+
 (** One transaction's effect. A string is the reason it failed, "" for none. *)
 apply (m : obj) (a : string) (fields : list string) : obj * list (list string) * string :=
   let fail (why : string) := (m, ([] : list (list string)), why) in
@@ -319,6 +329,24 @@ apply (m : obj) (a : string) (fields : list string) : obj * list (list string) *
             let note := if seq yes "yes" && negb agree then [["log", append a (append "'s yes named another tree than the leader's, " (ptree p))]] else [] in
             let '(m, o) := settle (setf m "pending" (Some p)) in (m, o ++ note, "")
       | _, _ => fail "nothing to attest"
+      end
+  | ["mark", t, line, tree] =>
+      match task_by m (num t) with
+      | None => fail "no such task"
+      | Some tk =>
+          if negb lead then fail "only the term leader marks a task done"
+          else if negb (topen tk) then fail "task is closed"
+          else if seq tree "" then fail "a mark names the tree its edit gives on the head: mark TASK LINE TREE"
+          else if negb (pending_bid_id m =? 0) then fail "a merge is already pending"
+          else if seq line "" || negb (plain_text line) || contains newline line then fail "a mark names one line of .plan, as it is there"
+          else if marked_line line || starts "#" line then fail "that line is a note or already marked"
+          else
+            let id := nbids m + 1 in
+            (* the bid appended last, the shape market.proof's lemma for an
+               appended bid states *)
+            let m := setf (setf m "nbids" id) "pending" (Some {| pbid := id; pby := a; pat := mheight m; pvotes := []; ptree := tree |}) in
+            ok (setf m "bids" (bids m ++ [{| bidn := id; btask := tid tk; bidder := a; base := version m; edits := [mark_edit line];
+                                             note := mark_note; bst := Pending; stale := false; why := ""; votes := [] |}]))
       end
   | ["reject", i, why] =>
       if negb (plain_text why) then fail "a rejection's reason has a NUL or control character" else

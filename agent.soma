@@ -30,6 +30,8 @@ done_marks (a : obj) : list (string * string) := getf a "done_marks".
 (** when this agent first saw a task's latest merge: task id and merge count
     to the height *)
 merge_seen (a : obj) : list (string * nat) := getf a "merge_seen".
+(** the .plan line a leader judged done with its task, to mark *)
+plan_lines (a : obj) : list (string * string) := getf a "plan_lines".
 
 new_agent (me : string) : obj :=
   [("me", me : Any), ("backend", "scripted" : Any), ("behavior", "honest" : Any),
@@ -38,7 +40,8 @@ new_agent (me : string) : obj :=
    ("inflight", 0 : Any), ("sent_at", 0 : Any), ("queue", ([] : list (list string)) : Any),
    ("asked", ([] : list string) : Any), ("attempts", ([] : list (string * nat)) : Any), ("retry_keys", ([] : list (string * string)) : Any),
    ("reqs", ([] : list (string * list string)) : Any), ("nreq", 0 : Any), ("bid_window", 30 : Any),
-   ("done_marks", ([] : list (string * string)) : Any), ("merge_seen", ([] : list (string * nat)) : Any)].
+   ("done_marks", ([] : list (string * string)) : Any), ("merge_seen", ([] : list (string * nat)) : Any),
+   ("plan_lines", ([] : list (string * string)) : Any)].
 
 is_merged (b : bid) : bool := match bst b with Merged => true | _ => false end.
 
@@ -152,14 +155,20 @@ pick_prompt (a m : obj) (t : task) (bs : list bid) : string :=
   (append (fold_left (fun s b => append s (append "Bid " (append (show (bidn b)) (append " by " (append (bidder b)
             (append ":
 " (append (fence "note" (note b)) (edits_text b)))))))) bs "")
-  "Pick the bid that takes the task furthest correctly, if one is good enough, and reject wrong ones. A correct part of the task is good enough: the task stays open for the rest. merge 0 means none yet. Then judge whether the task is done: done is true only when the whole task is finished with the bid you merge (or with what's merged already, if you merge none), its .plan mark included if it names one. A bid that marks the plan item done when it isn't is wrong.
-Reply format: {""merge"": <bid number or 0>, ""reject"": [{""bid"": <number>, ""reason"": ""why""}], ""done"": true or false}")))).
+  (append "Each repository's plan, its open items:
+{{PLAN}}"
+  "Pick the bid that takes the task furthest correctly, if one is good enough, and reject wrong ones. A correct part of the task is good enough: the task stays open for the rest. merge 0 means none yet. Then judge whether the task is done: done is true only when the whole task is finished with the bid you merge (or with what's merged already, if you merge none). A bid that marks the plan item done when it isn't is wrong. When it's done and the task is a plan item still open above, give that item's line as plan_line, copied exactly, and you'll mark it done in .plan (a line shown cut with ... can't be: leave plan_line empty).
+Reply format: {""merge"": <bid number or 0>, ""reject"": [{""bid"": <number>, ""reason"": ""why""}], ""done"": true or false, ""plan_line"": ""the item's line, or empty""}"))))).
 
 attest_prompt (a m : obj) (t : string) (b : bid) : string :=
   append (preamble a "attestor, deciding whether a proposed merge is safe")
-  (append (fence "task" t) (append (fence "note" (note b)) (append (edits_text b)
+  (append (fence "task" t) (append (fence "note" (note b))
+  (append (if seq (note b) mark_note
+           then append "This is the leader's mark: it only puts ""+ "" before the plan item's line in .plan. Approve it only if the task is done, judging by what merged on it, and the line is the task's plan item.
+" (match task_by m (btask b) with Some tk => merged_text m tk | None => "" end)
+           else "") (append (edits_text b)
   "The edits apply cleanly to the current head, and its CI passed if it has one. Approve only if they do the task and have nothing harmful or unrelated in them. When unsure, don't.
-Reply format: {""approve"": true or false, ""reason"": ""one line""}"))).
+Reply format: {""approve"": true or false, ""reason"": ""one line""}")))).
 
 (** The scripted backend's answers, in the same flattened form the shell
     gives a model's JSON reply: [key; value; key; value...]. *)
@@ -227,7 +236,8 @@ on_answer (a m : obj) (data kv : list string) : obj :=
       let pick := kv_at kv "merge" in
       let merging := mem pick cands && negb (mem pick (map fst (rejects_from kv 0 10))) in
       let a := if seq (kv_at kv "done") "true"
-               then setf a "done_marks" (put t (if merging then pick else "0") (done_marks a)) else a in
+               then setf (setf a "done_marks" (put t (if merging then pick else "0") (done_marks a)))
+                         "plan_lines" (put t (trim (clean_text (kv_at kv "plan_line"))) (plan_lines a)) else a in
       if merging then enqueue a ["merge", pick] else a
   | "attest" :: b :: tree :: _ =>
       enqueue a (if seq (kv_at kv "approve") "true" then ["attest", b, "yes", tree] else ["attest", b, "no"])
@@ -287,8 +297,16 @@ lead (a m : obj) : obj * list (list string) :=
                        | Some b => seq b "0" || existsb (fun x => seq (show (bidn x)) b) (merged_on t)
                        | None => false
                        end in
-  let a := fold_left (fun a t => if judged_done t || stuck t
-                                 then enqueue a ["close", show (tid t)] else a) (open_tasks m) a in
+  (* a task judged done gets its plan line marked first, when it names one:
+     the leader's mark, a bid of its own (market.soma). Lead runs only with
+     no merge pending, so a mark already made has merged or failed. *)
+  let a := fold_left (fun a t =>
+             let line := get_or "" (show (tid t)) (plan_lines a) in
+             let marked := existsb (fun b => seq (note b) mark_note) (for_task t) in
+             if stuck t || (judged_done t && (seq line "" || marked)) then enqueue a ["close", show (tid t)]
+             else if judged_done t && ask_once a (append "mark." (show (tid t)))
+             then enqueue (note_asked a (append "mark." (show (tid t)))) ["markq", show (tid t)]
+             else a) (open_tasks m) a in
   (* review bids once the chosen workers have bid or the window has passed *)
   let st := fold_left (fun (st : obj * list (list string)) (t : task) =>
       let cands := filter (fun b => (btask b =? tid t) && is_pending (bst b) && negb (seq (bidder b) (me a))) (bids m) in
@@ -392,6 +410,17 @@ flush (a m : obj) : obj * list (list string) :=
   | ["merge", b] :: rest =>
       let a := setf a "queue" rest in
       match bid_by m (num b) with Some bd => check_req a m "mcheck" bd "" | None => (a, []) end
+  | ["markq", t] :: rest =>
+      let a := setf a "queue" rest in
+      let line := get_or "" t (plan_lines a) in
+      match task_by m (num t) with
+      | Some tk =>
+          let r := trepo tk in
+          let id := show (nreq a + 1) in
+          (setf (setf a "nreq" (nreq a + 1)) "reqs" ((id, ["markcheck", t, line]) :: reqs a),
+           [("check" :: id :: r :: get_or "" r (repos m) :: (epath (mark_edit line) :: eold (mark_edit line) :: enew (mark_edit line) :: []))])
+      | None => (a, [])
+      end
   | tx :: rest =>
       if inflight a =? 0 then
         (setf (setf (setf a "queue" rest) "inflight" (n + 1)) "sent_at" (mheight m), [("submit" :: show (n + 1) :: tx)])
@@ -441,6 +470,12 @@ answered (a m : obj) (id : string) (kv : list string) : obj * list (list string)
         | None => (a, [])
         end
       else flush (enqueue a ["attest", b, "no"]) m
+  | Some ("markcheck" :: t :: line :: _) =>
+      if seq (kv_at kv "ok") "true" then flush (enqueue a ["mark", t, line, kv_at kv "tree"]) m
+      else
+        let a := setf a "plan_lines" (put t "" (plan_lines a)) in
+        let '(a, o) := flush a m in
+        (a, ["log", append "the plan line of task " (append t (append " can't be marked, so it closes unmarked: " (kv_at kv "why")))] :: o)
   | Some ("mcheck" :: b :: _) =>
       if seq (kv_at kv "ok") "error" then abstain a kv
       else if seq (kv_at kv "ok") "true" then flush (enqueue a ["merge", b, kv_at kv "tree"]) m

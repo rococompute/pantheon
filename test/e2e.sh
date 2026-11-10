@@ -585,7 +585,8 @@ scenario_model() {
 p=$(cat)
 case "$p" in
   *"choosing the next task"*)
-    case "$p" in *"plan of calc: open items>>>"*"add a hello command (calc.sh)"*) ;; *) echo "no open plan item" >> "$(dirname "$0")/plan-errors" ;; esac
+    # once the leader has marked it, the plan has no open item: that's right too
+    case "$p" in *"plan of calc: open items>>>"*"add a hello command (calc.sh)"*|*"every item is done or dropped"*) ;; *) echo "no open plan item" >> "$(dirname "$0")/plan-errors" ;; esac
     case "$p" in *"an old thing"*|*"a dropped idea"*) echo "a done or dropped item" >> "$(dirname "$0")/plan-errors" ;; esac
     # each node's first two drafts fail, as a flaky model's do: the leader
     # has to ask again within its term
@@ -610,7 +611,10 @@ PYREPLY
     printf 'echo hello\n' > hello.sh
     sed -i.bak 's|^  \*) echo "usage|  hello) sh hello.sh ;;\n  *) echo "usage|' calc.sh && rm calc.sh.bak
     "$PANTHEON_BIN" edits . "hello command" ;;
-  *"reviewing the bids"*) n=$(printf '%s' "$p" | sed -n 's/^Bid \([0-9]*\) by.*/\1/p' | head -1); echo "{\"merge\": $n, \"reject\": []}" ;;
+  *"reviewing the bids"*)
+    # the leader judges the task done with its merge, and names the plan line to mark
+    n=$(printf '%s' "$p" | sed -n 's/^Bid \([0-9]*\) by.*/\1/p' | head -1)
+    echo "{\"merge\": ${n:-0}, \"reject\": [], \"done\": true, \"plan_line\": \"add a hello command (calc.sh)\"}" ;;
   *"proposed merge is safe"*)
     # each node's first attestation fails (an empty reply)
     c=$(dirname "$0")/attests.$PPID; n=$(cat "$c" 2>/dev/null || echo 0); echo $((n + 1)) > "$c"
@@ -622,6 +626,10 @@ F
   printf -- 'add a hello command\n' > "$ROOT/model/goal.txt"
   for a in $AGENTS; do node model "$a" -- --backend "cmd:$fake"; done
   wait_for model claude 90 "a merge through the model path" merges_at_least model claude 1 || { stop model; return 1; }
+  # the leader judged the task done: its mark puts "+ " before the plan line, and the task closes
+  wait_for model claude 90 "the leader's mark on the plan line" \
+    sh -c "git -C '$ROOT/model/claude/repos/calc' show HEAD:.plan | grep -qx '+ add a hello command (calc.sh)'" || { stop model; return 1; }
+  wait_for model claude 30 "task 1 closed after its mark" sh -c "grep -q '^task 1 \\[closed\\]' '$ROOT/model/claude/status.txt'" || { stop model; return 1; }
   sleep 2; stop model
   [ ! -s "$ROOT/model/plan-errors" ] || { echo "FAIL model: the leader's prompt had the wrong plan: $(sort -u "$ROOT/model/plan-errors" | tr '\n' ' ')"; return 1; }
   failures=$(grep -h 'model call failed.*the reply had no JSON object' "$ROOT"/model/*/node.log | wc -l)
@@ -631,7 +639,7 @@ F
   [ "$(cd "$r" && sh calc.sh hello)" = "hello" ] || { echo "FAIL model: calc.sh hello doesn't run hello.sh"; return 1; }
   [ "$(cd "$r" && sh calc.sh add 2 3)" = "5" ] || { echo "FAIL model: calc.sh add broke"; return 1; }
   agree model claude codex grok muse && agree_files model claude codex grok muse || return 1
-  echo "ok model: a fake model with tools edited a checkout, and its edits merged on every node, though its first drafts and attestations failed; the leader drafted from the .plan's open items"
+  echo "ok model: a fake model with tools edited a checkout, and its edits merged on every node, though its first drafts and attestations failed; the leader drafted from the .plan's open items, judged the task done and marked its plan line"
 }
 
 scenario_stuck() {
