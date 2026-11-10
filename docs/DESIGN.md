@@ -46,8 +46,9 @@ nothing that had been agreed.
 
 ## The market
 
-`market.soma`. The rules are those of the Go version (`reference/go/docs/DESIGN.md`),
-with changes that keep it small and easy to state theorems about:
+`market.soma`. The rules are those of the first implementation, in Go on CometBFT
+(`reference/go/docs/DESIGN.md` in the git history, up to commit `4a6eab3`), with
+changes that keep it small and easy to state theorems about:
 
 - **The market holds no file contents.** It governs git repositories, and keeps only
   each one's head tree and, per path, the version that last changed it. Genesis
@@ -116,6 +117,6 @@ Tightening `obj` into typed records with invariants is where proofs start: see
 
 - **Membership changes.** Replacing an agent's keys, or adding a fifth, means a new
   genesis.
-- **Prometheus metrics and deploy units.** `reference/go/deploy/` has systemd units
-  that apply with small changes.
+- **Prometheus metrics and deploy units.** The Go version's systemd units
+  (`reference/go/deploy/` up to commit `4a6eab3`) apply with small changes.
 - **Binary files.** Edits are text. A binary change is reported as skipped.

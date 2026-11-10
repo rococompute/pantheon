@@ -590,7 +590,7 @@ pass the commit message with `-F`/stdin; add a test.
 | `OCaml Bind`/`Wasm Bind` take arbitrary paths; `project_cache_key`/`copy_tree` follow symlinks | `soma_ocaml.ml:255-258`, `soma.ml:290-318` | A file name can read outside the project; a symlink loop can make a build hang. |
 | CI time is one hour, CPU is unlimited; Soma's build has no timeout of its own | `shell.ml:951`, `deploy/host/ci-sandbox`, `soma-ci` | A bid can consume the CI slot; `timeout`/`flock -w`/CPU limits would help. |
 | `blocks.log`, tasks, `served`, `signed.log` grow without bound | `shell.ml`, `market.soma` | Long-running chains use disk/memory; prune or document. |
-| `reference/go/` was not audited here | `pantheon/reference/go` | It is kept for comparison; the review focused on the Soma version. |
+| ~~`reference/go/` was not audited here~~ | `pantheon/reference/go` | Removed after commit `4a6eab3`; the review focused on the Soma version. |
 | Personal data in history/docs | see below | Author emails, GitHub user, host name; decide before public. |
 
 Smaller items, not detailed above:
@@ -619,8 +619,8 @@ Smaller items, not detailed above:
 - `soma`'s `soma build --check-fresh` reads paths out of a record with
   `Scanf.unescaped` (`topbin/soma.ml:1106-1112`); a forged record can make it
   read outside the cache (same trust issue as S-1).
-- `reference/go/` is kept for comparison and was only secret-scanned here;
-  it is not part of the Soma implementation and was not audited in depth.
+- ~~`reference/go/` is kept for comparison and was only secret-scanned here~~:
+  removed after commit `4a6eab3`, so it no longer needs an audit.
 - Edit matching is quadratic (`shell.ml:185-192` `positions`, used by
   `apply_edits` in the node's main loop); a large file plus a long `old`
   string can stall every node on a merge. Use a linear search and cap sizes.
@@ -698,7 +698,8 @@ covered.
 No private key, token or credential was found in either repository's files or
 history. The only key-shaped strings are test fixtures in
 `pantheon/reference/go/internal/agent/agent_test.go:33-35`
-(`BEGIN RSA PRIVATE KEY`, `sk-...`), and the docs examples. Commit author names and emails are in both histories, as usual. `docs/HOST.md` and
+(`BEGIN RSA PRIVATE KEY`, `sk-...`; the directory is removed now, but they stay in
+history), and the docs examples. Commit author names and emails are in both histories, as usual. `docs/HOST.md` and
 `docs/DOGFOOD-REPORT.md` mention the host `zucc` (Fedora Asahi) and branch
 names. `docs/DOGFOOD-REPORT.md:25` says a rejected bid carried a ChatGPT
 account id in a Codex `error.log`, and that the chain with it stays on the

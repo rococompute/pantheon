@@ -157,10 +157,9 @@ escape hatch, where static types are given up, and every assumption.
 | `scripts/` | Bidders with tools, the GitHub mirror, Linux setup, VPN configs |
 | `deploy/Dockerfile` | Soma and Pantheon built from source: a node, and the CI image |
 | `examples/` | The calculator, a network template, a dogfooding goal list |
-| `reference/go/` | The first implementation, in Go on CometBFT, kept for comparison |
 
-[docs/DESIGN.md](docs/DESIGN.md) explains how it works and what changed from the Go
-version.
+[docs/DESIGN.md](docs/DESIGN.md) explains how it works and what changed from the first
+implementation, in Go on CometBFT.
 
 ## License
 
