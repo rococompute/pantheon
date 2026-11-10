@@ -15,6 +15,13 @@ here=$(cd "$(dirname "$0")" && pwd)
 export DEBIAN_FRONTEND=noninteractive
 say() { printf 'provision: %s\n' "$*"; }
 
+# public resolvers: the VM network's own (192.168.104.2 under vz) has
+# answered every AAAA query with SERVFAIL after 2 s, so each lookup took 2-8 s
+# and the models' CLIs timed out reaching their providers
+mkdir -p /etc/systemd/resolved.conf.d
+printf '[Resolve]\nDNS=1.1.1.1 8.8.8.8\nDomains=~.\n' > /etc/systemd/resolved.conf.d/pantheon-dns.conf
+systemctl restart systemd-resolved 2>/dev/null || true
+
 say "system packages"
 apt-get update -q >/dev/null
 apt-get install -y -q git build-essential opam jq curl m4 pkg-config libgmp-dev zlib1g-dev rsync ca-certificates \
