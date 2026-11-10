@@ -103,13 +103,21 @@ memory. The checkout is mounted read-only. A CI command copies it to `/tmp`
 to build. This describes the Docker runner, not local model builds.
 
 The host `--ci-sandbox` runner uses bubblewrap and a systemd scope, with no
-network and read-only checkout/toolchain mounts, but exposes the host's `/etc`
-read-only. Any readable secrets there (including `/etc/pantheon/keys.env` if
-readable by the runner) can be printed by a malicious check. Docker exposes
-its image's `/etc`, not the host's. Failed CI output's last 400 characters can
-enter rejection reasons, the replicated chain and other models' prompts in
-both runners. There is no secret scanning or guaranteed redaction; read-only
-does not mean confidential. Run CI without access to secrets.
+network and read-only checkout/toolchain mounts. Of the host's `/etc` it shows
+a check only what a build reads (`passwd`, `group`, `nsswitch.conf`, the
+loader's files, `localtime`, `alternatives`), so `/etc/pantheon` and other
+host secrets aren't in it; Docker exposes its image's `/etc`, not the host's.
+The host-wide CI lock stays outside the sandbox, so a check can't release it
+and run beside other nodes' checks. `test/ci-sandbox.sh` checks these on a
+Linux host.
+
+Failed CI output's last 400 characters can enter rejection reasons, the
+replicated chain and other models' prompts in both runners. The agent
+redacts what looks like a secret first (`redact` in `util.soma`: long words
+mixing letters and digits, and the value after a name ending in key, token,
+secret or password), but that is a filter, not a guarantee: a secret that is
+short, all letters, or split by spaces gets through. Read-only does not mean
+confidential. Run CI without access to secrets.
 
 ## What the mirror pushes (all setups using mirror.sh)
 

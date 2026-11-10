@@ -181,6 +181,66 @@ plain_text (s : string) : bool := forallb plain_char (chars s).
     composes from a model's reply or a check's output *)
 clean_text (s : string) : string := map_chars (fun c => if plain_char c then c else " "%char) s.
 
+(** Redacting what looks like a secret in text that goes on chain: a failed
+    check's output, which becomes a rejection every agent sees
+    (docs/SECURITY-REVIEW-2.md P-12). A word is a run of letters, digits and
+    [+ = _ :]. One of 24 characters or more with both letters and digits (a
+    key, a token, a hash) becomes [redacted], and so does the value after a
+    name ending in key, token, secret, password or passwd and an [=] or [:],
+    in the same word or the next. Paths and error messages are left alone:
+    [/ . -] split words. *)
+secret_char (c : ascii) : bool :=
+  let n := nat_of_ascii c in
+  ((48 <=? n) && (n <=? 57)) || ((65 <=? n) && (n <=? 90)) || ((97 <=? n) && (n <=? 122))
+  || (n =? 43) || (n =? 61) || (n =? 95) || (n =? 58).
+
+ends (p s : string) : bool := (slen p <=? slen s) && seq (substr s (slen s - slen p) (slen p)) p.
+
+redacted : string := "[redacted]".
+
+key_word (w : string) : bool :=
+  let l := lower w in existsb (fun k => ends k l) ("key" :: "token" :: "secret" :: "password" :: "passwd" :: []).
+
+looks_secret (w : string) : bool :=
+  (24 <=? slen w)
+  && existsb (fun c => let n := nat_of_ascii c in (48 <=? n) && (n <=? 57)) (chars w)
+  && existsb (fun c => let n := nat_of_ascii (lower_char c) in (97 <=? n) && (n <=? 122)) (chars w).
+
+first_sep (w : string) : option nat :=
+  match find_str "=" w 0, find_str ":" w 0 with
+  | Some i, Some j => Some (Nat.min i j)
+  | Some i, None => Some i
+  | None, o => o
+  end.
+
+(** a word as it goes out, and whether the next word is a value to hide *)
+redact_word (w : string) : string * bool :=
+  match first_sep w with
+  | Some p =>
+      if key_word (substr w 0 p) then
+        if slen w =? p + 1 then (w, true) else (append (substr w 0 (p + 1)) redacted, false)
+      else (if looks_secret w then redacted else w, false)
+  | None => (if looks_secret w then redacted else w, false)
+  end.
+
+redact_flush (out : list string) (cur : list ascii) (hide : bool) : list string * bool :=
+  match cur with
+  | [] => (out, hide)
+  | _ => if hide then (redacted :: out, false)
+         else let '(o, h) := redact_word (of_chars (rev_onto cur [])) in (o :: out, h)
+  end.
+
+redact (s : string) : string :=
+  let '(out, cur, hide) :=
+    fold_left (fun st c =>
+      let '(out, cur, hide) := st in
+      if secret_char c then (out, c :: cur, hide)
+      else let '(out, hide) := redact_flush out cur hide in
+           let n := nat_of_ascii c in
+           (of_chars (c :: []) :: out, [], hide && ((n =? 32) || (n =? 9) || (n =? 34) || (n =? 39))))
+      (chars s) ([], [], false) in
+  Stdlib.Strings.String.concat "" (rev_onto (fst (redact_flush out cur hide)) []).
+
 (** pairs from a flat list: [a; b; c; d] is [(a, b); (c, d)] *)
 Fixpoint pairs (l : list string) : list (string * string) :=
   match l with a :: b :: r => (a, b) :: pairs r | _ => [] end.

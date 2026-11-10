@@ -44,6 +44,18 @@ Example text_checks : plain_text "a b" = true /\ clean_text "ab" = "ab" /\ lower
   /\ shell_safe_path "src/a..b" = true /\ shell_safe_path "a/../b" = false /\ safe_path "a/.GIT/x" = false.
 Proof. repeat split; reflexivity. Qed.
 
+(** a failed check's output on chain: secrets out, errors and paths as they were (P-12) *)
+Example redact_hides_secrets :
+  redact "File ""agent.soma"", line 512: Error: not found" = "File ""agent.soma"", line 512: Error: not found"
+  /\ redact "/tmp/pantheon-check8f3a2c/main.soma: 3 failed" = "/tmp/pantheon-check8f3a2c/main.soma: 3 failed"
+  /\ redact "VERS_API_KEY=sk1 rest" = "VERS_API_KEY=[redacted] rest"
+  /\ redact "token: hunter2 ok" = "token: [redacted] ok"
+  /\ redact "PASSWORD=""a b"" x" = "PASSWORD=""[redacted] b"" x"
+  /\ redact "got 3f2a9c4b5d6e7f8091a2b3c4d5e6f708 here" = "got [redacted] here"
+  /\ redact "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  /\ redact "secret:" = "secret:" /\ redact "" = "".
+Proof. repeat split; reflexivity. Qed.
+
 Example numbers : digits "120" 0 = 120 /\ short_digits "123" 3 = true /\ short_digits "1234" 3 = false
   /\ short_digits "" 0 = true /\ hexnum "ff0" 2 0 = 255 /\ nth_char 1 "ab" = 98 /\ nth_char 5 "ab" = 256.
 Proof. repeat split; reflexivity. Qed.
