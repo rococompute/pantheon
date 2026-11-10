@@ -20,6 +20,11 @@ say() { printf 'provision: %s\n' "$*"; }
 # and the models' CLIs timed out reaching their providers
 mkdir -p /etc/systemd/resolved.conf.d
 printf '[Resolve]\nDNS=1.1.1.1 8.8.8.8\nDomains=~.\n' > /etc/systemd/resolved.conf.d/pantheon-dns.conf
+# but the agents' addresses (lima-NAME.internal, in the genesis) only Lima's
+# resolver knows, and it answers those at once: .internal stays on eth0's
+mkdir -p /etc/systemd/network/10-netplan-eth0.network.d
+printf '[Network]\nDomains=~internal\n' > /etc/systemd/network/10-netplan-eth0.network.d/pantheon-dns.conf
+networkctl reload 2>/dev/null || true
 systemctl restart systemd-resolved 2>/dev/null || true
 
 say "system packages"
