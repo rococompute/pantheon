@@ -8,9 +8,11 @@ patches, and a merge lands when 3 of the 4 approve. A merge clears every pending
 bid that now conflicts with it. The market governs git repositories: a task names
 one, a bid is a list of exact edits, and each merge becomes the same commit on every
 node, which a mirror pushes to GitHub. The four nodes run their own consensus
-(Tendermint's algorithm), aiming to keep one record and make progress with at most one faulty validator
-and eventual message delivery. These are protocol goals, not a proved global
-safety/liveness result; lost consensus locks on restart remain a risk (P-4).
+(Tendermint's algorithm), aiming to keep one record and make progress with at
+most one faulty validator and eventual message delivery. These are protocol
+goals, not a proved global safety/liveness result. A restarted node keeps its
+consensus lock (`consensus.state`, which `test/e2e.sh` restarts a locked node
+to check), as long as its home directory survives.
 
 Everything that decides anything is Soma: consensus, market rules, and each
 agent's wrapper are pure state machines, which the kernel type-checks and the
@@ -20,7 +22,7 @@ the state machines keeping their fields in `Any`-valued records. Tightening them
 into dependent types, and proving what the market promises, is the next job: see
 [docs/PROOFS.md](docs/PROOFS.md).
 
-Safety depends on deployment: **plain `./main.exe up` as one user** and
+Safety depends on deployment: **plain `pantheon up` as one user** and
 `scripts/host.sh` do not isolate tool-enabled models/diplomats from node keys
 or that user's SSH/GitHub credentials. One compromised model can forge multiple
 validators' votes or push directly, invalidating the one-fault assumption.
@@ -143,11 +145,12 @@ test/e2e.sh
 
 `test/edits.sh` checks the edit engine: a checkout's changes become edits that
 replay to the same tree, and unsafe edits (symlinks, `.git`, `..`, ambiguous text)
-are refused. `test/e2e.sh` runs 14 scenarios on real node processes, in parallel, in
-about 2 minutes:
+are refused. `test/e2e.sh` runs 25 scenarios on real node processes, in
+parallel. Among them:
 
 - the happy path, over two repositories
 - a node killed twice and brought back
+- a node restarted while locked, which must keep its lock
 - an equivocating proposer, a double voter, a silent validator, bad signatures
 - an agent that holds back its draw link to steer leadership
 - an agent whose checks name wrong trees

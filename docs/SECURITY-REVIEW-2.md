@@ -100,7 +100,7 @@ end.
 | H1 `.git/config` commands | **Partial** — fixed when the model is another user; the checkout's `PANTHEON_GITDIR` is still model-writable when node and model share a user, and filters are not disabled | `shell.ml:897-905`, `test/edits.sh:95-105`; finding **P-2** |
 | H2 host diplomats own every secret | **Open** | finding **P-1** |
 | H3 connection/line/JSON DoS | **Partial** — caps added, but 64 × 31 MB and 4000 × 12.8 MB still fit | `shell.ml:474-477`, `consensus.soma:222-228`; finding **P-13** |
-| H4 locks lost on restart | **Open** | finding **P-4** |
+| H4 locks lost on restart | ~~Open~~ **Fixed later**: locks persist in `consensus.state` | finding **P-4**, `test/restart-lock.sh`, `test/e2e.sh` restart-lock |
 | H5 pool locked by future nonces | **Open** | finding **P-5** |
 | H6 no secret scanning | **Open** (see secrets section; `model_env` is a blacklist) | `shell.ml:773-775`, secrets section |
 | H7 endless CI output | **Fixed** (4 MB cap, kill at once) | `shell.ml:65,1266-1272` |

@@ -129,9 +129,10 @@ protect the default branch (docs/NETWORK.md).
 `signed.log` remembers every vote signed, so a restarted node can't sign a
 second, different vote for the same slot. Keep it with the keys (see
 docs/NETWORK.md, "Replacing a machine"). This only prevents double-signing
-in the same slot. Consensus locks/valid values are not persisted across a
-restart (P-4); these local proofs and the crash test do not guarantee global
-agreement after lock loss. Same-user models can also tamper with logs.
+in the same slot. Consensus locks and valid values persist across a restart
+too, in `consensus.state` (P-4), so keep that file with them. The local proofs
+and the restart tests don't guarantee global agreement across restarts.
+Same-user models can also tamper with these files.
 
 ## Known limits
 

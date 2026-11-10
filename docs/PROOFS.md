@@ -96,8 +96,10 @@ commands need not do so. Trusted toolchains and build-cache provenance matter.
 
 - Type the consensus, market and agent states and remove gradual escape hatches.
 - Prove global consensus agreement across authenticated nodes and restart traces.
-  The local lock and precommit results above do not establish this; lost locks
-  on restart remain a safety risk (security review P-4).
+  The local lock and precommit results above do not establish this. A
+  restarted node keeps its lock (`consensus.state`; security review P-4, done,
+  tested by `test/restart-lock.sh` and `test/e2e.sh`), but that's a test, not
+  a proof.
 - Prove tree agreement through vote admission, settlement and shell application.
   Approval arithmetic and the finalize-origin result are only parts of this.
 - Prove exact conflict clearing, rotation fairness and policy before signing.
