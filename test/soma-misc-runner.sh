@@ -39,3 +39,30 @@ printf 'sleep 10\n' > test-suite/misc/soma_existing.sh
 SOMA_TEST_TIMEOUT=1; export SOMA_TEST_TIMEOUT
 refuse 124
 echo 'ok Soma test discovery, candidate binary, cache isolation, failures and timeout'
+unset SOMA_TEST_TIMEOUT
+# Named tests: only those run (Soma's CI names what a bid adds or changes)
+printf 'echo one >> ran\n' > test-suite/misc/soma_one.sh
+printf 'exit 9\n' > test-suite/misc/soma_two.sh
+: > ran
+sh "$here/scripts/soma-misc-tests" test-suite/misc/soma_one.sh > "$t/log" 2>&1 || { cat "$t/log"; echo "a named test failed"; exit 1; }
+[ "$(cat ran)" = one ] || { echo "named: ran $(cat ran)"; exit 1; }
+status=0; sh "$here/scripts/soma-misc-tests" test-suite/misc/soma_one.sh test-suite/misc/soma_two.sh > "$t/log" 2>&1 || status=$?
+[ "$status" -eq 9 ] || { cat "$t/log"; echo "a failing named test gave $status"; exit 1; }
+status=0; sh "$here/scripts/soma-misc-tests" bin/soma > "$t/log" 2>&1 || status=$?
+[ "$status" -eq 2 ] || { echo "a name that isn't a soma_*.sh test gave $status"; exit 1; }
+echo 'ok named tests: only those run, a failing one fails, other files are refused'
+# --changed: what isn't in the baseline of path:hash runs, what is doesn't
+printf 'echo one >> ran\n' > test-suite/misc/soma_one.sh
+rm -f test-suite/misc/soma_two.sh
+h1=$(git hash-object --no-filters test-suite/misc/soma_one.sh); hx=$(git hash-object --no-filters test-suite/misc/soma_existing.sh)
+: > ran
+sh "$here/scripts/soma-misc-tests" --changed "test-suite/misc/soma_one.sh:$h1 test-suite/misc/soma_existing.sh:$hx" > "$t/log" 2>&1 || { cat "$t/log"; exit 1; }
+[ ! -s ran ] && grep -q 'no test-suite/misc/soma_\*.sh test added or changed' "$t/log" || { cat "$t/log"; echo "--changed ran an unchanged test"; exit 1; }
+printf 'echo one-changed >> ran\n' > test-suite/misc/soma_one.sh
+printf 'echo new >> ran\n' > test-suite/misc/soma_new.sh
+sh "$here/scripts/soma-misc-tests" --changed "test-suite/misc/soma_one.sh:$h1 test-suite/misc/soma_existing.sh:$hx" > "$t/log" 2>&1 || { cat "$t/log"; exit 1; }
+[ "$(sort ran | tr '\n' ' ')" = "new one-changed " ] || { echo "--changed ran: $(cat ran)"; exit 1; }
+printf 'exit 5\n' > test-suite/misc/soma_new.sh
+status=0; sh "$here/scripts/soma-misc-tests" --changed "test-suite/misc/soma_existing.sh:$hx" > "$t/log" 2>&1 || status=$?
+[ "$status" -eq 5 ] || { cat "$t/log"; echo "a failing changed test gave $status"; exit 1; }
+echo 'ok --changed: only added or changed tests run, and a failing one fails'

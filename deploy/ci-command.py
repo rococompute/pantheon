@@ -82,6 +82,15 @@ def manifest(root):
     return {'proofs': proofs, 'pinned': pinned}
 
 
+def added_tests(root, baseline):
+    # test/*.sh the operator's checkout didn't have: a bid's own tests, which
+    # CI runs after the command (docs/DOGFOOD-REPORT.md D-1). An existing one
+    # is pinned, so a bid can't change it; tests a bid adds can't change CI.
+    return sorted(p.relative_to(root).as_posix() for p in (root / 'test').glob('*.sh')
+                  if p.is_file() and not p.is_symlink()
+                  and p.relative_to(root).as_posix() not in baseline['pinned'])
+
+
 def verify(root, baseline):
     for name, digest in baseline['pinned'].items():
         p = root / name
@@ -97,12 +106,27 @@ def verify(root, baseline):
 if __name__ == '__main__':
     if sys.argv[1] == '--verify':
         try:
-            verify(Path.cwd(), json.loads(sys.argv[2]))
+            baseline = json.loads(sys.argv[2])
+            verify(Path.cwd(), baseline)
+            for name in added_tests(Path.cwd(), baseline):
+                print(name)
         except (ValueError, OSError) as e:
             sys.exit('CI policy: ' + str(e))
     else:
         root = Path(sys.argv[1]).resolve()
         baseline = json.dumps(manifest(root), separators=(',', ':'))
         source = Path(__file__).read_text()
-        print('python3 - --verify ' + shlex.quote(baseline) + " <<'PANTHEON_CI_POLICY'\n" + source + '\nPANTHEON_CI_POLICY\n' +
-              'policy_status=$?; [ "$policy_status" -eq 0 ] || exit "$policy_status"\n' + sys.argv[2])
+        # the policy check, then the command, then each test the bid adds,
+        # each within PANTHEON_TEST_TIMEOUT seconds (default 600), in bash if
+        # its first line asks for it
+        # (the list goes through a file: a here-document inside $(...) trips
+        # bash 3.2 when it holds a case pattern)
+        print('pantheon_added_file=${TMPDIR:-/tmp}/pantheon-added.$$\n'
+              'python3 - --verify ' + shlex.quote(baseline) + " > \"$pantheon_added_file\" <<'PANTHEON_CI_POLICY'\n" + source +
+              '\nPANTHEON_CI_POLICY\npolicy_status=$?; [ "$policy_status" -eq 0 ] || exit "$policy_status"\n'
+              'pantheon_added=$(cat "$pantheon_added_file"); rm -f "$pantheon_added_file"\n'
+              '{\n' + sys.argv[2] + '\n} && for pantheon_test in $pantheon_added; do\n'
+              '  echo "CI: $pantheon_test (this tree adds it)"\n'
+              '  case $(head -n 1 "$pantheon_test") in \'#!\'*bash*) pantheon_sh=bash ;; *) pantheon_sh=sh ;; esac\n'
+              '  timeout "${PANTHEON_TEST_TIMEOUT:-600}" "$pantheon_sh" "$pantheon_test" || { s=$?; echo "CI: $pantheon_test failed (exit $s)"; exit $s; }\n'
+              'done')

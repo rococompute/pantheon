@@ -1,7 +1,11 @@
 #!/bin/sh
 # Run from a built Soma checkout. BIN follows test-suite's convention and
 # must name the candidate toolchain, never the installed host toolchain.
-# All matching tests run, including untracked/new tests in a bid's tree.
+#
+#   soma-misc-tests                      every test-suite/misc/soma_*.sh, new ones included
+#   soma-misc-tests test-suite/misc/soma_x.sh ...   just these
+#   soma-misc-tests --changed "PATH:HASH ..."       those whose git blob hash isn't in the list:
+#                                                   what a bid adds or changes (Soma's CI, D-1)
 set -eu
 root=$(pwd -P)
 BIN=${BIN:-$root/_build/install/default/bin}
@@ -15,8 +19,21 @@ trap 'rm -rf "$scratch"' EXIT
 trap 'exit 130' INT
 trap 'exit 143' HUP TERM
 count=0
-for script in "$root"/test-suite/misc/soma_*.sh; do
-  [ -f "$script" ] || continue
+if [ "${1:-}" = --changed ]; then
+  base=" ${2:-} "; set --
+  for f in "$root"/test-suite/misc/soma_*.sh; do
+    [ -f "$f" ] || continue
+    rel=test-suite/misc/${f##*/}
+    case $base in *" $rel:$(git hash-object --no-filters "$f") "*) ;; *) set -- "$@" "$f" ;; esac
+  done
+  [ $# -gt 0 ] || { echo "soma-misc-tests: no test-suite/misc/soma_*.sh test added or changed"; exit 0; }
+  echo "soma-misc-tests: $# added or changed"
+fi
+if [ $# -eq 0 ]; then set -- "$root"/test-suite/misc/soma_*.sh; fi
+for script in "$@"; do
+  case $script in /*) ;; *) script=$root/$script ;; esac
+  case ${script##*/} in soma_*.sh) ;; *) echo "soma-misc-tests: ${script##*/} is not a test-suite/misc/soma_*.sh test" >&2; exit 2 ;; esac
+  [ -f "$script" ] || { [ $# -eq 1 ] && [ ! -e "$script" ] && [ "${script##*/}" = 'soma_*.sh' ] && continue; echo "soma-misc-tests: no $script" >&2; exit 2; }
   count=$((count + 1))
   # A fresh cache per test and per invocation, even when the caller already
   # has SOMA_CACHE set. Do not let one test's warmed cache mask another's bug.

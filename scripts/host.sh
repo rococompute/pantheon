@@ -46,7 +46,7 @@ NET=$P/net AGENTS="claude codex grok muse"
 VM_AGENTS=${VM_AGENTS:-muse}
 BIN=$here/main.exe SOMA=${SOMA_DIR:-$P/soma}
 CI_MEMORY=${CI_MEMORY:-1536m}
-CI_CMD=$(python3 "$here/deploy/ci-command.py" "$here" "${PANTHEON_CI:-timeout 120 soma build main.soma && timeout 120 test/edits.sh && sh test/ci-policy.sh}")
+CI_CMD=$(python3 "$here/deploy/ci-command.py" "$here" "${PANTHEON_CI:-timeout 120 soma build main.soma && timeout 120 test/edits.sh && sh test/ci-policy.sh && timeout 120 bash test/cli.sh && timeout 120 bash test/genesis.sh && timeout 120 bash test/double-bid.sh && timeout 120 sh test/soma-misc-runner.sh && timeout 120 sh test/host-quoting.sh}")
 PORT=${INBOX_PORT:-8787}
 # a Lima VM (plain, user-mode network) reaches the host's localhost here
 VM_HOST=192.168.5.2

@@ -66,6 +66,22 @@ Everything after `--` is more node flags. `GOAL_FILE` picks the goal lines
 (default `examples/dogfood/goal.txt`), and `PANTHEON_CI` and `SOMA_CI` each
 repository's CI command.
 
+What CI runs on a bid's merged tree, by default:
+
+- **Pantheon:** the policy check (`deploy/ci-command.py`: no new `Admitted`
+  or axiom, no change to a pinned test or CI file), `soma build main.soma`,
+  the fast tests (`test/edits.sh`, `ci-policy.sh`, `cli.sh`, `genesis.sh`,
+  `double-bid.sh`, `soma-misc-runner.sh`, `host-quoting.sh`, a few seconds
+  each), then every `test/*.sh` the bid's tree adds, each within
+  `PANTHEON_TEST_TIMEOUT` seconds (600). A bid can't change a test that was
+  there, so a new scenario goes in a new `test/NAME.sh`. `test/e2e.sh` is the
+  operator's to run (about 8 minutes). The CI container has no network but
+  its own loopback, so a test may run nodes on localhost.
+- **Soma:** its build, then the `test-suite/misc/soma_*.sh` tests the bid
+  adds or changes (by git blob hash against the market's Soma commit, each
+  with its own `SOMA_CACHE`: `scripts/soma-misc-tests --changed`), then the
+  image's Pantheon built with it.
+
 To check the plumbing without spending tokens, run every agent scripted:
 
 ```bash

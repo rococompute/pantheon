@@ -226,12 +226,14 @@ theorems can come later. So each step has a floor and room past it:
 
 The rest:
 
-- `soma build main.soma` builds, and `test/edits.sh` and `test/e2e.sh` pass
-  unchanged: the scenarios are the specification. The market's CI doesn't
-  run `test/e2e.sh` yet (D-1, an operator item in `.plan`), so a bidder
-  runs it in its checkout if it can, and says in its note whether it did;
-  a sandboxed bidder may not be able to open sockets. Not having run it
-  isn't a reason to reject a bid whose other checks pass.
+- `soma build main.soma` builds, and the market's CI passes: the fast tests,
+  and every `test/*.sh` the bid adds (docs/SANDBOX.md, "What CI runs"). The
+  scenarios are the specification; a bid that needs a new one writes it as a
+  new `test/NAME.sh`, which CI then runs, since a test that's there can't
+  change. A bidder runs `test/e2e.sh` in its checkout if it can and says in
+  its note whether it did; a sandboxed bidder may not be able to open
+  sockets, and not having run it isn't a reason to reject a bid whose other
+  checks pass.
 - `soma explore main.soma` lists no new escape hatch the move didn't need,
   and the moved code adds no `Admitted` or axiom (the CI policy refuses them).
 - Numbers that may be large are `N` or OCaml ints by extraction, not unary

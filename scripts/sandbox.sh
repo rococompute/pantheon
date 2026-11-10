@@ -297,7 +297,7 @@ cmd_start() {
     printf '%s\n' "$CI_MEMORY" | put ci-memory
     # Pantheon's build within a cloud agent's default command time (2 minutes):
     # a change that makes it slower fails CI, as a broken one does
-    pantheon_ci=$(python3 "$here/deploy/ci-command.py" "$here" "${PANTHEON_CI:-timeout 120 soma build main.soma && timeout 120 test/edits.sh && sh test/ci-policy.sh}")
+    pantheon_ci=$(python3 "$here/deploy/ci-command.py" "$here" "${PANTHEON_CI:-timeout 120 soma build main.soma && timeout 120 test/edits.sh && sh test/ci-policy.sh && timeout 120 bash test/cli.sh && timeout 120 bash test/genesis.sh && timeout 120 bash test/double-bid.sh && timeout 120 sh test/soma-misc-runner.sh && timeout 120 sh test/host-quoting.sh}")
     printf '%s\n' "$pantheon_ci" | put ci/pantheon
     # Soma's CI is a full build: on three agents (SOMA_CI_AGENTS), so whichever
     # bids, two attestors run it, and two rejecting a broken build keep it out.
@@ -307,7 +307,9 @@ cmd_start() {
     case " $SOMA_CI_AGENTS " in
       # deploy/sandbox/soma-ci: Soma's build, then the CI image's Pantheon built
       # with it, so a change that breaks Soma's biggest user fails here
-      *" $a "*) printf '%s\n' "${SOMA_CI:-$(cat "$here/deploy/sandbox/soma-ci")}" | put ci/soma ;;
+      # Then the test-suite/misc/soma_*.sh tests a bid adds or changes, by git's
+      # hash against the market's Soma commit (docs/DOGFOOD-REPORT.md D-1)
+      *" $a "*) printf '%s\n' "${SOMA_CI:-$(soma_ci_command)}" | put ci/soma ;;
       *) in_vm "$v" sudo rm -f /etc/pantheon/ci/soma ;;
     esac
     printf '%s\n' --bid-window 900 --max-llm-calls 200 $flags | put flags
@@ -322,6 +324,15 @@ cmd_start() {
   # catching up needs two nodes that have it
   for a in $AGENTS; do in_vm "$(vm "$a")" sudo systemctl restart pantheon-node & done; wait
   say "started. Watch it with: scripts/sandbox.sh status"
+}
+
+# Soma's CI command: deploy/sandbox/soma-ci, after the hashes of the market's
+# Soma commit's test-suite/misc/soma_*.sh, so it runs what a bid adds or changes
+soma_ci_command() {
+  b=$(git -C "$SOMA_CHECKOUT" ls-tree -r "${SOMA_COMMIT:-gradual}" test-suite/misc \
+      | awk -F '\t' '$2 ~ /^test-suite\/misc\/soma_[^\/]*\.sh$/ { split($1, m, " "); printf "%s:%s ", $2, m[3] }')
+  [ -n "$b" ] || die "no test-suite/misc/soma_*.sh in Soma's ${SOMA_COMMIT:-gradual} ($SOMA_CHECKOUT): Soma's CI couldn't tell which tests a bid changes"
+  printf "SOMA_MISC_BASELINE='%s'\n%s\n" "$b" "$(cat "$here/deploy/sandbox/soma-ci")"
 }
 
 cmd_status() {
