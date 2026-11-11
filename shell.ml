@@ -1466,8 +1466,9 @@ let node_open init step checkpoint restore plan_open packed json_fn home flags =
     (* model calls that ran too long *)
     List.iter (fun j -> if now -. j.jstarted > j.jlimit && not (Hashtbl.mem overtime j.jpid) then begin
         Hashtbl.replace overtime j.jpid j.jlimit; Hashtbl.replace cut j.jpid (); (try Unix.kill j.jpid Sys.sigkill with _ -> ()) end) !jobs;
-    ();
-    let wait = List.fold_left (fun m (t, _) -> min m (t -. now)) 0.2 !timers |> max 0. in
+    (* events already queued (timers due now, what perform pushed) go to the
+       loop without waiting: the old loop drained them before select *)
+    let wait = if Queue.is_empty queue then List.fold_left (fun m (t, _) -> min m (t -. now)) 0.2 !timers |> max 0. else 0. in
     let reads = listener :: List.map (fun c -> c.fd) !conns @ List.map (fun j -> j.jfd) !jobs in
     let writes = List.filter_map (fun p -> match p.out with Some fd when p.connecting || Buffer.length p.obuf > 0 -> Some fd | _ -> None) peers in
     (* a failed select (a descriptor past FD_SETSIZE, EBADF) waits a moment
