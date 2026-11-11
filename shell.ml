@@ -868,19 +868,21 @@ let boot_snapshot id = Option.map Obj.obj (lookup_handle id).h_snapshot
 let replay_count id = (lookup_handle id).h_replayed
 (* The node's operations (node.soma's node_op, U-1), one at a time in their
    wire form (node.soma's io_wire; this match is its io_of_wire): the only
-   place the node logs, sets a timer, queues an event or sends on a peer
-   link. A unikernel would interpret the same operations through Sandbox. *)
+   place the node logs, sets a timer, queues an event, sends on a peer
+   link, or reads the clock. Effects return (true, 0.); "clock" returns
+   (true, Unix.gettimeofday ()). A unikernel would interpret the same
+   operations through Sandbox. *)
 let node_io id op =
   let h = lookup_handle id in
-  (match op with
-   | [ "log"; text ] -> h.h_log text
-   | "timer" :: ms :: ev -> h.h_timer ms ev
-   | "push" :: ev -> h.h_push ev
-   | "send_all" :: fields -> h.h_send_all fields
-   | "send_peer" :: index :: fields -> h.h_send_peer index fields
-   | "peer_send" :: who :: fields -> h.h_peer_send who fields
-   | _ -> fail "unknown node operation %s" (String.concat " " op));
-  true
+  match op with
+  | [ "log"; text ] -> h.h_log text; (true, 0.)
+  | "timer" :: ms :: ev -> h.h_timer ms ev; (true, 0.)
+  | "push" :: ev -> h.h_push ev; (true, 0.)
+  | "send_all" :: fields -> h.h_send_all fields; (true, 0.)
+  | "send_peer" :: index :: fields -> h.h_send_peer index fields; (true, 0.)
+  | "peer_send" :: who :: fields -> h.h_peer_send who fields; (true, 0.)
+  | [ "clock" ] -> (true, Unix.gettimeofday ())
+  | _ -> fail "unknown node operation %s" (String.concat " " op)
 let node_conn_admit id oid mode target = (lookup_handle id).h_conn_admit oid mode target; true
 let node_conns id = (lookup_handle id).h_conns ()
 let node_conn_close id cid = (lookup_handle id).h_conn_close cid; true
@@ -889,8 +891,8 @@ let node_draw id = (lookup_handle id).h_draw
 let node_block id height = (lookup_handle id).h_block height
 let node_store id height txs = (lookup_handle id).h_store height txs; true
 let node_height id h = (lookup_handle id).h_height h; true
-(* Reads/writes and authenticated socket sends; catch-up policy is Soma. *)
-let node_clock () = Unix.gettimeofday ()
+(* Reads/writes and authenticated socket sends; catch-up policy is Soma.
+   The clock is the "clock" arm of node_io. *)
 let node_current_height id = (lookup_handle id).h_current_height ()
 let node_last_served id who h = (lookup_handle id).h_last_served who h
 let node_mark_served id who h now = (lookup_handle id).h_mark_served who h now; true
