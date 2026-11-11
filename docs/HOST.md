@@ -39,7 +39,7 @@ Nothing listens beyond localhost. The nodes talk on 127.0.0.1. Muse's VM (Lima o
 - **A worker is slow:** a patch request gets under 30 minutes, and a late bid is dropped. Diplomats are told to keep answering attestations while workers run.
 - **File permissions:** `network` and `start` restrict each node home to 0700 and its `key.json` to 0600. The inbox token configuration is created privately and restricted to 0600 by `start` and `vm`. For an existing stopped deployment, `scripts/host.sh permissions` applies these modes; `HOST_DRY=DIR scripts/host.sh permissions` writes the same operations to `DIR/permissions.sh` without changing the deployment. This is only the permissions step of P-1; ownership and process identities are still unchanged.
 
-- **All diplomats run as the host's one user:** a diplomat could read the other nodes' keys. Separate Linux users per diplomat would close that; it isn't done yet.
+- **Diplomats as the host's one user:** until `users`, `services` and `sessions` (below) have run, a diplomat could read the other nodes' keys. After them, each session runs as its own user.
 
 The inbox backend also supports `PANTHEON_INBOX_GROUP` for deployments with
 separate users: set it in the node's backend wrapper to that agent's inbox
@@ -77,16 +77,50 @@ cannot reach - before any root write. Its files are built in a
 root-only stage; per-node scripts are piped to pantheon over stdin,
 never read out of that stage. It disables the operator's legacy user
 units before enabling the system ones, so no node runs twice.
-`HOST_DRY=DIR` previews the same script (`DIR/services.sh`); running
-the units for real, and then starting diplomat sessions as their
-users, is what is left.
+`HOST_DRY=DIR` previews the same script (`DIR/services.sh`). The node
+unit sets `CI_LOCK=/var/lib/pantheon/.ci-lock`, the host's one CI lock.
 
-This command only prepares accounts. It does not migrate a running network,
-credentials, checkouts, instructions or services, and does not yet isolate
-existing diplomat sessions. Continue treating those sessions as having access
-to the node's secrets until the service and session migration lands. Future
-node homes under `net/AGENT` must stay 0700 and `inbox.json` 0600; the shared
-repositories must move outside those homes before the accounts can be used.
+`sudo scripts/host.sh sessions` comes after both. It refuses to run
+before `services` has written the node unit, since the inbox server must
+already write `/var/lib/pantheon-inbox`. It also refuses, before any
+write, when a diplomat can't run what its session uses: `pantheon-inbox`,
+`ci-sandbox`, and pantheon's Soma, opam root and switch, checked as that
+user. And it refuses when a diplomat can read any node's `key.json`,
+`inbox.json` or pantheon's `.ssh`. Then each diplomat writes its own
+files, which root pipes to it over runuser's stdin, so root writes
+nothing in a diplomat's home:
+
+| path | owner, mode | what |
+|---|---|---|
+| `/var/lib/pantheon/net/AGENT` | pantheon, 0700 | keys, logs (the node) |
+| `/var/lib/pantheon/inbox.json`, `.ssh` | pantheon, 0600 / 0700 | inbox tokens, the push key |
+| `/var/lib/pantheon/soma`, `.opam`, `.cache/soma/ocaml` | pantheon, readable | builds a check uses read-only |
+| `/var/lib/pantheon/.ci-lock` | pantheon, 0644 | the host's one check at a time (locked read-only by diplomats) |
+| `/var/lib/pantheon-inbox/AGENT` | pantheon:inbox-AGENT, 2770 | the only thing a diplomat shares |
+| `/var/lib/pantheon-diplomats/AGENT` | pantheon-AGENT, 0700 | its CLI's login, `instructions.md` (0600), `.profile` |
+| `.../AGENT/desk` | pantheon-AGENT, 0700 | its clone, `pantheon-inbox` and `pantheon-check` wrappers (0700) |
+| `/var/lib/pantheon-diplomats/sessions` | root, 0644 | the agents whose sessions start as their user (written last) |
+
+`pantheon-check` runs ci-sandbox as the diplomat, with
+`CI_OPAMROOT`/`CI_SWITCH` naming pantheon's opam root and switch and
+`CI_LOCK` the host's lock. Linger gives each diplomat the user manager
+ci-sandbox scopes a check in. TIOCSTI is turned off
+(`/etc/sysctl.d/60-pantheon-tiocsti.conf`). Once an agent is in
+`sessions`, `scripts/host.sh login AGENT` logs its CLI in as
+`pantheon-AGENT`, into that user's home. `diplomats` then checks that the
+user finds its CLI, makes the tab's shell that user's login shell
+(`exec sudo -iu pantheon-AGENT`, which runs its `.profile`: its desk, its
+wrappers first), and starts the CLI there with approvals off and herdr's
+readiness wait, as before. The prompt points at the user's own
+`instructions.md`. No `PANTHEON_*` or `PATH` of the operator's reaches
+the session. Agents not in `sessions` keep the old path.
+`HOST_DRY=DIR` previews the script (`DIR/sessions.sh`). Its own read-only
+GitHub key for the clone is the operator's to add.
+
+`users` on its own does not migrate a running network: run `services` and
+`sessions` after it, with the network under `/var/lib/pantheon` (made
+there as pantheon). Node homes under `net/AGENT` must stay 0700 and
+`inbox.json` 0600.
 
 The `users` and `permissions` setup commands preflight their destination paths
 before changing accounts or modes. They refuse symlinks in the destinations
@@ -94,5 +128,4 @@ or their ancestors, including absent leaves below a symlinked directory. This
 also applies to the scripts emitted by `HOST_DRY=DIR`; inspect those scripts
 before deployment. Run setup with the network stopped and no concurrent
 changes to its directories: the preflight is not a filesystem race barrier.
-This hardens provisioning; the legacy service and diplomat session commands
-still need migration to the separate accounts described in P-1.
+The same holds for `services` and `sessions`.
