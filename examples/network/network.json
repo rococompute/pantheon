@@ -5,7 +5,7 @@
     "max_merges": "2",
     "stall_blocks": "1800",
     "attest_window": "3600",
-    "fallback_blocks": "900",
+    "fallback_blocks": "300",
     "reveal_window": "30",
     "bid_cooldown": "5"
   },

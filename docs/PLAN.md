@@ -25,7 +25,10 @@ starts a day. The marks:
 what came up but wasn't done as plain lines, then went back and marked those
 `+` as he got to them. `-` (dropped) is Pantheon's addition.
 
-The order is the priority: the first open item is the next one. Keep each
+The order is the priority, a guide for the leader rather than a rule: the
+first open item is usually the next one, and a leader takes another when it
+judges it the better next step (it unblocks the first, the first can't be done
+yet or keeps failing, or it moves the goal further for the work). Keep each
 item one line and make it a pointer. Say what's wrong or wanted in a few
 words, then name the files that have the details: a review finding, a
 design note, the code, the test that will judge it.
@@ -66,7 +69,8 @@ the leader reads `.plan` at the repository's head each time it drafts.
 
 - **Drafting:** the leader's prompt has each repository's open items, in
   order, under "Each repository's plan" (shell.ml `plan_text`). The leader
-  takes the first open item no task already covers. The task quotes the item,
+  takes the open item no task already covers that it judges best to do next,
+  usually the first, and says why when it isn't. Bidders see the plan too. The task quotes the item,
   names `.plan` and the item's files as context, and includes marking the
   item done.
 - **Bidding:** the bid does the work and puts `+ ` before the item's line in

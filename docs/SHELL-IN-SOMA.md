@@ -116,6 +116,39 @@ and CI checks as processes: those go behind bindings for what they do
 (apply edits and give a tree, ask a model, run a check), which the binary
 does with a process and the unikernel asks a service for over the network.
 
+## Two directions, and the unikernel
+
+"Shell.ml to verified Soma" goes two ways at once, and the plan has items
+for both, so a leader can take whichever moves the goal further:
+
+- **Writing it in Soma at all** (breadth): steps 4 to 6 move OCaml into
+  Soma with loose types. `Any` is fine at this floor, so a bid can move a
+  lot: all of `handle` in one bid is welcome. Measured by the OCaml lines
+  left in `shell.ml`.
+- **Typing and proving what is in Soma** (depth): `Any` replaced by records
+  and inductives where the code allows, and theorems for what the code
+  promises (`order_effects` keeps every output once and puts decided ones
+  before the snapshot; a merge needs n - f approvals). Measured by the count
+  of `Any` and the theorems added.
+
+**Where the whole of Pantheon runs.** Soma extracts to OCaml, so the binary
+`main.exe` is already "Pantheon in Soma" for every part that has moved; at
+the end of step 6, `shell.ml` is only the bindings named above, and the
+binary is the Soma program plus them.
+
+**The unikernel.** Soma builds a program that requires `Sandbox` into a
+MirageOS image (`theories/Soma/Sandbox.v` in Soma: `io` as data, run by the
+image). For the node to be one, its I/O must be one interface: a datatype of
+the node's operations, as `Sandbox.io` is, which `shell.ml` interprets for
+the binary and `Sandbox` interprets for the unikernel. `Sandbox` today has
+printing, sleeping, a loop, the time of day, random numbers, arguments,
+one-shot `serve` and `fetch` over TCP. The node also needs: peer links that
+stay open (send and receive on a connection), a millisecond clock, storage
+for the key and the block log, SHA-256 and RSA, and git, model calls and CI,
+which the binary runs as processes and the unikernel would ask services for
+over the network. Those are Soma's items (`Sandbox`); the interface is
+Pantheon's (the `U-1` line in `.plan`).
+
 ## The first pieces, bottom-up (superseded by the section above)
 
 `shell.ml`'s sections, roughly from least to most I/O:
