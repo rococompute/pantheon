@@ -139,9 +139,9 @@ step (n : node_state) (ev : list string) : node_state * list (list string) :=
 
 (** ---- Step 2 (docs/SHELL-IN-SOMA.md): the node loop in Soma ----
     The loop holds the state and drives [step]; shell.ml only binds
-    [node_open] (setup), [events] (one select turn), [perform] (one output,
-    the shell's old handle), [save_snapshot], [note_refused], [take_state]
-    and [forever]. An effect is a field list: ["perform"; output...],
+    [node_open] (I/O setup), startup data, [events] (one select turn),
+    smaller output bindings and the remaining [perform] cases,
+    [save_snapshot], [note_refused] and [forever]. An effect is a field list: ["perform"; output...],
     ["save_snapshot"] or ["refuse"; raw]. [order_effects] is pure: it takes
     the event, the state before and after [step], and the outputs, and puts
     decided outputs first, then the snapshot when consensus changed, then
@@ -188,12 +188,82 @@ order_effects (ev : list string) (before after : node_state) (outs : list (list 
   let rest := map (fun o => "perform" :: o) (filter (fun o => negb (is_decided o)) outs) in
   refused ++ decided ++ save ++ rest.
 
+(** Step 4: classify outputs in Soma. The remaining cases temporarily use
+    the legacy binding; moved cases never pass through shell.ml's handle. *)
+Inductive output_request :=
+| SetTimer (ms : string) (event : list string)
+| WriteLog (text : string)
+| RevealLink (term : string)
+| DecidedBlock (height : string) (txs : list string)
+| LegacyOutput (out : list string).
+
+plan_output (out : list string) : output_request :=
+  match out with
+  | ["timer", name, h, r, ms] => SetTimer ms ["timeout", name, h, r]
+  | ["log", text] => WriteLog text
+  | ["reveal", t] => RevealLink t
+  | "decided" :: h :: txs => DecidedBlock h txs
+  | _ => LegacyOutput out
+  end.
+
+Inductive output_action :=
+| LogAction (text : string)
+| QueueAction (event : list string)
+| StoreAction (height : string) (txs : list string).
+
+Fixpoint draw_link (n : nat) (secret : string) : string :=
+  match n with
+  | 0 => secret
+  | Succ k => draw_link k (sha256 secret)
+  end.
+
+reveal_plan (byz limit secret term : string) : list output_action :=
+  let t := num term in
+  if seq byz "withhold" && (t mod 2 =? 1) then
+    [LogAction (append "FAULT INJECTION: holding back my link for draw " (show t))]
+  else if t <? num limit then
+    [QueueAction ["local_tx", "reveal", draw_link (num limit - t) secret]]
+  else [].
+
+decided_plan (h : string) (txs : list string) (stored : option (list string))
+    : list output_action :=
+  match stored with
+  | None => [StoreAction h txs]
+  | Some _ => []
+  end.
+
+carry_output_action (h : node_t) (action : output_action) : bool :=
+  match action with
+  | LogAction text => node_log h text
+  | QueueAction ev => node_push h ev
+  | StoreAction height txs => node_store h height txs
+  end.
+
+Fixpoint carry_output_actions (h : node_t) (actions : list output_action) : bool :=
+  match actions with
+  | [] => true
+  | action :: rest => carry_output_action h action && carry_output_actions h rest
+  end.
+
+perform_output (h : node_t) (out : list string) : bool :=
+  match plan_output out with
+  | SetTimer ms ev => node_timer h ms ev
+  | WriteLog text => node_log h text
+  | RevealLink term =>
+      let (byz, chain) := node_draw h in
+      let (limit, secret) := chain in
+      carry_output_actions h (reveal_plan byz limit secret term)
+  | DecidedBlock height txs =>
+      carry_output_actions h (decided_plan height txs (node_block h height))
+  | LegacyOutput fields => perform h fields
+  end.
+
 (** Effects return whether they were carried out, and the loop keeps the
     new state only when they were: a unit result would be a cast the
     extraction can erase, and with it the call. *)
 carry_effect (h : node_t) (snap : consensus_state) (eff : list string) : bool :=
   match eff with
-  | "perform" :: out => perform h out
+  | "perform" :: out => perform_output h out
   | ["save_snapshot"] => save_snapshot h snap
   | ["refuse", raw] => note_refused h raw
   | _ => true
@@ -217,6 +287,37 @@ Fixpoint run_events (h : node_t) (st : node_state) (evs : list (list string)) : 
 
 node_tick (h : node_t) (st : node_state) : node_state := run_events h st (events h).
 
+(** Replay has no consensus snapshot effects, just as before: a restored
+    snapshot is checked against the fully replayed height before start. *)
+Fixpoint perform_outputs (h : node_t) (outs : list (list string)) : bool :=
+  match outs with
+  | [] => true
+  | out :: rest => perform_output h out && perform_outputs h rest
+  end.
+
+Fixpoint run_boot (h : node_t) (st : node_state) (evs : list (list string)) : node_state :=
+  match evs with
+  | [] => st
+  | ev :: rest =>
+      let (s, outs) := step st ev in
+      if perform_outputs h outs then run_boot h s rest else st
+  end.
+
+(** Start always persists its snapshot before any vote, including when the
+    restored consensus is unchanged. Decisions still reach blocks.log first. *)
+startup_effects (outs : list (list string)) : list (list string) :=
+  map (fun out => "perform" :: out) (filter is_decided outs) ++
+  [["save_snapshot"]] ++
+  map (fun out => "perform" :: out) (filter (fun out => negb (is_decided out)) outs).
+
+start_node (h : node_t) (st : node_state) : node_state :=
+  let (s, outs) := step st ["start"] in
+  if carry_all h (cons s) (startup_effects outs) then s else st.
+
 run_node (home : string) (flags : list string) : unit :=
-  let h := node_open empty_node step cons restore_cons plan_open (pack_helpers node_helpers) shallow_json home flags in
-  forever (node_tick h) (take_state h).
+  let h := node_open plan_open (pack_helpers node_helpers) shallow_json home flags in
+  let st := run_boot h empty_node (boot_events h) in
+  let n := replay_count h in
+  let logged := if seq n "0" then true else node_log h (append "replayed " (append n " blocks from disk")) in
+  let st := match boot_snapshot h with Some c => restore_cons st c | None => st end in
+  if logged then forever (node_tick h) (start_node h st) else print_text "".
