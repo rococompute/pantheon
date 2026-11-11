@@ -1,30 +1,32 @@
 (** What is proved about the market, so far. Each theorem is checked whenever
     market.soma is built. docs/PROOFS.md lists what to prove next. *)
 
-(** Without the bidder fallback, a merge needs two attestors to vote yes:
-    the leader's approval alone is one of the three. *)
-Theorem without_fallback_two_attestors_must_approve :
-  forall (p : proposal) (age : nat), 3 <= approvals p age 0 -> 2 <= length (filter snd (pvotes p)).
+(** The leader supplies one approval; fallback supplies at most one more. *)
+Theorem without_fallback_attestors_must_approve :
+  forall (n : nat) (p : proposal) (age : nat),
+    quorum n <= approvals p age 0 ->
+    quorum n - 1 <= length (filter snd (pvotes p)).
 Proof.
-  Take p : proposal.
-  Take age : nat.
-  Assume that 3 <= approvals p age 0 as H.
-  unfold approvals in H.
-  Computing, we conclude that 2 <= length (filter snd (pvotes p)).
+  intros n p age H. unfold approvals in H. simpl in H. lia.
 Qed.
 
-(** With the fallback, one attestor's yes is still needed: leader and bidder
-    together are only two of the three. *)
-Theorem fallback_still_needs_an_attestor :
-  forall (p : proposal) (age fb : nat), 3 <= approvals p age fb -> 1 <= length (filter snd (pvotes p)).
+Theorem fallback_attestors_must_approve :
+  forall (n : nat) (p : proposal) (age fb : nat),
+    quorum n <= approvals p age fb ->
+    quorum n - 2 <= length (filter snd (pvotes p)).
 Proof.
-  Take p : proposal.
-  Take age : nat.
-  Take fb : nat.
-  Assume that 3 <= approvals p age fb as H.
-  unfold approvals in H.
+  intros n p age fb H. unfold approvals in H.
   destruct ((0 <? fb) && (fb <=? age)); simpl in H; lia.
 Qed.
+
+(** Pure quorum regressions, including the seven-agent scenario and the
+    current eight-agent deployment: approvals, rejecting no votes, reveals. *)
+Example quorum_four : (quorum 4, reject_quorum 4, quorum 4) = (3, 2, 3).
+Proof. reflexivity. Qed.
+Example quorum_seven : (quorum 7, reject_quorum 7, quorum 7) = (5, 3, 5).
+Proof. reflexivity. Qed.
+Example quorum_eight : (quorum 8, reject_quorum 8, quorum 8) = (6, 3, 6).
+Proof. reflexivity. Qed.
 
 (** Holding back your link in one draw bars you from the next, as long as
     anyone who didn't hold back revealed. So withholding never raises your own
@@ -113,7 +115,7 @@ Theorem maybe_draw_bars_who_held_back :
 Proof.
   intros m a b Ha Hb Hbh. unfold maybe_draw.
   destruct (awaiting m && ((length (reveals m) =? length (agents m)) ||
-    ((3 <=? length (reveals m)) &&
+    ((quorum (length (agents m)) <=? length (reveals m)) &&
       (asince m + param m "reveal_window" <=? mheight m))));
     [right|left; reflexivity].
   cbv zeta. unfold count.
@@ -183,15 +185,15 @@ Qed.
 
 Lemma settle_preserves_merged : forall P,
   (forall m p, pending m = Some p -> merged_satisfy P m ->
-    3 <= approvals p (mheight m - pat p) (param m "fallback_blocks") ->
+    quorum (length (agents m)) <= approvals p (mheight m - pat p) (param m "fallback_blocks") ->
     merged_satisfy P (fst (finalize m p))) ->
   forall m, merged_satisfy P m -> merged_satisfy P (fst (settle m)).
 Proof.
   intros P Hfinal m Hm. unfold settle.
   destruct (pending m) as [p|] eqn:Hp; [|exact Hm].
-  destruct (3 <=? approvals p (mheight m - pat p) (param m "fallback_blocks")) eqn:Hyes.
+  destruct (quorum (length (agents m)) <=? approvals p (mheight m - pat p) (param m "fallback_blocks")) eqn:Hyes.
   - apply Hfinal; [exact Hp|exact Hm|]. apply Nat.leb_le. exact Hyes.
-  - destruct (2 <=? length (filter (fun v => negb (snd v)) (pvotes p)));
+  - destruct (reject_quorum (length (agents m)) <=? length (filter (fun v => negb (snd v)) (pvotes p)));
       [destruct (bid_by m (pbid p)) as [b|] |
        destruct (param m "attest_window" <=? mheight m - pat p)]; simpl;
       repeat first [apply merged_count | apply merged_setf_other; [reflexivity|] |
@@ -209,7 +211,7 @@ Qed.
 
 Lemma apply_preserves_merged : forall P,
   (forall m p, pending m = Some p -> merged_satisfy P m ->
-    3 <= approvals p (mheight m - pat p) (param m "fallback_blocks") ->
+    quorum (length (agents m)) <= approvals p (mheight m - pat p) (param m "fallback_blocks") ->
     merged_satisfy P (fst (finalize m p))) ->
   forall m a fields, merged_satisfy P m ->
     merged_satisfy P (fst (fst (apply m a fields))).
@@ -264,7 +266,7 @@ Lemma draw_preserves_merged : forall P m,
 Proof.
   intros P m Hm. unfold maybe_draw.
   destruct (awaiting m && ((length (reveals m) =? length (agents m)) ||
-    ((3 <=? length (reveals m)) &&
+    ((quorum (length (agents m)) <=? length (reveals m)) &&
       (asince m + param m "reveal_window" <=? mheight m))));
     [|exact Hm].
   cbv zeta. merged_steps.
@@ -294,7 +296,7 @@ Qed.
     finalize preserve it. Every other transition preserves it on its own. *)
 Lemma apply_block_preserves_merged : forall P,
   (forall m p, pending m = Some p -> merged_satisfy P m ->
-    3 <= approvals p (mheight m - pat p) (param m "fallback_blocks") ->
+    quorum (length (agents m)) <= approvals p (mheight m - pat p) (param m "fallback_blocks") ->
     merged_satisfy P (fst (finalize m p))) ->
   forall m h txs, merged_satisfy P m ->
     merged_satisfy P (fst (apply_block m h txs)).
@@ -332,21 +334,21 @@ Proof.
 Qed.
 
 (** A newly Merged bid in a block came from finalize, at a settlement state
-    with at least three approvals. Existing Merged bids may survive a block;
+    with at least n-f approvals. Existing Merged bids may survive a block;
     their presence alone does not assert a new finalization. *)
-Theorem merged_only_through_finalize_with_three_approvals :
+Theorem merged_only_through_finalize_with_quorum_approvals :
   forall (m : obj) (h : nat) (txs : list string) (b : bid),
     In b (bids (fst (apply_block m h txs))) -> bst b = Merged ->
     ~ In b (bids m) ->
     exists (before : obj) (p : proposal),
-      3 <= approvals p (mheight before - pat p) (param before "fallback_blocks") /\
+      quorum (length (agents before)) <= approvals p (mheight before - pat p) (param before "fallback_blocks") /\
       pending before = Some p /\ ~ In b (bids before) /\
       In b (bids (fst (finalize before p))).
 Proof.
   intros m h txs b Hin Hb Hnew.
   let P := constr:(fun b => In b (bids m) \/
     exists before p,
-      3 <= approvals p (mheight before - pat p) (param before "fallback_blocks") /\
+      quorum (length (agents before)) <= approvals p (mheight before - pat p) (param before "fallback_blocks") /\
       pending before = Some p /\ ~ In b (bids before) /\
       In b (bids (fst (finalize before p)))) in
   assert (H : merged_satisfy P (fst (apply_block m h txs))).

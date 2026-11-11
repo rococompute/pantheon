@@ -1,5 +1,5 @@
-(** The market: four agents take turns as term leader. The leader posts tasks,
-    the others bid patches, and a merge lands when 3 of 4 approve. Up to
+(** The market: n agents take turns as term leader. The leader posts tasks,
+    the others bid patches, and a merge lands when n - (n-1)/3 approve. Up to
     max_open_tasks tasks are open at once, each with its own bids and its own
     record of rejections.
 
@@ -14,9 +14,8 @@
     leader clears one whose edits no longer apply (conflict), which isn't a
     rejection, and its bidder writes an updated bid. Attestors apply the edits to the head, and a yes names the tree
     they got. The leader's merge names the tree its own check gave, and an
-    attestor's yes counts only for that same tree. A merge needs the leader
-    and at least one attestor (market.proof), so with at most one faulty agent
-    an honest node computed the tree it records. Every node then checks its own
+    attestor's yes counts only for that same tree. A merge needs n-f approvals (market.proof); the leader and bidder
+    supply at most two of them. Every node then checks its own
     checkout reaches it.
 
     The next leader is drawn from values each agent committed to at genesis:
@@ -219,11 +218,13 @@ finalize (m : obj) (p : proposal) : obj * list (list string) :=
       (m, [("merge" :: r :: show v :: ptree p :: show (bidn b) :: show (btask b) :: bidder b :: spec_of :: flat_edits (edits b))])
   end.
 
-(** Three of four approve: the leader by proposing, each attestor by voting
-    yes, and the bidder too once fallback_blocks have passed. Without that
-    fallback, one silent attestor could block every honest merge: with four
-    agents, the leader and the bidder leave only two attestors. Two "no" votes
-    reject, since three approvals can no longer happen. *)
+(** Quorums for a roster of n agents, tolerating f = (n-1)/3 faults.
+    The leader approves by proposing; the bidder counts after fallback_blocks.
+    f+1 no votes make n-f approvals impossible. *)
+faults (n : nat) : nat := (n - 1) / 3.
+quorum (n : nat) : nat := n - faults n.
+reject_quorum (n : nat) : nat := faults n + 1.
+
 approvals (p : proposal) (age fb : nat) : nat :=
   1 + length (filter snd (pvotes p)) + (if (0 <? fb) && (fb <=? age) then 1 else 0).
 
@@ -234,8 +235,8 @@ settle (m : obj) : obj * list (list string) :=
       let no := length (filter (fun v => negb (snd v)) (pvotes p)) in
       let age := mheight m - pat p in
       let yes := approvals p age (param m "fallback_blocks") in
-      if 3 <=? yes then finalize m p
-      else if 2 <=? no then
+      if quorum (length (agents m)) <=? yes then finalize m p
+      else if reject_quorum (length (agents m)) <=? no then
         match bid_by m (pbid p) with
         | Some b => (count (setf (set_bid m (with_votes (with_status b Rejected "attestors voted no") (pvotes p))) "pending" (None : option proposal)) (bidder b) "rejected", [])
         | None => (setf m "pending" (None : option proposal), [])
@@ -255,7 +256,7 @@ next_link (v tip : string) : bool := seq (sha256 v) tip.
     so the mark is a bid of its own: one edit, of that one line, made by the
     leader and proposed for merge at once. It merges like any bid, with the
     attestors' yes on the tree they get; the bidder fallback counts the
-    leader, so it still needs an attestor (fallback_still_needs_an_attestor). *)
+    leader; fallback_attestors_must_approve bounds the attestors needed. *)
 mark_note : string := "leader's mark: the task is done, so its plan item is marked done in .plan".
 
 mark_edit (line : string) : edit := {| epath := ".plan"; eold := line; enew := append "+ " line |}.
@@ -418,12 +419,12 @@ revealed (m : obj) : list string := filter (fun a => existsb (fun r => seq (fst 
 eligible (m : obj) : list string :=
   draw_pool (revealed m) (held_back m) (last_n 2 (history m)) (last_n 1 (history m)).
 
-(** The draw waits for all four reveals, or for three once reveal_window blocks
+(** The draw waits for all n reveals, or for n-f once reveal_window blocks
     have passed. The seed hashes the reveals in agent order, so no proposer
     can choose among them. *)
 maybe_draw (m : obj) : obj :=
   let n := length (reveals m) in
-  if awaiting m && ((n =? length (agents m)) || ((3 <=? n) && (asince m + param m "reveal_window" <=? mheight m))) then
+  if awaiting m && ((n =? length (agents m)) || ((quorum (length (agents m)) <=? n) && (asince m + param m "reveal_window" <=? mheight m))) then
     let el := eligible m in
     let seed := hash_list (map (fun a => get_or "" a (reveals m)) (agents m)) in
     let l := nth (hexnum seed 12 0 mod length el) el "" in
