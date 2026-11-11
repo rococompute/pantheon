@@ -122,8 +122,29 @@ cmd_permissions() {
     permissions_script | sh -eu
   fi
 }
+# The generated script checks every path before its first mutation. Walk
+# ancestors too: a regular key below a symlinked net/ is still unsafe.
+path_guard() {
+  cat <<'GUARD'
+reject_links() {
+  path=$1
+  while :; do
+    [ ! -L "$path" ] || { echo "host: symlinked path $path" >&2; exit 1; }
+    case $path in /|.|'') break ;; esac
+    parent=$(dirname -- "$path")
+    [ "$parent" != "$path" ] || break
+    path=$parent
+  done
+}
+GUARD
+}
 permissions_script() {
   printf '#!/bin/sh\nset -eu\n'
+  path_guard
+  for a in $AGENTS; do
+    printf 'reject_links %s\n' "$(q "$NET/$a/key.json")"
+  done
+  printf 'reject_links %s\n' "$(q "$P/inbox.json")"
   for a in $AGENTS; do
     h=$(q "$NET/$a")
     printf '[ ! -d %s ] || chmod 0700 %s\n' "$h" "$h"
@@ -154,9 +175,18 @@ cmd_users() {
   fi
 }
 users_script() {
+  printf '#!/bin/sh\nset -eu\n'
+  path_guard
+  # Check even currently absent leaves, before account creation or install
+  # changes a directory. Existing private homes must never redirect root.
+  for path in /var/lib/pantheon/.ssh /var/lib/pantheon-diplomats /var/lib/pantheon-inbox /etc/sudoers.d/pantheon; do
+    printf 'reject_links %s\n' "$(q "$path")"
+  done
+  for a in $AGENTS; do
+    printf 'reject_links %s\n' "$(q "/var/lib/pantheon-diplomats/$a")"
+    printf 'reject_links %s\n' "$(q "/var/lib/pantheon-inbox/$a")"
+  done
   cat <<'ROOT'
-#!/bin/sh
-set -eu
 # Refuse to adopt an unrelated existing account or a symlinked home.
 account() {
   name=$1 home=$2
