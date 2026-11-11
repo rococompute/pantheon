@@ -198,6 +198,8 @@ Inductive output_request :=
 | DecidedBlock (height : string) (txs : list string)
 | SetHeight (height : string)
 | CatchupPeer (who first : string)
+| WriteStatus (lines : list string)
+| SubmitTransaction (nonce : string) (fields : list string)
 | LegacyOutput (out : list string).
 
 plan_output (out : list string) : output_request :=
@@ -208,6 +210,8 @@ plan_output (out : list string) : output_request :=
   | "decided" :: h :: txs => DecidedBlock h txs
   | ["height", h] => SetHeight h
   | ["behind", who, first] => CatchupPeer who first
+  | "status" :: lines => WriteStatus lines
+  | "submit" :: nonce :: fields => SubmitTransaction nonce fields
   | _ => LegacyOutput out
   end.
 
@@ -216,7 +220,9 @@ Inductive output_action :=
 | QueueAction (event : list string)
 | StoreAction (height : string) (txs : list string)
 | RememberPeer (who first : string) (now : float)
-| ReadPeerBlock (who : string) (height : nat).
+| ReadPeerBlock (who : string) (height : nat)
+| PublishTransaction (nonce : string) (fields : list string) (message : option string)
+| MarkNonceFlood.
 
 Fixpoint draw_link (n : nat) (secret : string) : string :=
   match n with
@@ -268,12 +274,51 @@ catchup_send (who : string) (height : nat) (block : option (list string))
   | Some txs => Some (who, "done" :: show height :: "0" :: "0" :: hash_list txs :: txs)
   end.
 
+(** Status formatting is pure; the shell only reads metadata, converts a
+    timestamp to local clock text, and atomically writes the result. *)
+status_limit_active (now until : float) : bool := PrimFloat.ltb now until.
+
+status_output (lines : list string) (heads bad : list (string * string))
+    (limited : bool) (backend until held reason : string) : string :=
+  let heads := map (fun p => append "checkout " (append (fst p) (append " " (snd p)))) heads in
+  let bad := map (fun p => append "DIVERGED " (append (fst p) (append " at merge " (snd p)))) bad in
+  let lim := if limited then
+    [append "LIMIT " (append backend (append " until " (append until
+      (append ", " (append held (append " model requests held: " reason))))))]
+    else [] in
+  append (Stdlib.Strings.String.concat newline (lines ++ heads ++ bad ++ lim)) newline.
+
+submission_message (fields : list string) : string :=
+  append "sending " (Stdlib.Strings.String.concat " "
+    (map (fun f => if 60 <? slen f then append (take_str 60 f) "..." else f) fields)).
+
+(** One ordinary transaction first; a future-nonce fault runs only once,
+    marks that fact before logging/signing, and sends offsets 4 through 603. *)
+submission_plan (byz : string) (flooded : bool) (nonce : string) (fields : list string)
+    : list output_action :=
+  PublishTransaction nonce fields (Some (submission_message fields)) ::
+  (if seq byz "future-nonce" && negb flooded then
+     MarkNonceFlood :: LogAction "FAULT INJECTION: flooding 600 future-nonce transactions" ::
+     map (fun k => PublishTransaction (show (num nonce + k)) ["withdraw", "0"] None) (List.seq 4 600)
+   else []).
+
+submission_send (byz raw : string) : option (list string) :=
+  if seq byz "silent" then None else Some ["tx", raw].
+
 carry_output_action (h : node_t) (action : output_action) : bool :=
   match action with
   | LogAction text => node_log h text
   | QueueAction ev => node_push h ev
   | StoreAction height txs => node_store h height txs
   | RememberPeer who first now => node_mark_served h who first now
+  | MarkNonceFlood => node_mark_nonce_flood h
+  | PublishTransaction nonce fields message =>
+      let raw := node_encode_tx h nonce fields in
+      node_track_tx h raw &&
+      (match message with Some text => node_log h text | None => true end) &&
+      node_push h ["tx", raw] &&
+      (match submission_send (fst (node_draw h)) raw with
+       | None => true | Some fields => node_send_all h fields end)
   | ReadPeerBlock who k =>
       match catchup_send who k (node_block h (show k)) with
       | None => true
@@ -304,6 +349,18 @@ perform_output (h : node_t) (out : list string) : bool :=
       let (byz, _) := node_draw h in
       carry_output_actions h (catchup_plan who first (node_current_height h)
                                now last (node_peer_exists h who) (seq byz "silent"))
+  | WriteStatus lines =>
+      let heads := node_checkout_heads h in
+      let bad := node_divergences h in
+      let now := node_clock tt in
+      let (until, info) := node_limit_info h in
+      let (backend, detail) := info in
+      let (held, reason) := detail in
+      let limited := status_limit_active now until in
+      let clock := if limited then node_local_time until else "" in
+      node_write_status h (status_output lines heads bad limited backend clock held reason)
+  | SubmitTransaction nonce fields =>
+      carry_output_actions h (submission_plan (fst (node_draw h)) (node_nonce_flooded h) nonce fields)
   | LegacyOutput fields => perform h fields
   end.
 

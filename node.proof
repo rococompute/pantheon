@@ -165,3 +165,72 @@ Example catchup_existing_and_empty_blocks_request_exact_peer_send :
   catchup_send "peer" 4 (Some []) =
     Some ("peer", ["done", "4", "0", "0", hash_list []]).
 Proof. split; reflexivity. Qed.
+
+Example status_and_submit_select_the_shared_interpreter :
+  plan_output ["status"] = WriteStatus [] /\
+  plan_output ["status", "version 2", "pool 0"] = WriteStatus ["version 2", "pool 0"] /\
+  plan_output ["submit", "7"] = SubmitTransaction "7" [] /\
+  plan_output ["submit", "7", "reveal", "link"] = SubmitTransaction "7" ["reveal", "link"] /\
+  plan_output ["submit"] = LegacyOutput ["submit"].
+Proof. repeat split; reflexivity. Qed.
+
+Example status_preserves_line_order_and_final_newline :
+  status_output ["height 3", "version 2"] [("calc", "abc"), ("notes", "def")]
+    [("calc", "bad tree")] true "codex" "09:05" "2" "quota" =
+  Stdlib.Strings.String.concat newline
+    ["height 3", "version 2", "checkout calc abc", "checkout notes def",
+     "DIVERGED calc at merge bad tree", "LIMIT codex until 09:05, 2 model requests held: quota", ""].
+Proof. reflexivity. Qed.
+
+Example status_without_a_limit_omits_all_limit_fields :
+  status_output ["pool 0"] [] [] false "ignored" "ignored" "7" "ignored" =
+    append "pool 0" newline /\
+  status_output [] [] [] false "" "" "" "" = newline.
+Proof. split; reflexivity. Qed.
+
+Example status_limit_uses_a_strict_wall_clock_boundary :
+  status_limit_active 9%float 10%float = true /\
+  status_limit_active 10%float 10%float = false /\
+  status_limit_active 11%float 10%float = false.
+Proof. repeat split; reflexivity. Qed.
+
+Example submission_log_keeps_empty_and_short_fields :
+  submission_message ["bid", "", "multi word"] = "sending bid  multi word" /\
+  submission_message [] = "sending ".
+Proof. split; reflexivity. Qed.
+
+Example submission_log_truncates_only_past_sixty_bytes :
+  submission_message ["012345678901234567890123456789012345678901234567890123456789"] =
+    "sending 012345678901234567890123456789012345678901234567890123456789" /\
+  submission_message ["012345678901234567890123456789012345678901234567890123456789X"] =
+    "sending 012345678901234567890123456789012345678901234567890123456789...".
+Proof. split; reflexivity. Qed.
+
+Example ordinary_submission_publishes_once_with_its_original_nonce :
+  submission_plan "" false "007" ["reveal", "link"] =
+    [PublishTransaction "007" ["reveal", "link"] (Some "sending reveal link")] /\
+  submission_plan "future-nonce" true "7" ["withdraw", "0"] =
+    [PublishTransaction "7" ["withdraw", "0"] (Some "sending withdraw 0")].
+Proof. split; reflexivity. Qed.
+
+Example future_nonce_marks_before_its_six_hundred_extra_submissions :
+  submission_plan "future-nonce" false "7" ["withdraw", "0"] =
+    PublishTransaction "7" ["withdraw", "0"] (Some "sending withdraw 0") ::
+    MarkNonceFlood :: LogAction "FAULT INJECTION: flooding 600 future-nonce transactions" ::
+    map (fun k => PublishTransaction (show (7 + k)) ["withdraw", "0"] None) (List.seq 4 600).
+Proof. reflexivity. Qed.
+
+Example future_nonce_range_is_four_through_six_hundred_three :
+  length (submission_plan "future-nonce" false "7" []) = 603 /\
+  nth 3 (submission_plan "future-nonce" false "7" []) MarkNonceFlood =
+    PublishTransaction "11" ["withdraw", "0"] None /\
+  nth 602 (submission_plan "future-nonce" false "7" []) MarkNonceFlood =
+    PublishTransaction "610" ["withdraw", "0"] None.
+Proof. repeat split; reflexivity. Qed.
+
+Example submission_silence_only_suppresses_the_peer_send :
+  submission_send "silent" "signed tx" = None /\
+  submission_send "" "signed tx" = Some ["tx", "signed tx"] /\
+  submission_plan "silent" false "7" ["withdraw", "0"] =
+    [PublishTransaction "7" ["withdraw", "0"] (Some "sending withdraw 0")].
+Proof. repeat split; reflexivity. Qed.
