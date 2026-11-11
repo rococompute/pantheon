@@ -296,3 +296,47 @@ Example broadcast_equivocates_and_double_votes_per_peer :
      SendPeer "0" ["prevote", "3", "1", "0", "vid", "val", "tail"],
      SendPeer "1" ["prevote", "3", "1", "0", "", "val", "tail"]].
 Proof. repeat split; reflexivity. Qed.
+
+(** A decided merge's pure part: its gate, its edits and the texts said. *)
+Example merge_output_selects_merge_and_short_forms_stay_legacy :
+  plan_output ["merge", "calc", "2", "tree", "7", "3", "codex", "spec", "a.txt", "x", "y"] =
+    MergeRequest "calc" "2" "tree" "7" "3" "codex" "spec" ["a.txt", "x", "y"] /\
+  plan_output ["merge", "calc", "2", "tree", "7", "3", "codex"] =
+    LegacyOutput ["merge", "calc", "2", "tree", "7", "3", "codex"].
+Proof. split; reflexivity. Qed.
+
+Example merge_gate_unknown_applied_newer_and_diverged :
+  merge_gate_of None "2" false = MergeUnknown /\
+  merge_gate_of (Some "2") "2" false = MergeSkip /\
+  merge_gate_of (Some "3") "2" false = MergeSkip /\
+  merge_gate_of (Some "1") "2" true = MergeSkip /\
+  merge_gate_of (Some "1") "2" false = MergeApply.
+Proof. repeat split; reflexivity. Qed.
+
+Example merge_triples_in_order_dropping_a_short_tail :
+  merge_triples ["a", "o", "n", "b", "", "whole", "c", "x"] = [("a", "o", "n"), ("b", "", "whole")].
+Proof. reflexivity. Qed.
+
+Example merge_edit_plan_cases :
+  merge_edit_plan "../x" "o" "n" "file" = EditFail "unsafe path ../x" /\
+  merge_edit_plan "a" "o" "n" "symlink" = EditFail "a goes through a symlink" /\
+  merge_edit_plan "a" "o" "n" "dir" = EditFail "a is a directory" /\
+  merge_edit_plan "a" "" "" "file" = EditRemove "a" /\
+  merge_edit_plan "a" "" "" "none" = EditFail "a: nothing to delete" /\
+  merge_edit_plan "a" "" "whole" "none" = EditWrite "a" "whole" /\
+  merge_edit_plan "a" "o" "n" "none" = EditFail "a: no such file to edit" /\
+  merge_edit_plan "a" "o" "n" "file" = EditRead "a".
+Proof. repeat split; reflexivity. Qed.
+
+Example merge_edit_once_zero_one_several :
+  merge_edit_apply "a" "x" "y" "abc" = EditFail "a: the old text isn't in the file" /\
+  merge_edit_apply "a" "b" "y" "abc" = EditWrite "a" "ayc" /\
+  merge_edit_apply "a" "b" "y" "abcb" = EditFail "a: the old text appears more than once, so give more of it".
+Proof. repeat split; reflexivity. Qed.
+
+Example merge_tree_check_and_texts :
+  merge_tree_check "t" None = Some "git commit failed" /\
+  merge_tree_check "t" (Some ("t", "abc1234")) = None /\
+  merge_tree_check "t" (Some ("u", "abc1234")) = Some "got tree u, attested t" /\
+  merge_diverged_text "calc" "07" "boom" = "DIVERGED: repository calc, merge 7: boom. Stopped taking merges for it.".
+Proof. repeat split; reflexivity. Qed.

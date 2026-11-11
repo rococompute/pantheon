@@ -818,7 +818,17 @@ type node_handle = { h_events : unit -> string list list; h_perform : string lis
                      h_remember_broadcast : string -> string -> string list -> string list -> unit;
                      h_peer_count : unit -> string;
                      h_send_peer : string -> string list -> unit;
-                     h_run_check : string -> string -> string -> string list -> unit }
+                     h_run_check : string -> string -> string -> string list -> unit;
+                     h_merge_applied : string -> string option;
+                     h_merge_diverged : string -> bool;
+                     h_merge_reset : string -> unit;
+                     h_merge_probe : string -> string -> string;
+                     h_merge_read : string -> string -> string option;
+                     h_merge_write : string -> string -> string -> string;
+                     h_merge_remove : string -> string -> string;
+                     h_merge_commit : string -> string -> string -> string -> string -> string -> string -> (string * string) option;
+                     h_merge_set_applied : string -> string -> unit;
+                     h_merge_note_diverged : string -> string -> unit }
 let node_handles : (string, node_handle) Hashtbl.t = Hashtbl.create 4
 let node_counter = ref 0
 let lookup_handle id = try Hashtbl.find node_handles id with Not_found -> fail "unknown node handle %s" id
@@ -861,6 +871,17 @@ let node_remember_vote id slot vid fields = (lookup_handle id).h_remember_vote s
 let node_remember_broadcast id height kind fields alt = (lookup_handle id).h_remember_broadcast height kind fields alt; true
 let node_peer_count id = (lookup_handle id).h_peer_count ()
 let node_send_peer id index fields = (lookup_handle id).h_send_peer index fields; true
+(* a decided merge's I/O: node.soma's perform_merge decides *)
+let node_merge_applied id r = (lookup_handle id).h_merge_applied r
+let node_merge_diverged id r = (lookup_handle id).h_merge_diverged r
+let node_merge_reset id r = (lookup_handle id).h_merge_reset r; true
+let node_merge_probe id r p = (lookup_handle id).h_merge_probe r p
+let node_merge_read id r p = (lookup_handle id).h_merge_read r p
+let node_merge_write id r p text = (lookup_handle id).h_merge_write r p text
+let node_merge_remove id r p = (lookup_handle id).h_merge_remove r p
+let node_merge_commit id r v tree bid task bidder spec = (lookup_handle id).h_merge_commit r v tree bid task bidder spec
+let node_merge_set_applied id r v = (lookup_handle id).h_merge_set_applied r v; true
+let node_merge_note_diverged id r entry = (lookup_handle id).h_merge_note_diverged r entry; true
 let rec forever f s = forever f (f s)
 
 let node_open plan_open packed json_fn home flags =
@@ -1281,41 +1302,24 @@ let node_open plan_open packed json_fn home flags =
           end)
       ~clean:(fun () -> (try Sys.remove ef with _ -> ()); if ci = "" then rm_out ())
   in
-  (* A decided merge: the same edits on this node's checkout, committed the
-     same way on every node, so every node gets the same commit. A checkout
-     that doesn't reach the attested tree has diverged: that's loud, and it
-     stops taking merges. *)
-  let apply_merge r v tree bid task bidder spec edits =
-    if not (Hashtbl.mem applied r) then say "a merge for repository %s, which this node doesn't have" r
-    else if v <= Hashtbl.find applied r then ()
-    else if List.mem_assoc r !diverged then ()
-    else begin
-      let dir = rdir r in
-      let diverge why = say "DIVERGED: repository %s, merge %d: %s. Stopped taking merges for it." r v why; diverged := (r, Printf.sprintf "%d: %s" v why) :: !diverged in
-      ignore (git dir [ "reset"; "-q"; "--hard"; "HEAD" ]);
-      ignore (git dir [ "clean"; "-q"; "-f"; "-d"; "-x" ]);
-      match apply_edits helpers dir edits with
-      | Error e -> diverge e
-      | Ok () ->
-          let date = Printf.sprintf "@%d +0000" (1_700_000_000 + v) in
-          let who = [ "GIT_AUTHOR_NAME=Pantheon"; "GIT_AUTHOR_EMAIL=pantheon@localhost"; "GIT_COMMITTER_NAME=Pantheon";
-                      "GIT_COMMITTER_EMAIL=pantheon@localhost"; "GIT_AUTHOR_DATE=" ^ date; "GIT_COMMITTER_DATE=" ^ date ] in
-          let msg = Printf.sprintf "Merge bid %s for task %s by %s\n\n%s\n\nPantheon-Version: %d\nPantheon-Bid: %s\nPantheon-Tree: %s\n" bid task bidder spec v bid tree in
-          ignore (git dir [ "add"; "-A"; "-f" ]);
-          (* the message on stdin, not as an argument: the spec in it is the
-             leader's text, and an argument can't carry every string whole
-             (docs/SECURITY-REVIEW-2.md P-17) *)
-          if not (git_ok ~extra:who ~stdin:msg dir [ "commit"; "-q"; "--allow-empty"; "--no-verify"; "--cleanup=verbatim"; "-F"; "-" ]) then diverge "git commit failed"
-          else
-            let got = git_out dir [ "rev-parse"; "HEAD^{tree}" ] in
-            if got <> tree then diverge (Printf.sprintf "got tree %s, attested %s" got tree)
-            else (Hashtbl.replace applied r v; say "merged bid %s into %s: %s" bid r (git_out dir [ "rev-parse"; "--short"; "HEAD" ]))
-    end
+  (* A decided merge's commit, the same on every node (fixed author and
+     date), so every node gets the same commit: its tree and short id, or
+     none when git commit failed. node.soma's perform_merge decides the rest. *)
+  let merge_commit r v tree bid task bidder spec =
+    let dir = rdir r and v = int_of_string v in
+    let date = Printf.sprintf "@%d +0000" (1_700_000_000 + v) in
+    let who = [ "GIT_AUTHOR_NAME=Pantheon"; "GIT_AUTHOR_EMAIL=pantheon@localhost"; "GIT_COMMITTER_NAME=Pantheon";
+                "GIT_COMMITTER_EMAIL=pantheon@localhost"; "GIT_AUTHOR_DATE=" ^ date; "GIT_COMMITTER_DATE=" ^ date ] in
+    let msg = Printf.sprintf "Merge bid %s for task %s by %s\n\n%s\n\nPantheon-Version: %d\nPantheon-Bid: %s\nPantheon-Tree: %s\n" bid task bidder spec v bid tree in
+    ignore (git dir [ "add"; "-A"; "-f" ]);
+    (* the message on stdin, not as an argument: the spec in it is the
+       leader's text, and an argument can't carry every string whole
+       (docs/SECURITY-REVIEW-2.md P-17) *)
+    if not (git_ok ~extra:who ~stdin:msg dir [ "commit"; "-q"; "--allow-empty"; "--no-verify"; "--cleanup=verbatim"; "-F"; "-" ]) then None
+    else Some (git_out dir [ "rev-parse"; "HEAD^{tree}" ], git_out dir [ "rev-parse"; "--short"; "HEAD" ])
   in
   let handle out =
     match out with
-    | "merge" :: r :: v :: tree :: bid :: task :: bidder :: spec :: edits ->
-        apply_merge r (int_of_string v) tree bid task bidder spec (triples_of edits)
     | "llm" :: id :: kind :: prompt :: ctx ->
         incr calls;
         if !calls > !max_calls then push [ "llm_error"; id; Printf.sprintf "model call budget of %d used up: restart with a higher --max-llm-calls" !max_calls ]
@@ -1619,6 +1623,29 @@ let node_open plan_open packed json_fn home flags =
         match List.nth_opt peers (int_of_string index) with
         | Some p -> send_to p (wire fields)
         | None -> ());
-      h_run_check = run_check };
+      h_run_check = run_check;
+      h_merge_applied = (fun r -> Option.map string_of_int (Hashtbl.find_opt applied r));
+      h_merge_diverged = (fun r -> List.mem_assoc r !diverged);
+      h_merge_reset = (fun r ->
+        let dir = rdir r in
+        ignore (git dir [ "reset"; "-q"; "--hard"; "HEAD" ]);
+        ignore (git dir [ "clean"; "-q"; "-f"; "-d"; "-x" ]));
+      h_merge_probe = (fun r p ->
+        let dir = rdir r in
+        let f = Filename.concat dir p in
+        try
+          if not (no_symlink dir p) then "symlink"
+          else if Sys.file_exists f && Sys.is_directory f then "dir"
+          else if Sys.file_exists f then "file"
+          else "none"
+        with _ -> "symlink");
+      h_merge_read = (fun r p -> try Some (read_file (Filename.concat (rdir r) p)) with _ -> None);
+      h_merge_write = (fun r p text ->
+        let f = Filename.concat (rdir r) p in
+        try mkdir_p (Filename.dirname f); write_keep_mode f text; "" with e -> Printexc.to_string e);
+      h_merge_remove = (fun r p -> try Sys.remove (Filename.concat (rdir r) p); "" with e -> Printexc.to_string e);
+      h_merge_commit = merge_commit;
+      h_merge_set_applied = (fun r v -> Hashtbl.replace applied r (int_of_string v));
+      h_merge_note_diverged = (fun r entry -> diverged := (r, entry) :: !diverged) };
   handle_id
 

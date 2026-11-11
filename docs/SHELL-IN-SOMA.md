@@ -211,7 +211,15 @@ worth a note in this file rather than a workaround.
   node with decided outputs before its mandatory snapshot and votes after.
   `startup_effects` checks this order without timing a live process. The
   old `feed` loop and its state/step/checkpoint/restore callbacks are gone.
-  Remaining step 4 cases: merge, llm and check. Helpers stay in their record until those callers move.
+  Remaining step 4 cases: llm. Helpers stay in their record until those callers move.
+
+- Step 4, merge: a decided merge dispatches in Soma (`perform_merge`). Pure
+  `merge_gate_of` passes over an unknown repository, an applied version and
+  a diverged checkout; `merge_edit_plan` and `merge_edit_apply` (Soma's
+  `edit_once`) decide each edit; `merge_tree_check` compares the committed
+  tree with the attested one. The shell only resets, probes, reads, writes,
+  removes, commits and records. `apply_edits` stays in shell.ml for
+  `check` and `apply-edits`.
 
 - The helper callbacks (step 3) are one typed `shell_helpers` record in
   `util.soma`. `node_open` receives it once; the binding transports its four
