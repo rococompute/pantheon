@@ -757,7 +757,41 @@ Fixpoint run_events (h : node_t) (st : node_state) (evs : list (list string)) : 
   | ev :: rest => run_events h (run_event h st ev) rest
   end.
 
-node_tick (h : node_t) (st : node_state) : node_state := run_events h st (events h).
+(** After a limit's wait, held model requests go back: one first while the
+    backoff is up (only when it comes back without the limit, which resets
+    the backoff, do the rest go), all of them otherwise; none while the
+    limit lasts, while that first one is out, or when none are held. *)
+Inductive release_plan := ReleaseNone | ReleaseOne | ReleaseAll.
+
+release_plan_of (held : nat) (over probing backed_off : bool) : release_plan :=
+  if (held =? 0) || negb over || probing then ReleaseNone
+  else if backed_off then ReleaseOne else ReleaseAll.
+
+release_one_text (backend held : string) : string :=
+  append "the limit's wait is over: asking " (append backend
+    (append " one held request first (" (append held " held)"))).
+
+release_all_text (backend held : string) : string :=
+  append backend (append " answers again: asking its " (append held " held requests")).
+
+(** The held requests this turn gives back, oldest first, as llm_release
+    events; the shell only keeps them and hands them over. *)
+release_held (h : node_t) : list (list string) :=
+  let (until, info) := node_limit_info h in
+  let (backend, detail) := info in
+  let (held, _) := detail in
+  let (backoff, probing) := node_release_state h in
+  let over := negb (PrimFloat.ltb (node_clock tt) until) in
+  match release_plan_of (num held) over probing (PrimFloat.ltb 900%float backoff) with
+  | ReleaseNone => []
+  | ReleaseOne => if node_log h (release_one_text backend held) then [node_release_one h] else []
+  | ReleaseAll => if node_log h (release_all_text backend held) then node_release_all h else []
+  end.
+
+(** Released requests come first among a turn's events, as they did. *)
+node_tick (h : node_t) (st : node_state) : node_state :=
+  let st := run_events h st (release_held h) in
+  run_events h st (events h).
 
 (** Replay has no consensus snapshot effects, just as before: a restored
     snapshot is checked against the fully replayed height before start. *)

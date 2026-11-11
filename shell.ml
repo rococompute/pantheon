@@ -811,6 +811,9 @@ type node_handle = { h_events : unit -> string list list;
                      h_checkout_heads : unit -> (string * string) list;
                      h_divergences : unit -> (string * string) list;
                      h_limit_info : unit -> float * (string * (string * string));
+                     h_release_state : unit -> float * bool;
+                     h_release_one : unit -> string list;
+                     h_release_all : unit -> string list list;
                      h_write_status : string -> unit;
                      h_encode_tx : string -> string list -> string;
                      h_track_tx : string -> unit;
@@ -869,6 +872,9 @@ let node_peer_send id who fields = (lookup_handle id).h_peer_send who fields; tr
 let node_checkout_heads id = (lookup_handle id).h_checkout_heads ()
 let node_divergences id = (lookup_handle id).h_divergences ()
 let node_limit_info id = (lookup_handle id).h_limit_info ()
+let node_release_state id = (lookup_handle id).h_release_state ()
+let node_release_one id = (lookup_handle id).h_release_one ()
+let node_release_all id = (lookup_handle id).h_release_all ()
 let node_local_time until =
   let tm = Unix.localtime until in Printf.sprintf "%02d:%02d" tm.Unix.tm_hour tm.Unix.tm_min
 let node_write_status id text = (lookup_handle id).h_write_status text; true
@@ -1379,21 +1385,6 @@ let node_open packed json_fn home flags =
       my_txs := List.filter (fun (t, _) -> now -. t < 120.) !my_txs;
       List.iter (fun (_, raw) -> broadcast_fields [ "tx"; raw ]) !my_txs
     end;
-    (* after a limit's wait, one held request first: only when it comes back
-       without the limit (which resets the backoff) do the rest go *)
-    (* they go back to Soma first among this turn's events, as llm_release *)
-    let released = ref [] in
-    let release (id, kind, prompt0, ctx) = released := ("llm_release" :: id :: kind :: prompt0 :: ctx) :: !released in
-    if !held <> [] && now >= !limited_until && not !probing then begin
-      let hs = List.rev !held in
-      if !limit_backoff > 900. then begin
-        say "the limit's wait is over: asking %s one held request first (%d held)" !backend (List.length hs);
-        held := List.rev (List.tl hs); probing := true; release (List.hd hs)
-      end else begin
-        say "%s answers again: asking its %d held requests" !backend (List.length hs);
-        held := []; List.iter release hs
-      end
-    end;
     if now -. !last_inbox > 1. then begin
       last_inbox := now;
       let d = Filename.concat home "inbox" in
@@ -1544,7 +1535,7 @@ let node_open packed json_fn home flags =
     let evs = ref [] in
     while not (Queue.is_empty queue) do evs := Queue.pop queue :: !evs done;
     if debug then List.iter (fun ev -> say "event: %s" (brief ev)) (List.rev !evs);
-    List.rev_append !released (List.rev !evs)
+    List.rev !evs
   in
   let handle_id = string_of_int !node_counter in
   incr node_counter;
@@ -1579,6 +1570,16 @@ let node_open packed json_fn home flags =
       h_checkout_heads = (fun () -> List.map (fun (n, _, _, _) -> (n, git_out (rdir n) [ "rev-parse"; "--short"; "HEAD" ])) repos);
       h_divergences = (fun () -> !diverged);
       h_limit_info = (fun () -> (!limited_until, (!backend, (string_of_int (List.length !held), !limit_reason))));
+      (* held requests, oldest first, as llm_release events: node.soma's release_held decides when *)
+      h_release_state = (fun () -> (!limit_backoff, !probing));
+      h_release_one = (fun () ->
+        match List.rev !held with
+        | (id, kind, prompt0, ctx) :: rest -> held := List.rev rest; probing := true; "llm_release" :: id :: kind :: prompt0 :: ctx
+        | [] -> []);
+      h_release_all = (fun () ->
+        let hs = List.rev !held in
+        held := [];
+        List.map (fun (id, kind, prompt0, ctx) -> "llm_release" :: id :: kind :: prompt0 :: ctx) hs);
       h_write_status = (fun text -> write_file (Filename.concat home "status.txt") text);
       h_encode_tx = encode_tx key me;
       h_track_tx = (fun raw -> my_txs := (Unix.gettimeofday (), raw) :: !my_txs);
