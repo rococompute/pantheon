@@ -1230,6 +1230,13 @@ let node_open packed home flags =
           let tree = if byz = "bad-tree" then (say "FAULT INJECTION: naming a wrong tree"; sha256 ("lie" ^ id)) |> fun x -> String.sub x 0 40 else String.trim t in
           if ci = "" then result true tree "" ""
           else begin
+            (* CI gets the merged tree's files without the clone's .git: a
+               --shared clone's objects live in this node's own repository
+               (through alternates), which isn't in CI's sandbox, so git
+               there saw a broken repository ("bad object HEAD") and its
+               errors led the reason of a rejection (Soma's build runs git
+               for its revision). The tree is already computed *)
+            ignore (Sys.command ("rm -rf " ^ Filename.quote (Filename.concat out ".git")));
             ignore (Sys.command ("chmod -R a+rX " ^ Filename.quote out));
             let name = "pantheon-ci-" ^ random_hex 6 in
             with_ci @@ fun () ->

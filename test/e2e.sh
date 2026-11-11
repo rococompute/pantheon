@@ -454,12 +454,15 @@ cd "$2" || exit 2
 eval "$3"
 F
   chmod +x "$fake"
-  for a in $AGENTS; do node cifail "$a" -- --ci-sandbox "$fake" --ci 'echo "calc is broken"; exit 1' --ci-memory 1g; done
+  # CI gets the merged tree's files, not the check clone's .git (whose
+  # objects are this node's, through alternates, outside CI's sandbox)
+  for a in $AGENTS; do node cifail "$a" -- --ci-sandbox "$fake" --ci 'if [ -e .git ]; then echo "CI sees a .git"; fi; echo "calc is broken"; exit 1' --ci-memory 1g; done
   wait_for cifail claude 180 "a rejection for CI" sh -c "grep -q 'CI failed on the merged tree' $ROOT/cifail/claude/status.txt" || { stop cifail; return 1; }
   sleep 2; stop cifail
   if grep -q "edits don't apply" "$ROOT/cifail/claude/status.txt"; then echo "FAIL cifail: a CI failure was worded as don't apply"; return 1; fi
+  if grep -q "CI sees a .git" "$ROOT/cifail/claude/status.txt"; then echo "FAIL cifail: CI ran with the check clone's .git"; return 1; fi
   agree cifail claude codex grok muse && agree_files cifail claude codex grok muse || return 1
-  echo "ok cifail: a bid that applies was rejected for failing CI, in those words, and no node diverged"
+  echo "ok cifail: a bid that applies was rejected for failing CI, in those words, CI saw no .git, and no node diverged"
 }
 
 # Two tasks open at once (max_open_tasks=2): the leader drafts a second

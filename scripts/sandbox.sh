@@ -402,14 +402,22 @@ cmd_start() {
   # all at once: restarted one after another mid-height, a node that came back
   # first can decide a block the others then miss the last votes of, and
   # catching up needs two nodes that have it
-  [ -z "$JOIN" ] || cmd_forwards
+  # JOIN unreachable: say so before restarting anything here
+  [ -z "$JOIN" ] || { reach_join; cmd_forwards; }
   for a in $AGENTS; do in_vm "$(vm "$a")" sudo systemctl restart pantheon-node & done
   if [ -n "$JOIN" ]; then
-    # the same goal as here; its nodes, inbox and mirror by host.sh
-    remote_in "cat > ~/pantheon/goal.txt" < "${GOAL_FILE:-$here/examples/dogfood/goal.txt}"
-    remote "$(host_sh) start" | sed "s/^host: /sandbox: ${JOIN#*@}: /" &
+    # the same goal as here; its nodes, inbox and mirror by host.sh. A
+    # failure there fails start: the laptop's half alone can't reach a quorum
+    remote_in "cat > ~/pantheon/goal.txt" < "${GOAL_FILE:-$here/examples/dogfood/goal.txt}" \
+      || die "$JOIN: couldn't write its goal (~/pantheon/goal.txt): its nodes aren't started; retry scripts/sandbox.sh start"
+    joined=$(mktemp)
+    { remote "$(host_sh) start"; echo $? > "$joined"; } | sed "s/^host: /sandbox: ${JOIN#*@}: /" &
   fi
   wait
+  if [ -n "$JOIN" ]; then
+    rc=$(cat "$joined"); rm -f "$joined"
+    [ "$rc" = 0 ] || die "$JOIN: its nodes didn't start (host.sh start exited ${rc:-without a status}, see above): the laptop's nodes alone can't reach a quorum; retry scripts/sandbox.sh start"
+  fi
   say "started. Watch it with: scripts/sandbox.sh status"
 }
 
