@@ -1175,9 +1175,7 @@ let node_open packed home flags =
          write_file hdr hdr_text;
          start_job ~limit:(float_of_string limit_s) prog
            (List.map (fun a -> if a = "@HDR@" then "@" ^ hdr else a) args) ~stdin_text:prompt ~env:(Array.of_list env)
-           ~on_done:(fun t ->
-             try reply (Yojson.Safe.Util.(to_string (member "content" (member "message" (List.hd (to_list (member "choices" (Yojson.Safe.from_string t))))))))
-             with _ -> push [ "llm_error"; id; "grok: " ^ String.sub t 0 (min 300 (String.length t)) ])
+           ~on_done:reply (* Soma's model_reply_events takes the content out *)
            ~clean:(fun () -> try Sys.remove hdr with _ -> ())
      (* cmd: too, its limit, environment and paths to remove chosen by Soma's tool_job_of *)
      | prog :: limit_s :: _ :: args ->

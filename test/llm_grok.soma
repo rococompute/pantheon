@@ -1,0 +1,65 @@
+(** Grok's reply, decided in Soma: choices.0.message.content over the
+    yojson binding's tokens, with Yojson.Safe.Util's old semantics. Fixed
+    token lists, no node and no binding. *)
+Import util shell market agent node.
+From Stdlib Require ExtrOcamlNatInt.
+Extract Inlined Constant Nat.div => "(fun a b -> if b = 0 then 0 else a / b)".
+Extract Inlined Constant Nat.modulo => "(fun a b -> if b = 0 then a else a mod b)".
+Extract Inlined Constant Stdlib.Strings.String.length => "String.length".
+Extract Inlined Constant Stdlib.Strings.String.get =>
+  "(fun n s -> if n < String.length s then Some (String.unsafe_get s n) else None)".
+Extract Inlined Constant Stdlib.Strings.String.substring =>
+  "(fun n m s -> let l = String.length s in if n >= l then """" else String.sub s n (min m (l - n)))".
+
+check (label got expected : string) : string :=
+  append (if seq got expected then "ok " else "FAIL ") label.
+
+opt_text (o : option string) : string := match o with None => "none" | Some s => append "=" s end.
+
+(** {"choices":[{"message":{"content":C}}]} with C's tokens *)
+wrap (c : list string) : list string :=
+  ["A", "1", "choices", "L", "1", "A", "1", "message", "A", "1", "content"] ++ c.
+
+(** {"id":"x","usage":{"n":3,"l":[1,null,{"a":true}]},"choices":[
+     {"index":0,"message":{"role":"assistant","content":"hi"}}, {"message":{"content":"no"}}]} *)
+full : list string :=
+  ["A", "3", "id", "S", "x",
+   "usage", "A", "2", "n", "I", "3", "l", "L", "3", "I", "1", "U", "A", "1", "a", "B", "true",
+   "choices", "L", "2",
+     "A", "2", "index", "I", "0", "message", "A", "2", "role", "S", "assistant", "content", "S", "hi",
+     "A", "1", "message", "A", "1", "content", "S", "no"].
+
+pair_text (r : option string * string) : string :=
+  append (opt_text (fst r)) (append "#" (snd r)).
+
+long : string := append (Stdlib.Strings.String.concat "" (map (fun _ => "0123456789") (List.seq 0 31))) "END".
+
+checks : list string := [
+  check "plain content" (opt_text (grok_content (wrap ["S", "hello"]))) "=hello",
+  check "empty content is content" (opt_text (grok_content (wrap ["S", ""]))) "=",
+  check "content after skipped values, first choice only" (opt_text (grok_content full)) "=hi",
+  check "null content is none" (opt_text (grok_content (wrap ["U"]))) "none",
+  check "number content is none" (opt_text (grok_content (wrap ["I", "5"]))) "none",
+  check "object content is none" (opt_text (grok_content (wrap ["A", "0"]))) "none",
+  check "no choices" (opt_text (grok_content ["A", "1", "error", "S", "bad"])) "none",
+  check "empty choices" (opt_text (grok_content ["A", "1", "choices", "L", "0"])) "none",
+  check "choices not a list" (opt_text (grok_content ["A", "1", "choices", "A", "0"])) "none",
+  check "top level a list" (opt_text (grok_content ["L", "1", "S", "x"])) "none",
+  check "first matching key wins"
+    (opt_text (grok_content ["A", "2", "choices", "L", "0",
+                             "choices", "L", "1", "A", "1", "message", "A", "1", "content", "S", "late"])) "none",
+  check "a key named like a tag is skipped as a key"
+    (opt_text (grok_content ["A", "2", "A", "S", "v", "choices", "L", "1", "A", "1", "message",
+                             "A", "1", "content", "S", "ok"])) "=ok",
+  check "truncated tokens" (opt_text (grok_content ["A", "2", "x", "A", "3"])) "none",
+  check "skip a nested value" (opt_text (option_map (fun t => Stdlib.Strings.String.concat "," t)
+      (json_skip 20 [false] ["L", "2", "A", "1", "k", "U", "S", "s", "rest"]))) "=rest",
+  check "reply of parsed content" (pair_text (grok_reply_of (Some (wrap ["S", "c"])) "raw")) "=c#grok: raw",
+  check "reply of non-JSON" (pair_text (grok_reply_of None "!process failed (exit 7): x"))
+    "none#grok: !process failed (exit 7): x",
+  check "error keeps the first 300 bytes"
+    (snd (grok_reply_of None long))
+    (append "grok: " (take_str 300 long))
+].
+
+main := print_lines checks.

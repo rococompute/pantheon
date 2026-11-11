@@ -230,6 +230,15 @@ separate work; this status does not mark `.plan`.
 
 ## Done so far
 
+- Step 4, llm (part): grok's reply is read in Soma. The shell hands back
+  curl's raw output like any backend's; `model_reply_events` takes
+  `choices.0.message.content` from the yojson binding's tokens
+  (`grok_content`, over `json_member`, `json_first` and `json_skip`, with
+  Yojson.Safe.Util's old rules: the first matching key, a string content
+  only), and otherwise gives `llm_error` with "grok: " and the output's
+  first 300 bytes, never a limit hold, as before. `test/llm-grok.sh`
+  checks it on fixed tokens. Left in shell.ml: codex's output-file read.
+
 - Step 4, llm (part): a model job's launch is completed in Soma. For a
   cmd: backend, `tool_job_of` decides the time limit (1200 s without a
   tool checkout, 1800 s with one, 600 s when its clone failed), the

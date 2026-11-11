@@ -1030,6 +1030,97 @@ reply_events (h : node_t) (id kind prompt0 text : string) (ctx : list string) : 
   | ReplyFields kv => if node_limit_clear h 900%float then [("llm_reply" :: id :: kv)] else []
   end.
 
+(** ---- Grok's reply: the chat completion's choices.0.message.content ----
+    Over the yojson binding's tokens (as in [flatten_reply]), with the
+    shell's old Yojson.Safe.Util semantics: [member] takes the first key
+    that matches, and a missing key, a non-object, an empty or non-list
+    choices, or content that isn't a string is no content. *)
+
+(** Skip tokens: [pending] says what is left, a key (true) or a whole
+    value (false). None: the tokens end too soon. *)
+Fixpoint json_skip (fuel : nat) (pending : list bool) (toks : list string) : option (list string) :=
+  match fuel with
+  | 0 => None
+  | Succ f =>
+      match pending, toks with
+      | [], _ => Some toks
+      | true :: p, _ :: rest => json_skip f p rest
+      | false :: p, "A" :: ns :: rest =>
+          json_skip f (flat_map (fun _ => [true, false]) (List.seq 0 (num ns)) ++ p) rest
+      | false :: p, "L" :: ns :: rest =>
+          json_skip f (map (fun _ => false) (List.seq 0 (num ns)) ++ p) rest
+      | false :: p, "U" :: rest => json_skip f p rest
+      | false :: p, _ :: _ :: rest => json_skip f p rest
+      | _, _ => None
+      end
+  end.
+
+Fixpoint json_member_go (n : nat) (k : string) (toks : list string) : option (list string) :=
+  match n with
+  | 0 => None
+  | Succ n' =>
+      match toks with
+      | key :: rest =>
+          if seq key k then Some rest
+          else match json_skip (Succ (length rest)) [false] rest with
+               | Some after => json_member_go n' k after
+               | None => None
+               end
+      | [] => None
+      end
+  end.
+
+(** the tokens of an object's value at key [k], from its first such key *)
+json_member (k : string) (toks : list string) : option (list string) :=
+  match toks with
+  | "A" :: ns :: rest => json_member_go (num ns) k rest
+  | _ => None
+  end.
+
+(** the tokens of a nonempty list's first element *)
+json_first (toks : list string) : option (list string) :=
+  match toks with
+  | "L" :: ns :: rest => if 0 <? num ns then Some rest else None
+  | _ => None
+  end.
+
+grok_content (toks : list string) : option string :=
+  match json_member "choices" toks with
+  | None => None
+  | Some t1 =>
+      match json_first t1 with
+      | None => None
+      | Some t2 =>
+          match json_member "message" t2 with
+          | None => None
+          | Some t3 =>
+              match json_member "content" t3 with
+              | Some ("S" :: s :: _) => Some s
+              | _ => None
+              end
+          end
+      end
+  end.
+
+(** what grok's output becomes: its content, or the error with the
+    output's first 300 bytes (None: the output isn't JSON) *)
+grok_reply_of (toks : option (list string)) (text : string) : option string * string :=
+  match toks with
+  | Some t => (grok_content t, append "grok: " (take_str 300 text))
+  | None => (None, append "grok: " (take_str 300 text))
+  end.
+
+(** A model's raw output: grok's is its content first (an error that
+    isn't JSON content goes straight to llm_error, never a limit hold, as
+    the shell did); every other backend's is the reply itself. *)
+model_reply_events (h : node_t) (id kind prompt0 text : string) (ctx : list string) : list (list string) :=
+  if seq (fst (snd (node_limit_info h))) "grok" then
+    match grok_reply_of (node_json_tokens text) text with
+    | (Some content, _) => reply_events h id kind prompt0 content ctx
+    | (None, why) => [["llm_error", id, why]]
+    end
+  else reply_events h id kind prompt0 text ctx.
+
 (** The operating system's wait status, decoded without deciding its
     meaning. Signal names are platform data supplied by the shell. *)
 Inductive job_status := JobExit (code : string) | JobSignal (name : string) | JobStop (name : string).
@@ -1067,7 +1158,7 @@ job_result (status : job_status) (timeout : option string) (flooded : bool) (max
     the turn's events run, at the finished job's original queue position. *)
 model_output_events (h : node_t) (ev : list string) : list (list string) :=
   match ev with
-  | "llm_output" :: id :: kind :: prompt0 :: text :: ctx => reply_events h id kind prompt0 text ctx
+  | "llm_output" :: id :: kind :: prompt0 :: text :: ctx => model_reply_events h id kind prompt0 text ctx
   | _ => [ev]
   end.
 
@@ -1217,7 +1308,7 @@ llm_begin (h : node_t) (id kind prompt input : string) (ctx clean launch env : l
   match node_llm_start h id kind prompt input ctx clean launch env with
   | None => true
   (* the process couldn't start: its output is here at once *)
-  | Some text => push_all h (reply_events h id kind prompt text ctx)
+  | Some text => push_all h (model_reply_events h id kind prompt text ctx)
   end.
 
 llm_call (h : node_t) (id kind prompt : string) (ctx : list string) : bool :=
