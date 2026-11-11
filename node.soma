@@ -1050,6 +1050,28 @@ Fixpoint carry_all (h : node_t) (snap : consensus_state) (effs : list (list stri
     bindings): dropped when it is this node's own or an
     already-refused transaction -- neither pays for a verify -- and
     otherwise turned into the event it carries once verified. *)
+(** The peer JSON scan has the old depth four and caller-supplied item
+    cap. Invalid structure is refused before any JSON member reads. *)
+peer_line_shape (items raw : string) : bool := shallow_json "4" items raw.
+
+peer_wire_fields (me : string) (refused : string -> bool)
+    (parts : option (string * (string * list string))) : list string :=
+  match parts with
+  | None => []
+  | Some (from, (sig, fields)) =>
+      let self := if seq from me then "1" else "0" in
+      let seen := match fields with
+                  | ["tx", raw] => if refused raw then "1" else "0"
+                  | _ => "0"
+                  end in
+      "peer_line" :: self :: seen :: from :: sig :: fields
+  end.
+
+peer_raw_event (items me raw : string)
+    (parts : string -> option (string * (string * list string)))
+    (refused : string -> bool) : list string :=
+  if peer_line_shape items raw then peer_wire_fields me refused (parts raw) else [].
+
 line_dropped (self refused : string) : bool :=
   seq self "1" || seq refused "1".
 
@@ -1060,7 +1082,13 @@ line_event (from : string) (fields : list string) : list string :=
   end.
 
 run_event (h : node_t) (st : node_state) (ev : list string) : node_state :=
+  let ev := match ev with
+            | ["peer_raw", raw] => peer_raw_event (node_line_item_cap tt) (node_identity h) raw
+                                    node_line_parts (node_seen_refused h)
+            | _ => ev
+            end in
   match ev with
+  | [] => st
   | "llm_release" :: id :: kind :: prompt :: ctx =>
       if llm_call h id kind prompt ctx then st else with_live st (live st)
   | "peer_line" :: self :: refused :: from :: sig :: fields =>
@@ -1144,7 +1172,7 @@ start_node (h : node_t) (st : node_state) : node_state :=
   if carry_all h (cons s) (startup_effects outs) then s else st.
 
 run_node (home : string) (flags : list string) : unit :=
-  let h := node_open (pack_helpers node_helpers) shallow_json home flags in
+  let h := node_open (pack_helpers node_helpers) home flags in
   let st := run_boot h empty_node (boot_events h) in
   let n := replay_count h in
   let logged := if seq n "0" then true else node_log h (append "replayed " (append n " blocks from disk")) in

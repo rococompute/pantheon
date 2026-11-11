@@ -1,0 +1,48 @@
+(** Real peer JSON decoding, with no sockets, running node or timing. *)
+Import util shell node.
+From Stdlib Require ExtrOcamlNatInt.
+Extract Inlined Constant Nat.div => "(fun a b -> if b = 0 then 0 else a / b)".
+Extract Inlined Constant Nat.modulo => "(fun a b -> if b = 0 then a else a mod b)".
+
+(** Strings run as OCaml's (ExtrOcamlNativeString), which leaves out the
+    operations that count in [nat]. With [nat] as OCaml ints they're
+    OCaml's own, each as total as its definition: offsets past the end give
+    [None] or an empty string. util.soma reads long text through them. *)
+Extract Inlined Constant Stdlib.Strings.String.length => "String.length".
+Extract Inlined Constant Stdlib.Strings.String.get =>
+  "(fun n s -> if n < String.length s then Some (String.unsafe_get s n) else None)".
+Extract Inlined Constant Stdlib.Strings.String.substring =>
+  "(fun n m s -> let l = String.length s in if n >= l then """" else String.sub s n (min m (l - n)))".
+
+
+check_raw (label cap me raw : string) (refused : string -> bool) (expected : list string) : string :=
+  let got := peer_raw_event cap me raw node_line_parts refused in
+  append (if eq_strs got expected then "ok " else "FAIL ") label.
+
+main := print_lines [
+  check_raw "peer message fields" "100" "me"
+    "{""from"":""peer"",""sig"":""s"",""fields"":[""prevote"",""1""]}" (fun _ => false)
+    ["peer_line", "0", "0", "peer", "s", "prevote", "1"],
+  check_raw "own peer flag" "100" "me"
+    "{""from"":""me"",""sig"":""s"",""fields"":[""tx"",""r""]}" (fun _ => false)
+    ["peer_line", "1", "0", "me", "s", "tx", "r"],
+  check_raw "refused transaction flag" "100" "me"
+    "{""from"":""p"",""sig"":""s"",""fields"":[""tx"",""r""]}" (fun r => seq r "r")
+    ["peer_line", "0", "1", "p", "s", "tx", "r"],
+  check_raw "missing member dropped" "100" "me" "{}" (fun _ => false) [],
+  check_raw "malformed JSON dropped" "100" "me" "{bad}" (fun _ => false) [],
+  check_raw "numeric fields dropped" "100" "me"
+    "{""from"":""p"",""sig"":""s"",""fields"":[1]}" (fun _ => false) [],
+  check_raw "prefix is not stripped" "100" "me"
+    "prefix {""from"":""p"",""sig"":""s"",""fields"":[]}" (fun _ => false) [],
+  check_raw "four containers allowed" "100" "me"
+    "{""from"":""p"",""sig"":""s"",""fields"":[],""extra"":[[[]]]}" (fun _ => false)
+    ["peer_line", "0", "0", "p", "s"],
+  check_raw "fifth container dropped" "100" "me"
+    "{""from"":""p"",""sig"":""s"",""fields"":[],""extra"":[[[[]]]]}" (fun _ => false) [],
+  check_raw "item cap is strict" "7" "me"
+    "{""from"":""p"",""sig"":""s"",""fields"":[""tx"",""r""]}" (fun _ => false) [],
+  check_raw "item cap boundary accepted" "8" "me"
+    "{""from"":""p"",""sig"":""s"",""fields"":[""tx"",""r""]}" (fun _ => false)
+    ["peer_line", "0", "0", "p", "s", "tx", "r"]
+].

@@ -636,3 +636,40 @@ Proof.
   unfold reply_outcome_of. rewrite H.
   unfold reply_fields_of. rewrite S. rewrite T. reflexivity.
 Qed.
+
+Example peer_shape_item_and_depth_boundaries :
+  peer_line_shape "2" "{""x"":0}" = true /\
+  peer_line_shape "1" "{""x"":0}" = false /\
+  peer_line_shape "4" "{""x"":0,""y"":1}" = true /\
+  peer_line_shape "3" "{""x"":0,""y"":1}" = false /\
+  peer_line_shape "100" "{""x"":[[[]]]}" = true /\
+  peer_line_shape "100" "{""x"":[[[[]]]]}" = false.
+Proof. repeat split; reflexivity. Qed.
+
+Example peer_wire_fields_preserve_sender_signature_and_field_order :
+  peer_wire_fields "me" (fun _ => false) (Some ("peer", ("sig", ["prevote", "3", "2"]))) =
+    ["peer_line", "0", "0", "peer", "sig", "prevote", "3", "2"] /\
+  peer_wire_fields "me" (fun _ => false) (Some ("peer", ("sig", []))) =
+    ["peer_line", "0", "0", "peer", "sig"].
+Proof. split; reflexivity. Qed.
+
+Example peer_own_and_refused_flags_precede_signature_verification :
+  peer_wire_fields "me" (fun _ => false) (Some ("me", ("sig", ["tx", "raw"]))) =
+    ["peer_line", "1", "0", "me", "sig", "tx", "raw"] /\
+  peer_wire_fields "me" (fun raw => seq raw "bad") (Some ("peer", ("sig", ["tx", "bad"]))) =
+    ["peer_line", "0", "1", "peer", "sig", "tx", "bad"] /\
+  peer_wire_fields "me" (fun _ => true) (Some ("peer", ("sig", ["tx", "raw", "extra"]))) =
+    ["peer_line", "0", "0", "peer", "sig", "tx", "raw", "extra"] /\
+  line_dropped "1" "0" = true /\ line_dropped "0" "1" = true.
+Proof. repeat split; reflexivity. Qed.
+
+Example peer_bad_members_produce_no_event :
+  peer_wire_fields "me" (fun _ => false) None = [] /\
+  peer_raw_event "100" "me" "{bad}" (fun _ => None) (fun _ => false) = [] /\
+  peer_raw_event "1" "me" "{""x"":0}"
+    (fun _ => Some ("peer", ("sig", ["tx", "raw"]))) (fun _ => false) = [].
+Proof. repeat split; reflexivity. Qed.
+
+Theorem malformed_peer_shape_needs_no_json_members : forall cap me raw parts refused,
+  peer_line_shape cap raw = false -> peer_raw_event cap me raw parts refused = [].
+Proof. intros cap me raw parts refused H. unfold peer_raw_event. rewrite H. reflexivity. Qed.

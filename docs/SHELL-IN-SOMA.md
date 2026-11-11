@@ -168,6 +168,16 @@ worth a note in this file rather than a workaround.
 
 ## Done so far
 
+- Step 5, raw peer lines: socket framing queues a raw line. Soma applies
+  the depth/item scan before the Yojson member binding, assembles sender,
+  signature and field metadata, then uses the existing own/refused-before-
+  verify path. Invalid lines return the state immediately without running
+  consensus comparisons. The old `on_line` and global `soma_shallow_json`
+  callback are gone; `node_open` no longer receives a scan callback.
+  Examples and `test/peer-raw.sh` cover shape limits, bad members, exact
+  fields and own/refused flags without racing a running node. Connection
+  admission and buffered-line byte limits remain in the shell.
+
 - Step 5, part: `decode_tx` is Soma (market.soma). It refuses a raw
   transaction over the byte cap or not bounded JSON (`tx_shape_ok`, the caps
   as decimal strings), one the shell can't read as a transaction's JSON, one
