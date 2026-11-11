@@ -53,4 +53,17 @@ ok "a check killed through ci-sandbox dies, and the lock is free"
 out=$(run 'exit 3' 2>&1) && fail "a failing check passed" || r=$?
 [ "$r" = 3 ] || fail "a check's exit status 3 came back as $r"
 ok "a check's exit status comes back"
+# the node's command starts with "(" (ci_wrap) and may end in a comment;
+# where sh is bash (Fedora), "((" would start arithmetic and fail to parse
+out=$(run "(x=1
+cat <<EOF
+a)
+EOF
+) # a comment") || fail "a command starting with ( and ending in a comment didn't run: $out"
+[ "$out" = "a)" ] || fail "a command starting with ( gave: $out"
+ok "a command starting with ( and ending in a comment runs, whatever sh is"
+
+out=$(HOME=$t/home SOMA_DIR=$t/soma CI_LOCK=$t/lock sh "$sb" 256m "$t/work" 2>/dev/null) && fail "ci-sandbox ran without a command" || true
+case $out in *"ci-sandbox:"*) ;; *) fail "ci-sandbox's own error isn't on stdout: $out" ;; esac
+ok "ci-sandbox's own errors are on stdout, where the node reads them"
 echo PASS

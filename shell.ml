@@ -471,8 +471,9 @@ let check_bid_failed = 1
    exits are remapped to this inside the runner, except 124 and 137 (its
    time and memory budgets, also the bid's) (docs/SECURITY-REVIEW-2.md P-6) *)
 let ci_bid_failed = 86
+(* "( " with a space: where sh is bash (Fedora), "((" starts arithmetic *)
 let ci_wrap ci =
-  "(" ^ ci ^ ") 2>&1; r=$?; if [ $r -ne 0 ] && grep -qs 'oom_kill [1-9]' /sys/fs/cgroup/memory.events; then exit 137; fi; "
+  "( " ^ ci ^ "\n) 2>&1; r=$?; if [ $r -ne 0 ] && grep -qs 'oom_kill [1-9]' /sys/fs/cgroup/memory.events; then exit 137; fi; "
   ^ "case $r in 0|124|137) exit $r;; esac; exit " ^ string_of_int ci_bid_failed
 
 (* how a job ended, from the node's own "!process failed (HOW): " prefix;

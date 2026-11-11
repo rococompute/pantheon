@@ -21,6 +21,8 @@
 # systemd with the memory controller (cgroup v2), and unprivileged user
 # namespaces.
 set -eu
+# the node keeps only a runner's stdout: its own errors go there too
+exec 2>&1
 [ $# -eq 3 ] || { echo "ci-sandbox: usage: ci-sandbox MEMORY CHECKOUT CMD" >&2; exit 2; }
 mem=$1 work=$2 cmd=$3
 # Docker's sizes (1536m, 3g) in systemd's spelling (1536M, 3G)
@@ -50,6 +52,9 @@ exec systemd-run --user --scope --quiet --collect -p "MemoryMax=$mem" -p MemoryS
     for f in passwd group nsswitch.conf ld.so.cache ld.so.conf ld.so.conf.d localtime alternatives; do
       etc="$etc --ro-bind-try /etc/$f /etc/$f"
     done
+    # "( $cmd" with a space, and ")" on a line of its own: CMD starts with "("
+    # (the node wraps it), and where sh is bash, as on Fedora, "((" starts
+    # arithmetic; and a CMD ending in a comment would swallow the ")"
     cg=/sys/fs/cgroup$(sed -n "s/^0:://p" /proc/self/cgroup)
     bwrap --unshare-all --die-with-parent --new-session --cap-drop ALL \
       --ro-bind /usr /usr $etc \
@@ -61,7 +66,8 @@ exec systemd-run --user --scope --quiet --collect -p "MemoryMax=$mem" -p MemoryS
       --clearenv --setenv HOME /tmp --setenv XDG_CACHE_HOME /tmp/cache --setenv OPAMROOT "$HOME/.opam" \
       --setenv SOMA_OCAML_SWITCH "$switch" --setenv PATH "$soma/_build/install/default/bin:/usr/bin:/bin" \
       --setenv LANG C.UTF-8 --chdir /tmp \
-      sh -c "cp -R /work /tmp/w && cd /tmp/w && ($cmd) 2>&1" 9>&-
+      sh -c "cp -R /work /tmp/w && cd /tmp/w && ( $cmd
+) 2>&1" 9>&-
     r=$?
     if [ $r -ne 0 ] && grep -qs "oom_kill [1-9]" "$cg/memory.events"; then exit 137; fi
     exit $r' ci-sandbox "$soma" "$switch" "$work" "$cmd"
