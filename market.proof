@@ -576,6 +576,22 @@ Proof.
        split; [apply Stdlib.Strings.String.eqb_neq; reflexivity|reflexivity].
 Qed.
 
+(** A merge checked on a head the repository has moved past makes no
+    proposal: its tree is the old head's, and a market that took it would
+    record a head no node reaches (bid 68 of the joint network's first
+    night, merged by its leader alone). *)
+Theorem moved_head_merge_makes_no_proposal : forall (m : obj) (a i tree on : string) (b : bid),
+  bid_by m (num i) = Some b -> moved_since m (bid_repo m b) on = true ->
+  exists why, why <> "" /\ apply m a ["merge", i, tree, on] = (m, [], why).
+Proof.
+  intros m a i tree on b Hb Hmv.
+  unfold apply. cbn beta iota zeta.
+  rewrite Hb, Hmv.
+  repeat match goal with |- context [if ?c then _ else _] => destruct c eqn:? end.
+  all: match goal with |- exists w, _ /\ (_, _, ?r) = _ => exists r end;
+       split; [apply Stdlib.Strings.String.eqb_neq; reflexivity|reflexivity].
+Qed.
+
 (** And every merge that goes through names an existing bid made by
     someone else, sent by the term leader. *)
 Theorem merge_needs_leader_and_others_bid : forall (m m' : obj) (a i tree : string) (outs : list (list string)),

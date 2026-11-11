@@ -22,7 +22,7 @@ if ! soma run test/scopes.soma > "$T/out" 2> "$T/err"; then
 fi
 cat "$T/out"
 n=$(grep -c '^ok ' "$T/out")
-if grep -q '^FAIL' "$T/out" || [ "$n" -lt 21 ]; then fail "scopes program ($n of 21 ok)"; fi
+if grep -q '^FAIL' "$T/out" || [ "$n" -lt 27 ]; then fail "scopes program ($n of 27 ok)"; fi
 
 # a network with two repositories, calc and lib
 for r in calc lib; do

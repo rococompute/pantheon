@@ -135,7 +135,35 @@ lines_agent : list string :=
   ++ say (forallb (fun p => has p "Repositories: calc" && negb (has p "lib")) (draft_asks dx) && (0 <? length (draft_asks dx))) "its draft prompt offers only calc"
   ++ say ((check_reqs ax =? 0) && (check_reqs ai =? 1)) "only an agent whose scope has lib checks a lib merge".
 
+(** A merge or mark checked on a head the repository has moved past is
+    refused, and a leader whose check answers after a merge landed checks
+    again instead of merging: what bid 68 did to the joint network's first
+    night, merged by its leader alone on the old head's tree *)
+submits (o : list (list string)) : list (list string) :=
+  flat_map (fun x => match x with "submit" :: _ :: tx => [tx] | _ => [] end) o.
+
+lines_moved : list string :=
+  let m := with_lib_bid "claude" 1 in
+  let '(_, _, wok) := apply m "claude" ["merge", "1", "tree1", "l0"] in
+  let '(_, _, wold) := apply m "claude" ["merge", "1", "tree1", "lold"] in
+  let '(_, _, wnone) := apply m "claude" ["merge", "1", "tree1"] in
+  let '(_, _, wmk) := apply m "claude" ["mark", "1", "- a lib task", "tree2", "lold"] in
+  (* the leader's agent checks bid 1 on l0; then the head moves to l1 *)
+  let (a, _) := match bid_by m 1 with
+                 | Some bd => check_req (llm "claude") m "mcheck" bd ""
+                 | None => (llm "claude", [])
+                 end in
+  let moved := setf m "repos" ([("calc", "t0"), ("lib", "l1")] : list (string * string)) in
+  let (_, ostale) := answered a moved "1" ["ok", "true", "tree", "tree1"] in
+  let (_, ofresh) := answered a m "1" ["ok", "true", "tree", "tree1"] in
+  say (seq wok "") "a merge naming the head its tree was checked on is taken"
+  ++ say (has wold "checked on another head") "one naming a head the repository has moved past is refused"
+  ++ say (seq wnone "") "one naming no head is taken, as before"
+  ++ say (has wmk "checked on another head") "a mark naming a moved head is refused"
+  ++ say ((length (submits ostale) =? 0) && (check_reqs ostale =? 1)) "a check answering after the head moved is asked again on the head, not merged"
+  ++ say (existsb (fun tx => match tx with ["merge", "1", "tree1", "l0"] => true | _ => false end) (submits ofresh)) "one answering on the head merges, naming it".
+
 report : list string :=
-  lines_scope ++ lines_bidders ++ lines_leader ++ lines_quorum ++ lines_alone ++ lines_stall ++ lines_agent.
+  lines_scope ++ lines_bidders ++ lines_leader ++ lines_quorum ++ lines_alone ++ lines_stall ++ lines_agent ++ lines_moved.
 
 main := print_lines report.

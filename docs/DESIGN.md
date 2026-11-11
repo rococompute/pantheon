@@ -97,7 +97,11 @@ budget, its merge budget, or a stall. Two genesis settings change it. The
 parameter `merge_approvals` sets the approvals a merge needs: 1 makes the leader
 responsible alone, its own check and pick landing at once, with rotation and later
 bids, not attestors, guarding against a bad leader; the dogfood network runs that
-way. A part's `exclude` takes repositories out of an agent's scope: it isn't asked
+way. With no attestor recomputing the tree, a merge or a mark names the head its
+tree was checked on (`merge BID TREE HEAD`), and the market refuses it once the
+repository has moved past that head: a check that answers after another merge
+landed is the old head's, and its tree is one no node reaches. The leader's agent
+checks such a bid again on the head instead (`moved_since`). A part's `exclude` takes repositories out of an agent's scope: it isn't asked
 to bid, lead or check there, and a merge there counts its quorum over the agents
 whose scope has the repository (`scope`, `merge_n`; `market.proof` restates the
 merge theorem with `merge_quorum`).

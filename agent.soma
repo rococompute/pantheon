@@ -417,7 +417,8 @@ bid_duty (a m : obj) : obj * list (list string) :=
 check_req (a m : obj) (kind : string) (b : bid) (t : string) : obj * list (list string) :=
   let r := bid_repo m b in
   let id := show (nreq a + 1) in
-  (setf (setf a "nreq" (nreq a + 1)) "reqs" ((id, [kind, show (bidn b), t]) :: reqs a),
+  (* the head the check runs on, last: a merge or mark names it *)
+  (setf (setf a "nreq" (nreq a + 1)) "reqs" ((id, [kind, show (bidn b), t, get_or "" r (repos m)]) :: reqs a),
    [("check" :: id :: r :: get_or "" r (repos m) :: flat_edits (edits b))]).
 
 (** what an attestation of bid b to the pending merge is asked under: a merge
@@ -467,7 +468,8 @@ flush (a m : obj) : obj * list (list string) :=
   match queue a with
   | ["merge", b] :: rest =>
       let a := setf a "queue" rest in
-      match bid_by m (num b) with Some bd => check_req a m "mcheck" bd "" | None => (a, []) end
+      (* a bid merged, rejected or cleared since it was queued isn't checked *)
+      match bid_by m (num b) with Some bd => if is_pending (bst bd) then check_req a m "mcheck" bd "" else (a, []) | None => (a, []) end
   | ["markq", t] :: rest =>
       let a := setf a "queue" rest in
       let line := get_or "" t (plan_lines a) in
@@ -475,7 +477,7 @@ flush (a m : obj) : obj * list (list string) :=
       | Some tk =>
           let r := trepo tk in
           let id := show (nreq a + 1) in
-          (setf (setf a "nreq" (nreq a + 1)) "reqs" ((id, ["markcheck", t, line]) :: reqs a),
+          (setf (setf a "nreq" (nreq a + 1)) "reqs" ((id, ["markcheck", t, line, get_or "" r (repos m)]) :: reqs a),
            [("check" :: id :: r :: get_or "" r (repos m) :: (epath (mark_edit line) :: eold (mark_edit line) :: enew (mark_edit line) :: []))])
       | None => (a, [])
       end
@@ -529,15 +531,27 @@ answered (a m : obj) (id : string) (kv : list string) : obj * list (list string)
         | None => (a, [])
         end
       else flush (enqueue a ["attest", b, "no"]) m
-  | Some ("markcheck" :: t :: line :: _) =>
-      if seq (kv_at kv "ok") "true" then flush (enqueue a ["mark", t, line, kv_at kv "tree"]) m
+  | Some ("markcheck" :: t :: line :: rest) =>
+      let on := match rest with o :: _ => o | [] => "" end in
+      (* a merge landed while the check ran: its answer is the old head's,
+         so the mark is checked again on the head *)
+      if match task_by m (num t) with Some tk => moved_since m (trepo tk) on | None => false end
+      then flush (enqueue a ["markq", t]) m
+      else if seq (kv_at kv "ok") "true" then flush (enqueue a ["mark", t, line, kv_at kv "tree", on]) m
       else
         let a := setf a "plan_lines" (put t "" (plan_lines a)) in
         let '(a, o) := flush a m in
         (a, ["log", append "the plan line of task " (append t (append " can't be marked, so it closes unmarked: " (kv_at kv "why")))] :: o)
-  | Some ("mcheck" :: b :: _) =>
+  | Some ("mcheck" :: b :: rest) =>
+      (* the head the check ran on; none recorded is taken as the head *)
+      let on := match rest with _ :: o :: _ => o | _ => "" end in
       if seq (kv_at kv "ok") "error" then abstain a kv
-      else if seq (kv_at kv "ok") "true" then flush (enqueue a ["merge", b, kv_at kv "tree"]) m
+      (* a merge landed while the check ran (bid 68 of the joint network's
+         first night): whatever it said, it said it of the old head, so the
+         bid is checked again on the head *)
+      else if match bid_by m (num b) with Some bd => moved_since m (bid_repo m bd) on | None => false end
+      then flush (enqueue a ["merge", b]) m
+      else if seq (kv_at kv "ok") "true" then flush (enqueue a ["merge", b, kv_at kv "tree", on]) m
       else if seq (kv_at kv "stage") "node" then abstain a kv
       (* edits that don't apply to the head, on a bid made before a merge
          since, conflict with that merge: the bid is cleared, not rejected,

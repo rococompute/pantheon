@@ -116,7 +116,8 @@ wg/NAME.json     WireGuard only: each machine's public key and endpoint
 `examples/network/network.json` is a template. Among its parameters,
 `merge_approvals` is how many approvals a merge or a mark needs, the leader's
 own proposal counting as one: `1` (the template's) is the leader alone, its
-check and pick landing in the block it proposes; `0`, the market's default, is
+check and pick landing in the block it proposes (on the head it checked on:
+a merge naming a head the repository has moved past is refused); `0`, the market's default, is
 n-f of the agents whose scope has the repository, the rest attestors' yes on
 the same tree. A repository's `url` is any URL
 `git clone` takes, or a path relative to the network directory, and `commit`

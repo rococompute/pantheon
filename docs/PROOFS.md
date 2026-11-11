@@ -93,6 +93,7 @@ commands need not do so. Trusted toolchains and build-cache provenance matter.
 | `bidders_for_at_most_two` | Selection returns at most two bidders even for malformed rosters; no fairness guarantee. |
 | `bidders_for_excludes_leader` | The selected bidders exclude the current leader; no claim about earlier leaders' bids. |
 | `self_merge_makes_no_proposal` | A merge naming the sender's bid fails with a reason and unchanged state; no liveness guarantee. |
+| `moved_head_merge_makes_no_proposal` | A merge naming a head its bid's repository has moved past (`moved_since`) fails with a reason and unchanged state; does not prove the named tree is right. |
 | `merge_needs_leader_and_others_bid` | A successful merge command is from the leader and names someone else's existing bid; does not prove finalization. |
 | `apply_reveal` | Expands the reveal branch and its guards; no cryptographic assumption proved. |
 | `getf_setf_same` | Lookup of an updated key returns its value; only a record helper. |
