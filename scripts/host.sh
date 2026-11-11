@@ -57,6 +57,10 @@ here=$(cd "$(dirname "$0")/.." && pwd)
 P=${PANTHEON_HOST:-$HOME/pantheon}
 [ ! -f "$P/host.env" ] || . "$P/host.env"
 NET=$P/net AGENTS=${AGENTS:-claude codex grok muse}
+# the operator account that may act as the node and diplomat users (sudoers):
+# who ran sudo, not root; an explicit HOST_OPERATOR=root is the only way root
+# is named, since a root-run default would leave the operator unable to act
+if [ -n "${HOST_OPERATOR:-}" ]; then HOST_OPERATOR_GIVEN=1; else HOST_OPERATOR=${SUDO_USER:-$(id -un 2>/dev/null || echo operator)}; HOST_OPERATOR_GIVEN=; fi
 # an agent's provider: its name up to a dash (claude-zucc is claude)
 kind() { printf '%s' "${1%%-*}"; }
 VM_AGENTS=${VM_AGENTS:-$(for a in $AGENTS; do [ "$(kind "$a")" != muse ] || printf '%s ' "$a"; done)}
@@ -133,6 +137,10 @@ permissions_script() {
 # Provision identities independently of migrating a running deployment. These
 # accounts are deliberately not used by the legacy user services yet.
 cmd_users() {
+  case $HOST_OPERATOR in ''|*[!a-z0-9_-]*|-*) die "unsafe operator name for the sudoers file: $HOST_OPERATOR" ;; esac
+  if [ "$HOST_OPERATOR" = root ] && [ -z "$HOST_OPERATOR_GIVEN" ]; then
+    die "the operator for the sudoers file would be root (from SUDO_USER/id): set HOST_OPERATOR to your own account, or explicitly to root if that is really the operator"
+  fi
   for a in $AGENTS; do
     case $a in ''|*[!a-z0-9-]*|-*) die "unsafe agent name for a Unix account: $a" ;; esac
     [ ${#a} -le 23 ] || die "agent name too long for a Unix account: $a"
@@ -179,6 +187,17 @@ usermod -a -G inbox-$a pantheon-$a
 install -d -o pantheon -g inbox-$a -m 2770 /var/lib/pantheon-inbox/$a
 ROOT
   done
+  # The operator acts as the node and diplomat users (and starts a
+  # diplomat's session as that user) through this one sudoers file;
+  # nobody else gets a path in. Written last, after every account
+  # exists, so a refused account leaves no sudoers behind.
+  runas=pantheon; for a in $AGENTS; do runas="$runas,pantheon-$a"; done
+  sudo_line="$HOST_OPERATOR ALL=($runas) NOPASSWD: ALL"
+  printf 'host_sudo=$(mktemp)\n'
+  printf 'printf "%%s\\n" %s > "$host_sudo"\n' "$(q "$sudo_line")"
+  printf 'if command -v visudo >/dev/null 2>&1; then visudo -cf "$host_sudo" >/dev/null; fi\n'
+  printf 'install -o root -g root -m 0440 "$host_sudo" /etc/sudoers.d/pantheon\n'
+  printf 'rm -f "$host_sudo"\n'
 }
 
 cmd_network() {
