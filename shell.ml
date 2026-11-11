@@ -811,7 +811,13 @@ type node_handle = { h_events : unit -> string list list; h_perform : string lis
                      h_track_tx : string -> unit;
                      h_nonce_flooded : unit -> bool;
                      h_mark_nonce_flood : unit -> unit;
-                     h_send_all : string list -> unit }
+                     h_send_all : string list -> unit;
+                     h_signed_vote : string -> string option;
+                     h_signed_body : string -> string list option;
+                     h_remember_vote : string -> string -> string list -> unit;
+                     h_remember_broadcast : string -> string -> string list -> string list -> unit;
+                     h_peer_count : unit -> string;
+                     h_send_peer : string -> string list -> unit }
 let node_handles : (string, node_handle) Hashtbl.t = Hashtbl.create 4
 let node_counter = ref 0
 let lookup_handle id = try Hashtbl.find node_handles id with Not_found -> fail "unknown node handle %s" id
@@ -847,6 +853,12 @@ let node_track_tx id raw = (lookup_handle id).h_track_tx raw; true
 let node_nonce_flooded id = (lookup_handle id).h_nonce_flooded ()
 let node_mark_nonce_flood id = (lookup_handle id).h_mark_nonce_flood (); true
 let node_send_all id fields = (lookup_handle id).h_send_all fields; true
+let node_signed_vote id slot = (lookup_handle id).h_signed_vote slot
+let node_signed_body id slot = (lookup_handle id).h_signed_body slot
+let node_remember_vote id slot vid fields = (lookup_handle id).h_remember_vote slot vid fields; true
+let node_remember_broadcast id height kind fields alt = (lookup_handle id).h_remember_broadcast height kind fields alt; true
+let node_peer_count id = (lookup_handle id).h_peer_count ()
+let node_send_peer id index fields = (lookup_handle id).h_send_peer index fields; true
 let rec forever f s = forever f (f s)
 
 let node_open plan_open packed json_fn home flags =
@@ -909,7 +921,7 @@ let node_open plan_open packed json_fn home flags =
   let queue = Queue.create () in
   let push ev = Queue.add ev queue in
   let height = ref 0 in
-  let mine : (int * string list) list ref = ref [] in
+  let mine : (int * (string * string list * string list)) list ref = ref [] in
   let my_txs : (float * string) list ref = ref [] in
   let blocks : (int, string list) Hashtbl.t = Hashtbl.create 64 in
   let served : (string * int, float) Hashtbl.t = Hashtbl.create 64 in
@@ -982,36 +994,13 @@ let node_open plan_open packed json_fn home flags =
       let line = wire fields in
       List.iter (fun p -> send_to p line) peers
   in
-  (* Byzantine variants of our own messages, for fault-injection tests *)
-  let send_consensus fields =
-    match byz, fields with
-    | "equivocate", "proposal" :: h :: r :: vr :: _ :: _ ->
-        let alt = [ "proposal"; h; r; vr; hash_list [ "equivocation"; h; r ]; "equivocation"; h; r ] in
-        List.iteri (fun i p -> send_to p (wire (if i = 0 then fields else alt))) peers
-    | "double-vote", k :: h :: r :: vr :: _ :: rest when k = "prevote" || k = "precommit" ->
-        List.iteri (fun i p -> send_to p (wire (if i = 0 then fields else k :: h :: r :: vr :: "" :: rest))) peers
-    | _ -> broadcast_fields fields
-  in
-  (* Never sign two different votes for one height, round and kind, even
-     across a restart: that is the one thing an honest validator can't do.
-     Asked to, it sends the vote it signed before instead: staying silent
-     would hide that it's behind, and the others only send a node the blocks
-     it missed when they hear from it. *)
-  let guard fields =
-    match fields with
-    | k :: h :: r :: _ :: vid :: _ when k <> "done" ->
-        let slot = String.concat "/" [ k; h; r ] in
-        (match Hashtbl.find_opt signed slot with
-         | Some (v, before) when v <> vid && byz = "" ->
-             (match before with
-              | Some f -> say "already signed a %s at %s: sending that one again" k slot; Some f
-              | None -> say "refusing to sign a second %s at %s: already signed %s" k slot v; None)
-         | Some _ -> Some fields
-         | None ->
-             Hashtbl.replace signed slot (vid, Some fields);
-             append_line_synced signed_path (slot ^ " " ^ vid ^ " " ^ Yojson.Safe.to_string (strings_json fields));
-             Some fields)
-    | _ -> Some fields
+  (* Resend exactly the messages Soma recorded. The choice of message,
+     including equivocation and silence, was made when they were recorded. *)
+  let resend_recorded kind fields alt =
+    match kind with
+    | "each" -> List.iteri (fun i p -> send_to p (wire (if i = 0 then fields else alt))) peers
+    | "all" -> let line = wire fields in List.iter (fun p -> send_to p line) peers
+    | _ -> ()
   in
   (* jobs the node stopped for running past their time limit *)
   let overtime = Hashtbl.create 8 in
@@ -1323,12 +1312,6 @@ let node_open plan_open packed json_fn home flags =
   in
   let handle out =
     match out with
-    | "broadcast" :: fields ->
-        (match guard fields with
-         | Some f ->
-             (match f with _ :: h :: _ -> mine := (int_of_string h, f) :: !mine | _ -> ());
-             send_consensus f
-         | None -> ())
     | "merge" :: r :: v :: tree :: bid :: task :: bidder :: spec :: edits ->
         apply_merge r (int_of_string v) tree bid task bidder spec (triples_of edits)
     | "llm" :: id :: kind :: prompt :: ctx ->
@@ -1422,7 +1405,7 @@ let node_open plan_open packed json_fn home flags =
        links drop, and the protocol needs every message to arrive eventually *)
     if now -. !last_rebroadcast > 2. then begin
       last_rebroadcast := now;
-      List.iter (fun (_, f) -> send_consensus f) (List.rev !mine);
+      List.iter (fun (_, (kind, fields, alt)) -> resend_recorded kind fields alt) (List.rev !mine);
       my_txs := List.filter (fun (t, _) -> now -. t < 120.) !my_txs;
       List.iter (fun (_, raw) -> broadcast_fields [ "tx"; raw ]) !my_txs
     end;
@@ -1622,6 +1605,18 @@ let node_open plan_open packed json_fn home flags =
       h_track_tx = (fun raw -> my_txs := (Unix.gettimeofday (), raw) :: !my_txs);
       h_nonce_flooded = (fun () -> !nonce_flood_sent);
       h_mark_nonce_flood = (fun () -> nonce_flood_sent := true);
-      h_send_all = (fun fields -> let line = wire fields in List.iter (fun p -> send_to p line) peers) };
+      h_send_all = (fun fields -> let line = wire fields in List.iter (fun p -> send_to p line) peers);
+      h_signed_vote = (fun slot -> Option.map fst (Hashtbl.find_opt signed slot));
+      h_signed_body = (fun slot -> match Hashtbl.find_opt signed slot with Some (_, body) -> body | None -> None);
+      h_remember_vote = (fun slot vid fields ->
+        Hashtbl.replace signed slot (vid, Some fields);
+        append_line_synced signed_path (slot ^ " " ^ vid ^ " " ^ Yojson.Safe.to_string (strings_json fields)));
+      h_remember_broadcast = (fun height kind fields alt ->
+        mine := (int_of_string height, (kind, fields, alt)) :: !mine);
+      h_peer_count = (fun () -> string_of_int (List.length peers));
+      h_send_peer = (fun index fields ->
+        match List.nth_opt peers (int_of_string index) with
+        | Some p -> send_to p (wire fields)
+        | None -> ()) };
   handle_id
 

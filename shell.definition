@@ -77,3 +77,11 @@ node_track_tx : string -> string -> bool.
 node_nonce_flooded : string -> bool.
 node_mark_nonce_flood : string -> bool.
 node_send_all : string -> list string -> bool.
+
+(** Vote table, resend memory and socket writes. Soma chooses the message. *)
+node_signed_vote : string -> string -> option string.
+node_signed_body : string -> string -> option (list string).
+node_remember_vote : string -> string -> string -> list string -> bool.
+node_remember_broadcast : string -> string -> string -> list string -> list string -> bool.
+node_peer_count : string -> string.
+node_send_peer : string -> string -> list string -> bool.

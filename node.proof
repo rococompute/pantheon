@@ -234,3 +234,57 @@ Example submission_silence_only_suppresses_the_peer_send :
   submission_plan "silent" false "7" ["withdraw", "0"] =
     [PublishTransaction "7" ["withdraw", "0"] (Some "sending withdraw 0")].
 Proof. repeat split; reflexivity. Qed.
+
+Example broadcast_selects_its_fields_and_leaves_other_outputs :
+  plan_output ["broadcast", "prevote", "1", "0", "-1", "v", "nil"] =
+    Broadcast ["prevote", "1", "0", "-1", "v", "nil"] /\
+  plan_output ["broadcast"] = Broadcast [] /\
+  plan_output ["not-broadcast"] = LegacyOutput ["not-broadcast"].
+Proof. repeat split; reflexivity. Qed.
+
+Example broadcast_records_a_new_vote_then_sends_it_to_every_peer :
+  broadcast_plan "" 2 ["prevote", "1", "0", "-1", "v", "nil"]
+    (Some ("prevote", "1", "0", "v")) None None =
+    [RememberVote "prevote/1/0" "v" ["prevote", "1", "0", "-1", "v", "nil"],
+     RememberBroadcast "1" "all" ["prevote", "1", "0", "-1", "v", "nil"]
+       ["prevote", "1", "0", "-1", "v", "nil"],
+     SendEveryone ["prevote", "1", "0", "-1", "v", "nil"]].
+Proof. reflexivity. Qed.
+
+Example broadcast_refuses_a_second_value_when_nothing_was_stored :
+  broadcast_plan "" 2 ["prevote", "1", "0", "-1", "w", "nil"]
+    (Some ("prevote", "1", "0", "w")) (Some "v") None =
+    [LogAction "refusing to sign a second prevote at prevote/1/0: already signed v"].
+Proof. reflexivity. Qed.
+
+Example broadcast_resends_the_stored_vote :
+  broadcast_plan "" 1 ["prevote", "1", "0", "-1", "w", "nil"]
+    (Some ("prevote", "1", "0", "w")) (Some "v")
+    (Some ["prevote", "1", "0", "-1", "v", "nil"]) =
+    [LogAction "already signed a prevote at prevote/1/0: sending that one again",
+     RememberBroadcast "1" "all" ["prevote", "1", "0", "-1", "v", "nil"]
+       ["prevote", "1", "0", "-1", "v", "nil"],
+     SendEveryone ["prevote", "1", "0", "-1", "v", "nil"]].
+Proof. reflexivity. Qed.
+
+Example broadcast_silent_records_the_vote_and_sends_nothing :
+  broadcast_plan "silent" 2 ["prevote", "1", "0", "-1", "v", "nil"]
+    (Some ("prevote", "1", "0", "v")) None None =
+    [RememberVote "prevote/1/0" "v" ["prevote", "1", "0", "-1", "v", "nil"]] /\
+  broadcast_subject ["done", "4", "0", "0", "abc", "tx"] = None /\
+  broadcast_plan "" 1 ["ping"] None None None = [SendEveryone ["ping"]].
+Proof. repeat split; reflexivity. Qed.
+
+Example broadcast_equivocates_and_double_votes_per_peer :
+  broadcast_plan "equivocate" 2 ["proposal", "3", "1", "0", "vid", "val"] None None None =
+    [RememberBroadcast "3" "each" ["proposal", "3", "1", "0", "vid", "val"]
+       ["proposal", "3", "1", "0", hash_list ["equivocation", "3", "1"], "equivocation", "3", "1"],
+     SendPeer "0" ["proposal", "3", "1", "0", "vid", "val"],
+     SendPeer "1" ["proposal", "3", "1", "0", hash_list ["equivocation", "3", "1"], "equivocation", "3", "1"]] /\
+  broadcast_plan "double-vote" 2 ["prevote", "3", "1", "0", "vid", "val", "tail"]
+    (Some ("prevote", "3", "1", "vid")) (Some "vid") None =
+    [RememberBroadcast "3" "each" ["prevote", "3", "1", "0", "vid", "val", "tail"]
+       ["prevote", "3", "1", "0", "", "val", "tail"],
+     SendPeer "0" ["prevote", "3", "1", "0", "vid", "val", "tail"],
+     SendPeer "1" ["prevote", "3", "1", "0", "", "val", "tail"]].
+Proof. repeat split; reflexivity. Qed.
