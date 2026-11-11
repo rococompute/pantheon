@@ -1046,10 +1046,29 @@ Fixpoint carry_all (h : node_t) (snap : consensus_state) (effs : list (list stri
     second count against the budget. It isn't a [step] event: the state is
     the same either way (the branches differ only so extraction keeps the
     call). *)
+(** A peer line, parsed by the shell (JSON and signature stay
+    bindings): dropped when it is this node's own or an
+    already-refused transaction -- neither pays for a verify -- and
+    otherwise turned into the event it carries once verified. *)
+line_dropped (self refused : string) : bool :=
+  seq self "1" || seq refused "1".
+
+line_event (from : string) (fields : list string) : list string :=
+  match fields with
+  | ["tx", raw] => ["tx", raw]
+  | _ => "msg" :: from :: fields
+  end.
+
 run_event (h : node_t) (st : node_state) (ev : list string) : node_state :=
   match ev with
   | "llm_release" :: id :: kind :: prompt :: ctx =>
       if llm_call h id kind prompt ctx then st else with_live st (live st)
+  | "peer_line" :: self :: refused :: from :: sig :: fields =>
+      if line_dropped self refused then st
+      else if node_verify_line h from sig fields then
+        let (s, outs) := step st (line_event from fields) in
+        if carry_all h (cons s) (order_effects (line_event from fields) st s outs) then s else st
+      else st
   | _ =>
       let (s, outs) := step st ev in
       if carry_all h (cons s) (order_effects ev st s outs) then s else st
