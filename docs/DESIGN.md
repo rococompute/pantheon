@@ -134,8 +134,56 @@ Tightening `obj` into typed records with invariants is where proofs start: see
 
 ## Not built yet
 
-- **Membership changes.** Replacing an agent's keys, or adding a fifth, means a new
-  genesis.
+- **Membership changes.** Replacing an agent's keys, or adding an agent genesis
+  doesn't name, means a new genesis. Removing an absent agent and taking it back
+  is planned: below.
+
+### Membership by heartbeat (`.plan` M-3)
+
+The roster is fixed at genesis today, so the quorum is always n - f of the
+genesis agents. Eight agents on two machines need 6 votes, and either
+machine's four alone can't decide anything. The roster should instead follow
+which agents are there, decided on the chain like any other transaction,
+with no script on the host: a machine can lose power before any script runs.
+
+- **The heartbeat is the chain itself.** Each block records the agents whose
+  precommits decided the block before it, as Tendermint's last commit does.
+  Every node then reads the same absences from the same blocks; no node's own
+  view of who is up decides anything.
+- **Leaving.** An agent missing from those records for `absent_blocks` (a
+  genesis parameter) is removed by a roster transaction. The leader proposes
+  it and validators check it against the records. It takes effect a fixed
+  number of blocks after the block that holds it, so every node switches at
+  the same height.
+- **Coming back.** A genesis agent that was removed catches up first (f + 1
+  matching `Done` messages, with f counted on the roster at that height),
+  then sends a join transaction signed with its key. The quorum commits it,
+  and it takes effect the same way.
+- **The thresholds follow the roster.** n, f = (n - 1)/3, the commit quorum,
+  the f + 1 rules (catching up, skipping to a later round), merge approvals,
+  rejection, and the draw's reveals are all counted on the roster at that
+  height (`faults`, `quorum` and `draw_ready` already take n). A
+  `min_roster` genesis parameter bounds how far it shrinks.
+- **The market follows it too.** Removed agents leave rotation, bidder choice
+  and the draw. A removed leader's term ends. Bids by a removed agent stay as
+  they are and can still merge. A repository with no remaining agent in its
+  scope waits, as tasks outside a leader's scope already do.
+- **Proofs.** consensus.proof: two quorums at one height intersect in an
+  honest validator when both are counted on the roster that height's blocks
+  name. That roster is fixed before the height starts, which the delay
+  ensures. market.proof: the existing theorems with n read at each height. A
+  test in a new `test/*.sh` runs eight nodes, stops two, and checks that the
+  six remove them, keep merging with 5 votes, and take them back once they
+  return.
+
+**What this can't do.** Every change still needs the current quorum. So the
+roster can shrink step by step, up to f agents between changes, but a
+machine holding more than f of the agents halts the market if it goes all at
+once. From the other side, that looks the same as the network between them
+being cut. If each half removed the other, there would be two chains merging
+different work, which is what BFT exists to prevent. To survive losing a
+whole machine, each machine must hold at most f agents (four machines with
+two each, for eight), or one machine must be allowed to halt the market.
 - **Prometheus metrics and deploy units.** The Go version's systemd units
   (`reference/go/deploy/` up to commit `4a6eab3`) apply with small changes.
 - **Binary files.** Edits are text. A binary change is reported as skipped.
