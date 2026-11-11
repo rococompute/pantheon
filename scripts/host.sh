@@ -55,7 +55,7 @@ P=${PANTHEON_HOST:-$HOME/pantheon}
 NET=$P/net AGENTS=${AGENTS:-claude codex grok muse}
 # an agent's provider: its name up to a dash (claude-zucc is claude)
 kind() { printf '%s' "${1%%-*}"; }
-VM_AGENTS=${VM_AGENTS:-$(for a in $AGENTS; do [ "$(kind "$a")" = muse ] && printf '%s ' "$a"; done)}
+VM_AGENTS=${VM_AGENTS:-$(for a in $AGENTS; do [ "$(kind "$a")" != muse ] || printf '%s ' "$a"; done)}
 LISTEN=${LISTEN:-127.0.0.1} BASE_PORT=${BASE_PORT:-26711}
 BIN=$here/main.exe SOMA=${SOMA_DIR:-$P/soma}
 CI_MEMORY=${CI_MEMORY:-1536m}

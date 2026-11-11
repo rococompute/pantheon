@@ -1,6 +1,6 @@
 #!/bin/bash
-# Genesis validation on its own: 3f + 1 parts (4, 7, ...), unique names and
-# unique public keys, and valid four- and seven-part geneses build.
+# Genesis validation on its own: at least four parts, unique names and
+# unique public keys, and valid four-, five- and seven-part geneses build.
 #
 #   test/genesis.sh
 #
@@ -47,15 +47,19 @@ copy4
   && jq -e '.agents | length == 4' "$T/home/genesis.json" >/dev/null \
   && ok "valid four-part genesis builds" || fail "valid genesis failed: $(cat "$T/genesis.log")"
 
-# five parts
+# five parts: more than 3f + 1 is safe too
 copy4
 cp "$T/key-e/public.json" "$T/net/parts/e.json"
-expect_refused "five parts" 'genesis must have 3f + 1 parts (4, 7, 10, ...), got 5'
+rm -rf "$T/home"; mkdir -p "$T/home"
+"$BIN" genesis "$T/home" "$T/net" > "$T/genesis.log" 2>&1 \
+  && jq -e '.agents | length == 5' "$T/home/genesis.json" >/dev/null \
+  && ok "valid five-part genesis builds" || fail "five-part genesis failed: $(cat "$T/genesis.log")"
+rm -rf "$T/home"; mkdir -p "$T/home"
 
 # three parts (wrong count the other way)
 copy4
 rm "$T/net/parts/d.json"
-expect_refused "three parts" 'genesis must have 3f + 1 parts (4, 7, 10, ...), got 3'
+expect_refused "three parts" 'genesis must have at least 4 parts, got 3'
 
 # seven parts (n = 3f + 1 with f = 2): a genesis with seven agents
 copy4

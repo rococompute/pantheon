@@ -33,8 +33,7 @@
 #   JOIN             another host's agents in the same network, by scripts/host.sh there: USER@HOST,
 #                    reached with tailscale ssh (default: none). The VMs' nodes then take addresses on
 #                    this Mac's tailnet address, ports 26701 on, forwarded to them (scripts/sandbox.sh forwards)
-#   JOIN_AGENTS      its agents (default: claude codex grok, each with -HOST after it: with the
-#                    four here, seven, n = 3f + 1 with f = 2, which genesis requires)
+#   JOIN_AGENTS      its agents (default: claude codex grok muse, each with -HOST after it)
 #   JOIN_DIR         its Pantheon checkout, under its home (default: pantheon/pantheon)
 set -eu
 here=$(cd "$(dirname "$0")/.." && pwd)
@@ -46,7 +45,7 @@ SOMA_CI_AGENTS=${SOMA_CI_AGENTS:-claude codex grok}
 REPOS=${REPOS:-pantheon soma}
 for r in $REPOS; do case $r in pantheon|soma) ;; *) printf 'sandbox: REPOS has %s: it can name pantheon and soma\n' "$r" >&2; exit 1 ;; esac; done
 JOIN=${JOIN:-}
-JOIN_AGENTS=${JOIN_AGENTS:-$( [ -z "$JOIN" ] || for k in claude codex grok; do printf '%s-%s ' "$k" "${JOIN#*@}"; done)}
+JOIN_AGENTS=${JOIN_AGENTS:-$( [ -z "$JOIN" ] || for k in claude codex grok muse; do printf '%s-%s ' "$k" "${JOIN#*@}"; done)}
 JOIN_DIR=${JOIN_DIR:-pantheon/pantheon}
 BASE=pantheon-base
 HOMEDIR=/var/lib/pantheon/home

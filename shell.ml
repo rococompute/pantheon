@@ -558,12 +558,12 @@ let build_genesis helpers home net =
   let netj = read_json (Filename.concat net "network.json") in
   let pdir = Filename.concat net "parts" in
   let files = if Sys.file_exists pdir then Sys.readdir pdir |> Array.to_list |> List.filter (fun f -> Filename.check_suffix f ".json") |> List.sort compare else [] in
-  (* n = 3f + 1 agents with f >= 1 (4, 7, 10, ...): consensus's quorum is
-     n - f with f = (n - 1) / 3, and any other n tolerates no more faults than
-     the 3f + 1 below it while needing more votes *)
+  (* at least four agents: n >= 3f + 1 tolerates f = (n - 1) / 3 faulty
+     ones, consensus's quorum being n - f; 4, 7 and 10 are the n that need
+     the fewest votes for their f, and any n of 4 or more is safe *)
   let n = List.length files in
-  if n < 4 || (n - 1) mod 3 <> 0 then
-    fail "genesis must have 3f + 1 parts (4, 7, 10, ...), got %d (%s has %d parts; a network of n = 3f + 1 agents tolerates f faulty ones. Each agent runs `pantheon keygen` and adds its public.json there)"
+  if n < 4 then
+    fail "genesis must have at least 4 parts, got %d (%s has %d parts; n agents tolerate (n - 1) / 3 faulty ones, so four is the fewest that tolerate one. Each agent runs `pantheon keygen` and adds its public.json there)"
       n pdir n;
   let raw_parts = List.map (fun f -> (f, read_json (Filename.concat pdir f))) files in
   let seen_names = ref [] in
