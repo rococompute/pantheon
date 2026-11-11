@@ -866,13 +866,25 @@ let note_refused id raw = (lookup_handle id).h_refuse raw; true
 let boot_events id = (lookup_handle id).h_boot
 let boot_snapshot id = Option.map Obj.obj (lookup_handle id).h_snapshot
 let replay_count id = (lookup_handle id).h_replayed
-let node_timer id ms ev = (lookup_handle id).h_timer ms ev; true
+(* The node's operations (node.soma's node_op, U-1), one at a time in their
+   wire form (node.soma's io_wire; this match is its io_of_wire): the only
+   place the node logs, sets a timer, queues an event or sends on a peer
+   link. A unikernel would interpret the same operations through Sandbox. *)
+let node_io id op =
+  let h = lookup_handle id in
+  (match op with
+   | [ "log"; text ] -> h.h_log text
+   | "timer" :: ms :: ev -> h.h_timer ms ev
+   | "push" :: ev -> h.h_push ev
+   | "send_all" :: fields -> h.h_send_all fields
+   | "send_peer" :: index :: fields -> h.h_send_peer index fields
+   | "peer_send" :: who :: fields -> h.h_peer_send who fields
+   | _ -> fail "unknown node operation %s" (String.concat " " op));
+  true
 let node_conn_admit id oid mode target = (lookup_handle id).h_conn_admit oid mode target; true
 let node_conns id = (lookup_handle id).h_conns ()
 let node_conn_close id cid = (lookup_handle id).h_conn_close cid; true
 let node_line_limit id = (lookup_handle id).h_line_limit ()
-let node_log id text = (lookup_handle id).h_log text; true
-let node_push id ev = (lookup_handle id).h_push ev; true
 let node_draw id = (lookup_handle id).h_draw
 let node_block id height = (lookup_handle id).h_block height
 let node_store id height txs = (lookup_handle id).h_store height txs; true
@@ -883,7 +895,6 @@ let node_current_height id = (lookup_handle id).h_current_height ()
 let node_last_served id who h = (lookup_handle id).h_last_served who h
 let node_mark_served id who h now = (lookup_handle id).h_mark_served who h now; true
 let node_peer_exists id who = (lookup_handle id).h_peer_exists who
-let node_peer_send id who fields = (lookup_handle id).h_peer_send who fields; true
 let node_checkout_heads id = (lookup_handle id).h_checkout_heads ()
 let node_divergences id = (lookup_handle id).h_divergences ()
 let node_limit_info id = (lookup_handle id).h_limit_info ()
@@ -898,13 +909,11 @@ let node_encode_tx id nonce fields = (lookup_handle id).h_encode_tx nonce fields
 let node_track_tx id raw = (lookup_handle id).h_track_tx raw; true
 let node_nonce_flooded id = (lookup_handle id).h_nonce_flooded ()
 let node_mark_nonce_flood id = (lookup_handle id).h_mark_nonce_flood (); true
-let node_send_all id fields = (lookup_handle id).h_send_all fields; true
 let node_signed_vote id slot = (lookup_handle id).h_signed_vote slot
 let node_signed_body id slot = (lookup_handle id).h_signed_body slot
 let node_remember_vote id slot vid fields = (lookup_handle id).h_remember_vote slot vid fields; true
 let node_remember_broadcast id height kind fields alt = (lookup_handle id).h_remember_broadcast height kind fields alt; true
 let node_peer_count id = (lookup_handle id).h_peer_count ()
-let node_send_peer id index fields = (lookup_handle id).h_send_peer index fields; true
 (* Raw Yojson member reads and node metadata. Soma gates the parse and
    decides whether to verify and which event the fields carry. *)
 let node_line_parts raw =

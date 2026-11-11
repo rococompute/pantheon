@@ -149,6 +149,25 @@ which the binary runs as processes and the unikernel would ask services for
 over the network. Those are Soma's items, in Soma's own `.plan` (the market
 governs Soma too); the interface is Pantheon's (the `U-1` line in `.plan`).
 
+The interface so far is `node.soma`'s `node_op`, carried out by `io_do`
+through one binding, `node_io` (shell.ml interprets the operation's wire
+form, `io_wire`; `io_of_wire` reads it back, proved for every operation).
+What a `Sandbox` interpreter of each operation still lacks:
+
+| `node_op` | binary (shell.ml) | Sandbox lacks |
+|---|---|---|
+| `IoLog text` | a line on stdout with the time | nothing: printing (the time with the clock below) |
+| `IoTimer ms event` | a timer list checked each select turn | a millisecond clock and sleep (Soma's "a millisecond clock") |
+| `IoQueue event` | the event queue the next turn drains | nothing: a queue in the program's loop |
+| `IoSendAll fields`, `IoSendPeer index fields`, `IoPeerSend peer fields` | sign, frame and buffer on the peer's TCP link | links that stay open (Soma's "links that stay open") and RSA signing (Soma's "SHA-256 and RSA") |
+
+Not yet operations, still bindings of their own (the next parts of U-1):
+the clock and the node's tables (reads, which need operations with a
+result, as `Sandbox.io`'s binds have), the block log, signed votes and the
+snapshot (Soma's "storage"), the listener and accepted connections (links),
+SHA-256 and RSA (Soma's item), and git, model and CI jobs (Soma's
+"services": `fetch` with a timeout and HTTP POST).
+
 ## The first pieces, bottom-up (superseded by the section above)
 
 `shell.ml`'s sections, roughly from least to most I/O:
@@ -167,6 +186,19 @@ where it is. A piece that would need a binding Soma can't express yet is
 worth a note in this file rather than a workaround.
 
 ## Done so far
+
+- U-1, part: the node's effects that write (a log line, a timer, an
+  event queued for the loop, a send to every peer, to the peer at an
+  index or to a peer by name) are values of `node_op` in `node.soma`.
+  Every place that called `node_log`, `node_timer`, `node_push`,
+  `node_send_all`, `node_send_peer` or `node_peer_send` now builds an
+  operation and carries it out with `io_do`; those six bindings are gone,
+  and shell.ml's `node_io` is the one interpreter. `action_io` and
+  `output_io` give the operation a plan's action or an output is, and
+  `node.proof` checks them on concrete plans and proves each is carried
+  out as exactly its operation, and that the wire form reads back.
+  Left: reads (clock, tables), files, git, model and CI jobs (see "Two
+  directions, and the unikernel").
 
 - Step 5, connection and line limits: an accepted socket reaches Soma
   as a `conn_offer` event carrying its per-host and total counts;
