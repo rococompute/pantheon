@@ -166,6 +166,14 @@ Example catchup_existing_and_empty_blocks_request_exact_peer_send :
     Some ("peer", ["done", "4", "0", "0", hash_list []]).
 Proof. split; reflexivity. Qed.
 
+Example check_selects_the_ci_job :
+  plan_output ["check", "9", "calc", "head1", "e1", "e2"] =
+    CheckRequest "9" "calc" "head1" ["e1", "e2"] /\
+  plan_output ["check", "9", "calc", "head1"] = CheckRequest "9" "calc" "head1" [] /\
+  plan_output ["check", "9", "calc"] = LegacyOutput ["check", "9", "calc"] /\
+  plan_output ["check"] = LegacyOutput ["check"].
+Proof. repeat split; reflexivity. Qed.
+
 Example status_and_submit_select_the_shared_interpreter :
   plan_output ["status"] = WriteStatus [] /\
   plan_output ["status", "version 2", "pool 0"] = WriteStatus ["version 2", "pool 0"] /\
@@ -233,4 +241,102 @@ Example submission_silence_only_suppresses_the_peer_send :
   submission_send "" "signed tx" = Some ["tx", "signed tx"] /\
   submission_plan "silent" false "7" ["withdraw", "0"] =
     [PublishTransaction "7" ["withdraw", "0"] (Some "sending withdraw 0")].
+Proof. repeat split; reflexivity. Qed.
+
+Example broadcast_selects_its_fields_and_leaves_other_outputs :
+  plan_output ["broadcast", "prevote", "1", "0", "-1", "v", "nil"] =
+    Broadcast ["prevote", "1", "0", "-1", "v", "nil"] /\
+  plan_output ["broadcast"] = Broadcast [] /\
+  plan_output ["not-broadcast"] = LegacyOutput ["not-broadcast"].
+Proof. repeat split; reflexivity. Qed.
+
+Example broadcast_records_a_new_vote_then_sends_it_to_every_peer :
+  broadcast_plan "" 2 ["prevote", "1", "0", "-1", "v", "nil"]
+    (Some ("prevote", "1", "0", "v")) None None =
+    [RememberVote "prevote/1/0" "v" ["prevote", "1", "0", "-1", "v", "nil"],
+     RememberBroadcast "1" "all" ["prevote", "1", "0", "-1", "v", "nil"]
+       ["prevote", "1", "0", "-1", "v", "nil"],
+     SendEveryone ["prevote", "1", "0", "-1", "v", "nil"]].
+Proof. reflexivity. Qed.
+
+Example broadcast_refuses_a_second_value_when_nothing_was_stored :
+  broadcast_plan "" 2 ["prevote", "1", "0", "-1", "w", "nil"]
+    (Some ("prevote", "1", "0", "w")) (Some "v") None =
+    [LogAction "refusing to sign a second prevote at prevote/1/0: already signed v"].
+Proof. reflexivity. Qed.
+
+Example broadcast_resends_the_stored_vote :
+  broadcast_plan "" 1 ["prevote", "1", "0", "-1", "w", "nil"]
+    (Some ("prevote", "1", "0", "w")) (Some "v")
+    (Some ["prevote", "1", "0", "-1", "v", "nil"]) =
+    [LogAction "already signed a prevote at prevote/1/0: sending that one again",
+     RememberBroadcast "1" "all" ["prevote", "1", "0", "-1", "v", "nil"]
+       ["prevote", "1", "0", "-1", "v", "nil"],
+     SendEveryone ["prevote", "1", "0", "-1", "v", "nil"]].
+Proof. reflexivity. Qed.
+
+Example broadcast_silent_records_the_vote_and_sends_nothing :
+  broadcast_plan "silent" 2 ["prevote", "1", "0", "-1", "v", "nil"]
+    (Some ("prevote", "1", "0", "v")) None None =
+    [RememberVote "prevote/1/0" "v" ["prevote", "1", "0", "-1", "v", "nil"]] /\
+  broadcast_subject ["done", "4", "0", "0", "abc", "tx"] = None /\
+  broadcast_plan "" 1 ["ping"] None None None = [SendEveryone ["ping"]].
+Proof. repeat split; reflexivity. Qed.
+
+Example broadcast_equivocates_and_double_votes_per_peer :
+  broadcast_plan "equivocate" 2 ["proposal", "3", "1", "0", "vid", "val"] None None None =
+    [RememberBroadcast "3" "each" ["proposal", "3", "1", "0", "vid", "val"]
+       ["proposal", "3", "1", "0", hash_list ["equivocation", "3", "1"], "equivocation", "3", "1"],
+     SendPeer "0" ["proposal", "3", "1", "0", "vid", "val"],
+     SendPeer "1" ["proposal", "3", "1", "0", hash_list ["equivocation", "3", "1"], "equivocation", "3", "1"]] /\
+  broadcast_plan "double-vote" 2 ["prevote", "3", "1", "0", "vid", "val", "tail"]
+    (Some ("prevote", "3", "1", "vid")) (Some "vid") None =
+    [RememberBroadcast "3" "each" ["prevote", "3", "1", "0", "vid", "val", "tail"]
+       ["prevote", "3", "1", "0", "", "val", "tail"],
+     SendPeer "0" ["prevote", "3", "1", "0", "vid", "val", "tail"],
+     SendPeer "1" ["prevote", "3", "1", "0", "", "val", "tail"]].
+Proof. repeat split; reflexivity. Qed.
+
+(** A decided merge's pure part: its gate, its edits and the texts said. *)
+Example merge_output_selects_merge_and_short_forms_stay_legacy :
+  plan_output ["merge", "calc", "2", "tree", "7", "3", "codex", "spec", "a.txt", "x", "y"] =
+    MergeRequest "calc" "2" "tree" "7" "3" "codex" "spec" ["a.txt", "x", "y"] /\
+  plan_output ["merge", "calc", "2", "tree", "7", "3", "codex"] =
+    LegacyOutput ["merge", "calc", "2", "tree", "7", "3", "codex"].
+Proof. split; reflexivity. Qed.
+
+Example merge_gate_unknown_applied_newer_and_diverged :
+  merge_gate_of None "2" false = MergeUnknown /\
+  merge_gate_of (Some "2") "2" false = MergeSkip /\
+  merge_gate_of (Some "3") "2" false = MergeSkip /\
+  merge_gate_of (Some "1") "2" true = MergeSkip /\
+  merge_gate_of (Some "1") "2" false = MergeApply.
+Proof. repeat split; reflexivity. Qed.
+
+Example merge_triples_in_order_dropping_a_short_tail :
+  merge_triples ["a", "o", "n", "b", "", "whole", "c", "x"] = [("a", "o", "n"), ("b", "", "whole")].
+Proof. reflexivity. Qed.
+
+Example merge_edit_plan_cases :
+  merge_edit_plan "../x" "o" "n" "file" = EditFail "unsafe path ../x" /\
+  merge_edit_plan "a" "o" "n" "symlink" = EditFail "a goes through a symlink" /\
+  merge_edit_plan "a" "o" "n" "dir" = EditFail "a is a directory" /\
+  merge_edit_plan "a" "" "" "file" = EditRemove "a" /\
+  merge_edit_plan "a" "" "" "none" = EditFail "a: nothing to delete" /\
+  merge_edit_plan "a" "" "whole" "none" = EditWrite "a" "whole" /\
+  merge_edit_plan "a" "o" "n" "none" = EditFail "a: no such file to edit" /\
+  merge_edit_plan "a" "o" "n" "file" = EditRead "a".
+Proof. repeat split; reflexivity. Qed.
+
+Example merge_edit_once_zero_one_several :
+  merge_edit_apply "a" "x" "y" "abc" = EditFail "a: the old text isn't in the file" /\
+  merge_edit_apply "a" "b" "y" "abc" = EditWrite "a" "ayc" /\
+  merge_edit_apply "a" "b" "y" "abcb" = EditFail "a: the old text appears more than once, so give more of it".
+Proof. repeat split; reflexivity. Qed.
+
+Example merge_tree_check_and_texts :
+  merge_tree_check "t" None = Some "git commit failed" /\
+  merge_tree_check "t" (Some ("t", "abc1234")) = None /\
+  merge_tree_check "t" (Some ("u", "abc1234")) = Some "got tree u, attested t" /\
+  merge_diverged_text "calc" "07" "boom" = "DIVERGED: repository calc, merge 7: boom. Stopped taking merges for it.".
 Proof. repeat split; reflexivity. Qed.

@@ -168,6 +168,13 @@ worth a note in this file rather than a workaround.
 
 ## Done so far
 
+- Step 4, broadcast: `broadcast_plan` decides which vote is sent, the
+  signed-vote log, and the per-peer equivocate and double-vote variants.
+  Silence records the vote and sends nothing. The two-second resend repeats
+  the messages Soma stored, and does not choose them again. OCaml only
+  reads and writes the vote table and the sockets. Remaining cases: merge,
+  llm and check.
+
 - Step 4, status and submission: `status_output` assembles the status file
   from raw checkout heads, divergence records and limit metadata; the only
   shell operations read those values, convert a timestamp to local time,
@@ -179,7 +186,7 @@ worth a note in this file rather than a workaround.
   startup/replay and runtime, and their old `handle` branches are gone.
   `node.proof` checks exact status bytes, limit boundaries, log truncation,
   dispatch, flood ordering/count/range and silent sends. Remaining step 4
-  cases are broadcast, merge, llm and check; the helper record is unchanged.
+  cases are merge, llm and check; the helper record is unchanged.
 
 - Step 4, peer catch-up: `behind` now selects `CatchupPeer` in the shared
   Soma dispatcher. `catchup_plan` names the served-table write and bounded
@@ -204,7 +211,15 @@ worth a note in this file rather than a workaround.
   node with decided outputs before its mandatory snapshot and votes after.
   `startup_effects` checks this order without timing a live process. The
   old `feed` loop and its state/step/checkpoint/restore callbacks are gone.
-  Remaining step 4 cases: broadcast, status, merge, submit, llm and check. Helpers stay in their record until those callers move.
+  Remaining step 4 cases: llm. Helpers stay in their record until those callers move.
+
+- Step 4, merge: a decided merge dispatches in Soma (`perform_merge`). Pure
+  `merge_gate_of` passes over an unknown repository, an applied version and
+  a diverged checkout; `merge_edit_plan` and `merge_edit_apply` (Soma's
+  `edit_once`) decide each edit; `merge_tree_check` compares the committed
+  tree with the attested one. The shell only resets, probes, reads, writes,
+  removes, commits and records. `apply_edits` stays in shell.ml for
+  `check` and `apply-edits`.
 
 - The helper callbacks (step 3) are one typed `shell_helpers` record in
   `util.soma`. `node_open` receives it once; the binding transports its four
