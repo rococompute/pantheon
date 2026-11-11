@@ -446,3 +446,102 @@ Example release_texts :
   release_one_text "claude" "3" = "the limit's wait is over: asking claude one held request first (3 held)" /\
   release_all_text "claude" "3" = "claude answers again: asking its 3 held requests".
 Proof. split; reflexivity. Qed.
+
+(** What a model's output becomes (step 5): a limit noticed, when it
+    resets, how long it holds, and a reply's outcome. *)
+Example is_limit_words_any_case :
+  is_limit "Error: Rate Limit exceeded" = true /\
+  is_limit "You've hit your limit" = true /\
+  is_limit "API error (status 402 Payment Required): Grok Build usage balance exhausted" = true /\
+  is_limit "RESOURCE_EXHAUSTED" = true /\
+  is_limit "all good" = false /\
+  is_limit "" = false.
+Proof. repeat split; reflexivity. Qed.
+
+Example is_limit_429_only_as_its_own_number :
+  is_limit "429" = true /\
+  is_limit "HTTP 429 Too" = true /\
+  is_limit "status=429." = true /\
+  is_limit "k429" = false /\
+  is_limit "14290" = false /\
+  is_limit "4290 k429 x" = false /\
+  is_limit "k429 then 429" = true.
+Proof. repeat split; reflexivity. Qed.
+
+Example reset_in_claude_deadline :
+  reset_in digits_float 1735999000%float "Claude AI usage limit reached|1736000000" = Some 1000%float /\
+  reset_in digits_float 1735999000%float "Claude AI usage limit reached|1736000000
+" = Some 1000%float /\
+  reset_in digits_float 1736000001%float "Claude AI usage limit reached|1736000000" = None /\
+  reset_in digits_float 0%float "limit|1736000000 more" = None /\
+  reset_in digits_float 0%float "limit|" = None.
+Proof. repeat split; reflexivity. Qed.
+
+Example reset_in_phrases_and_units :
+  reset_in digits_float 0%float "Rate limit: try again in 5 minutes" = Some 300%float /\
+  reset_in digits_float 0%float "Try again in  2 hours" = Some 7200%float /\
+  reset_in digits_float 0%float "quota resets in 30s" = Some 30%float /\
+  reset_in digits_float 0%float "try again in 7" = Some 420%float /\
+  reset_in digits_float 0%float "try again later; resets in 1h" = Some 3600%float /\
+  reset_in digits_float 0%float "try again in a bit" = None /\
+  reset_in digits_float 0%float "usage limit" = None /\
+  reset_in digits_float 0%float "resets in 3 hours" = Some 10800%float.
+Proof. repeat split; reflexivity. Qed.
+
+Example limit_wait_and_backoff :
+  limit_wait (Some 300%float) 900%float = 310%float /\
+  limit_wait (Some 0%float) 900%float = 900%float /\
+  limit_wait None 1800%float = 1800%float /\
+  limit_next_backoff 900%float = 1800%float /\
+  limit_next_backoff 3600%float = 7200%float /\
+  limit_next_backoff 7200%float = 7200%float.
+Proof. repeat split; reflexivity. Qed.
+
+Example limit_log_line :
+  limit_log_text "claude" "15" "usage limit" =
+    "LIMIT: claude says it has hit its limit, so its model calls are held for 15 minutes: usage limit".
+Proof. reflexivity. Qed.
+
+Example reply_outcomes :
+  reply_outcome_of "!process failed (exit 1): usage limit reached" (fun _ => None) =
+    ReplyHold "process failed (exit 1): usage limit reached" /\
+  reply_outcome_of "!boom" (fun _ => None) = ReplyError "boom" /\
+  reply_outcome_of "!" (fun _ => None) = ReplyError "" /\
+  reply_outcome_of "{""a"": ""quota""}" (fun _ => Some ["a", "quota"]) = ReplyFields ["a", "quota"] /\
+  reply_outcome_of "sorry, rate limit" (fun _ => None) = ReplyHold "sorry, rate limit" /\
+  reply_outcome_of "  hello
+there " (fun _ => None) = ReplyError "the reply had no JSON object: hello there" /\
+  reply_outcome_of "
+ " (fun _ => None) = ReplyError "the reply was empty" /\
+  reply_outcome_of "" (fun _ => None) = ReplyError "the reply was empty".
+Proof. repeat split; reflexivity. Qed.
+
+Example reply_no_json_cut_at_two_hundred :
+  reply_no_json_text (append (Stdlib.Strings.String.concat "" (repeat "0123456789" 20)) "X") =
+    append "the reply had no JSON object: " (append (Stdlib.Strings.String.concat "" (repeat "0123456789" 20)) "...") /\
+  reply_no_json_text (Stdlib.Strings.String.concat "" (repeat "0123456789" 20)) =
+    append "the reply had no JSON object: " (Stdlib.Strings.String.concat "" (repeat "0123456789" 20)).
+Proof. split; reflexivity. Qed.
+
+(** A reply with no JSON object never becomes a reply event. *)
+Theorem no_json_no_reply : forall text kv,
+  reply_outcome_of text (fun _ => None) <> ReplyFields kv.
+Proof.
+  intros text kv. unfold reply_outcome_of.
+  destruct (starts "!" text); destruct (is_limit text); discriminate.
+Qed.
+
+(** A failed job never becomes a reply event either, whatever its JSON. *)
+Theorem failed_job_no_reply : forall text f kv,
+  starts "!" text = true -> reply_outcome_of text f <> ReplyFields kv.
+Proof.
+  intros text f kv H. unfold reply_outcome_of. rewrite H.
+  destruct (is_limit text); discriminate.
+Qed.
+
+(** A JSON reply from a job that didn't fail is that reply, limit words or not. *)
+Theorem json_reply_is_the_reply : forall text f kv,
+  starts "!" text = false -> f text = Some kv -> reply_outcome_of text f = ReplyFields kv.
+Proof.
+  intros text f kv H J. unfold reply_outcome_of. rewrite H, J. reflexivity.
+Qed.
