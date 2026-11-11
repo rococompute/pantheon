@@ -3,6 +3,24 @@
     effect appears only when consensus changed (as [empty_node]'s has not),
     decided outputs come before it, and the rest come after. *)
 
+Example feed_chunks_splits_lines_and_keeps_the_partial :
+  feed_chunks [] "one
+tw" = (["one"], ["tw"]) /\
+  feed_chunks ["tw"] "o
+three
+" = (["two", "three"], []) /\
+  feed_chunks [] "a
+b
+c
+" = (["a", "b", "c"], []) /\
+  feed_chunks [] "" = ([], [""]) /\
+  feed_chunks ["ab"] "cd" = ([], ["ab", "cd"]) /\
+  feed_chunks [] "
+" = ([""], []) /\
+  feed_chunks [] "no newline at all" = ([], ["no newline at all"]) /\
+  chunks_len ["ab", "cde"] = 5 /\ chunks_len [] = 0.
+Proof. repeat split; reflexivity. Qed.
+
 Example connection_admission_and_line_cap_edges :
   admit_decision_of 15 63 = AdmitNew /\ admit_decision_of 16 0 = AdmitRefuse /\
   admit_decision_of 0 64 = AdmitEvict /\ admit_decision_of 16 64 = AdmitRefuse /\
@@ -776,3 +794,16 @@ Proof.
   intros h out op H. unfold output_io in H. unfold perform_output.
   destruct (plan_output out); try discriminate H; injection H as <-; reflexivity.
 Qed.
+
+(** A local transaction from the inbox: a JSON list of strings, and the
+    shapes that are malformed. *)
+Example inbox_tx_shapes :
+  inbox_tx (Some ["L", "2", "S", "post", "S", "calc task"]) = Some ["post", "calc task"] /\
+  inbox_tx (Some ["L", "0"]) = Some [] /\
+  inbox_tx None = None /\
+  inbox_tx (Some ["A", "0"]) = None /\
+  inbox_tx (Some ["L", "2", "S", "a", "I", "3"]) = None /\
+  inbox_tx (Some ["L", "1", "S", "a", "S", "b"]) = None /\
+  inbox_tx (Some ["L", "2", "S", "a"]) = None /\
+  inbox_tx (Some ["S", "x"]) = None.
+Proof. repeat split; reflexivity. Qed.

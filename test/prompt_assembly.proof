@@ -1,0 +1,35 @@
+(** These results are checked in Soma, independently of extraction and I/O. *)
+Example prompt_fixed_result : assembled fixture_template ["calc", "a.txt", "missing"] = fixture_expected.
+Proof. reflexivity. Qed.
+
+Example prompt_mixed_plan_result : plan_open fixture_plan = ["first open", "second open", "third open"].
+Proof. reflexivity. Qed.
+
+Theorem prompt_plan_at_most_sixty : forall text, length (plan_open text) <= 60.
+Proof. intro text. unfold plan_open. apply firstn_le_length. Qed.
+
+Theorem prompt_plan_ordered_prefix : forall text,
+  exists tail, map truncate_line (filter open_line (map trim (split_lines text))) = plan_open text ++ tail.
+Proof.
+  intro text. unfold plan_open.
+  exists (skipn 60 (map truncate_line (filter open_line (map trim (split_lines text))))).
+  symmetry. apply firstn_skipn.
+Qed.
+
+Theorem prompt_plan_items_have_open_sources : forall text item,
+  In item (plan_open text) ->
+  exists raw, In raw (split_lines text) /\ open_line (trim raw) = true /\ item = truncate_line (trim raw).
+Proof.
+  intros text item H. unfold plan_open in H.
+  assert (Hfull : In item (map truncate_line (filter open_line (map trim (split_lines text))))).
+  { rewrite <- (firstn_skipn 60 (map truncate_line (filter open_line (map trim (split_lines text))))).
+    apply in_or_app. left. exact H. }
+  apply in_map_iff in Hfull. destruct Hfull as [line [E Hline]].
+  apply filter_In in Hline. destruct Hline as [Hline Hopen].
+  apply in_map_iff in Hline. destruct Hline as [raw [T Hraw]].
+  exists raw. subst line. repeat split; auto.
+Qed.
+
+Theorem prompt_no_context_ignores_repo : forall token template repos plan repo1 repo2,
+  prompt_assemble token template [] repos plan repo1 = prompt_assemble token template [] repos plan repo2.
+Proof. reflexivity. Qed.

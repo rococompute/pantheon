@@ -69,7 +69,8 @@ the leader reads `.plan` at the repository's head each time it drafts.
 ## How the market uses it
 
 - **Drafting:** the leader's prompt has each repository's open items, in
-  order, under "Each repository's plan" (shell.ml `plan_text`). The leader
+  order, under "Each repository's plan" (`node.soma`'s `plan_text_of`,
+  expanded by `prompt_assemble`). The leader
   takes the open item no task already covers that it judges best to do next,
   usually the first, and says why when it isn't. With room for another task
   (`max_open_tasks`), it drafts one beside the open ones when it judges one can

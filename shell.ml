@@ -663,7 +663,7 @@ let cmd_genesis packed home net =
 type peer = { name : string; addr : string; mutable out : Unix.file_descr option; mutable connecting : bool;
               obuf : Buffer.t; mutable next_try : float }
 
-type conn = { cid : int; fd : Unix.file_descr; ibuf : Buffer.t; host : string; mutable last : float }
+type conn = { cid : int; fd : Unix.file_descr; host : string; mutable last : float; mutable chunks : string list }
 
 (* inbound connections: peers are a handful, so these are generous *)
 let max_conns = 64
@@ -766,6 +766,8 @@ type node_handle = { h_events : unit -> string list list;
                      h_head_file : string -> string -> string option;
                      h_conn_admit : string -> string -> string -> unit;
                      h_conns : unit -> (string * float) list;
+                     h_conn_buffer : string -> string list;
+                     h_conn_store_buffer : string -> string list -> unit;
                      h_conn_close : string -> unit;
                      h_line_limit : unit -> string;
                      h_save : Obj.t -> unit; h_refuse : string -> unit; h_boot : string list list; h_snapshot : Obj.t option; h_replayed : string;
@@ -896,6 +898,8 @@ let node_io id op =
   | _ -> fail "unknown node operation %s" (String.concat " " op)
 let node_conn_admit id oid mode target = (lookup_handle id).h_conn_admit oid mode target; true
 let node_conns id = (lookup_handle id).h_conns ()
+let node_conn_buffer id cid = (lookup_handle id).h_conn_buffer cid
+let node_conn_store_buffer id cid chunks = (lookup_handle id).h_conn_store_buffer cid chunks; true
 let node_conn_close id cid = (lookup_handle id).h_conn_close cid; true
 let node_line_limit id = (lookup_handle id).h_line_limit ()
 let node_draw id = (lookup_handle id).h_draw
@@ -1386,7 +1390,8 @@ let node_open packed home flags =
         Array.iter (fun f ->
             let p = Filename.concat d f in
             if Filename.check_suffix f ".json" then begin
-              (try push ("local_tx" :: json_strings (Yojson.Safe.from_file p)) with _ -> say "ignoring malformed %s" p);
+              (* node.soma's inbox_tx decides what the file becomes *)
+              push [ "inbox_file"; p; (try read_file p with _ -> "") ];
               Sys.remove p
             end)
           (Sys.readdir d)
@@ -1433,18 +1438,10 @@ let node_open packed home flags =
           | 0 -> Unix.close c.fd; false
           | n ->
               c.last <- now;
-              (* only the new bytes are looked at for a line's end, so a long
-                 line costs its length once, not once per read *)
-              (match Bytes.index_opt (Bytes.sub buf 0 n) '\n' with
-               | None -> Buffer.add_subbytes c.ibuf buf 0 n
-               | Some _ ->
-                   Buffer.add_subbytes c.ibuf buf 0 n;
-                   let s = Buffer.contents c.ibuf in
-                   let parts = String.split_on_char '\n' s in
-                   let rec take = function [ rest ] -> rest | l :: more -> push [ "peer_raw"; l ]; take more | [] -> "" in
-                   let rest = take parts in
-                   Buffer.clear c.ibuf; Buffer.add_string c.ibuf rest);
-              push [ "conn_buffer"; string_of_int c.cid; string_of_int (Buffer.length c.ibuf) ]; true
+              (* Soma splits these bytes into lines (feed_chunks in
+                 node.soma, through this peer_bytes event); the shell
+                 only reads the bytes from the descriptor *)
+              push [ "peer_bytes"; string_of_int c.cid; Bytes.sub_string buf 0 n ]; true
           | exception Unix.Unix_error ((EAGAIN | EWOULDBLOCK), _, _) -> true
           | exception _ -> (try Unix.close c.fd with _ -> ()); false)
       !conns;
@@ -1560,8 +1557,10 @@ let node_open packed home flags =
                  Unix.set_nonblock c;
                  let cid = !conn_counter in
                  incr conn_counter;
-                 conns := { cid; fd = c; ibuf = Buffer.create 4096; host; last = Unix.gettimeofday () } :: !conns));
+                 conns := { cid; fd = c; host; last = Unix.gettimeofday (); chunks = [] } :: !conns));
       h_conns = (fun () -> List.map (fun x -> (string_of_int x.cid, x.last)) !conns);
+      h_conn_buffer = (fun cid -> match List.find_opt (fun x -> string_of_int x.cid = cid) !conns with Some x -> x.chunks | None -> []);
+      h_conn_store_buffer = (fun cid chunks -> match List.find_opt (fun x -> string_of_int x.cid = cid) !conns with Some x -> x.chunks <- chunks | None -> ());
       h_conn_close = (fun cid ->
         match List.find_opt (fun x -> string_of_int x.cid = cid) !conns with
         | Some x -> (try Unix.close x.fd with _ -> ()); conns := List.filter (fun y -> y != x) !conns
