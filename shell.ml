@@ -817,7 +817,8 @@ type node_handle = { h_events : unit -> string list list; h_perform : string lis
                      h_remember_vote : string -> string -> string list -> unit;
                      h_remember_broadcast : string -> string -> string list -> string list -> unit;
                      h_peer_count : unit -> string;
-                     h_send_peer : string -> string list -> unit }
+                     h_send_peer : string -> string list -> unit;
+                     h_run_check : string -> string -> string -> string list -> unit }
 let node_handles : (string, node_handle) Hashtbl.t = Hashtbl.create 4
 let node_counter = ref 0
 let lookup_handle id = try Hashtbl.find node_handles id with Not_found -> fail "unknown node handle %s" id
@@ -848,6 +849,7 @@ let node_limit_info id = (lookup_handle id).h_limit_info ()
 let node_local_time until =
   let tm = Unix.localtime until in Printf.sprintf "%02d:%02d" tm.Unix.tm_hour tm.Unix.tm_min
 let node_write_status id text = (lookup_handle id).h_write_status text; true
+let node_run_check id req r head edits = (lookup_handle id).h_run_check req r head edits; true
 let node_encode_tx id nonce fields = (lookup_handle id).h_encode_tx nonce fields
 let node_track_tx id raw = (lookup_handle id).h_track_tx raw; true
 let node_nonce_flooded id = (lookup_handle id).h_nonce_flooded ()
@@ -1322,7 +1324,6 @@ let node_open plan_open packed json_fn home flags =
           hold (fun () -> call_model id kind prompt ctx)
         end
         else (say "asking %s for a %s (request %s, call %d of %d)" !backend kind id !calls !max_calls; call_model id kind prompt ctx)
-    | "check" :: id :: r :: head :: edits -> run_check id r head edits
     | _ -> ()
   in
   let debug = (try Sys.getenv "PANTHEON_DEBUG" with Not_found -> "") <> "" in
@@ -1617,6 +1618,7 @@ let node_open plan_open packed json_fn home flags =
       h_send_peer = (fun index fields ->
         match List.nth_opt peers (int_of_string index) with
         | Some p -> send_to p (wire fields)
-        | None -> ()) };
+        | None -> ());
+      h_run_check = run_check };
   handle_id
 

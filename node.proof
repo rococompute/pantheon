@@ -166,6 +166,14 @@ Example catchup_existing_and_empty_blocks_request_exact_peer_send :
     Some ("peer", ["done", "4", "0", "0", hash_list []]).
 Proof. split; reflexivity. Qed.
 
+Example check_selects_the_ci_job :
+  plan_output ["check", "9", "calc", "head1", "e1", "e2"] =
+    CheckRequest "9" "calc" "head1" ["e1", "e2"] /\
+  plan_output ["check", "9", "calc", "head1"] = CheckRequest "9" "calc" "head1" [] /\
+  plan_output ["check", "9", "calc"] = LegacyOutput ["check", "9", "calc"] /\
+  plan_output ["check"] = LegacyOutput ["check"].
+Proof. repeat split; reflexivity. Qed.
+
 Example status_and_submit_select_the_shared_interpreter :
   plan_output ["status"] = WriteStatus [] /\
   plan_output ["status", "version 2", "pool 0"] = WriteStatus ["version 2", "pool 0"] /\
