@@ -11,6 +11,7 @@
 # localhost. CI runs one check at a time, in a sandbox (deploy/host/ci-sandbox).
 # Nothing listens beyond localhost.
 #
+#   scripts/host.sh permissions        restrict existing node homes and secrets (HOST_DRY=DIR to preview)
 #   scripts/host.sh network            keys, the network and its genesis (once), for Pantheon at HEAD
 #   scripts/host.sh start              write the services and (re)start them all: nodes, mirror, inbox server
 #   scripts/host.sh vm AGENT           AGENT's VM (Muse's): made and started, the agent's CLI in it, a token
@@ -77,6 +78,28 @@ is_agent() { case " $AGENTS " in *" $1 "*) return 0 ;; esac; return 1; }
 vm() { printf 'pantheon-%s' "$1"; }
 q() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
 
+# Emit the same permission operations for deployment and for rootless CI.
+# This is only the modes part of P-1; it does not separate Unix identities.
+cmd_permissions() {
+  if [ -n "${HOST_DRY:-}" ]; then
+    mkdir -p "$HOST_DRY"
+    permissions_script > "$HOST_DRY/permissions.sh"
+  else
+    permissions_script | sh -eu
+  fi
+}
+permissions_script() {
+  printf '#!/bin/sh\nset -eu\n'
+  for a in $AGENTS; do
+    h=$(q "$NET/$a")
+    printf '[ ! -d %s ] || chmod 0700 %s\n' "$h" "$h"
+    k=$(q "$NET/$a/key.json")
+    printf '[ ! -f %s ] || chmod 0600 %s\n' "$k" "$k"
+  done
+  k=$(q "$P/inbox.json")
+  printf '[ ! -f %s ] || chmod 0600 %s\n' "$k" "$k"
+}
+
 cmd_network() {
   need_bin
   [ ! -d "$NET" ] || die "$NET already holds a network. A new chain is a new network: stop it, move $NET away, and run this again"
@@ -86,6 +109,7 @@ cmd_network() {
   "$BIN" init "$NET" --repo "pantheon=$here" --base-port 26701 --block-ms 1000 \
     --param term_blocks=3600 --param max_merges=2 --param stall_blocks=1800 --param attest_window=3600 \
     --param fallback_blocks=900 --param reveal_window=30 --param bid_cooldown=5
+  cmd_permissions
   [ -f "$P/goal.txt" ] || cp "$here/examples/cloud/goal.txt" "$P/goal.txt"
   mkdir -p "$P/inbox"; for a in $AGENTS; do mkdir -p "$P/inbox/$a"; done
   say "a network for Pantheon at $(git -C "$here" log -1 --format='%h %s' "$commit"); goals in $P/goal.txt"
@@ -130,6 +154,7 @@ PY
 cmd_start() {
   need_bin
   [ -d "$NET" ] || die "no network yet: scripts/host.sh network"
+  cmd_permissions
   for a in $AGENTS; do
     # the node strips PANTHEON_* from a backend's environment: the backend sets its own
     if in_vm_agents "$a"; then url="INBOX_URL=http://$VM_HOST:$PORT "; else url=""; fi
@@ -172,7 +197,8 @@ U
   [ -n "$REMOTE" ] && units="pantheon-mirror.service" || say "no REMOTE (this checkout has no origin): workers elsewhere can't see the market's head"
   if [ -n "$VM_AGENTS" ]; then
     # for the VMs: on the host's localhost, which a VM reaches and nothing outside does
-    [ -f "$P/inbox.json" ] || printf '{"listen": "127.0.0.1:%s", "url": "", "agents": {}}\n' "$PORT" > "$P/inbox.json"
+    (umask 077; [ -f "$P/inbox.json" ] || printf '{"listen": "127.0.0.1:%s", "url": "", "agents": {}}\n' "$PORT" > "$P/inbox.json")
+    cmd_permissions
     cat > "$UNITS/pantheon-inbox.service" <<U
 [Unit]
 Description=Pantheon inbox over HTTP, for the agents' VMs
@@ -299,7 +325,8 @@ cmd_vm() {
   limactl shell "$v" sh -c 'command -v git >/dev/null && command -v jq >/dev/null || { sudo apt-get update -q && sudo apt-get install -y -q git jq curl; }' >/dev/null
   # a token for this agent's inbox only; the instructions, the token beside them
   mkdir -p "$P/inbox/$a"
-  [ -f "$P/inbox.json" ] || printf '{"listen": "127.0.0.1:%s", "url": "", "agents": {}}\n' "$PORT" > "$P/inbox.json"
+  (umask 077; [ -f "$P/inbox.json" ] || printf '{"listen": "127.0.0.1:%s", "url": "", "agents": {}}\n' "$PORT" > "$P/inbox.json")
+  cmd_permissions
   tmp=$(mktemp -d); umask 077
   # a token once; NEW_TOKEN=1 replaces it (a running session then loses its inbox)
   if [ -n "${NEW_TOKEN:-}" ] || ! limactl shell "$v" test -s pantheon/token 2>/dev/null; then
@@ -396,7 +423,7 @@ cmd_logs() {
 
 c=${1:-}; [ $# -gt 0 ] && shift
 case $c in
-  network|start|vm|login|diplomats|watchdog|instructions|mirror|check|stop|status|logs) "cmd_$c" "$@" ;;
+  permissions|network|start|vm|login|diplomats|watchdog|instructions|mirror|check|stop|status|logs) "cmd_$c" "$@" ;;
   mirror-loop) cmd_mirror_loop ;;
   watchdog-loop) cmd_watchdog_loop ;;
   *) awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "$0"; [ -z "$c" ] || exit 1 ;;

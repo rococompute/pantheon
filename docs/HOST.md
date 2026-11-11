@@ -37,4 +37,15 @@ Nothing listens beyond localhost. The nodes talk on 127.0.0.1. Muse's VM (Lima o
 
 - **A diplomat's provider hits its usage limit:** the diplomat runs `pantheon-inbox limited`, and its node holds requests and probes again later (15, 30, 60, 120 minutes).
 - **A worker is slow:** a patch request gets under 30 minutes, and a late bid is dropped. Diplomats are told to keep answering attestations while workers run.
+- **File permissions:** `network` and `start` restrict each node home to 0700 and its `key.json` to 0600. The inbox token configuration is created privately and restricted to 0600 by `start` and `vm`. For an existing stopped deployment, `scripts/host.sh permissions` applies these modes; `HOST_DRY=DIR scripts/host.sh permissions` writes the same operations to `DIR/permissions.sh` without changing the deployment. This is only the permissions step of P-1; ownership and process identities are still unchanged.
+
 - **All diplomats run as the host's one user:** a diplomat could read the other nodes' keys. Separate Linux users per diplomat would close that; it isn't done yet.
+
+The inbox backend also supports `PANTHEON_INBOX_GROUP` for deployments with
+separate users: set it in the node's backend wrapper to that agent's inbox
+group, with both the node and diplomat as members. Requests are group-private;
+the patch worktree is group-writable with setgid directories and no access for
+others. Its sibling git directory stays node-owned. A failed group assignment
+refuses the request. This is preparatory support, not enabled by host.sh yet:
+separate service users, readable repository objects, and diplomat-side Git
+metadata for pull/apply still need to land before switching the host to it.
