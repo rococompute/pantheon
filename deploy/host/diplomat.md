@@ -39,7 +39,7 @@ Soma isn't a black box: it's a fork of the Rocq Prover with gradual dependent ty
 
 Workers can read it too: tell them to `git clone --depth 1 -b {{SOMA_REF}} {{SOMA_REMOTE}} soma` beside the repository and read what the task needs. Building Soma takes about 25 minutes and 2.5 GB, so a worker builds it only if its machine has room and the task needs a real check; otherwise you check its work here.
 
-This network governs Pantheon only: no one changes Soma through it. If you or a worker find a Soma bug, a missing feature, or a place where the language fights you, add a line to `{{SOMA_NOTES}}`: what you tried, what happened, and the smallest example you have. Those become Soma's next work.
+{{SOMA_SCOPE}}
 
 ## What to keep in mind
 

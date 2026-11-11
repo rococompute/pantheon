@@ -146,8 +146,8 @@ one-shot `serve` and `fetch` over TCP. The node also needs: peer links that
 stay open (send and receive on a connection), a millisecond clock, storage
 for the key and the block log, SHA-256 and RSA, and git, model calls and CI,
 which the binary runs as processes and the unikernel would ask services for
-over the network. Those are Soma's items (`Sandbox`); the interface is
-Pantheon's (the `U-1` line in `.plan`).
+over the network. Those are Soma's items, in Soma's own `.plan` (the market
+governs Soma too); the interface is Pantheon's (the `U-1` line in `.plan`).
 
 ## The first pieces, bottom-up (superseded by the section above)
 

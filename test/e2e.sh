@@ -399,7 +399,7 @@ scenario_network() {
     if [ $i -eq 3 ]; then
       echo "{\"repos\": []}" > "$net/network.json"
       "$BIN" genesis "$base/claude" "$net" > "$base/early.log" 2>&1 && { echo "FAIL network: genesis with 3 parts"; return 1; }
-      grep -q 'needs 4' "$base/early.log" || { echo "FAIL network: no clear error for 3 parts: $(cat "$base/early.log")"; return 1; }
+      grep -q 'at least 4 parts' "$base/early.log" || { echo "FAIL network: no clear error for 3 parts: $(cat "$base/early.log")"; return 1; }
     fi
   done
   commit=$(git -C "$ROOT/src/calc" rev-parse HEAD)
@@ -460,6 +460,23 @@ F
   if grep -q "edits don't apply" "$ROOT/cifail/claude/status.txt"; then echo "FAIL cifail: a CI failure was worded as don't apply"; return 1; fi
   agree cifail claude codex grok muse && agree_files cifail claude codex grok muse || return 1
   echo "ok cifail: a bid that applies was rejected for failing CI, in those words, and no node diverged"
+}
+
+# A node that can't build a repository (--no-check: Soma's CI on a small
+# host) abstains on that repository's bids instead of saying yes after only
+# applying the edits; the nodes that check it still merge.
+scenario_nocheck() {
+  init nocheck 28700 term_blocks=60 max_merges=1 bid_cooldown=2 attest_window=200 fallback_blocks=20 || return 1
+  fake=$ROOT/nocheck/fake-ci
+  printf '#!/bin/sh\ncd "$2" || exit 2\neval "$3"\n' > "$fake"; chmod +x "$fake"
+  for a in claude codex; do node nocheck "$a" -- --ci-sandbox "$fake" --ci 'true' --ci-memory 1g; done
+  for a in grok muse; do node nocheck "$a" -- --ci-sandbox "$fake" --ci 'true' --ci-memory 1g --no-check calc; done
+  wait_for nocheck claude 180 "an abstention" sh -c "grep -q \"abstains: this node doesn't check calc\" $ROOT/nocheck/grok/node.log $ROOT/nocheck/muse/node.log" || { stop nocheck; return 1; }
+  wait_for nocheck claude 120 "a merge" merges_at_least nocheck claude 1 || { stop nocheck; return 1; }
+  sleep 2; stop nocheck
+  if grep -q 'CI for request' "$ROOT/nocheck/grok/node.log" "$ROOT/nocheck/muse/node.log"; then echo "FAIL nocheck: a --no-check node ran CI"; return 1; fi
+  agree nocheck claude codex grok muse && agree_files nocheck claude codex grok muse || return 1
+  echo "ok nocheck: the --no-check nodes abstained and ran no CI; $(merged nocheck claude) merges"
 }
 
 # a bid's CI prints forever (its test runs `yes`): the checking nodes stop the
@@ -846,6 +863,7 @@ run() {
     cifail) scenario_cifail ;;
     ciflood) scenario_ciflood ;;
     cispoof) scenario_cispoof ;;
+    nocheck) scenario_nocheck ;;
     flood) scenario_flood ;;
     policy) scenario_policy ;;
     model) scenario_model ;;
@@ -859,7 +877,7 @@ run() {
   esac
 }
 
-ALL="bidders bidder-fallback bidder-timeout happy crash restart-lock equivocate double-vote silent bad-sig withhold bad-tree future-nonce deny silent-model policy model stuck limit limit-cli prune epoch text network ci cifail ciflood cispoof flood"
+ALL="bidders bidder-fallback bidder-timeout happy crash restart-lock equivocate double-vote silent bad-sig withhold bad-tree future-nonce deny silent-model policy model stuck limit limit-cli prune epoch text network ci cifail ciflood cispoof nocheck flood"
 want=${*:-$ALL}
 pids=""
 for s in $want; do (run "$s" > "$ROOT/$s.result" 2>&1; echo $? > "$ROOT/$s.code") & pids="$pids $!"; done

@@ -169,7 +169,7 @@ Sized for a 24 GB Mac running everything else you do on it:
 |---|---|---|
 | each VM | 4 GiB, 4 CPUs, plus 4 GiB of swap of its own (`VM_MEMORY`, `VM_CPUS`) | the worst moment is Soma's CI (2.3 GiB) beside the model's CLI and a `soma build` (about 1 GiB) |
 | a CI container | 3g, memory and `/tmp` together (`CI_MEMORY`) | a full Soma build at `-j 2` peaks at 2.3 GiB and takes 2.5 minutes |
-| Soma's CI | on claude, codex and grok (`SOMA_CI_AGENTS`) | whichever agent bids, two attestors run it, and two "no" votes reject a bid. On two nodes, a bid from one of them left one check, which a single "no" can't enforce (a merge needs three approvals, a rejection two): that's how a change that broke Pantheon merged |
+| Soma's CI | on claude, codex and grok (`SOMA_CI_AGENTS`; the others abstain on Soma's bids, `--no-check soma`) | whichever agent bids, two attestors run it, and two "no" votes reject a bid. On two nodes, a bid from one of them left one check, which a single "no" can't enforce (a merge needs three approvals, a rejection two): that's how a change that broke Pantheon merged |
 
 Pantheon's CI is light (seconds), so every node runs it. `nodes` applies a
 changed `VM_MEMORY` to existing VMs, restarting them. The VMs keep memory they
@@ -223,7 +223,7 @@ pantheon-grok pantheon-muse` (and `pantheon-base`).
 ## One network with another host's agents (JOIN)
 
 `JOIN=USER@HOST` adds a host's agents, run by `scripts/host.sh` there, to the
-sandbox's network: `JOIN=zucc@zucc REPOS=pantheon scripts/sandbox.sh reset`,
+sandbox's network: `JOIN=zucc@zucc scripts/sandbox.sh reset`,
 then `network` and `start` as usual. The Mac reaches the host with
 `tailscale ssh` (Tailscale SSH on in the host: `sudo tailscale set --ssh`).
 
@@ -245,5 +245,11 @@ then `network` and `start` as usual. The Mac reaches the host with
 - **Start:** `start` writes the goal on the host and runs `host.sh start`
   there (nodes, inbox server, mirror). The diplomats then start from a herdr
   pane on the host: `AGENTS='claude-HOST ...' LISTEN=IP scripts/host.sh diplomats`.
+- **Soma:** the network governs Soma too (`REPOS`, default `pantheon soma`).
+  Soma's CI runs on this Mac's claude, codex and grok only; the host's nodes
+  and Muse here run with `--no-check soma`, so they abstain on Soma's bids
+  instead of saying yes to edits they never built (a host with 7 GiB has no
+  room for a 2.3 GiB build beside four nodes). A Soma bid then merges when a
+  checking agent leads; a host leader leaves it pending for the next one.
 - **Until M-2:** the market counts approvals for four agents (three to merge,
   two no votes to reject), whatever the number of agents.

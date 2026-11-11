@@ -137,6 +137,9 @@ refuses to replace the genesis of a home that already has blocks.
   network, before attesting to a merge in that repository. `--ci CMD` sets one
   for every repository. Without CI, an attestor still checks that the edits
   apply and computes their tree, but can't see whether they build.
+  `--no-check NAME` is for a repository this agent can't build (Soma's CI on
+  a small host): it abstains on that repository's bids, as attestor and as
+  leader, rather than say yes after only applying the edits.
   `--ci-memory` caps the container's memory and its `/tmp` (default 8g):
   building Soma needs more than 4g.
 - `--max-llm-calls` caps model calls (default 100). Raise it on purpose.

@@ -80,6 +80,16 @@ GROK_MODEL=${GROK_MODEL:-grok}
 SOMA_REMOTE=${SOMA_REMOTE:-https://github.com/yevbar/soma.git}
 SOMA_REF=${SOMA_REF:-gradual}
 soma_commit() { git -C "$SOMA" rev-parse HEAD 2>/dev/null || echo unknown; }
+# whether the network's genesis governs Soma too (scripts/sandbox.sh's JOIN
+# makes one that does); this host's nodes then abstain on Soma's bids
+governs_soma() { jq -e '.repos[] | select(.name == "soma")' "$NET/${AGENTS%% *}/genesis.json" >/dev/null 2>&1; }
+soma_scope() {
+  if governs_soma; then
+    printf '%s' "This network governs Soma too: its .plan has Soma's items (Sandbox's pieces for the unikernel, first), and a task on Soma comes with a checkout of Soma in the request, the market's head, which is what you change; {{SOMA_DIR}} is for reading. This host has no room to build Soma (a build takes about 2.5 GB): its nodes don't check Soma's bids (they abstain), and the other host's nodes run Soma's CI, so do a Soma patch by reading the source and the tests near it, keep it small, and add a test-suite/misc/soma_*.sh test, which CI runs; a rejection says what failed. A Soma bug you find while working on Pantheon goes in {{SOMA_NOTES}} too: what you tried, what happened, and the smallest example."
+  else
+    printf '%s' "This network governs Pantheon only: no one changes Soma through it. If you or a worker find a Soma bug, a missing feature, or a place where the language fights you, add a line to \`{{SOMA_NOTES}}\`: what you tried, what happened, and the smallest example you have. Those become Soma's next work."
+  fi
+}
 UNITS=$HOME/.config/systemd/user
 export PATH="$HOME/.local/bin:$PATH"
 say() { printf 'host: %s\n' "$*"; }
@@ -179,7 +189,7 @@ W
   # the values reach Python through its environment, never its source
   R_AGENT=$a R_REMOTE=$REMOTE R_BRANCH=$BRANCH R_NET=$NET R_CODEX_ENV=${CODEX_ENV:-ENV_ID} R_DESK=$P/desk/$a \
   R_SOMA_REMOTE=$SOMA_REMOTE R_SOMA_REF=$SOMA_REF R_SOMA_DIR=$SOMA R_SOMA_COMMIT=$(soma_commit) \
-  R_SOMA_NOTES=$P/soma-notes.md R_GROK_MODEL=$GROK_MODEL \
+  R_SOMA_NOTES=$P/soma-notes.md R_GROK_MODEL=$GROK_MODEL R_SOMA_SCOPE=$(soma_scope) \
   python3 - "$here/deploy/host/diplomat.md" "$d" "$P/diplomats/$a.md" <<'PY'
 import sys, os
 t = open(sys.argv[1]).read()
@@ -187,6 +197,7 @@ d = open(sys.argv[2]).read() if os.path.exists(sys.argv[2]) else "## How you han
 t = t.replace("{{DELEGATE}}", d.strip())
 # the inbox command by its full path: the wrapper with this agent's settings
 t = t.replace("pantheon-inbox ", "{{DESK}}/pantheon-inbox ").replace("`pantheon-inbox`", "`{{DESK}}/pantheon-inbox`")
+t = t.replace("{{SOMA_SCOPE}}", os.environ["R_SOMA_SCOPE"])
 for k in ["AGENT", "REMOTE", "BRANCH", "NET", "CODEX_ENV", "DESK", "SOMA_REMOTE", "SOMA_REF",
           "SOMA_DIR", "SOMA_COMMIT", "SOMA_NOTES", "GROK_MODEL"]:
     t = t.replace("{{%s}}" % k, os.environ["R_" + k])
@@ -208,7 +219,7 @@ B
     cat > "$NET/$a/run.sh" <<R
 #!/bin/sh
 exec $BIN node $NET/$a --backend cmd:$NET/$a/backend.sh --goal $P/goal.txt --listen $LISTEN \\
-  --ci-repo pantheon $(q "$CI_CMD") --ci-sandbox $here/deploy/host/ci-sandbox --ci-memory $CI_MEMORY
+  --ci-repo pantheon $(q "$CI_CMD") --no-check soma --ci-sandbox $here/deploy/host/ci-sandbox --ci-memory $CI_MEMORY
 R
     chmod 755 "$NET/$a/backend.sh" "$NET/$a/run.sh"
     in_vm_agents "$a" || render_diplomat "$a"
@@ -377,7 +388,7 @@ cmd_vm() {
   else tok="its token as it was"; fi
   { sed -e "s|{{AGENT}}|$a|g" -e "s|{{URL}}|http://$VM_HOST:$PORT|g" "$here/deploy/cloud/agent.md"
     printf '\nYour token is in the file ~/pantheon/token: send it as -H "Authorization: Bearer $(cat ~/pantheon/token)". This VM is your machine: work in it as you like.\n'
-    printf '\n## Soma, the language Pantheon is written in\n\nSoma is a fork of the Rocq Prover with gradual dependent types, and its source is its documentation: ~/soma is the commit the network builds with (%s; not built here). Start with README.md, GRADUAL.md, gradual-coverage.md, vision.md and examples/; test-suite/ and theories/ show how a feature behaves. When a task leans on a Soma feature, look it up there instead of guessing from Rocq you remember: this fork differs. This network changes Pantheon only; if you find a Soma bug or gap, say so in your patch note or reason, starting with "soma:".\n' "$(soma_commit)"; } > "$tmp/instructions.md"
+    printf '\n## Soma, the language Pantheon is written in\n\nSoma is a fork of the Rocq Prover with gradual dependent types, and its source is its documentation: ~/soma is the commit the network builds with (%s; not built here). Start with README.md, GRADUAL.md, gradual-coverage.md, vision.md and examples/; test-suite/ and theories/ show how a feature behaves. When a task leans on a Soma feature, look it up there instead of guessing from Rocq you remember: this fork differs. %s\n' "$(soma_commit)" "$(if governs_soma; then echo 'This network governs Soma too: a task on Soma gives you the market'"'"'s Soma to change, as a task on Pantheon gives you Pantheon; ~/soma is for reading. This VM has no room to build Soma (a build takes about 2.5 GB), so keep a Soma patch small, read the tests near what you change, and add a test-suite/misc/soma_*.sh test: the other host'"'"'s nodes run Soma'"'"'s CI, and a rejection says what failed.'; else echo 'This network changes Pantheon only; if you find a Soma bug or gap, say so in your patch note or reason, starting with "soma:".'; fi)"; } > "$tmp/instructions.md"
   limactl shell "$v" sh -c 'mkdir -p ~/pantheon && chmod 700 ~/pantheon'
   case $(kind "$a") in
     muse) printf '#!/bin/sh\ncd ~/pantheon && exec ~/.local/bin/muse --yolo "Read ~/pantheon/instructions.md: it is your job. Follow it now."\n' > "$tmp/start.sh" ;;

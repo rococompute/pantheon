@@ -815,7 +815,7 @@ let node_open init step checkpoint restore plan_open packed json_fn home flags =
   let nonce_flood_sent = ref false in
   (* flags: agent settings, given to Soma as events *)
   let backend = ref "scripted" and agent_events = ref [] and ci_cmd = ref "" and ci_repo = ref [] and ci_image = ref "alpine:3.20" and ci_sandbox = ref "" in
-  let listen = ref "0.0.0.0" and ci_memory = ref "8g" in
+  let listen = ref "0.0.0.0" and ci_memory = ref "8g" and no_check = ref [] in
   let max_calls = ref 100 and calls = ref 0 in
   let rec go = function
     | "--backend" :: b :: r -> backend := b; go r
@@ -826,6 +826,10 @@ let node_open init step checkpoint restore plan_open packed json_fn home flags =
     | "--perspective" :: t :: r -> agent_events := !agent_events @ [ [ "agent"; "perspective"; t ] ]; go r
     | "--ci" :: c :: r -> ci_cmd := c; go r
     | "--ci-repo" :: n :: c :: r -> ci_repo := (n, c) :: !ci_repo; go r
+    (* a repository this node can't build (Soma's CI on a small host): its
+       checks end as this node's problem, so the agent abstains on that
+       repository's bids rather than say yes after only applying the edits *)
+    | "--no-check" :: n :: r -> no_check := n :: !no_check; go r
     | "--listen" :: h :: r -> listen := h; go r
     | "--ci-memory" :: m :: r -> ci_memory := m; go r
     | "--ci-image" :: i :: r -> ci_image := i; go r
@@ -1161,6 +1165,7 @@ let node_open init step checkpoint restore plan_open packed json_fn home flags =
        its own signals (exit codes, a job that never started), never from
        what the check or the bid's CI printed (docs/SECURITY-REVIEW-2.md P-6) *)
     let result ok tree why stage = let why = plain_text why in push [ "check_result"; id; "ok"; (if ok then "true" else if stage = "node" then "error" else "false"); "tree"; tree; "why"; why; "stage"; stage ] in
+    if List.mem r !no_check then (rm_out (); (try Sys.remove ef with _ -> ()); result false "" ("this node doesn't check " ^ r ^ " (--no-check " ^ r ^ "): it has no room for that build") "node") else
     start_job self_exe [ "check"; rdir r; head; ef; out ] ~stdin_text:"" ~env:(Unix.environment ())
       ~on_done:(fun t ->
         if String.length t > 0 && t.[0] = '!' then (say "check of request %s failed: %s" id t; result false "" t

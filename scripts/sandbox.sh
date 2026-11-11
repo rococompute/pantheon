@@ -363,10 +363,13 @@ cmd_start() {
       # with it, so a change that breaks Soma's biggest user fails here
       # Then the test-suite/misc/soma_*.sh tests a bid adds or changes, by git's
       # hash against the market's Soma commit (docs/DOGFOOD-REPORT.md D-1)
-      *" $a "*) printf '%s\n' "${SOMA_CI:-$(soma_ci_command)}" | put ci/soma ;;
-      *) in_vm "$v" sudo rm -f /etc/pantheon/ci/soma ;;
+      *" $a "*) printf '%s\n' "${SOMA_CI:-$(soma_ci_command)}" | put ci/soma; nocheck="" ;;
+      # the others abstain on Soma's bids: a yes from applying the edits alone
+      # would count as a check that never built them
+      *) in_vm "$v" sudo rm -f /etc/pantheon/ci/soma; if governs soma; then nocheck="--no-check soma"; else nocheck=""; fi ;;
     esac
-    printf '%s\n' --bid-window 900 --max-llm-calls 200 $flags | put flags
+    # shellcheck disable=SC2086
+    printf '%s\n' --bid-window 900 --max-llm-calls 200 $nocheck $flags | put flags
     put goal.txt < "${GOAL_FILE:-$here/examples/dogfood/goal.txt}"
     setup_inbox "$v"
     printf '[Service]\nSyslogIdentifier=pantheon\nEnvironment="BIDDER_WRITABLE=/home/pantheon/.opam/log"\nEnvironment="PANTHEON_REPOS=%s/repos"\n' "$HOMEDIR" | in_vm "$v" sudo sh -c 'mkdir -p /etc/systemd/system/pantheon-node.service.d && cat > /etc/systemd/system/pantheon-node.service.d/log.conf && systemctl daemon-reload'
