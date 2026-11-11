@@ -168,6 +168,16 @@ worth a note in this file rather than a workaround.
 
 ## Done so far
 
+- Step 4, peer catch-up: `behind` now selects `CatchupPeer` in the shared
+  Soma dispatcher. `catchup_plan` names the served-table write and bounded
+  block reads in order; `catchup_send` selects an authenticated peer send
+  only for present blocks, including empty blocks. The original two-second
+  throttle, remembering silent/absent peers, and inclusive 51-block cap are
+  preserved. `node.proof` checks exact plans and message fields, malformed
+  arities, time/range boundaries, and missing/empty blocks. OCaml supplies
+  only clock/table/metadata access and signing/socket writes. Remaining
+  cases: broadcast, status, merge, submit, llm and check.
+
 - Step 4, partial: Soma handles `timer`, `log`, `reveal` and `decided`.
   `plan_output` selects their small bindings; pure `reveal_plan` decides
   when to withhold, queue a hash-chain link or do nothing, and
@@ -181,8 +191,7 @@ worth a note in this file rather than a workaround.
   node with decided outputs before its mandatory snapshot and votes after.
   `startup_effects` checks this order without timing a live process. The
   old `feed` loop and its state/step/checkpoint/restore callbacks are gone.
-  Remaining step 4 cases: broadcast, height, behind, status, merge, submit,
-  llm and check. Helpers stay in their record until those callers move.
+  Remaining step 4 cases: broadcast, status, merge, submit, llm and check. Helpers stay in their record until those callers move.
 
 - The helper callbacks (step 3) are one typed `shell_helpers` record in
   `util.soma`. `node_open` receives it once; the binding transports its four

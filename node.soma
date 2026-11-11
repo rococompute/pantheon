@@ -197,6 +197,7 @@ Inductive output_request :=
 | RevealLink (term : string)
 | DecidedBlock (height : string) (txs : list string)
 | SetHeight (height : string)
+| CatchupPeer (who first : string)
 | LegacyOutput (out : list string).
 
 plan_output (out : list string) : output_request :=
@@ -206,13 +207,16 @@ plan_output (out : list string) : output_request :=
   | ["reveal", t] => RevealLink t
   | "decided" :: h :: txs => DecidedBlock h txs
   | ["height", h] => SetHeight h
+  | ["behind", who, first] => CatchupPeer who first
   | _ => LegacyOutput out
   end.
 
 Inductive output_action :=
 | LogAction (text : string)
 | QueueAction (event : list string)
-| StoreAction (height : string) (txs : list string).
+| StoreAction (height : string) (txs : list string)
+| RememberPeer (who first : string) (now : float)
+| ReadPeerBlock (who : string) (height : nat).
 
 Fixpoint draw_link (n : nat) (secret : string) : string :=
   match n with
@@ -235,11 +239,46 @@ decided_plan (h : string) (txs : list string) (stored : option (list string))
   | Some _ => []
   end.
 
+(** The inclusive old bound [first .. min (current-1) (first+50)]
+    contains at most 51 heights. A request at or above current is empty. *)
+catchup_heights (first current : nat) : list nat :=
+  List.seq first (min 51 (current - first)).
+
+catchup_due (now : float) (last : option float) : bool :=
+  match last with
+  | None => true
+  | Some t => negb (PrimFloat.ltb (PrimFloat.sub now t) 2%float)
+  end.
+
+(** Remember first, including silent/absent peers and empty ranges. A
+    duplicate in the two-second window performs no writes or block reads. *)
+catchup_plan (who first current : string) (now : float) (last : option float)
+    (has_peer silent : bool) : list output_action :=
+  if catchup_due now last then
+    RememberPeer who first now ::
+    (if has_peer && negb silent then
+       map (ReadPeerBlock who) (catchup_heights (num first) (num current))
+     else [])
+  else [].
+
+catchup_send (who : string) (height : nat) (block : option (list string))
+    : option (string * list string) :=
+  match block with
+  | None => None
+  | Some txs => Some (who, "done" :: show height :: "0" :: "0" :: hash_list txs :: txs)
+  end.
+
 carry_output_action (h : node_t) (action : output_action) : bool :=
   match action with
   | LogAction text => node_log h text
   | QueueAction ev => node_push h ev
   | StoreAction height txs => node_store h height txs
+  | RememberPeer who first now => node_mark_served h who first now
+  | ReadPeerBlock who k =>
+      match catchup_send who k (node_block h (show k)) with
+      | None => true
+      | Some (peer, fields) => node_peer_send h peer fields
+      end
   end.
 
 Fixpoint carry_output_actions (h : node_t) (actions : list output_action) : bool :=
@@ -259,6 +298,12 @@ perform_output (h : node_t) (out : list string) : bool :=
   | DecidedBlock height txs =>
       carry_output_actions h (decided_plan height txs (node_block h height))
   | SetHeight height => node_height h height
+  | CatchupPeer who first =>
+      let now := node_clock tt in
+      let last := node_last_served h who first in
+      let (byz, _) := node_draw h in
+      carry_output_actions h (catchup_plan who first (node_current_height h)
+                               now last (node_peer_exists h who) (seq byz "silent"))
   | LegacyOutput fields => perform h fields
   end.
 
