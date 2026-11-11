@@ -1,6 +1,6 @@
 #!/bin/bash
-# Genesis validation on its own: exactly four parts, unique names and
-# unique public keys, and a valid four-part genesis still builds.
+# Genesis validation on its own: 3f + 1 parts (4, 7, ...), unique names and
+# unique public keys, and valid four- and seven-part geneses build.
 #
 #   test/genesis.sh
 #
@@ -19,7 +19,7 @@ mkdir -p "$T/net/parts" "$T/home"
 printf '{"repos": []}\n' > "$T/net/network.json"
 
 i=0
-for a in a b c d e; do
+for a in a b c d e f g; do
   "$BIN" keygen "$T/key-$a" --name "$a" --addr "127.0.0.1:$((39100 + i))" >/dev/null \
     || fail "keygen $a failed"
   i=$((i + 1))
@@ -50,12 +50,21 @@ copy4
 # five parts
 copy4
 cp "$T/key-e/public.json" "$T/net/parts/e.json"
-expect_refused "five parts" 'genesis must have exactly 4 parts, got 5'
+expect_refused "five parts" 'genesis must have 3f + 1 parts (4, 7, 10, ...), got 5'
 
 # three parts (wrong count the other way)
 copy4
 rm "$T/net/parts/d.json"
-expect_refused "three parts" 'genesis must have exactly 4 parts, got 3'
+expect_refused "three parts" 'genesis must have 3f + 1 parts (4, 7, 10, ...), got 3'
+
+# seven parts (n = 3f + 1 with f = 2): a genesis with seven agents
+copy4
+for a in e f g; do cp "$T/key-$a/public.json" "$T/net/parts/$a.json"; done
+rm -rf "$T/home"; mkdir -p "$T/home"
+"$BIN" genesis "$T/home" "$T/net" > "$T/genesis.log" 2>&1 \
+  && jq -e '.agents | length == 7' "$T/home/genesis.json" >/dev/null \
+  && ok "valid seven-part genesis builds" || fail "seven-part genesis failed: $(cat "$T/genesis.log")"
+rm -rf "$T/home"; mkdir -p "$T/home"
 
 # a repeated name (d.json now claims to be a)
 copy4

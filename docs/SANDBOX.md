@@ -227,9 +227,10 @@ sandbox's network: `JOIN=zucc@zucc REPOS=pantheon scripts/sandbox.sh reset`,
 then `network` and `start` as usual. The Mac reaches the host with
 `tailscale ssh` (Tailscale SSH on in the host: `sudo tailscale set --ssh`).
 
-- **Names:** the host's agents are `claude-HOST`, `codex-HOST`, `grok-HOST`,
-  `muse-HOST` (`JOIN_AGENTS`); host.sh reads an agent's provider from its name
-  up to the dash.
+- **Names:** the host's agents are `claude-HOST`, `codex-HOST` and `grok-HOST`
+  (`JOIN_AGENTS`): seven with the four here, since genesis takes n = 3f + 1
+  agents (4, 7, 10). host.sh reads an agent's provider from its name up to the
+  dash.
 - **Addresses:** every node is reached over the tailnet. The VMs' nodes take
   this Mac's tailnet address, ports 26701 on, each forwarded by ssh to its VM
   and bound to the tailnet address only (`scripts/sandbox.sh forwards`
