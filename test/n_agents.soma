@@ -1,0 +1,99 @@
+(** M-2, deterministically: the market's thresholds for n agents.
+
+    Seven agents (f = 2): a merge is approved at 5 approvals (the leader's
+    proposal and four attestors' yes), rejected at 3 no votes, and a draw
+    goes ahead at 5 reveals with 2 agents silent, once reveal_window has
+    passed. Eight agents (f = 2) need 6 approvals; four (f = 1) still need
+    3, and 2 no votes reject, as before. Known inputs, no timing: run with
+    test/n-agents.sh. *)
+Import util shell market.
+
+say (cond : bool) (what : string) : list string :=
+  [if cond then append "ok " what else append "FAIL " what].
+
+roster (n : nat) : list string := firstn n ["a1", "a2", "a3", "a4", "a5", "a6", "a7", "a8"].
+
+base (n : nat) : obj :=
+  let m := new_market (roster n) in
+  let m := setf m "leader" "a1" in
+  let m := setf m "h" 10 in
+  let m := setf m "repos" ([("calc", "tree0")] : list (string * string)) in
+  setf m "awaiting" false.
+
+first_bidder (m : obj) : string :=
+  match task_by m 1 with
+  | Some t => match bidders_for m t with a :: _ => a | [] => "" end
+  | None => ""
+  end.
+
+proposed (n : nat) : obj :=
+  let '(m, _, _) := apply (base n) "a1" ["post", "calc", "an n-agent task"] in
+  let '(m, _, _) := apply m (first_bidder m) ["bid", "1", "0", "a bid", "f.txt", "", "x"] in
+  let '(m, _, _) := apply m "a1" ["merge", "1", "tree1"] in m.
+
+attestors (n : nat) : list string :=
+  let m := proposed n in
+  filter (fun a => negb (seq a "a1") && negb (seq a (first_bidder m))) (roster n).
+
+attest (n k : nat) (yes : bool) : obj :=
+  fold_left (fun m a => fst (fst (apply m a (if yes then ["attest", "1", "yes", "tree1"] else ["attest", "1", "no"]))))
+    (firstn k (attestors n)) (proposed n).
+
+status_of (m : obj) : string := match bid_by m 1 with Some b => status_name (bst b) | None => "none" end.
+
+(** a draw under way since height 0, with the first k agents' reveals
+    accepted through the reveal transaction, each against its tip *)
+draw_state (n k h : nat) : obj :=
+  let m := setf (base n) "leader" "" in
+  let m := setf (setf (setf m "awaiting" true) "asince" 0) "h" h in
+  let m := setf m "tips" (map (fun a => (a, sha256 (append "v-" a))) (roster n)) in
+  fold_left (fun m a => let '(m, _, _) := apply m a ["reveal", append "v-" a] in m) (firstn k (roster n)) m.
+
+(** whether maybe_draw draws on this state: its condition, word for word.
+    The draw itself hashes the reveals into a 48-bit number, which a
+    program run here computes in unary and can't, so the decision is
+    checked here and maybe_draw's result by market.proof's Examples
+    (q7_five_reveals_draw), which the build checks. *)
+draws (m : obj) : bool :=
+  awaiting m && draw_ready (length (agents m)) (length (reveals m)) (asince m + param m "reveal_window" <=? mheight m).
+
+(** who maybe_draw records as holding back: the agents that didn't reveal *)
+silent (m : obj) : list string := filter (fun a => negb (mem a (revealed m))) (agents m).
+
+lines_seven : list string :=
+  say (length (attestors 7) =? 5) "seven agents: five attestors besides the leader and the bidder"
+  ++ say (seq (status_of (attest 7 3 true)) "pending") "seven agents: four approvals do not merge"
+  ++ say (seq (status_of (attest 7 4 true)) "merged") "seven agents: five approvals merge"
+  ++ say (seq (status_of (attest 7 2 false)) "pending") "seven agents: two no votes do not reject"
+  ++ say (seq (status_of (attest 7 3 false)) "rejected") "seven agents: three no votes reject".
+
+lines_draw : list string :=
+  let five := draw_state 7 5 100 in
+  say (length (reveals five) =? 5) "seven agents: five reveals accepted, two silent"
+  ++ say (negb (draws (draw_state 7 5 5))) "seven agents: five reveals inside the reveal window wait"
+  ++ say (negb (draws (draw_state 7 4 100))) "seven agents: four reveals do not draw"
+  ++ say (draws five) "seven agents: five reveals draw with two silent"
+  ++ say ((length (silent five) =? 2) && mem "a6" (silent five) && mem "a7" (silent five)) "seven agents: the two silent are the ones held back"
+  ++ say ((length (eligible five) =? 5) && forallb (fun a => mem a (firstn 5 (roster 7))) (eligible five)) "seven agents: only the five who revealed can be drawn"
+  ++ say (draws (draw_state 7 7 5)) "seven agents: all seven reveals draw at once"
+  ++ say (awaiting (maybe_draw (draw_state 7 4 100))) "seven agents: maybe_draw waits at four reveals".
+
+lines_eight : list string :=
+  say (seq (status_of (attest 8 4 true)) "pending") "eight agents: five approvals do not merge"
+  ++ say (seq (status_of (attest 8 5 true)) "merged") "eight agents: six approvals merge"
+  ++ say (seq (status_of (attest 8 2 false)) "pending") "eight agents: two no votes do not reject"
+  ++ say (seq (status_of (attest 8 3 false)) "rejected") "eight agents: three no votes reject"
+  ++ say (negb (draws (draw_state 8 5 100))) "eight agents: five reveals do not draw"
+  ++ say (draws (draw_state 8 6 100)) "eight agents: six reveals draw".
+
+lines_four : list string :=
+  say (seq (status_of (attest 4 1 true)) "pending") "four agents: two approvals do not merge"
+  ++ say (seq (status_of (attest 4 2 true)) "merged") "four agents: three approvals merge, as before"
+  ++ say (seq (status_of (attest 4 1 false)) "pending") "four agents: one no vote does not reject"
+  ++ say (seq (status_of (attest 4 2 false)) "rejected") "four agents: two no votes reject, as before"
+  ++ say (negb (draws (draw_state 4 2 100))) "four agents: two reveals do not draw"
+  ++ say (draws (draw_state 4 3 100)) "four agents: three reveals draw, as before".
+
+report : list string := lines_seven ++ lines_draw ++ lines_eight ++ lines_four.
+
+main := print_lines report.

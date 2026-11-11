@@ -27,6 +27,101 @@ Example quorum_seven : (quorum 7, reject_quorum 7, quorum 7) = (5, 3, 5).
 Proof. reflexivity. Qed.
 Example quorum_eight : (quorum 8, reject_quorum 8, quorum 8) = (6, 3, 6).
 Proof. reflexivity. Qed.
+Example quorum_one : (quorum 1, reject_quorum 1, quorum 1) = (1, 1, 1).
+Proof. reflexivity. Qed.
+
+(** The threshold decisions at, just below and just above each threshold,
+    for n = 1, 4, 7 and 8: approvals, no votes, and reveals (after the
+    window; before it, only all n). *)
+Example thresholds_one :
+  map (approved_at 1) [0, 1, 2] = [false, true, true] /\
+  map (rejected_at 1) [0, 1, 2] = [false, true, true] /\
+  map (fun k => draw_ready 1 k true) [0, 1, 2] = [false, true, true] /\
+  map (fun k => draw_ready 1 k false) [0, 1] = [false, true].
+Proof. repeat split; reflexivity. Qed.
+Example thresholds_four :
+  map (approved_at 4) [2, 3, 4] = [false, true, true] /\
+  map (rejected_at 4) [1, 2, 3] = [false, true, true] /\
+  map (fun k => draw_ready 4 k true) [2, 3, 4] = [false, true, true] /\
+  map (fun k => draw_ready 4 k false) [3, 4] = [false, true].
+Proof. repeat split; reflexivity. Qed.
+Example thresholds_seven :
+  map (approved_at 7) [4, 5, 6] = [false, true, true] /\
+  map (rejected_at 7) [2, 3, 4] = [false, true, true] /\
+  map (fun k => draw_ready 7 k true) [4, 5, 6] = [false, true, true] /\
+  map (fun k => draw_ready 7 k false) [5, 6, 7] = [false, false, true].
+Proof. repeat split; reflexivity. Qed.
+Example thresholds_eight :
+  map (approved_at 8) [5, 6, 7] = [false, true, true] /\
+  map (rejected_at 8) [2, 3, 4] = [false, true, true] /\
+  map (fun k => draw_ready 8 k true) [5, 6, 7] = [false, true, true] /\
+  map (fun k => draw_ready 8 k false) [6, 7, 8] = [false, false, true].
+Proof. repeat split; reflexivity. Qed.
+
+(** f = (n-1)/3 is the most faults n agents tolerate: 3f < n. *)
+Lemma faults_spec : forall n : nat, 3 * faults n <= n - 1.
+Proof.
+  intros n. unfold faults.
+  assert (H3 : 3 <> 0) by lia.
+  pose proof (Nat.div_mod (n - 1) 3 H3) as D.
+  pose proof (Nat.mod_upper_bound (n - 1) 3 H3) as M.
+  lia.
+Qed.
+
+(** An approval quorum and a rejecting quorum together are more than n, so
+    for any n the two can't both be reached by n distinct voters. *)
+Theorem quorum_plus_reject : forall n : nat, quorum n + reject_quorum n = n + 1.
+Proof.
+  intros n. pose proof (faults_spec n). unfold quorum, reject_quorum. lia.
+Qed.
+
+(** Two approval quorums of n - f share at least f + 1 agents, so with at
+    most f faulty, an honest one is in both. *)
+Theorem approval_quorums_intersect_in_an_honest_agent : forall n : nat,
+  1 <= n -> n + reject_quorum n <= 2 * quorum n.
+Proof.
+  intros n Hn. pose proof (faults_spec n). unfold quorum, reject_quorum. lia.
+Qed.
+
+Theorem approved_and_rejected_exclusive : forall n yes no : nat,
+  yes + no <= n -> approved_at n yes = true -> rejected_at n no = true -> False.
+Proof.
+  intros n yes no H Ha Hr. unfold approved_at, rejected_at in *.
+  apply Nat.leb_le in Ha. apply Nat.leb_le in Hr.
+  pose proof (quorum_plus_reject n). lia.
+Qed.
+
+Lemma votes_split : forall vs : list (string * bool),
+  length (filter snd vs) + length (filter (fun v => negb (snd v)) vs) = length vs.
+Proof.
+  induction vs as [|[a b] vs IH]; simpl; [reflexivity|].
+  destruct b; simpl; lia.
+Qed.
+
+(** settle's two outcomes exclude each other for every n: when the
+    attestors are at most n - 2 (the leader and the bidder don't attest),
+    a proposal can't have both n - f approvals, fallback or not, and
+    f + 1 no votes. *)
+Theorem merge_never_both_approved_and_rejected : forall (n : nat) (p : proposal) (age fb : nat),
+  length (pvotes p) + 2 <= n ->
+  quorum n <= approvals p age fb ->
+  reject_quorum n <= length (filter (fun v => negb (snd v)) (pvotes p)) -> False.
+Proof.
+  intros n p age fb Hl Hy Hn.
+  pose proof (quorum_plus_reject n). pose proof (votes_split (pvotes p)).
+  unfold approvals in Hy.
+  destruct ((0 <? fb) && (fb <=? age)); simpl in Hy; lia.
+Qed.
+
+(** Up to f silent agents can't stop a draw: n - k reveals with k <= f
+    are enough once the window has passed. *)
+Theorem draw_goes_on_with_f_silent : forall n k : nat,
+  k <= faults n -> draw_ready n (n - k) true = true.
+Proof.
+  intros n k Hk. unfold draw_ready, quorum.
+  destruct (n - k =? n); [reflexivity|]. simpl.
+  apply Nat.leb_le. lia.
+Qed.
 
 (** The same thresholds through settle and maybe_draw themselves, at
     n = 7 (f = 2): the leader's proposal plus three yes votes (four
@@ -84,6 +179,12 @@ Definition q7_draw (k : nat) : obj :=
 Example q7_four_reveals_do_not_draw : awaiting (maybe_draw (q7_draw 4)) = true.
 Proof. reflexivity. Qed.
 Example q7_five_reveals_draw : awaiting (maybe_draw (q7_draw 5)) = false.
+Proof. reflexivity. Qed.
+(** inside reveal_window, five of seven wait for the other two; all seven
+    draw at once *)
+Example q7_five_reveals_wait_inside_the_window : awaiting (maybe_draw (setf (q7_draw 5) "h" 5)) = true.
+Proof. reflexivity. Qed.
+Example q7_seven_reveals_draw_at_once : awaiting (maybe_draw (setf (q7_draw 7) "h" 5)) = false.
 Proof. reflexivity. Qed.
 
 (** Holding back your link in one draw bars you from the next, as long as
@@ -172,9 +273,8 @@ Theorem maybe_draw_bars_who_held_back :
     maybe_draw m = m \/ leader (maybe_draw m) <> a.
 Proof.
   intros m a b Ha Hb Hbh. unfold maybe_draw.
-  destruct (awaiting m && ((length (reveals m) =? length (agents m)) ||
-    ((quorum (length (agents m)) <=? length (reveals m)) &&
-      (asince m + param m "reveal_window" <=? mheight m))));
+  destruct (awaiting m && draw_ready (length (agents m)) (length (reveals m))
+    (asince m + param m "reveal_window" <=? mheight m));
     [right|left; reflexivity].
   cbv zeta. unfold count.
   repeat rewrite leader_setf_other by reflexivity.
@@ -251,7 +351,7 @@ Proof.
   destruct (pending m) as [p|] eqn:Hp; [|exact Hm].
   destruct (merge_quorum m p <=? approvals p (mheight m - pat p) (param m "fallback_blocks")) eqn:Hyes.
   - apply Hfinal; [exact Hp|exact Hm|]. apply Nat.leb_le. exact Hyes.
-  - destruct (reject_quorum (merge_n m p) <=? length (filter (fun v => negb (snd v)) (pvotes p)));
+  - destruct (rejected_at (merge_n m p) (length (filter (fun v => negb (snd v)) (pvotes p))));
       [destruct (bid_by m (pbid p)) as [b|] |
        destruct (param m "attest_window" <=? mheight m - pat p)]; simpl;
       repeat first [apply merged_count | apply merged_setf_other; [reflexivity|] |
@@ -323,9 +423,8 @@ Lemma draw_preserves_merged : forall P m,
   merged_satisfy P m -> merged_satisfy P (maybe_draw m).
 Proof.
   intros P m Hm. unfold maybe_draw.
-  destruct (awaiting m && ((length (reveals m) =? length (agents m)) ||
-    ((quorum (length (agents m)) <=? length (reveals m)) &&
-      (asince m + param m "reveal_window" <=? mheight m))));
+  destruct (awaiting m && draw_ready (length (agents m)) (length (reveals m))
+    (asince m + param m "reveal_window" <=? mheight m));
     [|exact Hm].
   cbv zeta. merged_steps.
   generalize (filter (fun a => negb (mem a (revealed m))) (agents m)).
