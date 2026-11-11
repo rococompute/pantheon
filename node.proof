@@ -340,3 +340,83 @@ Example merge_tree_check_and_texts :
   merge_tree_check "t" (Some ("u", "abc1234")) = Some "got tree u, attested t" /\
   merge_diverged_text "calc" "07" "boom" = "DIVERGED: repository calc, merge 7: boom. Stopped taking merges for it.".
 Proof. repeat split; reflexivity. Qed.
+
+(** The llm output: its request, the budget and hold, its log lines, and
+    the prompt assembled from what the shell reads. *)
+Example llm_output_selects_a_model_request :
+  plan_output ["llm", "3", "patch", "P", "calc", "a.txt"] = LlmRequest "3" "patch" "P" ["calc", "a.txt"] /\
+  plan_output ["llm", "3", "draft", "P"] = LlmRequest "3" "draft" "P" [] /\
+  plan_output ["llm", "3", "draft"] = LegacyOutput ["llm", "3", "draft"].
+Proof. repeat split; reflexivity. Qed.
+
+Example llm_gate_budget_then_a_strict_limit :
+  llm_gate_of "101" "100" 0%float 50%float = LlmOverBudget /\
+  llm_gate_of "100" "100" 5%float 10%float = LlmHeld /\
+  llm_gate_of "100" "100" 10%float 10%float = LlmAsk /\
+  llm_gate_of "1" "0" 0%float 0%float = LlmOverBudget.
+Proof. repeat split; reflexivity. Qed.
+
+Theorem llm_over_budget_whatever_the_limit : forall calls max now until,
+  (num max <? num calls) = true -> llm_gate_of calls max now until = LlmOverBudget.
+Proof. intros calls max now until H. unfold llm_gate_of. rewrite H. reflexivity. Qed.
+
+Example llm_log_lines :
+  llm_budget_text "100" = "model call budget of 100 used up: restart with a higher --max-llm-calls" /\
+  llm_hold_text "4" "pick" "claude" "15" = "holding request 4 (a pick): claude is limited for 15 more minutes" /\
+  llm_ask_text "codex" "patch" "7" "3" "100" = "asking codex for a patch (request 7, call 3 of 100)".
+Proof. repeat split; reflexivity. Qed.
+
+Example llm_fence_and_listing :
+  shell_fence "T" "file a" "x" = "<<<UNTRUSTED T file a>>>
+x
+<<<END UNTRUSTED T>>>
+" /\
+  listing_text "a
+b
+c" 2 = "a
+b
+(and 1 more)" /\
+  listing_text "a
+b" 2 = "a
+b" /\
+  listing_text "" 2 = "".
+Proof. repeat split; reflexivity. Qed.
+
+Example llm_plan_text_open_none_and_absent :
+  plan_text_of "T" [("calc", None)] = "(no repository has a .plan)
+" /\
+  plan_text_of "T" [("calc", Some "- gone"), ("web", None)] =
+    shell_fence "T" "plan of calc: open items" "(none: every item is done or dropped)" /\
+  plan_text_of "T" [("calc", Some "one
++ done
+two")] = shell_fence "T" "plan of calc: open items" "one
+two".
+Proof. repeat split; reflexivity. Qed.
+
+(** Each file is cut at the cap, and the budget spends what was quoted,
+    the cut note included: once it's spent, a file is only the note. *)
+Example llm_repo_files_cap_and_budget :
+  repo_files_text "T" 10 100 [("a", Some "hi")] = shell_fence "T" "file a" "hi" /\
+  repo_files_text "T" 4 6 [("a", Some "abcdef"), ("b", None), ("c", Some "")] =
+    append (shell_fence "T" "file a" (append "abcd" (append newline "(cut here: the file goes on)")))
+      (append (shell_fence "T" "file b" (append newline "(cut here: the file goes on)"))
+        (shell_fence "T" "file c" "")) /\
+  repo_files_text "T" 100 100 [("b", None)] = shell_fence "T" "file b" "(no such file at the head)".
+Proof. repeat split; reflexivity. Qed.
+
+Example llm_repo_text_known_and_unknown :
+  repo_text_of "T" "nope" None [] 1 1 = "(no repository nope)
+" /\
+  repo_text_of "T" "calc" (Some "x.txt") [("x.txt", Some "hi")] 10 100 =
+    append (shell_fence "T" "files in calc" "x.txt") (shell_fence "T" "file x.txt" "hi").
+Proof. repeat split; reflexivity. Qed.
+
+(** Placeholders in order; {{REPO}} needs a context, and text put in for a
+    placeholder already done isn't replaced again. *)
+Example llm_prompt_assembly :
+  prompt_assemble "T" "A {{F}} {{REPOS}} {{PLAN}} {{REPO}}" ["calc", "x"]
+    (fun _ => "R") (fun _ => "P") (fun r ps => append r (hd "" ps)) = "A T R P calcx" /\
+  prompt_assemble "T" "{{REPO}} {{F}}" [] (fun _ => "R") (fun _ => "P") (fun r _ => r) = "{{REPO}} T" /\
+  prompt_assemble "T" "{{REPOS}}" [] (fun _ => "{{F}}") (fun _ => "P") (fun r _ => r) = "{{F}}" /\
+  prompt_assemble "T" "plain" ["calc"] (fun _ => "R") (fun _ => "P") (fun r _ => r) = "plain".
+Proof. repeat split; reflexivity. Qed.

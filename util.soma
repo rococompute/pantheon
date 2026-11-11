@@ -411,13 +411,12 @@ shallow_json (max max_items s : string) : bool :=
 Record shell_helpers := {
   helper_edit_once : string -> string -> string -> option string;
   helper_contains : string -> string -> bool;
-  helper_safe_path : string -> bool;
-  helper_replace_all : string -> string -> string -> string
+  helper_safe_path : string -> bool
 }.
 
 node_helpers : shell_helpers :=
   {| helper_edit_once := edit_once; helper_contains := contains;
-     helper_safe_path := shell_safe_path; helper_replace_all := replace_all |}.
+     helper_safe_path := shell_safe_path |}.
 
 pack_helpers (h : shell_helpers) :=
-  (helper_edit_once h, helper_contains h, helper_safe_path h, helper_replace_all h).
+  (helper_edit_once h, helper_contains h, helper_safe_path h).
