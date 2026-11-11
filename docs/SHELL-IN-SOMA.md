@@ -168,6 +168,23 @@ worth a note in this file rather than a workaround.
 
 ## Done so far
 
+- Step 4, llm (the last case): `perform_llm` decides the call budget and
+  the rate-limit hold (`llm_gate_of`) and writes their log lines, and
+  `prompt_assemble` fills `{{F}}`, `{{REPOS}}`, `{{PLAN}}` and `{{REPO}}`
+  with Soma's `replace_all`, `plan_open`, `listing_text`, `plan_text_of`
+  and `repo_text_of` (the 64 KB per file and 200 KB budget included).
+  `repo_read_text` reads and truncates each context file before reading the
+  next, so prompt assembly doesn't first retain every full context blob.
+  The shell only counts calls, lists a checkout's files, reads a file at its
+  head, makes a fence token and runs the model process. A request held
+  for a limit is kept raw and comes back as an `llm_release` event, so
+  Soma assembles its prompt again when it is asked, as before. `perform`
+  and `handle` are gone: every output is decided in Soma. `replace_all`
+  left the helper record and `plan_open` left `node_open`'s arguments.
+  Still OCaml, for step 5: reading a reply (`json_in_reply`,
+  `flatten_reply`), noticing a limit in it (`is_limit`, `reset_in`) and
+  when to release held requests.
+
 - Step 4, broadcast: `broadcast_plan` decides which vote is sent, the
   signed-vote log, and the per-peer equivocate and double-vote variants.
   Silence records the vote and sends nothing. The two-second resend repeats
@@ -222,7 +239,7 @@ worth a note in this file rather than a workaround.
   `check` and `apply-edits`.
 
 - The helper callbacks (step 3) are one typed `shell_helpers` record in
-  `util.soma`. `node_open` receives it once; the binding transports its four
+  `util.soma` (`replace_all` has since left it, with the llm case). `node_open` receives it once; the binding transports its four
   fields as a product (`pack_helpers`), since `.definition` accepts products
   but not Soma record types. `shell.ml` unpacks it into a named OCaml record
   and threads it through callers, including the standalone commands; the

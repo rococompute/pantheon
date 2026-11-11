@@ -21,25 +21,24 @@ argv : unit -> list string.
 read_plan : string -> string.
 print_lines : list string -> unit.
 print_text : string -> unit.
-cmd_init : ((((string -> string -> string -> option string) * (string -> string -> bool)) * (string -> bool)) * (string -> string -> string -> string)) -> list string -> unit.
+cmd_init : (((string -> string -> string -> option string) * (string -> string -> bool)) * (string -> bool)) -> list string -> unit.
 cmd_keygen : list string -> unit.
-cmd_genesis : ((((string -> string -> string -> option string) * (string -> string -> bool)) * (string -> bool)) * (string -> string -> string -> string)) -> string -> string -> unit.
-cmd_edits : ((((string -> string -> string -> option string) * (string -> string -> bool)) * (string -> bool)) * (string -> string -> string -> string)) -> string -> list string -> unit.
-cmd_apply_edits : ((((string -> string -> string -> option string) * (string -> string -> bool)) * (string -> bool)) * (string -> string -> string -> string)) -> string -> string -> unit.
-cmd_check : ((((string -> string -> string -> option string) * (string -> string -> bool)) * (string -> bool)) * (string -> string -> string -> string)) -> string -> string -> string -> string -> unit.
+cmd_genesis : (((string -> string -> string -> option string) * (string -> string -> bool)) * (string -> bool)) -> string -> string -> unit.
+cmd_edits : (((string -> string -> string -> option string) * (string -> string -> bool)) * (string -> bool)) -> string -> list string -> unit.
+cmd_apply_edits : (((string -> string -> string -> option string) * (string -> string -> bool)) * (string -> bool)) -> string -> string -> unit.
+cmd_check : (((string -> string -> string -> option string) * (string -> string -> bool)) * (string -> bool)) -> string -> string -> string -> string -> unit.
 cmd_status : string -> unit.
 cmd_tx : string -> list string -> unit.
 cmd_up : string -> list string -> unit.
 
 (** The node loop is Soma (node.soma's run_node): the shell binds only the
-    handle's setup, one select turn, one output, the snapshot, the refused
-    set, startup data, and the endless repetition. The handle
-    is a string naming the shell's side of the node. Existing Soma helpers
-    are passed once as util.soma's shell_helpers record, packed as a product
-    (edit_once, contains, shell_safe_path, replace_all) at the binding boundary. *)
-node_open : (string -> list string) -> ((((string -> string -> string -> option string) * (string -> string -> bool)) * (string -> bool)) * (string -> string -> string -> string)) -> (string -> string -> string -> bool) -> string -> list string -> string.
+    handle's setup, one select turn, the small bindings of each output, the
+    snapshot, the refused set, startup data, and the endless repetition. The
+    handle is a string naming the shell's side of the node. Existing Soma
+    helpers are passed once as util.soma's shell_helpers record, packed as a
+    product (edit_once, contains, shell_safe_path) at the binding boundary. *)
+node_open : (((string -> string -> string -> option string) * (string -> string -> bool)) * (string -> bool)) -> (string -> string -> string -> bool) -> string -> list string -> string.
 events : string -> list (list string).
-perform : string -> list string -> bool.
 save_snapshot : forall {C : Type}, string -> C -> bool.
 note_refused : string -> string -> bool.
 (** Startup is data, interpreted by Soma before entering the event loop. *)
@@ -77,6 +76,24 @@ node_track_tx : string -> string -> bool.
 node_nonce_flooded : string -> bool.
 node_mark_nonce_flood : string -> bool.
 node_send_all : string -> list string -> bool.
+
+(** A model call's I/O; node.soma's perform_llm decides and assembles the
+    prompt. The call count, bumped for this call, and the budget; holding a
+    raw request until the limit's wait is over (it comes back as an
+    llm_release event); starting the model process on the assembled prompt
+    (the raw one too, held again if the reply says the model is limited);
+    the governed repositories; a checkout's git ls-files; a file at a
+    checkout's head (none: git show failed); a fresh fence token; a float
+    with no decimals. None of these decides anything: the prompt
+    node_llm_start gets is complete, assembled by Soma's prompt_assemble. *)
+node_llm_budget : string -> string * string.
+node_llm_hold : string -> string -> string -> string -> list string -> bool.
+node_llm_start : string -> string -> string -> string -> string -> list string -> bool.
+node_repo_names : string -> list string.
+node_ls_files : string -> string -> string.
+node_head_file : string -> string -> string -> option string.
+node_token : unit -> string.
+node_float_text : float -> string.
 
 (** The CI check job; Soma selects it, the shell runs the process. *)
 node_run_check : string -> string -> string -> string -> list string -> bool.

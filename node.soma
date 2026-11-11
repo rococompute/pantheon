@@ -141,7 +141,7 @@ step (n : node_state) (ev : list string) : node_state * list (list string) :=
 (** ---- Step 2 (docs/SHELL-IN-SOMA.md): the node loop in Soma ----
     The loop holds the state and drives [step]; shell.ml only binds
     [node_open] (I/O setup), startup data, [events] (one select turn),
-    smaller output bindings and the remaining [perform] cases,
+    smaller output bindings (every output case is decided in Soma),
     [save_snapshot], [note_refused] and [forever]. An effect is a field list: ["perform"; output...],
     ["save_snapshot"] or ["refuse"; raw]. [order_effects] is pure: it takes
     the event, the state before and after [step], and the outputs, and puts
@@ -189,8 +189,9 @@ order_effects (ev : list string) (before after : node_state) (outs : list (list 
   let rest := map (fun o => "perform" :: o) (filter (fun o => negb (is_decided o)) outs) in
   refused ++ decided ++ save ++ rest.
 
-(** Step 4: classify outputs in Soma. The remaining cases temporarily use
-    the legacy binding; moved cases never pass through shell.ml's handle. *)
+(** Step 4: classify outputs in Soma. Every case has its own small
+    bindings; an output no case names does nothing, as shell.ml's old
+    handle did with it. *)
 Inductive output_request :=
 | SetTimer (ms : string) (event : list string)
 | WriteLog (text : string)
@@ -203,6 +204,7 @@ Inductive output_request :=
 | Broadcast (fields : list string)
 | CheckRequest (id repo head : string) (edits : list string)
 | MergeRequest (r v tree bid task bidder spec : string) (edits : list string)
+| LlmRequest (id kind prompt : string) (ctx : list string)
 | LegacyOutput (out : list string).
 
 plan_output (out : list string) : output_request :=
@@ -219,6 +221,7 @@ plan_output (out : list string) : output_request :=
   | "check" :: id :: r :: head :: edits => CheckRequest id r head edits
   | "merge" :: r :: v :: tree :: bid :: task :: bidder :: spec :: edits =>
       MergeRequest r v tree bid task bidder spec edits
+  | "llm" :: id :: kind :: prompt :: ctx => LlmRequest id kind prompt ctx
   | _ => LegacyOutput out
   end.
 
@@ -537,6 +540,141 @@ perform_merge (h : node_t) (r v tree bid task bidder spec : string) (edits : lis
        end)
   end.
 
+(** ---- A model call (the "llm" output) ----
+    Soma decides the call budget and the rate-limit hold, writes the log
+    lines, and assembles the prompt: the fence token for {{F}}, every
+    repository's file list for {{REPOS}}, each .plan's open items for
+    {{PLAN}} and a task's files for {{REPO}}. The shell reads files at a
+    checkout's head, lists them, and runs the model process; a reply that
+    says the model is limited holds the raw request, which the shell hands
+    back as an [llm_release] event so its prompt is assembled again then. *)
+Inductive llm_gate := LlmOverBudget | LlmHeld | LlmAsk.
+
+(** [calls] already counts this call: the budget is [max] calls in all. *)
+llm_gate_of (calls max : string) (now until : float) : llm_gate :=
+  if num max <? num calls then LlmOverBudget
+  else if PrimFloat.ltb now until then LlmHeld
+  else LlmAsk.
+
+llm_budget_text (max : string) : string :=
+  append "model call budget of " (append max " used up: restart with a higher --max-llm-calls").
+
+llm_hold_text (id kind backend minutes : string) : string :=
+  append "holding request " (append id (append " (a " (append kind (append "): "
+    (append backend (append " is limited for " (append minutes " more minutes"))))))).
+
+llm_ask_text (backend kind id calls max : string) : string :=
+  append "asking " (append backend (append " for a " (append kind (append " (request "
+    (append id (append ", call " (append calls (append " of " (append max ")"))))))))).
+
+shell_fence (token label body : string) : string :=
+  append "<<<UNTRUSTED " (append token (append " " (append label (append ">>>" (append newline
+    (append body (append newline (append "<<<END UNTRUSTED " (append token (append ">>>" newline)))))))))).
+
+(** git ls-files' output, at most [cap] names, then how many more *)
+listing_text (files : string) (cap : nat) : string :=
+  let fs := filter (fun l => negb (seq l "")) (split_lines files) in
+  append (Stdlib.Strings.String.concat newline (firstn cap fs))
+    (if cap <? length fs
+     then append newline (append "(and " (append (show (length fs - cap)) " more)"))
+     else "").
+
+repos_text_of (token : string) (listings : list (string * string)) : string :=
+  Stdlib.Strings.String.concat ""
+    (map (fun p => shell_fence token (append "files in " (fst p)) (listing_text (snd p) 200)) listings).
+
+(** each repository's .plan at its head (None: it has none) *)
+plan_text_of (token : string) (plans : list (string * option string)) : string :=
+  let parts := flat_map (fun p =>
+      match snd p with
+      | None => []
+      | Some c =>
+          [shell_fence token (append "plan of " (append (fst p) ": open items"))
+             (match plan_open c with
+              | [] => "(none: every item is done or dropped)"
+              | items => Stdlib.Strings.String.concat newline items
+              end)]
+      end) plans in
+  match parts with
+  | [] => append "(no repository has a .plan)" newline
+  | _ => Stdlib.Strings.String.concat "" parts
+  end.
+
+(** a task's files, each cut at [cap] and all of them within [budget]
+    characters, the cut ones included with their note; None: no such file *)
+(** Read and truncate one file before reading the next. In particular, do
+    not build a list retaining every full context blob before budgeting. *)
+Fixpoint repo_read_text {A : Type} (token : string) (cap budget : nat)
+    (read : A -> string * option string) (files : list A) : string :=
+  match files with
+  | [] => ""
+  | file :: rest =>
+      let (p, got) := read file in
+      let c := match got with Some t => t | None => "(no such file at the head)" end in
+      let lim := Nat.min budget cap in
+      let c := if lim <? slen c then append (substr c 0 lim) (append newline "(cut here: the file goes on)") else c in
+      append (shell_fence token (append "file " p) c)
+        (repo_read_text token cap (budget - slen c) read rest)
+  end.
+
+repo_files_text (token : string) (cap budget : nat) (files : list (string * option string)) : string :=
+  repo_read_text token cap budget (fun file => file) files.
+
+(** None: no such repository *)
+repo_text_of (token r : string) (listing : option string) (files : list (string * option string))
+    (cap budget : nat) : string :=
+  match listing with
+  | None => append "(no repository " (append r (append ")" newline))
+  | Some l => append (shell_fence token (append "files in " r) (listing_text l 300))
+                     (repo_files_text token cap budget files)
+  end.
+
+(** The placeholders in order; each part is read only when its placeholder
+    is there, and {{REPO}} needs a context. Text put in isn't scanned again
+    for an earlier placeholder. *)
+prompt_assemble (token prompt : string) (ctx : list string) (repos plan : unit -> string)
+    (repo : string -> list string -> string) : string :=
+  let p := replace_all prompt "{{F}}" token in
+  let p := if contains "{{REPOS}}" p then replace_all p "{{REPOS}}" (repos tt) else p in
+  let p := if contains "{{PLAN}}" p then replace_all p "{{PLAN}}" (plan tt) else p in
+  match ctx with
+  | r :: paths => if contains "{{REPO}}" p then replace_all p "{{REPO}}" (repo r paths) else p
+  | [] => p
+  end.
+
+llm_repos_text (h : node_t) (token : string) : string :=
+  repos_text_of token (map (fun n => (n, node_ls_files h n)) (node_repo_names h)).
+
+llm_plan_text (h : node_t) (token : string) : string :=
+  plan_text_of token (map (fun n => (n, node_head_file h n ".plan")) (node_repo_names h)).
+
+llm_repo_text (h : node_t) (token r : string) (paths : list string) : string :=
+  if mem r (node_repo_names h)
+  then append (shell_fence token (append "files in " r) (listing_text (node_ls_files h r) 300))
+         (repo_read_text token (64 * 1024) (200 * 1024)
+           (fun p => (p, node_head_file h r p)) (filter shell_safe_path paths))
+  else repo_text_of token r None [] 0 0.
+
+llm_call (h : node_t) (id kind prompt : string) (ctx : list string) : bool :=
+  let token := node_token tt in
+  node_llm_start h id kind prompt
+    (prompt_assemble token prompt ctx (fun _ => llm_repos_text h token) (fun _ => llm_plan_text h token)
+       (llm_repo_text h token)) ctx.
+
+perform_llm (h : node_t) (id kind prompt : string) (ctx : list string) : bool :=
+  let (calls, max) := node_llm_budget h in
+  let now := node_clock tt in
+  let (until, info) := node_limit_info h in
+  let backend := fst info in
+  match llm_gate_of calls max now until with
+  | LlmOverBudget => node_push h ["llm_error", id, llm_budget_text max]
+  | LlmHeld =>
+      node_log h (llm_hold_text id kind backend
+                    (node_float_text (PrimFloat.div (PrimFloat.sub until now) 60%float))) &&
+      node_llm_hold h id kind prompt ctx
+  | LlmAsk => node_log h (llm_ask_text backend kind id calls max) && llm_call h id kind prompt ctx
+  end.
+
 perform_output (h : node_t) (out : list string) : bool :=
   match plan_output out with
   | SetTimer ms ev => node_timer h ms ev
@@ -578,7 +716,8 @@ perform_output (h : node_t) (out : list string) : bool :=
       end
   | CheckRequest id r head edits => node_run_check h id r head edits
   | MergeRequest r v tree bid task bidder spec edits => perform_merge h r v tree bid task bidder spec edits
-  | LegacyOutput fields => perform h fields
+  | LlmRequest id kind prompt ctx => perform_llm h id kind prompt ctx
+  | LegacyOutput _ => true
   end.
 
 (** Effects return whether they were carried out, and the loop keeps the
@@ -598,9 +737,19 @@ Fixpoint carry_all (h : node_t) (snap : consensus_state) (effs : list (list stri
   | e :: rest => carry_effect h snap e && carry_all h snap rest
   end.
 
+(** A model request held for a limit, handed back by the shell once the
+    limit's wait is over: asked now, its prompt assembled again, with no
+    second count against the budget. It isn't a [step] event: the state is
+    the same either way (the branches differ only so extraction keeps the
+    call). *)
 run_event (h : node_t) (st : node_state) (ev : list string) : node_state :=
-  let (s, outs) := step st ev in
-  if carry_all h (cons s) (order_effects ev st s outs) then s else st.
+  match ev with
+  | "llm_release" :: id :: kind :: prompt :: ctx =>
+      if llm_call h id kind prompt ctx then st else with_live st (live st)
+  | _ =>
+      let (s, outs) := step st ev in
+      if carry_all h (cons s) (order_effects ev st s outs) then s else st
+  end.
 
 Fixpoint run_events (h : node_t) (st : node_state) (evs : list (list string)) : node_state :=
   match evs with
@@ -638,7 +787,7 @@ start_node (h : node_t) (st : node_state) : node_state :=
   if carry_all h (cons s) (startup_effects outs) then s else st.
 
 run_node (home : string) (flags : list string) : unit :=
-  let h := node_open plan_open (pack_helpers node_helpers) shallow_json home flags in
+  let h := node_open (pack_helpers node_helpers) shallow_json home flags in
   let st := run_boot h empty_node (boot_events h) in
   let n := replay_count h in
   let logged := if seq n "0" then true else node_log h (append "replayed " (append n " blocks from disk")) in

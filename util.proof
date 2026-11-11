@@ -27,6 +27,54 @@ Example replace_all_is_literal : replace_all "{{F}} x {{F}}" "{{F}}" "T" = "T x 
   /\ replace_all "abc" "{{F}}" "x" = "abc" /\ replace_all "ab" "b" "{{b}}" = "a{{b}}".
 Proof. repeat split; reflexivity. Qed.
 
+(** The prompt's placeholders: overlapping matches go left to right without
+    overlap, an empty pattern changes nothing, an absent one changes
+    nothing, and the inserted text isn't scanned again. *)
+Example replace_all_overlapping_empty_absent :
+  replace_all "aaaa" "aa" "b" = "bb" /\ replace_all "aaaaa" "aa" "b" = "bba"
+  /\ replace_all "{{REPOS}}" "{{REPO}}" "x" = "{{REPOS}}"
+  /\ replace_all "" "" "x" = "" /\ replace_all "" "a" "x" = ""
+  /\ replace_all "x {{F}}" "" "T" = "x {{F}}"
+  /\ replace_all "no placeholder here" "{{PLAN}}" "P" = "no placeholder here"
+  /\ replace_all "{{F}}{{F}}" "{{F}}" "{{F}}" = "{{F}}{{F}}".
+Proof. repeat split; reflexivity. Qed.
+
+Theorem replace_all_empty_pattern : forall s r, replace_all s "" r = s.
+Proof. intros s r. reflexivity. Qed.
+
+Lemma substring_whole : forall s,
+  Stdlib.Strings.String.substring 0 (Stdlib.Strings.String.length s) s = s.
+Proof.
+  induction s as [| c s IH]; simpl.
+  - reflexivity.
+  - rewrite IH. reflexivity.
+Qed.
+
+(** A prompt without a placeholder comes out of replace_all unchanged:
+    filling {{PLAN}} into a prompt that doesn't ask for it changes nothing. *)
+Theorem replace_all_absent : forall s sub r,
+  contains sub s = false -> replace_all s sub r = s.
+Proof.
+  intros s sub r H. unfold contains in H.
+  destruct (find_str sub s 0) eqn:F; [discriminate |].
+  unfold replace_all.
+  destruct (seq sub "") eqn:E; [reflexivity |].
+  rewrite Nat.add_1_r. cbn [replace_all_go]. rewrite F.
+  cbn [rev_onto Stdlib.Strings.String.concat].
+  unfold drop_str, substr, slen. rewrite Nat.sub_0_r. apply substring_whole.
+Qed.
+
+(** A plan's open items: open lines in order, trimmed; marked done ("* ", "+ "),
+    dropped (-), notes (#), dates and blank lines left out. *)
+Example plan_open_open_marked_dropped :
+  plan_open (append "# a note" (append newline (append "2026-11-10" (append newline
+    (append "first open" (append newline (append "+ marked done" (append newline
+    (append "* done today" (append newline (append "- dropped" (append newline
+    (append "  second open  " (append newline (append "" (append newline "-"))))))))))))))))
+  = ["first open", "second open"]
+  /\ plan_open "" = [] /\ plan_open "+done" = ["+done"].
+Proof. repeat split; reflexivity. Qed.
+
 (** overlapping places count: "aa" is twice in "aaa", so an edit of it is ambiguous *)
 Example positions_two_at_most : positions "abab" "ab" = 0 :: 2 :: [] /\ positions "aaa" "aa" = 0 :: 1 :: []
   /\ positions "ababab" "ab" = 0 :: 2 :: [] /\ positions "abc" "c" = [2] /\ positions "abc" "x" = []
@@ -36,6 +84,31 @@ Proof. repeat split; reflexivity. Qed.
 Example edit_once_needs_one_place : edit_once "let x = 1" "1" "2" = Some "let x = 2"
   /\ edit_once "a a" "a" "b" = None /\ edit_once "abc" "x" "y" = None.
 Proof. repeat split; reflexivity. Qed.
+
+(** What a merge's edit promises: when edit_once gives a text, the old text
+    occurs at exactly one offset [i] (the first find finds it, and none is
+    found after it), and the result is the file with only that occurrence
+    replaced: the text before [i] and after the match are kept as they were. *)
+Theorem edit_once_single_match : forall s old r t,
+  edit_once s old r = Some t ->
+  exists i, find_str old s 0 = Some i /\ find_str old s (Succ i) = None
+    /\ t = append (take_str i s) (append r (drop_str (i + slen old) s)).
+Proof.
+  intros s old r t H. unfold edit_once, positions in H.
+  destruct (seq old "") eqn:E; [discriminate |].
+  destruct (find_str old s 0) as [i |] eqn:F1; [| discriminate].
+  destruct (find_str old s (Succ i)) as [j |] eqn:F2; [discriminate |].
+  injection H as <-. exists i. split; [first [exact F1 | reflexivity] | split; [first [exact F2 | reflexivity] |]].
+  reflexivity.
+Qed.
+
+(** an old text that isn't in the file gives no edit *)
+Theorem edit_once_absent : forall s old r,
+  find_str old s 0 = None -> edit_once s old r = None.
+Proof.
+  intros s old r H. unfold edit_once, positions.
+  destruct (seq old ""); [reflexivity |]. rewrite H. reflexivity.
+Qed.
 
 Example defang_breaks_braces : defang "{{F}}" = "{ {F}}" /\ defang "{{{" = "{ { {" /\ defang "{" = "{".
 Proof. repeat split; reflexivity. Qed.
@@ -73,19 +146,17 @@ Proof. repeat split; reflexivity. Qed.
 (** The actual product sent to node_open: project each callback and use it
     on pure inputs, including failures and asymmetric contains arguments. *)
 Example packed_node_helpers_work :
-  let '(edit, has, path, replace) := pack_helpers node_helpers in
+  let '(edit, has, path) := pack_helpers node_helpers in
   edit "abc" "b" "X" = Some "aXc" /\
   edit "aaa" "aa" "X" = None /\
   edit "abc" "z" "X" = None /\
   has "bc" "abc" = true /\ has "abc" "bc" = false /\
   path "src/a..b" = true /\ path "../escape" = false /\
-  path "sub/.GiT/config" = false /\
-  replace "aaa" "aa" "b" = "ba" /\ replace "abc" "" "X" = "abc".
+  path "sub/.GiT/config" = false.
 Proof. repeat split; reflexivity. Qed.
 
 Example helper_record_agrees :
   helper_edit_once node_helpers = edit_once /\
   helper_contains node_helpers = contains /\
-  helper_safe_path node_helpers = shell_safe_path /\
-  helper_replace_all node_helpers = replace_all.
+  helper_safe_path node_helpers = shell_safe_path.
 Proof. repeat split; reflexivity. Qed.
