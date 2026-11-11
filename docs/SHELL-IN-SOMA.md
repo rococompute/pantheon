@@ -230,8 +230,30 @@ separate work; this status does not mark `.plan`.
   The shell only lists `inbox/*.json`, reads each file and removes it,
   handing Soma an `inbox_file` event; `inbox_tx` turns a JSON list of
   strings (through the JSON token binding) into the `local_tx` event, and
-  anything else is logged as malformed, as before. Left of step 5: a job's
-  output cap and kill, and its outcome on failure.
+  anything else is logged as malformed, as before. Job completion outcomes
+  have also moved below; job output caps and timeout/kill enforcement remain.
+
+- Step 5, part: a completed process is a `job_finished` fact, carrying its
+  identifier, wait status, timeout/flood metadata and output. Soma decodes
+  this into the typed `job_status`; `job_result`, `job_failure_reason` and
+  `job_failure_tail` decide empty-success `pending`, exact success bytes,
+  error prefixes, exit/signal/stop reasons, flood-over-timeout precedence,
+  and the final 3000 diagnostic bytes. Those decisions left `shell.ml`.
+  `node_job_complete` invokes the stored callback with Soma's result before
+  its cleanup, preserving output-file reads, and returns queued events at
+  that completion's original position. `job_outputs` interprets generated
+  model replies before stepping the turn's events, as before. Native code
+  still waits for processes, decodes platform signal numbers, holds the
+  callbacks, and performs cleanup. There are no new helper callbacks into
+  Soma or `Any` values at this boundary.
+
+  `test/job-completion.sh` checks 21 fixed Soma results, including success,
+  exits, signals, stops, flood/timeout precedence, exact tail boundaries,
+  split peer chunks, multiple/empty lines, malformed peer input and the
+  strict kept-buffer cap. Its `.proof` includes exact-result Examples and
+  general success-byte and failure-priority theorems. This is a partial
+  step: output accumulation, its cap/kill enforcement, job deadlines and
+  timer scheduling remain native; step 5 is not marked complete.
 
 - U-1, part: the node's effects that write (a log line, a timer, an
   event queued for the loop, a send to every peer, to the peer at an
@@ -266,8 +288,8 @@ separate work; this status does not mark `.plan`.
   reports the buffered bytes and `buffer_over` applies the cap Soma is
   given as a decimal string (no unary literal), closing through a
   binding. `node.proof` checks both caps at and past their edges and
-  the oldest choice. With this, step 5's listed work is in Soma;
-  select and reading bytes remain bindings.
+  the oldest choice. Peer framing and parsing are in Soma; job buffer
+  caps and timeout/kill enforcement still remain native.
 
 - Step 5, raw peer lines: socket framing queues a raw line. Soma applies
   the depth/item scan before the Yojson member binding, assembles sender,
@@ -277,7 +299,7 @@ separate work; this status does not mark `.plan`.
   callback are gone; `node_open` no longer receives a scan callback.
   Examples and `test/peer-raw.sh` cover shape limits, bad members, exact
   fields and own/refused flags without racing a running node. Connection
-  admission and buffered-line byte limits remain in the shell.
+  admission and buffered-line byte-limit decisions subsequently moved too.
 
 - Step 5, part: `decode_tx` is Soma (market.soma). It refuses a raw
   transaction over the byte cap or not bounded JSON (`tx_shape_ok`, the caps

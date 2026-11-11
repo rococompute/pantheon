@@ -671,7 +671,7 @@ let max_conns_per_host = 16
 (* a line's longest: a proposal of max_block_txs transactions, quoted *)
 let max_line = 2 * max_tx_bytes * 60
 
-type job = { jfd : Unix.file_descr; jpid : int; jbuf : Buffer.t; jdone : string -> unit; jstarted : float; jlimit : float; jclean : unit -> unit }
+type job = { jid : string; jfd : Unix.file_descr; jpid : int; jbuf : Buffer.t; jdone : string -> unit; jstarted : float; jlimit : float; jclean : unit -> unit }
 
 let split_addr s =
   match String.rindex_opt s ':' with
@@ -756,6 +756,7 @@ let argv () = Array.to_list Sys.argv |> List.tl
 (* The Soma node loop's handle: node_open registers the closures its setup
    built, and the loop drives them by this name (docs/SHELL-IN-SOMA.md 2). *)
 type node_handle = { h_events : unit -> string list list;
+                     h_job_complete : string -> string -> string list list;
                      h_llm_budget : unit -> string * string;
                      h_llm_hold : string -> string -> string -> string list -> unit;
                      h_llm_start : string -> string -> string -> string -> string list -> string option;
@@ -817,6 +818,7 @@ let node_handles : (string, node_handle) Hashtbl.t = Hashtbl.create 4
 let node_counter = ref 0
 let lookup_handle id = try Hashtbl.find node_handles id with Not_found -> fail "unknown node handle %s" id
 let events id = (lookup_handle id).h_events ()
+let node_job_complete id job result = (lookup_handle id).h_job_complete job result
 (* a model call's I/O: node.soma's perform_llm decides and builds the prompt *)
 let node_llm_budget id = (lookup_handle id).h_llm_budget ()
 let node_llm_hold id req kind prompt ctx = (lookup_handle id).h_llm_hold req kind prompt ctx; true
@@ -1013,6 +1015,8 @@ let node_open packed home flags =
   let served : (string * int, float) Hashtbl.t = Hashtbl.create 64 in
   let timers : (float * string list) list ref = ref [] in
   let jobs : job list ref = ref [] in
+  let job_counter = ref 0 in
+  let finished_jobs : (string, job) Hashtbl.t = Hashtbl.create 8 in
   let signed_path = Filename.concat home "signed.log" in
   (* slot -> (value id, the whole vote): "SLOT VID [VOTE-AS-JSON]" per line *)
   let signed : (string, string * string list option) Hashtbl.t = Hashtbl.create 64 in
@@ -1115,7 +1119,9 @@ let node_open packed home flags =
     in
     if pid > 0 then begin
       Unix.close w; Unix.close ifd; Unix.close devnull;
-      jobs := { jfd = r; jpid = pid; jbuf = Buffer.create 4096; jdone = on_done; jstarted = Unix.gettimeofday (); jlimit = limit;
+      let jid = string_of_int !job_counter in
+      incr job_counter;
+      jobs := { jid; jfd = r; jpid = pid; jbuf = Buffer.create 4096; jdone = on_done; jstarted = Unix.gettimeofday (); jlimit = limit;
                 jclean = (fun () -> (try Sys.remove inp with _ -> ()); (try remove_tree_later cwd with _ -> ()); clean ()) } :: !jobs
     end
   in
@@ -1481,27 +1487,21 @@ let node_open packed home flags =
           | exception _ -> true)
       !jobs;
     List.iter (fun (j, status) ->
-        let out = Buffer.contents j.jbuf in
-        (* the reply first: codex's is a file that cleaning removes *)
-        (match status with
-         | Unix.WEXITED 0 when not (Hashtbl.mem flooded j.jpid) -> j.jdone (if out = "" then "pending" else out)
-         | _ -> let n = String.length out in
-                (* how it ended: CI tells an exceeded budget (137, 124) from a broken build by it *)
-                (* OCaml numbers signals its own way (SIGKILL is -7): say their names *)
-                let signame sg = if sg = Sys.sigkill then "SIGKILL" else if sg = Sys.sigterm then "SIGTERM"
-                                 else if sg = Sys.sigsegv then "SIGSEGV" else if sg = Sys.sigabrt then "SIGABRT"
-                                 else if sg = Sys.sigint then "SIGINT" else Printf.sprintf "signal %d" sg in
-                let how = match status with
-                  | _ when Hashtbl.mem flooded j.jpid ->
-                      Printf.sprintf "it printed more than %d MB, so the node stopped it" (max_job_output / 1048576)
-                  | Unix.WEXITED c -> Printf.sprintf "exit %d" c
-                  | Unix.WSIGNALED _ when Hashtbl.mem overtime j.jpid ->
-                      Printf.sprintf "it ran past its time limit of %.0f s, so the node stopped it" (Hashtbl.find overtime j.jpid)
-                  | Unix.WSIGNALED sg -> "killed by " ^ signame sg
-                  | Unix.WSTOPPED sg -> "stopped by " ^ signame sg in
-                Hashtbl.remove overtime j.jpid; Hashtbl.remove flooded j.jpid;
-                j.jdone (Printf.sprintf "!process failed (%s): %s" how (if n > 3000 then "..." ^ String.sub out (n - 3000) 3000 else out)));
-        j.jclean ())
+        (* Report native wait facts. Soma chooses success/failure and the
+           exact output; the callback and cleanup wait for node_job_complete. *)
+        let signal_name sg =
+          if sg = Sys.sigkill then "SIGKILL" else if sg = Sys.sigterm then "SIGTERM"
+          else if sg = Sys.sigsegv then "SIGSEGV" else if sg = Sys.sigabrt then "SIGABRT"
+          else if sg = Sys.sigint then "SIGINT" else Printf.sprintf "signal %d" sg in
+        let tag, value = match status with
+          | Unix.WEXITED c -> ("exit", string_of_int c)
+          | Unix.WSIGNALED sg -> ("signal", signal_name sg)
+          | Unix.WSTOPPED sg -> ("stop", signal_name sg) in
+        let timeout = match Hashtbl.find_opt overtime j.jpid with Some limit -> node_float_text limit | None -> "" in
+        let flood = if Hashtbl.mem flooded j.jpid then "1" else "0" in
+        Hashtbl.remove overtime j.jpid; Hashtbl.remove flooded j.jpid;
+        Hashtbl.replace finished_jobs j.jid j;
+        push [ "job_finished"; j.jid; tag; value; timeout; flood; Buffer.contents j.jbuf ])
       (List.rev !finished);
     List.iter (fun p ->
         match p.out with
@@ -1528,6 +1528,16 @@ let node_open packed home flags =
   incr node_counter;
   Hashtbl.replace node_handles handle_id
     { h_events = collect_events;
+      h_job_complete = (fun jid result ->
+        match Hashtbl.find_opt finished_jobs jid with
+        | None -> []
+        | Some j ->
+            Hashtbl.remove finished_jobs jid;
+            j.jdone result;
+            j.jclean ();
+            let evs = ref [] in
+            while not (Queue.is_empty queue) do evs := Queue.pop queue :: !evs done;
+            List.rev !evs);
       h_llm_budget = (fun () -> incr calls; (string_of_int !calls, string_of_int !max_calls));
       h_llm_hold = hold;
       h_llm_start = call_model;
