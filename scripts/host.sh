@@ -289,11 +289,24 @@ U
 # the market's head (any node's: merges commit the same way on every node),
 # published to BRANCH: a fast-forward, or a merge when people committed there
 # too (scripts/publish.sh)
+# the market's head of each governed repository, published to its default
+# branch: Pantheon to REMOTE's BRANCH, Soma (when genesis governs it) to the
+# origin of SOMA_DIR's checkout, branch SOMA_REF
 cmd_mirror() {
   [ -n "$REMOTE" ] || die "no REMOTE: set it to the GitHub repository workers share"
   r=$NET/${AGENTS%% *}/repos/pantheon
   [ -d "$r" ] || die "no network yet: scripts/host.sh network"
-  QUIET=${quiet:-} PUBLISH_DIR=$P/publish "$here/scripts/publish.sh" "$r" "$REMOTE" "$BRANCH"
+  st=0
+  QUIET=${quiet:-} PUBLISH_DIR=$P/publish "$here/scripts/publish.sh" "$r" "$REMOTE" "$BRANCH" || st=$?
+  if governs_soma; then
+    sr=$(git -C "$SOMA" remote get-url origin 2>/dev/null || true)
+    if [ -n "$sr" ] && [ -d "$NET/${AGENTS%% *}/repos/soma" ]; then
+      QUIET=${quiet:-} PUBLISH_DIR=$P/publish-soma "$here/scripts/publish.sh" "$NET/${AGENTS%% *}/repos/soma" "$sr" "$SOMA_REF" || st=$?
+    else
+      say "the network governs Soma, but $SOMA has no origin to publish to: its merges stay on the chain"
+    fi
+  fi
+  return $st
 }
 cmd_mirror_loop() { while :; do quiet=1 cmd_mirror || true; sleep 30; done; }
 
