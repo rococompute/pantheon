@@ -2,8 +2,9 @@
 
 Each governed repository keeps its plan in `.plan` at its root, in the
 format John Carmack used for his .plan files at id Software. A term leader
-drafts the next task from the plan's open items, and the bid that does the
-task marks its item done. So the plan changes the way the code does, through
+drafts the next task from the plan's open items, bids make progress on it,
+whole or in parts, and the leader marks the item done when it judges the
+task finished. So the plan changes the way the code does, through
 the market, and anyone who opens the repository's default branch sees what's
 next and what's done.
 
@@ -53,8 +54,8 @@ every line ever written, with the commit that marked it. Models only ever
 get the open lines, but a bidder with tools reads the whole file, and so do
 people, so a plan that's never pruned grows without bound.
 
-A bid still marks its item `+ ` rather than deleting it: an attestor sees
-which item the bid claims, and the leader sees it done. Prune between
+The leader marks an item `+ ` rather than deleting it, with a mark of its own
+that attestors approve: they see which item it claims and what merged on it. Prune between
 epochs, or as its own small task.
 
 ## Why a file, and not goal lines in the prompt
@@ -73,12 +74,15 @@ the leader reads `.plan` at the repository's head each time it drafts.
   usually the first, and says why when it isn't. With room for another task
   (`max_open_tasks`), it drafts one beside the open ones when it judges one can
   run at the same time, or gives null. Bidders see the plan too. The task quotes the item,
-  names `.plan` and the item's files as context, and includes marking the
-  item done.
-- **Bidding:** the bid does the work and puts `+ ` before the item's line in
-  `.plan`.
-- **Attesting:** an attestor sees that change in the bid's edits, like any
-  other.
+  names `.plan` and the item's files as context.
+- **Bidding:** a bid does all of the task or a correct part of it; the
+  leader merges any correct part and the task stays open for the rest. Bids
+  don't mark the item: a bid that does is rejected for that alone, and its
+  bidder resubmits the work without it. New tests go in new files: CI
+  refuses a bid that changes a test already in `test/`.
+- **Marking:** when the leader judges the task done (its pick's `done` and
+  `plan_line`), it puts `+ ` before the item's line with a mark of its own,
+  which attestors approve like a bid.
 - **Operator goals:** `--goal FILE` lines still work. They come first in the
   leader's prompt, as the operator's direction. A leader drafts only when the
   node has at least one goal line, so give a line such as "Work through each
