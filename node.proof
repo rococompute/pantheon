@@ -261,6 +261,18 @@ Example submission_silence_only_suppresses_the_peer_send :
     [PublishTransaction "7" ["withdraw", "0"] (Some "sending withdraw 0")].
 Proof. repeat split; reflexivity. Qed.
 
+Example storage_ops_travel_the_one_interface :
+  io_wire (IoStore "7" ["tx1", "tx2"]) = ["store", "7", "tx1", "tx2"] /\
+  io_of_wire ["store", "7", "tx1", "tx2"] = Some (IoStore "7" ["tx1", "tx2"]) /\
+  io_wire (IoStore "8" []) = ["store", "8"] /\
+  io_wire (IoSetHeight "9") = ["set_height", "9"] /\
+  io_of_wire ["set_height", "9"] = Some (IoSetHeight "9") /\
+  io_wire (IoWriteStatus "height 3") = ["write_status", "height 3"] /\
+  io_of_wire ["write_status", "height 3"] = Some (IoWriteStatus "height 3") /\
+  action_io (StoreAction "7" ["tx1"]) = Some (IoStore "7" ["tx1"]) /\
+  io_of_wire ["store"] = None.
+Proof. repeat split; reflexivity. Qed.
+
 Example broadcast_selects_its_fields_and_leaves_other_outputs :
   plan_output ["broadcast", "prevote", "1", "0", "-1", "v", "nil"] =
     Broadcast ["prevote", "1", "0", "-1", "v", "nil"] /\
@@ -719,7 +731,7 @@ Example plans_become_operations :
     [None, Some (IoSendPeer "0" ["proposal", "3", "1", "0", "vid", "val"]),
      Some (IoSendPeer "1" ["proposal", "3", "1", "0", hash_list ["equivocation", "3", "1"], "equivocation", "3", "1"])] /\
   map action_io (broadcast_plan "" 2 ["ping"] None None None) = [Some (IoSendAll ["ping"])] /\
-  action_io (StoreAction "7" []) = None.
+  action_io (StoreAction "7" []) = Some (IoStore "7" []).
 Proof. repeat split; reflexivity. Qed.
 
 (** An action that is one operation is carried out as exactly that
