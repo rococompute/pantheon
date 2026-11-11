@@ -71,6 +71,18 @@ tailnet_ip() { tailscale ip -4 2>/dev/null | head -1; }
 join_ip() { tailscale ip -4 "${JOIN#*@}" 2>/dev/null | head -1; }
 remote() { tailscale ssh "$JOIN" "$@" </dev/null; }
 remote_in() { tailscale ssh "$JOIN" "$@"; }
+# JOIN answers over Tailscale SSH, or this says why not (an unapproved
+# check, or Tailscale SSH off there) rather than blaming what comes next
+reach_join() {
+  out=$(timeout 60 tailscale ssh "$JOIN" true </dev/null 2>&1) && return 0
+  case $out in
+    *"host key is known"*|*"Host key verification failed"*)
+      die "$JOIN: no Tailscale SSH host key for it, so Tailscale SSH looks off there: on that host run 'sudo tailscale set --ssh', then retry" ;;
+    *"additional check"*|*"failed to fetch next SSH action"*)
+      die "$JOIN: Tailscale SSH wants a check approved: run 'tailscale ssh $JOIN true', open the URL it prints, then retry within the check's window" ;;
+    *) die "$JOIN: unreachable over Tailscale SSH: $(echo "$out" | tail -2 | tr '\n' ' ')" ;;
+  esac
+}
 host_sh() { printf 'cd ~/%s && AGENTS=%s LISTEN=%s scripts/host.sh' "$JOIN_DIR" "'$JOIN_AGENTS'" "$(join_ip)"; }
 # a VM agent's port under JOIN: 26701 for the first, and on
 agent_port() { i=26701; for x in $AGENTS; do [ "$x" = "$1" ] && { echo $i; return; }; i=$((i + 1)); done; }
@@ -174,7 +186,9 @@ cmd_network() {
     # the other host: its node built from the same commit (from GitHub), its
     # last chain moved aside, and its agents' public parts
     say "$JOIN: its node from ${pantheon_commit%"${pantheon_commit#???????}"}, keys for $JOIN_AGENTS"
-    remote "cd ~/$JOIN_DIR && git fetch -q origin && git cat-file -e $pantheon_commit" || die "$JOIN can't get $pantheon_commit: push it to GitHub first"
+    reach_join
+    remote "cd ~/$JOIN_DIR && git fetch -q origin" || die "$JOIN: git fetch failed in ~/$JOIN_DIR (can it reach GitHub?)"
+    remote "cd ~/$JOIN_DIR && git cat-file -e $pantheon_commit" || die "$JOIN can't get $pantheon_commit: push it to GitHub first"
     remote "cd ~/$JOIN_DIR && $(host_sh | sed 's/^cd [^&]*&& //') stop >/dev/null 2>&1; git checkout -q --detach $pantheon_commit && PATH=\$HOME/pantheon/soma/_build/install/default/bin:\$PATH && eval \"\$(opam env --switch=soma-build --set-switch)\" && soma build main.soma >/tmp/pantheon-join-build.log 2>&1" \
       || die "$JOIN: its node didn't build (/tmp/pantheon-join-build.log there)"
     remote 'P=$HOME/pantheon; [ ! -d $P/net ] || mv $P/net $P/net-saved-$(date +%Y%m%d-%H%M%S)'
