@@ -663,7 +663,7 @@ let cmd_genesis packed home net =
 type peer = { name : string; addr : string; mutable out : Unix.file_descr option; mutable connecting : bool;
               obuf : Buffer.t; mutable next_try : float }
 
-type conn = { fd : Unix.file_descr; ibuf : Buffer.t; host : string; mutable last : float }
+type conn = { cid : int; fd : Unix.file_descr; ibuf : Buffer.t; host : string; mutable last : float }
 
 (* inbound connections: peers are a handful, so these are generous *)
 let max_conns = 64
@@ -764,6 +764,10 @@ type node_handle = { h_events : unit -> string list list;
                      h_repo_names : unit -> string list;
                      h_ls_files : string -> string;
                      h_head_file : string -> string -> string option;
+                     h_conn_admit : string -> string -> string -> unit;
+                     h_conns : unit -> (string * float) list;
+                     h_conn_close : string -> unit;
+                     h_line_limit : unit -> string;
                      h_save : Obj.t -> unit; h_refuse : string -> unit; h_boot : string list list; h_snapshot : Obj.t option; h_replayed : string;
                      h_timer : string -> string list -> unit; h_log : string -> unit;
                      h_push : string list -> unit; h_draw : string * (string * string);
@@ -863,6 +867,10 @@ let boot_events id = (lookup_handle id).h_boot
 let boot_snapshot id = Option.map Obj.obj (lookup_handle id).h_snapshot
 let replay_count id = (lookup_handle id).h_replayed
 let node_timer id ms ev = (lookup_handle id).h_timer ms ev; true
+let node_conn_admit id oid mode target = (lookup_handle id).h_conn_admit oid mode target; true
+let node_conns id = (lookup_handle id).h_conns ()
+let node_conn_close id cid = (lookup_handle id).h_conn_close cid; true
+let node_line_limit id = (lookup_handle id).h_line_limit ()
 let node_log id text = (lookup_handle id).h_log text; true
 let node_push id ev = (lookup_handle id).h_push ev; true
 let node_draw id = (lookup_handle id).h_draw
@@ -1043,6 +1051,8 @@ let node_open packed home flags =
       names
   in
   let conns : conn list ref = ref [] in
+  let conn_counter = ref 0 in
+  let pending_conns : (int * Unix.file_descr * string) list ref = ref [] in
   let msg_bytes from fields = String.concat "\x00" [ "msg"; !chain_id; from; Yojson.Safe.to_string (strings_json fields) ] in
   let wire fields =
     let sg = if byz = "bad-sig" then String.make 512 '0' else sign key (msg_bytes me fields) in
@@ -1388,16 +1398,12 @@ let node_open packed home flags =
                  peer with no key can't use up the node's descriptors; when
                  full, the one quiet longest makes room (a real peer
                  reconnects) *)
-              if List.length (List.filter (fun x -> x.host = host) !conns) >= max_conns_per_host then Unix.close c
-              else begin
-                if List.length !conns >= max_conns then begin
-                  let oldest = List.fold_left (fun o x -> if x.last < o.last then x else o) (List.hd !conns) !conns in
-                  (try Unix.close oldest.fd with _ -> ());
-                  conns := List.filter (fun x -> x != oldest) !conns
-                end;
-                Unix.set_nonblock c;
-                conns := { fd = c; ibuf = Buffer.create 4096; host; last = now } :: !conns
-              end)
+              let oid = !conn_counter in
+              incr conn_counter;
+              pending_conns := (oid, c, host) :: !pending_conns;
+              push [ "conn_offer"; string_of_int oid;
+                     string_of_int (List.length (List.filter (fun x -> x.host = host) !conns));
+                     string_of_int (List.length !conns) ])
       r;
     let buf = Bytes.create 65536 in
     conns := List.filter (fun c ->
@@ -1418,7 +1424,7 @@ let node_open packed home flags =
                    let rec take = function [ rest ] -> rest | l :: more -> push [ "peer_raw"; l ]; take more | [] -> "" in
                    let rest = take parts in
                    Buffer.clear c.ibuf; Buffer.add_string c.ibuf rest);
-              if Buffer.length c.ibuf > max_line then (Unix.close c.fd; false) else true
+              push [ "conn_buffer"; string_of_int c.cid; string_of_int (Buffer.length c.ibuf) ]; true
           | exception Unix.Unix_error ((EAGAIN | EWOULDBLOCK), _, _) -> true
           | exception _ -> (try Unix.close c.fd with _ -> ()); false)
       !conns;
@@ -1519,6 +1525,29 @@ let node_open packed home flags =
       h_refuse = (fun raw -> if Hashtbl.length refused < 10000 then Hashtbl.replace refused raw ());
       h_boot = List.rev !boot_rev; h_snapshot = boot_saved;
       h_replayed = string_of_int !replayed;
+      h_conn_admit = (fun oid mode target ->
+        match List.find_opt (fun (i, _, _) -> string_of_int i = oid) !pending_conns with
+        | None -> ()
+        | Some (_, c, host) ->
+            pending_conns := List.filter (fun (i, _, _) -> string_of_int i <> oid) !pending_conns;
+            (match mode with
+             | "refuse" -> (try Unix.close c with _ -> ())
+             | _ ->
+                 if mode = "evict" then
+                   (match List.find_opt (fun x -> string_of_int x.cid = target) !conns with
+                    | Some old -> (try Unix.close old.fd with _ -> ()); conns := List.filter (fun x -> x != old) !conns
+                    | None -> ());
+                 Unix.set_nonblock c;
+                 let cid = !conn_counter in
+                 incr conn_counter;
+                 conns := { cid; fd = c; ibuf = Buffer.create 4096; host; last = Unix.gettimeofday () } :: !conns));
+      h_conns = (fun () -> List.map (fun x -> (string_of_int x.cid, x.last)) !conns);
+      h_conn_close = (fun cid ->
+        match List.find_opt (fun x -> string_of_int x.cid = cid) !conns with
+        | Some x -> (try Unix.close x.fd with _ -> ()); conns := List.filter (fun y -> y != x) !conns
+        | None -> ());
+      h_line_limit = (fun () -> string_of_int max_line);
+      
       h_timer = (fun ms ev -> timers := (Unix.gettimeofday () +. float_of_string ms /. 1000., ev) :: !timers);
       h_log = (fun text -> say "%s" text); h_push = push;
       h_draw = (byz, (string_of_int chain_len, secret));

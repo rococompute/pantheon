@@ -1081,6 +1081,34 @@ line_event (from : string) (fields : list string) : list string :=
   | _ => "msg" :: from :: fields
   end.
 
+
+(** ---- Step 5, connection admission and line limits, in Soma ----
+    [admit_decision_of] is the old accept test: at the per-host cap the
+    new socket is refused; at the overall cap the quietest connection
+    (the one [oldest_conn] names, first of equals in list order) makes
+    room; otherwise the socket joins. [buffer_over] is the buffered-line
+    byte cap, compared as numbers the bindings pass as decimal strings,
+    never as unary literals built in Soma. *)
+Inductive admit_decision := AdmitRefuse | AdmitEvict | AdmitNew.
+
+admit_decision_of (same_host total : nat) : admit_decision :=
+  if 16 <=? same_host then AdmitRefuse
+  else if 64 <=? total then AdmitEvict
+  else AdmitNew.
+
+Fixpoint oldest_go (best : string * float) (rest : list (string * float)) : string :=
+  match rest with
+  | [] => fst best
+  | (id, last) :: r =>
+      if PrimFloat.ltb last (snd best) then oldest_go (id, last) r
+      else oldest_go best r
+  end.
+
+oldest_conn (l : list (string * float)) : string :=
+  match l with [] => "" | b :: r => oldest_go b r end.
+
+buffer_over (len limit : nat) : bool := limit <? len.
+
 run_event (h : node_t) (st : node_state) (ev : list string) : node_state :=
   let ev := match ev with
             | ["peer_raw", raw] => peer_raw_event (node_line_item_cap tt) (node_identity h) raw
@@ -1096,6 +1124,18 @@ run_event (h : node_t) (st : node_state) (ev : list string) : node_state :=
       else if node_verify_line h from sig fields then
         let (s, outs) := step st (line_event from fields) in
         if carry_all h (cons s) (order_effects (line_event from fields) st s outs) then s else st
+      else st
+  | ["conn_offer", oid, same, total] =>
+      match admit_decision_of (num same) (num total) with
+      | AdmitRefuse => if node_conn_admit h oid "refuse" "" then st else with_live st (live st)
+      | AdmitNew => if node_conn_admit h oid "new" "" then st else with_live st (live st)
+      | AdmitEvict =>
+          if node_conn_admit h oid "evict" (oldest_conn (node_conns h))
+          then st else with_live st (live st)
+      end
+  | ["conn_buffer", cid, len] =>
+      if buffer_over (num len) (num (node_line_limit h)) then
+        if node_conn_close h cid then st else with_live st (live st)
       else st
   | _ =>
       let (s, outs) := step st ev in

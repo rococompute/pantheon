@@ -168,6 +168,18 @@ worth a note in this file rather than a workaround.
 
 ## Done so far
 
+- Step 5, connection and line limits: an accepted socket reaches Soma
+  as a `conn_offer` event carrying its per-host and total counts;
+  `admit_decision_of` refuses at the per-host cap, evicts the
+  connection `oldest_conn` names (the quietest, first of equals) at
+  the overall cap, or admits it, and the shell only holds the offered
+  socket and carries the mode out. After a read, a `conn_buffer` event
+  reports the buffered bytes and `buffer_over` applies the cap Soma is
+  given as a decimal string (no unary literal), closing through a
+  binding. `node.proof` checks both caps at and past their edges and
+  the oldest choice. With this, step 5's listed work is in Soma;
+  select and reading bytes remain bindings.
+
 - Step 5, raw peer lines: socket framing queues a raw line. Soma applies
   the depth/item scan before the Yojson member binding, assembles sender,
   signature and field metadata, then uses the existing own/refused-before-
