@@ -429,7 +429,9 @@ save_chain() {
   running "$v" && in_vm "$v" sudo test -d $HOMEDIR/repos || return 0
   stamp=$(date +%Y%m%d-%H%M%S)
   export GIT_SSH_COMMAND="ssh -F $HOME/.lima/$v/ssh.config"
-  for name in $REPOS; do
+  for name in pantheon soma; do
+    # the repositories the old chain governed, which REPOS may no longer name
+    in_vm "$v" sudo test -d "$HOMEDIR/repos/$name" || continue
     dst=$(repo_src "$name") ref=refs/heads/pantheon/saved-$stamp
     if ! git -C "$dst" fetch -q --upload-pack "sudo -u pantheon git-upload-pack" "lima-$v:$HOMEDIR/repos/$name" "HEAD:$ref"; then
       [ "${FORCE_RESET:-}" = 1 ] || die "couldn't save $name's chain head from $a before discarding the chain: fix that, or FORCE_RESET=1 to discard it anyway"
