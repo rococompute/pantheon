@@ -55,3 +55,12 @@ node_block : string -> string -> option (list string).
 node_store : string -> string -> list string -> bool.
 node_height : string -> string -> bool.
 forever : forall {A : Type}, (A -> A) -> A -> unit.
+
+(** Raw clock/metadata/table operations and an authenticated peer send.
+    Soma chooses whether and which catch-up blocks to send. *)
+node_clock : unit -> float.
+node_current_height : string -> string.
+node_last_served : string -> string -> string -> option float.
+node_mark_served : string -> string -> string -> float -> bool.
+node_peer_exists : string -> string -> bool.
+node_peer_send : string -> string -> list string -> bool.
