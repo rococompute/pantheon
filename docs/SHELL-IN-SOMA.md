@@ -226,12 +226,28 @@ separate work; this status does not mark `.plan`.
 
 ## Done so far
 
+- Step 5, part: a job's output bytes are accumulated in Soma. The shell
+  reads a chunk from the job's descriptor and hands it over as a
+  `job_bytes` event; `job_feed` appends it to that job's chunks and, past
+  the output cap, keeps the last 64 KiB (the tail a failed check shows)
+  and says the job is over. `buffer_over` is that test. The shell stores
+  the chunks Soma returns and signals the process once (`node_job_flood`);
+  it no longer trims the buffer or compares it to the cap. `job_result`
+  still formats the outcome, and `node_job_complete` still runs the
+  callback at the completion's original queue position. `node.proof`
+  checks a line split across chunks, several lines in one chunk, an empty
+  line, a trailing partial, a malformed chunk kept without an event, and
+  the cap at and past its edge, and proves the under-cap append, that the
+  over flag is `buffer_over`, the tail, and that two under-cap reads join
+  to the same bytes. `test/job-feed.sh` runs those fixed results. Job
+  deadlines and timer scheduling remain native; step 5 is not marked complete.
+
 - Step 5, part: the node's inbox of local transactions is read in Soma.
   The shell only lists `inbox/*.json`, reads each file and removes it,
   handing Soma an `inbox_file` event; `inbox_tx` turns a JSON list of
   strings (through the JSON token binding) into the `local_tx` event, and
   anything else is logged as malformed, as before. Job completion outcomes
-  have also moved below; job output caps and timeout/kill enforcement remain.
+  and the output cap have also moved; job deadlines remain native.
 
 - Step 5, part: a completed process is a `job_finished` fact, carrying its
   identifier, wait status, timeout/flood metadata and output. Soma decodes
@@ -252,8 +268,8 @@ separate work; this status does not mark `.plan`.
   split peer chunks, multiple/empty lines, malformed peer input and the
   strict kept-buffer cap. Its `.proof` includes exact-result Examples and
   general success-byte and failure-priority theorems. This is a partial
-  step: output accumulation, its cap/kill enforcement, job deadlines and
-  timer scheduling remain native; step 5 is not marked complete.
+  step: job deadlines and timer scheduling remain native; the output cap
+  moved in the entry above. Step 5 is not marked complete.
 
 - U-1, part: the node's effects that write (a log line, a timer, an
   event queued for the loop, a send to every peer, to the peer at an
@@ -288,8 +304,9 @@ separate work; this status does not mark `.plan`.
   reports the buffered bytes and `buffer_over` applies the cap Soma is
   given as a decimal string (no unary literal), closing through a
   binding. `node.proof` checks both caps at and past their edges and
-  the oldest choice. Peer framing and parsing are in Soma; job buffer
-  caps and timeout/kill enforcement still remain native.
+  the oldest choice. Peer framing and parsing are in Soma. Job output
+  caps are in Soma too (`job_feed`); job deadlines and timer scheduling
+  remain native.
 
 - Step 5, raw peer lines: socket framing queues a raw line. Soma applies
   the depth/item scan before the Yojson member binding, assembles sender,

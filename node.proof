@@ -31,6 +31,92 @@ Example connection_admission_and_line_cap_edges :
   buffer_over 10 10 = false /\ buffer_over 11 10 = true /\ buffer_over 0 0 = false.
 Proof. repeat split; reflexivity. Qed.
 
+(** A job's output bytes. Two reads join to the same text as one read while
+    the first stays under the cap, including once the cap trims the tail.
+    Newlines stay bytes: several lines, an empty line and a trailing partial
+    are kept. A malformed chunk is kept and is not an event. The cap is
+    strict, the same test as [buffer_over]. *)
+Example job_feed_chunks_lines_and_cap :
+  job_feed [] "hel" 8 4 = (["hel"], false) /\
+  job_feed ["hel"] "lo
+x" 8 4 = (["hel", "lo
+x"], false) /\
+  chunks_join (fst (job_feed ["hel"] "lo
+x" 8 4)) = "hello
+x" /\
+  chunks_join (fst (job_feed [] "hello
+x" 8 4)) = "hello
+x" /\
+  job_feed [] "one
+
+two
+par" 20 4 = (["one
+
+two
+par"], false) /\
+  job_feed [] "
+" 8 4 = (["
+"], false) /\
+  job_feed [] "{bad}" 8 4 = (["{bad}"], false) /\
+  job_feed ["abcdef"] "gh" 8 4 = (["abcdef", "gh"], false) /\
+  job_feed ["abcdef"] "ghi" 8 4 = (["fghi"], true) /\
+  job_feed ["abcdef"] "ghij" 8 4 = (["ghij"], true) /\
+  job_feed [] "abcdefghij" 8 4 = (["ghij"], true) /\
+  job_feed ["ghij"] "xy" 8 4 = (["ghij", "xy"], false) /\
+  job_feed ["ghij"] "xyzABC" 8 4 = (["zABC"], true) /\
+  job_feed ["ab"] "" 8 4 = (["ab", ""], false) /\
+  seq job_keep_text "65536" = true.
+Proof. repeat split; reflexivity. Qed.
+
+Theorem job_feed_under_cap_appends : forall chunks chunk limit keep,
+  (chunks_len chunks + slen chunk <=? limit) = true ->
+  job_feed chunks chunk limit keep = (chunks ++ [chunk], false).
+Proof.
+  intros chunks chunk limit keep H.
+  unfold job_feed.
+  destruct (limit <? chunks_len chunks + slen chunk) eqn:E.
+  - apply Nat.ltb_lt in E. apply Nat.leb_le in H. lia.
+  - reflexivity.
+Qed.
+
+Theorem job_feed_over_is_buffer_over : forall chunks chunk limit keep,
+  snd (job_feed chunks chunk limit keep) = buffer_over (chunks_len chunks + slen chunk) limit.
+Proof.
+  intros chunks chunk limit keep.
+  unfold job_feed, buffer_over.
+  destruct (limit <? chunks_len chunks + slen chunk); reflexivity.
+Qed.
+
+Theorem job_feed_over_keeps_the_tail : forall chunks chunk limit keep,
+  buffer_over (chunks_len chunks + slen chunk) limit = true ->
+  fst (job_feed chunks chunk limit keep) =
+    let joined := chunks_join (chunks ++ [chunk]) in
+    let n := slen joined in
+    [if n <=? keep then joined else substr joined (n - keep) keep].
+Proof.
+  intros chunks chunk limit keep H.
+  unfold job_feed, buffer_over in *.
+  destruct (limit <? chunks_len chunks + slen chunk).
+  - reflexivity.
+  - discriminate.
+Qed.
+
+Theorem job_feed_under_split_same_bytes : forall a b limit keep,
+  (slen a + slen b <=? limit) = true ->
+  chunks_join (fst (job_feed (fst (job_feed [] a limit keep)) b limit keep))
+  = chunks_join [a, b].
+Proof.
+  intros a b limit keep H.
+  assert (Ha : (slen a <=? limit) = true).
+  { apply Nat.leb_le. apply Nat.leb_le in H. lia. }
+  assert (E1 : job_feed [] a limit keep = ([a], false)).
+  { apply job_feed_under_cap_appends. cbn. exact Ha. }
+  rewrite E1. cbn.
+  assert (E2 : job_feed [a] b limit keep = ([a, b], false)).
+  { apply job_feed_under_cap_appends. cbn. rewrite Nat.add_0_r. exact H. }
+  rewrite E2. cbn. reflexivity.
+Qed.
+
 Example decided_snapshot_rest :
   order_effects ["msg", "peer", "x"] empty_node (with_cons empty_node (new_consensus "me" ["me"] 2))
     [["broadcast", "vote"], ["decided", "1", "tx"], ["status", "s"]]
