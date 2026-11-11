@@ -377,7 +377,7 @@ cmd_start() {
     printf '%s\n' "$CI_MEMORY" | put ci-memory
     # Pantheon's build within a cloud agent's default command time (2 minutes):
     # a change that makes it slower fails CI, as a broken one does
-    pantheon_ci=$(python3 "$here/deploy/ci-command.py" "$here" "${PANTHEON_CI:-timeout 120 soma build main.soma && timeout 120 test/edits.sh && sh test/ci-policy.sh && timeout 120 bash test/cli.sh && timeout 120 bash test/genesis.sh && timeout 120 bash test/double-bid.sh && timeout 120 bash test/parallel-tasks.sh && timeout 120 bash test/scopes.sh && timeout 120 sh test/soma-misc-runner.sh && timeout 120 sh test/host-quoting.sh}")
+    pantheon_ci=$(python3 "$here/deploy/ci-command.py" "$here" "${PANTHEON_CI:-timeout 120 soma build main.soma && timeout 120 test/edits.sh && sh test/ci-policy.sh && timeout 120 bash test/cli.sh && timeout 120 bash test/genesis.sh && timeout 120 bash test/double-bid.sh && timeout 120 bash test/parallel-tasks.sh && timeout 120 bash test/scopes.sh && timeout 120 bash test/plan-marks.sh && timeout 120 sh test/soma-misc-runner.sh && timeout 120 sh test/host-quoting.sh}")
     printf '%s\n' "$pantheon_ci" | put ci/pantheon
     # Soma's CI is a full build: on SOMA_CI_AGENTS only. The others have Soma
     # outside their scope (their parts' exclude, above), so the market

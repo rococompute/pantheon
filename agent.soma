@@ -177,7 +177,7 @@ pick_prompt (a m : obj) (t : task) (bs : list bid) : string :=
 " (append (fence "note" (note b)) (edits_text b)))))))) bs "")
   (append "Each repository's plan, its open items:
 {{PLAN}}"
-  "Pick the bid that takes the task furthest correctly, if one is good enough, and reject wrong ones. A correct part of the task is good enough: the task stays open for the rest. A bid at the task's floor is good enough, and among correct bids prefer the one that goes further, in the task or past the floor. Weigh each bid on several measures, not one: how much of the task and of the goal it does (for a move from one language to another, how much code it moves), whether its tests and checks show it working, how much of its code is typed precisely rather than Any, what it proves (Examples and theorems), how simple it is (less branching and duplication), and that it keeps the program as fast. A bid that does much more of the goal at the floor can be worth more than a smaller one past it. Don't reject a bid for lacking what the task calls welcome but not required, for doing only part of the task (say what's left in your reasons for the next bids), or for edits that no longer apply because of a merge since it was made (the merge check finds those and clears them as conflicts, which isn't a rejection). A bid can't change a test already in test/, so a new test in a new file is the right form, even where the task names an existing file. Reject what is wrong: it breaks the build or a test, it is unsafe or unrelated, or its own edits overlap. Marking the plan item done is yours (done and plan_line), not a bid's: if a bid marks it, reject it saying only that, so its bidder sends the same work without the mark. merge 0 means none yet. Then judge whether the task is done: done is true only when the whole task is finished with the bid you merge (or with what's merged already, if you merge none). When it's done and the task is a plan item still open above, give that item's line as plan_line, copied exactly, and you'll mark it done in .plan (a line shown cut with ... can't be: leave plan_line empty).
+  "Pick the bid that takes the task furthest correctly, if one is good enough, and reject wrong ones. A correct part of the task is good enough: the task stays open for the rest. A bid at the task's floor is good enough, and among correct bids prefer the one that goes further, in the task or past the floor. Weigh each bid on several measures, not one: how much of the task and of the goal it does (for a move from one language to another, how much code it moves), whether its tests and checks show it working, how much of its code is typed precisely rather than Any, what it proves (Examples and theorems), how simple it is (less branching and duplication), and that it keeps the program as fast. A bid that does much more of the goal at the floor can be worth more than a smaller one past it. Don't reject a bid for lacking what the task calls welcome but not required, for doing only part of the task (say what's left in your reasons for the next bids), or for edits that no longer apply because of a merge since it was made (the merge check finds those and clears them as conflicts, which isn't a rejection). A bid can't change a test already in test/, so a new test in a new file is the right form, even where the task names an existing file. Reject what is wrong: it breaks the build or a test, it is unsafe or unrelated, or its own edits overlap. Marking the plan item done is yours (done and plan_line), not a bid's: if a bid marks it, reject it saying only that, so its bidder sends the same work without the mark. merge 0 means none yet. Then judge whether the task is done: done is true only when the whole task is finished with the bid you merge (or with what's merged already, if you merge none). When it's done and the task is a plan item still open above, give that item's line as plan_line, copied exactly from its start as it's shown above, and you'll mark it done in .plan (for a line shown cut with ..., what's shown before the ... names it).
 Reply format: {""merge"": <bid number or 0>, ""reject"": [{""bid"": <number>, ""reason"": ""why""}], ""done"": true or false, ""plan_line"": ""the item's line, or empty""}"))))).
 
 attest_prompt (a m : obj) (t : string) (b : bid) : string :=
@@ -281,7 +281,7 @@ on_answer (a m : obj) (data kv : list string) : obj :=
       let merging := mem pick cands && negb (mem pick (map fst (rejects_from kv 0 10))) in
       let a := if seq (kv_at kv "done") "true"
                then setf (setf a "done_marks" (put t (if merging then pick else "0") (done_marks a)))
-                         "plan_lines" (put t (trim (clean_text (kv_at kv "plan_line"))) (plan_lines a)) else a in
+                         "plan_lines" (put t (plan_line_start (clean_text (kv_at kv "plan_line"))) (plan_lines a)) else a in
       if merging then enqueue a ["merge", pick] else a
   | "attest" :: b :: tree :: _ =>
       enqueue a (if seq (kv_at kv "approve") "true" then ["attest", b, "yes", tree] else ["attest", b, "no"])
@@ -320,6 +320,14 @@ with_retry (st : obj * list (list string)) (m : obj) (key : string) (data : list
   let a := setf a "retry_keys" (firstn 50 ((show (nreq a + 1), key) :: retry_keys a)) in
   with_ask (a, o) m k data prompt ctx.
 
+(** why a task closes with its plan line still open *)
+unmarked_close_text (t : string) (done no_line marked : bool) : string :=
+  append "task " (append t (append " closes with no mark in .plan, so its plan line stays open: "
+    (if negb done then "no bid could finish it (too many rejected, or open too long)"
+     else if marked then "its mark didn't merge"
+     else if no_line then "the leader judged it done but named no plan line, or its line couldn't be marked"
+     else ""))).
+
 lead (a m : obj) : obj * list (list string) :=
   if negb (is_leader m (me a)) || negb (pending_bid_id m =? 0) then (a, []) else
   let h := mheight m in
@@ -348,13 +356,23 @@ lead (a m : obj) : obj * list (list string) :=
   (* a task judged done gets its plan line marked first, when it names one:
      the leader's mark, a bid of its own (market.soma). Lead runs only with
      no merge pending, so a mark already made has merged or failed. *)
-  let a := fold_left (fun a t =>
-             let line := get_or "" (show (tid t)) (plan_lines a) in
+  (* A close that leaves the plan line open is logged, once, with why: a
+     task closed unmarked is drafted again from .plan by a later leader, or
+     after a new genesis, though its work has merged *)
+  let closed := fold_left (fun (st : obj * list (list string)) t =>
+             let (a, o) := st in
+             let id := show (tid t) in
+             let line := get_or "" id (plan_lines a) in
              let marked := existsb (fun b => seq (note b) mark_note) (for_task t) in
-             if stuck t || (judged_done t && (seq line "" || marked)) then enqueue a ["close", show (tid t)]
-             else if judged_done t && ask_once a (append "mark." (show (tid t)))
-             then enqueue (note_asked a (append "mark." (show (tid t)))) ["markq", show (tid t)]
-             else a) (mine (open_tasks m)) a in
+             let mark_merged := existsb (fun b => seq (note b) mark_note && is_merged b) (for_task t) in
+             if stuck t || (judged_done t && (seq line "" || marked)) then
+               let a := enqueue a ["close", id] in
+               if mark_merged || negb (ask_once a (append "unmarked." id)) then (a, o)
+               else (note_asked a (append "unmarked." id),
+                     o ++ [["log", unmarked_close_text id (judged_done t) (seq line "") marked]])
+             else if judged_done t && ask_once a (append "mark." id)
+             then (enqueue (note_asked a (append "mark." id)) ["markq", id], o)
+             else (a, o)) (mine (open_tasks m)) (a, []) in
   (* review bids once the chosen workers have bid or the window has passed *)
   let st := fold_left (fun (st : obj * list (list string)) (t : task) =>
       let cands := filter (fun b => (btask b =? tid t) && is_pending (bst b) && negb (seq (bidder b) (me a))) (bids m) in
@@ -374,7 +392,7 @@ lead (a m : obj) : obj * list (list string) :=
       match good with
       | [] => st
       | _ => with_retry st m (append key ".ask") ("pick" :: show (tid t) :: map (fun b => show (bidn b)) good) (pick_prompt (fst st) m t good) []
-      end) (mine (open_tasks m)) (a, []) in
+      end) (mine (open_tasks m)) closed in
   (* room for another task: draft the next one from the goal. With tasks
      open, the model writes one only if it judges it can run beside them, and
      asks again when the count of tasks or of open ones changes *)

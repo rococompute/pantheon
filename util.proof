@@ -134,7 +134,9 @@ Example numbers : digits "120" 0 = 120 /\ short_digits "123" 3 = true /\ short_d
 Proof. repeat split; reflexivity. Qed.
 
 Example plan_lines : is_date_line "2026-11-09" = true /\ is_date_line "2026-11-0" = false
-  /\ truncate_line "abc" = "abc".
+  /\ truncate_line "abc" = "abc"
+  /\ plan_line_start "abc..." = "abc" /\ plan_line_start " abc " = "abc"
+  /\ plan_line_start (append "abc " ellipsis) = "abc" /\ plan_line_start "abc" = "abc".
 Proof. repeat split; reflexivity. Qed.
 
 (** the scan before JSON parsing: depth and items capped, strings skipped *)

@@ -83,7 +83,16 @@ the leader reads `.plan` at the repository's head each time it drafts.
   refuses a bid that changes a test already in `test/`.
 - **Marking:** when the leader judges the task done (its pick's `done` and
   `plan_line`), it puts `+ ` before the item's line with a mark of its own,
-  which attestors approve like a bid.
+  which attestors approve like a bid. The prompt shows each line cut at 400
+  characters, and most items are longer, so `plan_line` is the line as
+  shown: its start, without the `...` (`util.soma`'s `plan_line_start`).
+  The mark's edit replaces that start together with the newline before it
+  (`market.soma`'s `mark_edit`), so it marks the whole line, only where a
+  line begins with it, and only if exactly one line does. A task that closes
+  with its line still open (no bid could finish it, no line was named, or
+  the mark failed) is logged once with why: an unmarked item is drafted
+  again by a later leader, or after a new genesis, though its work merged.
+  `test/plan-marks.sh` checks all of this.
 - **Operator goals:** `--goal FILE` lines still work. They come first in the
   leader's prompt, as the operator's direction. A leader drafts only when the
   node has at least one goal line, so give a line such as "Work through each

@@ -327,6 +327,18 @@ open_line (l : string) : bool :=
 plan_open (text : string) : list string :=
   firstn 60 (map truncate_line (filter open_line (map trim (split_lines text)))).
 
+(** "…", U+2026, in UTF-8: a model may write it for "..." *)
+ellipsis : string := SCons (ascii_of_nat 226) (SCons (ascii_of_nat 128) (SCons (ascii_of_nat 166) SNil)).
+
+(** The start of a plan line, from the line as the leader's prompt shows it
+    (plan_open): a cut line's "..." comes off, so its first 400 characters
+    name it. Most items are longer than that, and a leader that had to give
+    the whole line couldn't mark them. A mark edits the line that begins
+    with this (market.soma mark_edit). *)
+plan_line_start (l : string) : string :=
+  let l := trim l in
+  if ends "..." l || ends ellipsis l then trim (take_str (slen l - 3) l) else l.
+
 (** [s] after its first [n] characters *)
 drop_str (n : nat) (s : string) : string := substr s n (slen s - n).
 

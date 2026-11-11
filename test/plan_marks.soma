@@ -1,0 +1,93 @@
+(** The leader's mark on a long plan line, deterministically.
+
+    The leader's prompt shows each open .plan item cut at 400 characters,
+    and most items are longer. A mark names the line by its start, as the
+    prompt shows it: the "..." comes off (plan_line_start), and the mark's
+    edit replaces the line's start together with the newline before it
+    (market.soma mark_edit), so it marks the whole line, only where a line
+    begins with it, and only if one line does. A task that closes with its
+    line still open is logged once, with why: a later leader, or a new
+    genesis, would draft it again. Run with test/plan-marks.sh. *)
+Import util shell market agent.
+
+say (cond : bool) (what : string) : list string :=
+  [if cond then append "ok " what else append "FAIL " what].
+
+has (s sub : string) : bool := contains sub s.
+
+(** an item of 5 + 60 * 10 = 605 characters, like most of Pantheon's *)
+long : string := append "M-2: " (Stdlib.Strings.String.concat "" (repeat "the market" 60)).
+
+plan_text : string :=
+  append "# a plan" (append newline (append "2026-11-11" (append newline
+    (append long (append newline (append "M-20: another item" newline)))))).
+
+shown : string := plan_line_start (truncate_line long).
+
+mark_on (text line : string) : option string :=
+  edit_once text (eold (mark_edit line)) (enew (mark_edit line)).
+
+lines_edit : list string :=
+  let marked := match mark_on plan_text shown with Some t => t | None => "" end in
+  say (400 <? slen long) "the item is longer than the prompt shows"
+  ++ say (negb (ends "..." shown) && (slen shown =? 400) && starts shown long) "its shown line, without the ..., is the line's first 400 characters"
+  ++ say (seq (plan_line_start (append (take_str 30 long) ellipsis)) (take_str 30 long)) "a line cut with … comes off the same way"
+  ++ say (seq (plan_line_start "  M-20: another item ") "M-20: another item") "a whole line is kept, trimmed"
+  ++ say (has marked (append newline (append "+ " long))) "a mark by the line's start marks the whole line"
+  ++ say (negb (existsb (fun l => starts "M-2: " l) (plan_open marked))) "the marked line isn't open any more"
+  ++ say (existsb (fun l => seq l "M-20: another item") (plan_open marked)) "the other item is still open"
+  ++ say (match mark_on (append "#" (append newline (append "abc one" (append newline (append "zz abc two" newline))))) "abc" with
+          | Some t => has t (append newline "+ abc one") && has t "zz abc two" | None => false end)
+         "a start that also appears inside another line marks only the line it begins"
+  ++ say (match mark_on (append "#" (append newline (append "M-1: a" (append newline (append "M-1: b" newline))))) "M-1" with
+          | Some _ => false | None => true end)
+         "a start two lines begin with marks neither".
+
+(** ---- the market and the agent ---- *)
+
+base : obj :=
+  let m := new_market ["claude", "codex", "grok", "muse"] in
+  let m := setf m "leader" "claude" in
+  let m := setf m "h" 10 in
+  let m := setf m "repos" ([("calc", "tree0")] : list (string * string)) in
+  setf m "awaiting" false.
+
+posted : obj := let '(m, _, _) := apply base "claude" ["post", "calc", "a long plan item"] in m.
+
+llm (who : string) : obj := setf (new_agent who) "backend" "llm".
+
+(** a leader that judged task 1 done, with the plan line it named *)
+judged (line : string) : obj :=
+  setf (setf (llm "claude") "done_marks" ([("1", "0")] : list (string * string)))
+    "plan_lines" ([("1", line)] : list (string * string)).
+
+logs (o : list (list string)) : list string :=
+  flat_map (fun x => match x with ["log", t] => [t] | _ => [] end) o.
+
+queued (a : obj) (k : string) : bool :=
+  existsb (fun q => match q with x :: _ => seq x k | _ => false end) (queue a).
+
+lines_agent : list string :=
+  let '(mk, _, wk) := apply posted "claude" ["mark", "1", shown, "tree1"] in
+  let edit_ok := match bid_by mk 1 with
+                 | Some b => match edits b with [e] => seq (eold e) (append newline shown) | _ => false end
+                 | None => false end in
+  let pa := on_answer (llm "claude") posted ["pick", "1"]
+                   ["merge", "0", "done", "true", "plan_line", truncate_line long] in
+  let (named, on) := lead (judged shown) posted in
+  let (unnamed, un) := lead (judged "") posted in
+  let (_, again) := lead unnamed posted in
+  let (_, stuck) := lead (llm "claude") (setf posted "h" 100000) in
+  say (seq wk "") "the market takes a mark that names a line by its start"
+  ++ say edit_ok "the mark's edit is the line's start after a newline"
+  ++ say (seq (get_or "" "1" (plan_lines pa)) shown) "a pick's plan_line shown cut is kept without the ..."
+  ++ say (queued named "markq" && (length (logs on) =? 0)) "a task judged done with its line named is marked first, and nothing is logged"
+  ++ say (queued unnamed "close" && existsb (fun l => has l "task 1 closes with no mark in .plan" && has l "named no plan line") (logs un))
+         "a task judged done with no line closes, and the log says its line stays open"
+  ++ say (length (logs again) =? 0) "that is logged once"
+  ++ say (existsb (fun l => has l "task 1 closes with no mark" && has l "no bid could finish it") (logs stuck))
+         "a task no bid could finish closes, logged the same way".
+
+report : list string := lines_edit ++ lines_agent.
+
+main := print_lines report.

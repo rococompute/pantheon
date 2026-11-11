@@ -342,7 +342,12 @@ next_link (v tip : string) : bool := seq (sha256 v) tip.
     leader; fallback_attestors_must_approve bounds the attestors needed. *)
 mark_note : string := "leader's mark: the task is done, so its plan item is marked done in .plan".
 
-mark_edit (line : string) : edit := {| epath := ".plan"; eold := line; enew := append "+ " line |}.
+(** The edit replaces the line's start together with the newline before
+    it, so [line] names the line that begins with it, all of it or its first
+    part (the leader's prompt cuts lines at 400 characters), and marks it
+    only where it begins a line. As for any edit, the old text must appear
+    once in .plan. *)
+mark_edit (line : string) : edit := {| epath := ".plan"; eold := append newline line; enew := append newline (append "+ " line) |}.
 
 (** One transaction's effect. A string is the reason it failed, "" for none. *)
 apply (m : obj) (a : string) (fields : list string) : obj * list (list string) * string :=
