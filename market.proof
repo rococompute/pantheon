@@ -28,6 +28,64 @@ Proof. reflexivity. Qed.
 Example quorum_eight : (quorum 8, reject_quorum 8, quorum 8) = (6, 3, 6).
 Proof. reflexivity. Qed.
 
+(** The same thresholds through settle and maybe_draw themselves, at
+    n = 7 (f = 2): the leader's proposal plus three yes votes (four
+    approvals) does not merge, plus four (five approvals) does; two no
+    votes do not reject, three do; four reveals do not draw, five do.
+    Checked here, in the build, rather than in a separate program a CI
+    run must compile on top of it. *)
+Definition q7_agents : list string := ["a1", "a2", "a3", "a4", "a5", "a6", "a7"].
+
+Definition q7_base : obj :=
+  let m := new_market q7_agents in
+  let m := setf m "leader" "a1" in
+  let m := setf m "h" 10 in
+  let m := setf m "repos" ([("calc", "tree0")] : list (string * string)) in
+  setf m "awaiting" false.
+
+Definition q7_bidder (m : obj) : string :=
+  match task_by m 1 with
+  | Some t => match bidders_for m t with a :: _ => a | [] => "" end
+  | None => ""
+  end.
+
+Definition q7_proposed : obj :=
+  let '(m, _, _) := apply q7_base "a1" ["post", "calc", "seven agent task"] in
+  let '(m, _, _) := apply m (q7_bidder m) ["bid", "1", "0", "seven bid", "f.txt", "", "x"] in
+  let '(m, _, _) := apply m "a1" ["merge", "1", "tree1"] in m.
+
+Definition q7_attestors : list string :=
+  filter (fun a => negb (seq a "a1") && negb (seq a (q7_bidder q7_proposed))) q7_agents.
+
+Definition q7_attest (who : list string) (vote : string) : obj :=
+  fold_left (fun m a => fst (fst (apply m a (if seq vote "yes" then ["attest", "1", "yes", "tree1"] else ["attest", "1", "no"])))) who q7_proposed.
+
+Definition q7_status (m : obj) : string :=
+  match bid_by m 1 with Some b => status_name (bst b) | None => "none" end.
+
+Example q7_five_attestors : length q7_attestors = 5.
+Proof. reflexivity. Qed.
+Example q7_three_yes_do_not_merge : q7_status (q7_attest (firstn 3 q7_attestors) "yes") = "pending".
+Proof. reflexivity. Qed.
+Example q7_four_yes_merge : q7_status (q7_attest (firstn 4 q7_attestors) "yes") = "merged".
+Proof. reflexivity. Qed.
+Example q7_two_no_do_not_reject : q7_status (q7_attest (firstn 2 q7_attestors) "no") = "pending".
+Proof. reflexivity. Qed.
+Example q7_three_no_reject : q7_status (q7_attest (firstn 3 q7_attestors) "no") = "rejected".
+Proof. reflexivity. Qed.
+
+Definition q7_draw (k : nat) : obj :=
+  let m := setf q7_base "leader" "" in
+  let m := setf m "awaiting" true in
+  let m := setf m "asince" 0 in
+  let m := setf m "h" 100 in
+  setf m "reveals" (map (fun a => (a, append "v-" a)) (firstn k q7_agents)).
+
+Example q7_four_reveals_do_not_draw : awaiting (maybe_draw (q7_draw 4)) = true.
+Proof. reflexivity. Qed.
+Example q7_five_reveals_draw : awaiting (maybe_draw (q7_draw 5)) = false.
+Proof. reflexivity. Qed.
+
 (** Holding back your link in one draw bars you from the next, as long as
     anyone who didn't hold back revealed. So withholding never raises your own
     chance of leading next term, which is what a favor trade would need. *)

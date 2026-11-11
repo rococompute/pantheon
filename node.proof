@@ -46,6 +46,12 @@ line two"] = WriteLog "line one
 line two".
 Proof. reflexivity. Qed.
 
+Example height_selects_the_new_height :
+  plan_output ["height", "12"] = SetHeight "12" /\
+  plan_output ["height"] = LegacyOutput ["height"] /\
+  plan_output ["height", "1", "2"] = LegacyOutput ["height", "1", "2"].
+Proof. repeat split; reflexivity. Qed.
+
 Example decided_selects_height_and_all_transactions :
   plan_output ["decided", "7", "tx one", "tx two"] =
     DecidedBlock "7" ["tx one", "tx two"] /\
