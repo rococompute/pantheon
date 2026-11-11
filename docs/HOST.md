@@ -59,7 +59,27 @@ at `/var/lib/pantheon-diplomats/AGENT` (0700). Each inbox at
 only the node account and that diplomat are added to its group. The node's
 `.ssh` is 0700. Existing accounts with different homes are refused.
 `HOST_DRY=DIR scripts/host.sh users` writes the same operations to
-`DIR/users.sh` without root or account changes.
+`DIR/users.sh` without root or account changes. It also writes, last,
+`/etc/sudoers.d/pantheon` (0440, checked with `visudo -cf` when visudo
+is there): the operator may act as `pantheon` and each `pantheon-AGENT`
+through sudo - `sudo -iu pantheon-AGENT` is how a diplomat's session
+will be started as its own user once the sessions migrate. The operator
+is `HOST_OPERATOR`, or who ran sudo (`SUDO_USER`), never root by
+default: a root default is refused unless `HOST_OPERATOR=root` is set
+on purpose.
+
+`scripts/host.sh services` is the next step: it writes the nodes, the
+mirror and the inbox server as system units (`User=pantheon`, the node
+unit with `XDG_RUNTIME_DIR=/run/user/<pantheon's uid>` for ci-sandbox's
+user bus, and linger so that user manager exists), refusing symlinked
+or missing node homes - and units whose binary or scripts pantheon
+cannot reach - before any root write. Its files are built in a
+root-only stage; per-node scripts are piped to pantheon over stdin,
+never read out of that stage. It disables the operator's legacy user
+units before enabling the system ones, so no node runs twice.
+`HOST_DRY=DIR` previews the same script (`DIR/services.sh`); running
+the units for real, and then starting diplomat sessions as their
+users, is what is left.
 
 This command only prepares accounts. It does not migrate a running network,
 credentials, checkouts, instructions or services, and does not yet isolate
@@ -67,3 +87,12 @@ existing diplomat sessions. Continue treating those sessions as having access
 to the node's secrets until the service and session migration lands. Future
 node homes under `net/AGENT` must stay 0700 and `inbox.json` 0600; the shared
 repositories must move outside those homes before the accounts can be used.
+
+The `users` and `permissions` setup commands preflight their destination paths
+before changing accounts or modes. They refuse symlinks in the destinations
+or their ancestors, including absent leaves below a symlinked directory. This
+also applies to the scripts emitted by `HOST_DRY=DIR`; inspect those scripts
+before deployment. Run setup with the network stopped and no concurrent
+changes to its directories: the preflight is not a filesystem race barrier.
+This hardens provisioning; the legacy service and diplomat session commands
+still need migration to the separate accounts described in P-1.

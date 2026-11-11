@@ -866,24 +866,39 @@ let note_refused id raw = (lookup_handle id).h_refuse raw; true
 let boot_events id = (lookup_handle id).h_boot
 let boot_snapshot id = Option.map Obj.obj (lookup_handle id).h_snapshot
 let replay_count id = (lookup_handle id).h_replayed
-let node_timer id ms ev = (lookup_handle id).h_timer ms ev; true
+(* The node's operations (node.soma's node_op, U-1), one at a time in their
+   wire form (node.soma's io_wire; this match is its io_of_wire): the only
+   place the node logs, sets a timer, queues an event, sends on a peer
+   link, stores a block, sets the height, writes the status file, or
+   reads the clock. Effects return (true, 0.); "clock" returns
+   (true, Unix.gettimeofday ()). A unikernel would interpret the same
+   operations through Sandbox. *)
+let node_io id op =
+  let h = lookup_handle id in
+  match op with
+  | [ "log"; text ] -> h.h_log text; (true, 0.)
+  | "timer" :: ms :: ev -> h.h_timer ms ev; (true, 0.)
+  | "push" :: ev -> h.h_push ev; (true, 0.)
+  | "send_all" :: fields -> h.h_send_all fields; (true, 0.)
+  | "send_peer" :: index :: fields -> h.h_send_peer index fields; (true, 0.)
+  | "peer_send" :: who :: fields -> h.h_peer_send who fields; (true, 0.)
+  | "store" :: height :: txs -> h.h_store height txs; (true, 0.)
+  | [ "set_height"; height ] -> h.h_height height; (true, 0.)
+  | [ "write_status"; text ] -> h.h_write_status text; (true, 0.)
+  | [ "clock" ] -> (true, Unix.gettimeofday ())
+  | _ -> fail "unknown node operation %s" (String.concat " " op)
 let node_conn_admit id oid mode target = (lookup_handle id).h_conn_admit oid mode target; true
 let node_conns id = (lookup_handle id).h_conns ()
 let node_conn_close id cid = (lookup_handle id).h_conn_close cid; true
 let node_line_limit id = (lookup_handle id).h_line_limit ()
-let node_log id text = (lookup_handle id).h_log text; true
-let node_push id ev = (lookup_handle id).h_push ev; true
 let node_draw id = (lookup_handle id).h_draw
 let node_block id height = (lookup_handle id).h_block height
-let node_store id height txs = (lookup_handle id).h_store height txs; true
-let node_height id h = (lookup_handle id).h_height h; true
-(* Reads/writes and authenticated socket sends; catch-up policy is Soma. *)
-let node_clock () = Unix.gettimeofday ()
+(* Reads/writes and authenticated socket sends; catch-up policy is Soma.
+   The clock is the "clock" arm of node_io. *)
 let node_current_height id = (lookup_handle id).h_current_height ()
 let node_last_served id who h = (lookup_handle id).h_last_served who h
 let node_mark_served id who h now = (lookup_handle id).h_mark_served who h now; true
 let node_peer_exists id who = (lookup_handle id).h_peer_exists who
-let node_peer_send id who fields = (lookup_handle id).h_peer_send who fields; true
 let node_checkout_heads id = (lookup_handle id).h_checkout_heads ()
 let node_divergences id = (lookup_handle id).h_divergences ()
 let node_limit_info id = (lookup_handle id).h_limit_info ()
@@ -892,19 +907,16 @@ let node_release_one id = (lookup_handle id).h_release_one ()
 let node_release_all id = (lookup_handle id).h_release_all ()
 let node_local_time until =
   let tm = Unix.localtime until in Printf.sprintf "%02d:%02d" tm.Unix.tm_hour tm.Unix.tm_min
-let node_write_status id text = (lookup_handle id).h_write_status text; true
 let node_run_check id req r head edits = (lookup_handle id).h_run_check req r head edits; true
 let node_encode_tx id nonce fields = (lookup_handle id).h_encode_tx nonce fields
 let node_track_tx id raw = (lookup_handle id).h_track_tx raw; true
 let node_nonce_flooded id = (lookup_handle id).h_nonce_flooded ()
 let node_mark_nonce_flood id = (lookup_handle id).h_mark_nonce_flood (); true
-let node_send_all id fields = (lookup_handle id).h_send_all fields; true
 let node_signed_vote id slot = (lookup_handle id).h_signed_vote slot
 let node_signed_body id slot = (lookup_handle id).h_signed_body slot
 let node_remember_vote id slot vid fields = (lookup_handle id).h_remember_vote slot vid fields; true
 let node_remember_broadcast id height kind fields alt = (lookup_handle id).h_remember_broadcast height kind fields alt; true
 let node_peer_count id = (lookup_handle id).h_peer_count ()
-let node_send_peer id index fields = (lookup_handle id).h_send_peer index fields; true
 (* Raw Yojson member reads and node metadata. Soma gates the parse and
    decides whether to verify and which event the fields carry. *)
 let node_line_parts raw =

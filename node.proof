@@ -261,6 +261,18 @@ Example submission_silence_only_suppresses_the_peer_send :
     [PublishTransaction "7" ["withdraw", "0"] (Some "sending withdraw 0")].
 Proof. repeat split; reflexivity. Qed.
 
+Example storage_ops_travel_the_one_interface :
+  io_wire (IoStore "7" ["tx1", "tx2"]) = ["store", "7", "tx1", "tx2"] /\
+  io_of_wire ["store", "7", "tx1", "tx2"] = Some (IoStore "7" ["tx1", "tx2"]) /\
+  io_wire (IoStore "8" []) = ["store", "8"] /\
+  io_wire (IoSetHeight "9") = ["set_height", "9"] /\
+  io_of_wire ["set_height", "9"] = Some (IoSetHeight "9") /\
+  io_wire (IoWriteStatus "height 3") = ["write_status", "height 3"] /\
+  io_of_wire ["write_status", "height 3"] = Some (IoWriteStatus "height 3") /\
+  action_io (StoreAction "7" ["tx1"]) = Some (IoStore "7" ["tx1"]) /\
+  io_of_wire ["store"] = None.
+Proof. repeat split; reflexivity. Qed.
+
 Example broadcast_selects_its_fields_and_leaves_other_outputs :
   plan_output ["broadcast", "prevote", "1", "0", "-1", "v", "nil"] =
     Broadcast ["prevote", "1", "0", "-1", "v", "nil"] /\
@@ -683,3 +695,57 @@ Proof. repeat split; reflexivity. Qed.
 Theorem malformed_peer_shape_needs_no_json_members : forall cap me raw parts refused,
   peer_line_shape cap raw = false -> peer_raw_event cap me raw parts refused = [].
 Proof. intros cap me raw parts refused H. unfold peer_raw_event. rewrite H. reflexivity. Qed.
+
+(** U-1: the node's operations as one interface. The dispatch produces
+    [node_op] values; each crosses the binding as its wire form, which
+    reads back as the same operation (shell.ml's node_io is that match). *)
+Theorem io_wire_reads_back : forall op, io_of_wire (io_wire op) = Some op.
+Proof. intros op. destruct op; reflexivity. Qed.
+
+Example io_wire_forms :
+  io_wire (IoLog "hi there") = ["log", "hi there"] /\
+  io_wire (IoTimer "350" ["timeout", "commit", "7", "2"]) = ["timer", "350", "timeout", "commit", "7", "2"] /\
+  io_wire (IoQueue ["tx", "raw"]) = ["push", "tx", "raw"] /\
+  io_wire (IoSendAll ["prevote", "1"]) = ["send_all", "prevote", "1"] /\
+  io_wire (IoSendPeer "0" []) = ["send_peer", "0"] /\
+  io_wire (IoPeerSend "codex" ["done", "4"]) = ["peer_send", "codex", "done", "4"] /\
+  io_wire IoClock = ["clock"] /\ io_of_wire ["clock"] = Some IoClock /\
+  io_of_wire ["clock", "extra"] = None /\
+  io_of_wire ["log"] = None /\ io_of_wire ["log", "a", "b"] = None /\
+  io_of_wire ["timer"] = None /\ io_of_wire [] = None /\ io_of_wire ["nope", "x"] = None.
+Proof. repeat split; reflexivity. Qed.
+
+Example outputs_become_operations :
+  output_io ["timer", "commit", "7", "2", "350"] = Some (IoTimer "350" ["timeout", "commit", "7", "2"]) /\
+  output_io ["log", "line"] = Some (IoLog "line") /\
+  output_io ["timer", "commit", "7", "2"] = None /\
+  output_io ["height", "3"] = None.
+Proof. repeat split; reflexivity. Qed.
+
+Example plans_become_operations :
+  map action_io (reveal_plan "withhold" "4" "secret" "3") =
+    [Some (IoLog "FAULT INJECTION: holding back my link for draw 3")] /\
+  map action_io (reveal_plan "" "4" "secret" "2") =
+    [Some (IoQueue ["local_tx", "reveal", sha256 (sha256 "secret")])] /\
+  map action_io (broadcast_plan "equivocate" 2 ["proposal", "3", "1", "0", "vid", "val"] None None None) =
+    [None, Some (IoSendPeer "0" ["proposal", "3", "1", "0", "vid", "val"]),
+     Some (IoSendPeer "1" ["proposal", "3", "1", "0", hash_list ["equivocation", "3", "1"], "equivocation", "3", "1"])] /\
+  map action_io (broadcast_plan "" 2 ["ping"] None None None) = [Some (IoSendAll ["ping"])] /\
+  action_io (StoreAction "7" []) = Some (IoStore "7" []).
+Proof. repeat split; reflexivity. Qed.
+
+(** An action that is one operation is carried out as exactly that
+    operation, and so are the timer and log outputs. *)
+Theorem single_actions_are_their_operation : forall h action op,
+  action_io action = Some op -> carry_output_action h action = io_do h op.
+Proof.
+  intros h action op H. destruct action; cbn in H; try discriminate H;
+    injection H as <-; reflexivity.
+Qed.
+
+Theorem single_outputs_are_their_operation : forall h out op,
+  output_io out = Some op -> perform_output h out = io_do h op.
+Proof.
+  intros h out op H. unfold output_io in H. unfold perform_output.
+  destruct (plan_output out); try discriminate H; injection H as <-; reflexivity.
+Qed.
