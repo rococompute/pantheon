@@ -1,14 +1,18 @@
 (** The market: four agents take turns as term leader. The leader posts tasks,
-    the others bid patches, and a merge lands when 3 of 4 approve. A merge
-    clears every pending bid that now conflicts with it.
+    the others bid patches, and a merge lands when 3 of 4 approve. Up to
+    max_open_tasks tasks are open at once, each with its own bids and its own
+    record of rejections.
 
     The market governs git repositories, and holds no file contents: only each
     repository's head tree and, for each path, the version that last changed
     it. A task names a repository. A bid is a list of edits against a version:
     each replaces one exact, unique piece of a file, writes a whole file, or
-    deletes one. A pending bid conflicts with a merge when it edits a path
-    that has changed since its version. It stays pending, marked stale, when it
-    doesn't. Attestors apply the edits to the head, and a yes names the tree
+    deletes one. A bid may be made on any version so far: a pending bid whose
+    paths a merge changes stays pending, marked stale, since its edits may
+    still apply line by line; one that writes or deletes a whole changed file
+    is cleared, since it would undo the merge. Whether they do is the merge check's call: the
+    leader clears one whose edits no longer apply (conflict), which isn't a
+    rejection, and its bidder writes an updated bid. Attestors apply the edits to the head, and a yes names the tree
     they got. The leader's merge names the tree its own check gave, and an
     attestor's yes counts only for that same tree. A merge needs the leader
     and at least one attestor (market.proof), so with at most one faulty agent
@@ -91,7 +95,10 @@ params (m : obj) : list (string * nat) := getf m "params".
 (** Parameters, set at genesis. Block counts. *)
 default_params : list (string * nat) :=
   [("term_blocks", 300), ("max_merges", 2), ("stall_blocks", 120), ("attest_window", 120),
-   ("fallback_blocks", 60), ("max_open_tasks", 3), ("max_pending_bids", 3), ("bid_cooldown", 5),
+   ("fallback_blocks", 60),
+   (* tasks open at once: the leader drafts another while fewer are open, when
+      it judges one can run beside them (agent.soma); 1 unless genesis says *)
+   ("max_open_tasks", 1), ("max_pending_bids", 3), ("bid_cooldown", 5),
    ("reveal_window", 10), ("max_files", 20), ("keep_settled", 100), ("max_block_txs", 50),
    (* a leader closes a task no bid could do: this many rejected bids, or open
       this many blocks, with no bid pending *)
@@ -182,6 +189,11 @@ bid_repo (m : obj) (b : bid) : string := match task_by m (btask b) with Some t =
 
 conflicts (m : obj) (b : bid) : bool := existsb (changed_since m (bid_repo m b) (base b)) (edit_paths (edits b)).
 
+(** A whole-file edit (write or delete) on a path changed since the bid's
+    version would undo that change: it conflicts, whatever the lines. *)
+overwrites (m : obj) (b : bid) : bool :=
+  existsb (fun e => seq (eold e) "" && changed_since m (bid_repo m b) (base b) (epath e)) (edits b).
+
 (** A merge: move the repository's head to the attested tree, mark the paths
     it changed, then clear what now conflicts. The shell applies the edits to
     its checkout and checks it reaches that tree. *)
@@ -197,12 +209,13 @@ finalize (m : obj) (p : proposal) : obj * list (list string) :=
       let m := set_bid m (with_votes (with_status b Merged "") (pvotes p)) in
       let m := setf (setf m "pending" (None : option proposal)) "merges" (merges m + 1) in
       let m := count m (bidder b) "merges" in
-      let reason := append "conflicts with bid " (show (bidn b)) in
+      (* a pending bid whose files this changed is marked stale and stays: its
+         edits may still apply, line by line; if they don't, the leader's merge
+         check finds it and clears it (conflict) *)
+      let reason := append "writes or deletes a whole file that bid " (append (show (bidn b)) " changed") in
       let m := fold_left (fun m x =>
-                 if is_pending (bst x) then
-                   if conflicts m x then count (set_bid m (with_status x Cleared reason)) (bidder x) "cleared"
-                   else set_bid m (mark_stale x)
-                 else m) (bids m) m in
+                 if is_pending (bst x) && overwrites m x then count (set_bid m (with_status x Cleared reason)) (bidder x) "cleared"
+                 else if is_pending (bst x) && conflicts m x then set_bid m (mark_stale x) else m) (bids m) m in
       (m, [("merge" :: r :: show v :: ptree p :: show (bidn b) :: show (btask b) :: bidder b :: spec_of :: flat_edits (edits b))])
   end.
 
@@ -282,7 +295,12 @@ apply (m : obj) (a : string) (fields : list string) : obj * list (list string) *
           else if (0 <? get_or 0 a (lastbid m)) && (mheight m <? get_or 0 a (lastbid m) + param m "bid_cooldown") then fail "bid cooldown"
           else
             let m := setf m "lastbid" (put a (mheight m) (lastbid m)) in
-            if negb (num v =? version m) then (m, [], "bid is not on the current version: rebase")
+            (* a bid made on any version so far: whether its edits still apply
+               on the head is the merge check's call, by the lines they replace,
+               not by which files changed since *)
+            if version m <? num v then (m, [], "a bid names a version the market hasn't reached")
+            else if existsb (fun e => seq (eold e) "" && changed_since m (trepo tk) (num v) (epath e)) w
+            then (m, [], "a bid writes or deletes a whole file changed since its version: write it on the head")
             else if (length w =? 0) || negb (length es =? 3 * length w) then (m, [], "a bid's edits come in threes: path, old, new")
             else if (param m "max_files" <? length (edit_paths w)) || (5 * param m "max_files" <? length w) then (m, [], "a bid edits 1 to max_files files, with up to 5 edits each")
             else if negb (forallb (fun e => safe_path (epath e)) w) then (m, [], "unsafe path")
@@ -292,7 +310,7 @@ apply (m : obj) (a : string) (fields : list string) : obj * list (list string) *
               (* counted first, then the bid appended to that state's bids: the shape
                  market.proof's lemma for an appended bid states *)
               let m := setf m "nbids" id in
-              ok (setf m "bids" (bids m ++ [{| bidn := id; btask := tid tk; bidder := a; base := version m; edits := w;
+              ok (setf m "bids" (bids m ++ [{| bidn := id; btask := tid tk; bidder := a; base := num v; edits := w;
                                                note := n; bst := Pending; stale := false; why := ""; votes := [] |}]))
       end
   | ["withdraw", i] =>
@@ -353,6 +371,16 @@ apply (m : obj) (a : string) (fields : list string) : obj * list (list string) *
       match bid_by m (num i) with
       | Some b => if lead && is_pending (bst b) && negb (bidn b =? pending_bid_id m)
                   then ok (count (set_bid m (with_status b Rejected why)) (bidder b) "rejected") else fail "can't reject that bid"
+      | None => fail "no such bid"
+      end
+  (* conflict BID: its edits no longer apply to the head (a merge since
+     replaced the lines they replace). Not a rejection: the bid did nothing
+     wrong, and its bidder writes an updated one *)
+  | ["conflict", i] =>
+      match bid_by m (num i) with
+      | Some b => if lead && is_pending (bst b) && negb (bidn b =? pending_bid_id m)
+                  then ok (count (set_bid m (with_status b Cleared "its edits no longer apply to the head: a merge since changed the lines they replace")) (bidder b) "cleared")
+                  else fail "can't clear that bid"
       | None => fail "no such bid"
       end
   | ["close", t] =>

@@ -118,7 +118,7 @@ scenario_happy() {
   wait_for happy claude 90 "three merges" merges_at_least happy claude 3 || { stop happy; return 1; }
   sleep 2; stop happy
   agree happy claude codex grok muse && agree_files happy claude codex grok muse && rotation_ok happy claude || return 1
-  grep -q 'conflicts with bid' "$ROOT/happy/claude/status.txt" || { echo "FAIL happy: nothing was cleared by a conflict"; return 1; }
+  grep -q 'whole file that bid' "$ROOT/happy/claude/status.txt" || { echo "FAIL happy: nothing was cleared by a conflict"; return 1; }
   # scripted leaders post tasks to the repositories in turn
   for f in calc/work/task-1.txt notes/work/task-2.txt calc/work/task-3.txt; do
     git -C "$ROOT/happy/claude/repos/${f%%/*}" cat-file -e "HEAD:${f#*/}" 2>/dev/null || { echo "FAIL happy: $f not merged"; return 1; }
@@ -460,6 +460,23 @@ F
   if grep -q "edits don't apply" "$ROOT/cifail/claude/status.txt"; then echo "FAIL cifail: a CI failure was worded as don't apply"; return 1; fi
   agree cifail claude codex grok muse && agree_files cifail claude codex grok muse || return 1
   echo "ok cifail: a bid that applies was rejected for failing CI, in those words, and no node diverged"
+}
+
+# Two tasks open at once (max_open_tasks=2): the leader drafts a second
+# while the first is open, both draw bids, and both get merges. Merges on one
+# move the version under the other's bids, which still land: a bid goes stale
+# only when its edits no longer apply.
+scenario_parallel() {
+  init parallel 28750 term_blocks=60 max_merges=4 bid_cooldown=2 max_open_tasks=2 || return 1
+  for a in $AGENTS; do node parallel "$a"; done
+  two_open() { n=$(grep -c '^task [0-9]* \[open\]' "$ROOT/parallel/claude/status.txt" 2>/dev/null); [ "${n:-0}" -ge 2 ]; }
+  wait_for parallel claude 90 "two tasks open at once" two_open || { stop parallel; return 1; }
+  tasks_merged() { [ "$(sed -n 's/^bid [0-9]* \[merged[^]]*\] task \([0-9]*\).*/\1/p' "$ROOT/parallel/claude/status.txt" | sort -u | wc -l)" -ge 2 ]; }
+  wait_for parallel claude 120 "merges on two tasks" tasks_merged || { stop parallel; return 1; }
+  sleep 2; stop parallel
+  agree parallel claude codex grok muse && agree_files parallel claude codex grok muse || return 1
+  if grep -q 'not on the current version' "$ROOT"/parallel/*/node.log; then echo "FAIL parallel: a bid was refused for its version alone"; return 1; fi
+  echo "ok parallel: two tasks open at once, merges on $(sed -n 's/^bid [0-9]* \[merged[^]]*\] task \([0-9]*\).*/\1/p' "$ROOT/parallel/claude/status.txt" | sort -u | wc -l | tr -d ' ') tasks, $(merged parallel claude) merges"
 }
 
 # A node that can't build a repository (--no-check: Soma's CI on a small
@@ -864,6 +881,7 @@ run() {
     ciflood) scenario_ciflood ;;
     cispoof) scenario_cispoof ;;
     nocheck) scenario_nocheck ;;
+    parallel) scenario_parallel ;;
     flood) scenario_flood ;;
     policy) scenario_policy ;;
     model) scenario_model ;;
@@ -877,7 +895,7 @@ run() {
   esac
 }
 
-ALL="bidders bidder-fallback bidder-timeout happy crash restart-lock equivocate double-vote silent bad-sig withhold bad-tree future-nonce deny silent-model policy model stuck limit limit-cli prune epoch text network ci cifail ciflood cispoof nocheck flood"
+ALL="bidders bidder-fallback bidder-timeout happy crash restart-lock equivocate double-vote silent bad-sig withhold bad-tree future-nonce deny silent-model policy model stuck limit limit-cli prune epoch text network ci cifail ciflood cispoof nocheck parallel flood"
 want=${*:-$ALL}
 pids=""
 for s in $want; do (run "$s" > "$ROOT/$s.result" 2>&1; echo $? > "$ROOT/$s.code") & pids="$pids $!"; done

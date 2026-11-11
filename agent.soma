@@ -22,6 +22,8 @@ inflight_tx (a : obj) : list string := getf a "inflight_tx".
 queue (a : obj) : list (list string) := getf a "queue".
 asked (a : obj) : list string := getf a "asked".
 attempts (a : obj) : list (string * nat) := getf a "attempts".
+(** the version each task's patch tries were counted at (bid_duty) *)
+attempt_v (a : obj) : list (string * nat) := getf a "attempt_v".
 retry_keys (a : obj) : list (string * string) := getf a "retry_keys".
 reqs (a : obj) : list (string * list string) := getf a "reqs".
 nreq (a : obj) : nat := getf a "nreq".
@@ -41,7 +43,7 @@ new_agent (me : string) : obj :=
    ("deny", ([".git/", ".github/", ".gitmodules", ".gitattributes", "network/"] : list string) : Any),
    ("inflight", 0 : Any), ("sent_at", 0 : Any), ("inflight_tx", ([] : list string) : Any),
    ("queue", ([] : list (list string)) : Any),
-   ("asked", ([] : list string) : Any), ("attempts", ([] : list (string * nat)) : Any), ("retry_keys", ([] : list (string * string)) : Any),
+   ("asked", ([] : list string) : Any), ("attempts", ([] : list (string * nat)) : Any), ("attempt_v", ([] : list (string * nat)) : Any), ("retry_keys", ([] : list (string * string)) : Any),
    ("reqs", ([] : list (string * list string)) : Any), ("nreq", 0 : Any), ("bid_window", 30 : Any),
    ("done_marks", ([] : list (string * string)) : Any), ("merge_seen", ([] : list (string * nat)) : Any),
    ("plan_lines", ([] : list (string * string)) : Any)].
@@ -114,6 +116,17 @@ merged_text (m : obj) (t : task) : string :=
            (fold_left (fun s b => append s (fence (append "merged bid " (append (show (bidn b)) (append " by " (bidder b)))) (note b))) ms "")
   end.
 
+(** With tasks open, the leader may add one that runs beside them: its own
+    call, on what each task changes and needs. *)
+parallel_text (m : obj) : string :=
+  match open_tasks m with
+  | [] => ""
+  | ts => append (append "Tasks open now: " (show (length ts)))
+            (append (append " of up to " (show (param m "max_open_tasks")))
+            ", each being worked by its own bidders. Another task can be open beside them, and is worth it when it can be done at the same time: a different plan item, in either repository, whose work changes other files than theirs and doesn't need their result. Bids on it then don't go stale when theirs merge, nor theirs when its do. If no open item is like that, give null: this is asked again when a task closes.
+")
+  end.
+
 draft_prompt (a m : obj) : string :=
   append (preamble a "term leader, choosing the next task")
   (append "Project goal, from the operator:
@@ -123,9 +136,9 @@ draft_prompt (a m : obj) : string :=
   (append (fold_left (fun s t => append s (fence (append (task_label m t) (trepo t)) (spec t))) (tasks m) "")
   (append "A task closed unfinished got no bid good enough: don't post it again as it was. Post it with what its rejections show, or a part of it, or move on.
 "
-  (append "The repositories, and their files:
+  (append (append "The repositories, and their files:
 {{REPOS}}
-" (append (append "Write the next task: the open plan item no task above already covers that you judge the best to do next, whole, in one repository. Usually that is the first; take another when it is the better next step: it unblocks the first, the first can't be done yet or keeps failing, or another moves the goal further for the work it takes. Say in the task why you took it if it isn't the first. Don't cut it down to a first piece: say what done looks like for the whole item and how it will be judged. Judge by the floor: the least that does the item correctly (it builds, the tests pass, the behavior is right). Name what is welcome past it without requiring it; in a gradually typed language such as Soma, that's more precise types than Any and proofs of what the code does. A bid at the floor is as mergeable as one past it. Ask for tests a bidder can write and run: a pure function's results checked in the repository's own language, not a timing race against a running program. Bidders may do all of it in one patch or a correct part of it, and the task stays open across merges until its leader judges it done. Quote the item at the start of the task, name .plan and the files the item points at as context (up to 8), and say that the bid that finishes the item puts ""+ "" before its line in .plan. If no plan item is left and the goal is met, give null. Repositories:" (repo_names m))
+" (parallel_text m)) (append (append "Write the next task: the open plan item no task above already covers that you judge the best to do next, whole, in one repository. Usually that is the first; take another when it is the better next step: it unblocks the first, the first can't be done yet or keeps failing, or another moves the goal further for the work it takes. Say in the task why you took it if it isn't the first. Don't cut it down to a first piece: say what done looks like for the whole item and how it will be judged. Judge by the floor: the least that does the item correctly (it builds, the tests pass, the behavior is right). Name what is welcome past it without requiring it; in a gradually typed language such as Soma, that's more precise types than Any and proofs of what the code does. A bid at the floor is as mergeable as one past it. Ask for tests a bidder can write and run: a pure function's results checked in the repository's own language, not a timing race against a running program. Bidders may do all of it in one patch or a correct part of it, and the task stays open across merges until its leader judges it done. Quote the item at the start of the task, name .plan and the files the item points at as context (up to 8), and say that the bid that finishes the item puts ""+ "" before its line in .plan. If no plan item is left and the goal is met, give null. Repositories:" (repo_names m))
   "
 Reply format: {""task"": ""what to do and how it will be judged"", ""repo"": ""name"", ""context"": [""path"", ...]} or {""task"": null}"))))))).
 
@@ -251,14 +264,14 @@ on_answer (a m : obj) (data kv : list string) : obj :=
   | "patch" :: t :: v :: _ =>
       let a := release_inflight a m in
       let es := edits_from kv 0 (5 * param m "max_files") in
-      let r := match task_by m (num t) with Some tk => trepo tk | None => "" end in
-      (* the version may have moved while the model thought: rebase when the
-         patch's paths haven't changed since, and give up when they have.
-         A bid already pending on the chain or in flight is kept, and this
-         reply is dropped: it would be a second bid on the same task. *)
-      if seq (hash_list es) (hash_list []) || existsb (changed_since m r (num v)) (edit_paths (triples es)) then a
+      (* the bid names the version the patch was written on: if merges
+         landed while the model thought, the leader's merge check decides
+         whether its edits still apply, line by line. A bid already pending
+         on the chain or in flight is kept, and this reply is dropped: it
+         would be a second bid on the same task. *)
+      if seq (hash_list es) (hash_list []) then a
       else if pending_bid a m t then a
-      else enqueue a ("bid" :: t :: show (version m) :: clean_text (kv_at kv "note") :: es)
+      else enqueue a ("bid" :: t :: v :: clean_text (kv_at kv "note") :: es)
   | "pick" :: t :: cands =>
       let a := fold_left (fun a r => if mem (fst r) cands then enqueue a ["reject", fst r, clean_text (snd r)] else a) (rejects_from kv 0 10) a in
       let pick := kv_at kv "merge" in
@@ -355,9 +368,11 @@ lead (a m : obj) : obj * list (list string) :=
       | [] => st
       | _ => with_retry st m (append key ".ask") ("pick" :: show (tid t) :: map (fun b => show (bidn b)) good) (pick_prompt (fst st) m t good) []
       end) (open_tasks m) (a, []) in
-  (* nothing open: draft the next task from the goal *)
-  if (length (open_tasks m) =? 0) && negb (length (goal (fst st)) =? 0) then
-    with_retry st m (append "draft." (append (show (term m)) (append "." (show (length (tasks m)))))) ["draft"] (draft_prompt (fst st) m) []
+  (* room for another task: draft the next one from the goal. With tasks
+     open, the model writes one only if it judges it can run beside them, and
+     asks again when the count of tasks or of open ones changes *)
+  if (length (open_tasks m) <? param m "max_open_tasks") && negb (length (goal (fst st)) =? 0) then
+    with_retry st m (append "draft." (append (show (term m)) (append "." (append (show (length (tasks m))) (append "." (show (length (open_tasks m)))))))) ["draft"] (draft_prompt (fst st) m) []
   else st.
 
 bid_duty (a m : obj) : obj * list (list string) :=
@@ -369,7 +384,10 @@ bid_duty (a m : obj) : obj * list (list string) :=
     (* a task takes bids until its leader closes it: three tries per merge on it *)
     let finished := existsb (fun b => (btask b =? tid t) && seq (bidder b) (me a) && is_pending (bst b)) (bids m) in
     let k := append (show (tid t)) (append "." (show (length (filter (fun b => (btask b =? tid t) && is_merged b) (bids m))))) in
-    let n := get_or 0 k (attempts a) in
+    (* three tries per version: a merge on any task (another open one too)
+       moves the version, and a bid that went stale with it costs nothing:
+       the agent writes an updated one *)
+    let n := if get_or 0 k (attempt_v a) =? version m then get_or 0 k (attempts a) else 0 in
     (* one patch at a time per task: not while a model is writing one, not while
        one waits to be sent, and not while one has been sent and is not yet in
        a block. The in-flight transaction is that bid, not only its nonce. *)
@@ -383,8 +401,8 @@ bid_duty (a m : obj) : obj * list (list string) :=
              then setf a "merge_seen" (firstn 50 ((k, mheight m) :: merge_seen a)) else a in
     let settling := (0 <? merges) && (mheight m <? get_or 0 k (merge_seen a) + param m "bid_cooldown") in
     if negb (mem (me a) (bidders_for m t)) || finished || waiting || settling || (3 <=? n) then (a, o) else
-    let a := setf a "attempts" (put k (n + 1) (attempts a)) in
-    with_ask (a, o) m (append "patch." (append k (append "." (show n))))
+    let a := setf (setf a "attempts" (put k (n + 1) (attempts a))) "attempt_v" (put k (version m) (attempt_v a)) in
+    with_ask (a, o) m (append "patch." (append k (append "." (append (show (version m)) (append "." (show n))))))
       ["patch", show (tid t), show (version m)] (patch_prompt a m t) (trepo t :: tctx t)) (open_tasks m) (a, []).
 
 (** a check of a bid's edits on the head, by the shell: for an attest, or for
@@ -513,6 +531,12 @@ answered (a m : obj) (id : string) (kv : list string) : obj * list (list string)
       if seq (kv_at kv "ok") "error" then abstain a kv
       else if seq (kv_at kv "ok") "true" then flush (enqueue a ["merge", b, kv_at kv "tree"]) m
       else if seq (kv_at kv "stage") "node" then abstain a kv
+      (* edits that don't apply to the head, on a bid made before a merge
+         since, conflict with that merge: the bid is cleared, not rejected,
+         and its bidder writes an updated one. On a bid made at the head they
+         were wrong all along: rejected *)
+      else if seq (kv_at kv "stage") "apply" && match bid_by m (num b) with Some bd => base bd <? version m | None => false end
+      then flush (enqueue a ["conflict", b]) m
       else flush (enqueue a ["reject", b, clean_text (redact
              (if seq (kv_at kv "stage") "ci" then append "CI failed on the merged tree: " (kv_at kv "why")
               else append "its edits don't apply to the head: " (kv_at kv "why")))]) m

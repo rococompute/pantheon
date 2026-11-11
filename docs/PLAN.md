@@ -70,7 +70,9 @@ the leader reads `.plan` at the repository's head each time it drafts.
 - **Drafting:** the leader's prompt has each repository's open items, in
   order, under "Each repository's plan" (shell.ml `plan_text`). The leader
   takes the open item no task already covers that it judges best to do next,
-  usually the first, and says why when it isn't. Bidders see the plan too. The task quotes the item,
+  usually the first, and says why when it isn't. With room for another task
+  (`max_open_tasks`), it drafts one beside the open ones when it judges one can
+  run at the same time, or gives null. Bidders see the plan too. The task quotes the item,
   names `.plan` and the item's files as context, and includes marking the
   item done.
 - **Bidding:** the bid does the work and puts `+ ` before the item's line in

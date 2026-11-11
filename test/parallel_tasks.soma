@@ -1,0 +1,137 @@
+(** Parallel tasks and stale bids, deterministically.
+
+    Up to max_open_tasks tasks are open at once (1 unless genesis says), and
+    the leader drafts another while there's room, asking the model whether
+    one can run beside them. A bid made on an earlier version stays good
+    while its edits apply line by line; a whole-file edit of a file changed
+    since conflicts. The leader clears a bid whose edits no longer apply
+    (conflict, not a rejection), and its bidder gets fresh tries when the
+    version moves. Run with test/parallel-tasks.sh. *)
+Import util shell market agent.
+
+say (cond : bool) (what : string) : list string :=
+  [if cond then append "ok " what else append "FAIL " what].
+
+base_market (open : nat) : obj :=
+  let m := new_market ["claude", "codex", "grok", "muse"] in
+  let m := setf m "leader" "claude" in
+  let m := setf m "h" 10 in
+  let m := setf m "repos" ([("calc", "tree")] : list (string * string)) in
+  let m := setf m "awaiting" false in
+  if open =? 0 then m else setf m "params" ([("max_open_tasks", open)] : list (string * nat)).
+
+post (m : obj) (s : string) : obj * string :=
+  let '(m, _, why) := apply m "claude" ["post", "calc", s] in (m, why).
+
+two_open : obj := fst (post (fst (post (base_market 2) "task one")) "task two").
+one_open (cap : nat) : obj := fst (post (base_market cap) "task one").
+
+(** a merge on another task: the version moves and g.txt changed at it *)
+after_merge (m : obj) : obj :=
+  setf (setf m "version" 1) "paths" (put (path_key "calc" "g.txt") 1 (paths m)).
+
+eligible (m : obj) (id : nat) : string :=
+  match task_by m id with
+  | Some t => match bidders_for m t with a :: _ => a | [] => "" end
+  | None => ""
+  end.
+
+eligible2 (m : obj) (id : nat) : string :=
+  match task_by m id with
+  | Some t => match bidders_for m t with _ :: b :: _ => b | _ => "" end
+  | None => ""
+  end.
+
+llm (who : string) : obj := setf (new_agent who) "backend" "llm".
+leader_agent : obj := setf (llm "claude") "goal" ["- add a sub command", "- add a mul command"].
+
+draft_asks (o : list (list string)) : list string :=
+  flat_map (fun x => match x with "llm" :: _ :: "draft" :: p :: _ => [p] | _ => [] end) o.
+
+patch_asks (o : list (list string)) : nat :=
+  length (filter (fun x => match x with "llm" :: _ :: "patch" :: _ => true | _ => false end) o).
+
+has (s sub : string) : bool := contains sub s.
+
+status_of (m : obj) (id : nat) : string :=
+  match bid_by m id with Some b => status_name (bst b) | None => "none" end.
+
+bidder_of (m : obj) (id : nat) : string := match bid_by m id with Some b => bidder b | None => "" end.
+
+sent (a : obj) (o : list (list string)) (k : string) : bool :=
+  existsb (fun q => match q with x :: _ => seq x k | _ => false end) (queue a)
+  || existsb (fun x => match x with "submit" :: _ :: y :: _ => seq y k | _ => false end) o.
+
+lines_posting : list string :=
+  let (_, w3) := post two_open "task three" in
+  let (_, w2) := post (one_open 0) "task two" in
+  say (length (open_tasks two_open) =? 2) "two tasks open with max_open_tasks 2"
+  ++ say (has w3 "too many open tasks") "a third is refused at the cap"
+  ++ say (has w2 "too many open tasks") "by default one task is open at a time".
+
+lines_drafting : list string :=
+  let (_, o2) := lead leader_agent (one_open 2) in
+  let (_, o1) := lead leader_agent (one_open 1) in
+  let (_, o0) := lead leader_agent (base_market 2) in
+  say (length (draft_asks o2) =? 1) "with room for another, the leader asks for a draft"
+  ++ say (forallb (fun p => has p "Tasks open now: 1 of up to 2") (draft_asks o2)) "the draft prompt says what is open and the cap"
+  ++ say (length (draft_asks o1) =? 0) "at the cap, the leader drafts nothing"
+  ++ say ((length (draft_asks o0) =? 1) && forallb (fun p => negb (has p "Tasks open now")) (draft_asks o0)) "with nothing open, a plain draft".
+
+lines_stale : list string :=
+  let m := after_merge (one_open 0) in
+  let who := eligible m 1 in
+  let '(_, _, w_lines) := apply m who ["bid", "1", "0", "edit f", "f.txt", "x = 1", "x = 2"] in
+  let '(_, _, w_same) := apply m who ["bid", "1", "0", "edit g", "g.txt", "y = 1", "y = 2"] in
+  let '(_, _, w_whole) := apply m who ["bid", "1", "0", "write g", "g.txt", "", "all new"] in
+  let '(_, _, w_future) := apply m who ["bid", "1", "2", "ahead", "f.txt", "", "x"] in
+  say (seq w_lines "") "a bid on an earlier version is taken"
+  ++ say (seq w_same "") "so is one replacing lines in a file changed since"
+  ++ say (has w_whole "whole file") "a whole-file write of a file changed since is refused"
+  ++ say (has w_future "hasn't reached") "a bid on a version not reached yet is refused".
+
+lines_clearing : list string :=
+  let m := one_open 0 in
+  let who := eligible m 1 in
+  let '(m, _, _) := apply m who ["bid", "1", "0", "write g", "g.txt", "", "all new"] in
+  let '(m, _, _) := apply (setf m "h" 20) (eligible2 m 1) ["bid", "1", "0", "edit g", "g.txt", "y = 1", "y = 2"] in
+  let m := after_merge m in
+  let whole := match bid_by m 1 with Some b => overwrites m b | None => false end in
+  let lines := match bid_by m 2 with Some b => negb (overwrites m b) && conflicts m b | None => false end in
+  let '(mc, _, wc) := apply m "claude" ["conflict", "2"] in
+  let '(_, _, wn) := apply m who ["conflict", "2"] in
+  say whole "a whole-file write over a changed file overwrites it"
+  ++ say lines "a line edit there only touches a changed path"
+  ++ say (seq wc "" && seq (status_of mc 2) "cleared") "the leader clears a bid that conflicts"
+  ++ say (get_or 0 (append (bidder_of mc 2) ".rejected") (counters mc) =? 0) "a conflict is not counted as a rejection"
+  ++ say (negb (seq wn "")) "only the leader clears a bid".
+
+with_mcheck (a : obj) : obj :=
+  setf (setf a "nreq" 1) "reqs" ([("1", ["mcheck", "1"])] : list (string * list string)).
+
+apply_fail : list string := ["ok", "false", "tree", "", "why", "edit 1 matches nothing", "stage", "apply"].
+
+lines_check : list string :=
+  let m := one_open 0 in
+  let '(m, _, _) := apply m (eligible m 1) ["bid", "1", "0", "edit f", "f.txt", "x = 1", "x = 2"] in
+  let (stale_a, so) := answered (with_mcheck leader_agent) (after_merge m) "1" apply_fail in
+  let (head_a, ho) := answered (with_mcheck leader_agent) m "1" apply_fail in
+  say (sent stale_a so "conflict" && negb (sent stale_a so "reject")) "edits that no longer apply after a merge: conflict"
+  ++ say (sent head_a ho "reject" && negb (sent head_a ho "conflict")) "edits that never applied: rejected".
+
+lines_tries : list string :=
+  let m := one_open 0 in
+  let who := eligible m 1 in
+  let spent := setf (setf (llm who) "attempts" ([("1.0", 3)] : list (string * nat))) "attempt_v" ([("1.0", 0)] : list (string * nat)) in
+  let (_, held) := bid_duty spent m in
+  let m1 := after_merge m in
+  let who1 := eligible m1 1 in
+  let spent1 := setf (setf (llm who1) "attempts" ([("1.0", 3)] : list (string * nat))) "attempt_v" ([("1.0", 0)] : list (string * nat)) in
+  let (_, fresh) := bid_duty spent1 m1 in
+  say (patch_asks held =? 0) "three tries spent at a version: no more patches"
+  ++ say (patch_asks fresh =? 1) "the version moved: fresh tries for an updated bid".
+
+report : list string :=
+  lines_posting ++ lines_drafting ++ lines_stale ++ lines_clearing ++ lines_check ++ lines_tries.
+
+main := print_lines report.

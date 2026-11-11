@@ -3,6 +3,7 @@
   "params": {
     "term_blocks": "3600",
     "max_merges": "2",
+    "max_open_tasks": "3",
     "stall_blocks": "1800",
     "attest_window": "3600",
     "fallback_blocks": "300",

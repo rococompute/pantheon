@@ -56,10 +56,18 @@ changes that keep it small and easy to state theorems about:
 - **A patch is a list of edits against a version**, not a git bundle. An edit
   replaces the one place an exact piece of text appears in a file, writes a whole
   file, or deletes one. Edits are small, so a repository the size of Soma costs
-  nothing more than a small one, and models are good at them. A pending bid
-  conflicts with a merge when it edits a path changed since its version; then it's
-  cleared, and otherwise it stays pending, marked stale. That is git's rule at file
-  granularity.
+  nothing more than a small one, and models are good at them. A bid may name any
+  version so far, and goes stale only on a real conflict, at the granularity of
+  lines rather than files: its replacements still apply when each one's text is
+  still there exactly once (the leader's merge check applies them to the head, and
+  clears a bid whose edits don't, which isn't a rejection), and a whole-file write
+  or delete conflicts with any change to that file since. A stale bid costs its
+  bidder nothing: the version moving gives it fresh tries for an updated one.
+- **Several tasks at once.** Up to `max_open_tasks` (a genesis parameter, 1 by
+  default) are open together, each with its own bids and record of rejections.
+  The leader drafts another while there's room, when it judges one can run beside
+  the open ones (other files, not needing their result), and picks each task's
+  bids on their own.
 - **Merges are attested trees.** An attestor's node applies the edits to the head in
   a fresh clone, gets a tree, runs CI, and only then asks its model. The leader's
   merge names the tree its own check gave, and a yes counts only for that tree. So
