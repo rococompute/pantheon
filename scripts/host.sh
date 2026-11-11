@@ -21,8 +21,10 @@
 #                                      part: each node's genesis from it, and the genesis hash
 #   scripts/host.sh start              write the services and (re)start them all: nodes, mirror, inbox server
 #   scripts/host.sh services           nodes, mirror and inbox server as the pantheon user, as system services (root; HOST_DRY=DIR to preview)
+#   scripts/host.sh sessions           each diplomat's home as its own user: instructions, desk, inbox wrapper, its check;
+#                                      diplomats then starts each session as that user (root, after services; HOST_DRY=DIR to preview)
 #   scripts/host.sh vm AGENT           AGENT's VM (Muse's): made and started, the agent's CLI in it, a token
-#   scripts/host.sh login AGENT        log AGENT's CLI in, in its VM (device code: you open the URL)
+#   scripts/host.sh login AGENT        log AGENT's CLI in, in its VM (device code: you open the URL), or as its own user after sessions
 #   scripts/host.sh diplomats          from a herdr pane: a workspace with one tab per agent, each session started
 #   scripts/host.sh watchdog [--check] (re)start the watchdog (--check: what it sees, nudging no one): it nudges an agent whose session stopped working its inbox
 #   scripts/host.sh instructions       write each diplomat's instructions again (after changing them; restarts nothing)
@@ -296,6 +298,7 @@ User=pantheon
 WorkingDirectory=/var/lib/pantheon/net/%i
 Environment=SOMA_DIR=/var/lib/pantheon/soma
 Environment=XDG_RUNTIME_DIR=/run/user/$uid
+Environment=CI_LOCK=/var/lib/pantheon/.ci-lock
 ExecStart=/var/lib/pantheon/net/%i/run.sh
 Restart=on-failure
 RestartSec=10
@@ -339,6 +342,136 @@ ROOT
   [ -n "$REMOTE" ] && units="$units pantheon-mirror.service"
   [ -n "$VM_AGENTS" ] && units="$units pantheon-inbox.service"
   printf 'systemctl enable --now%s\n' "$units"
+}
+
+# Each diplomat as its own user (the session part of P-1). Needs users (the
+# accounts, the inboxes) and services (the inbox server writing
+# /var/lib/pantheon-inbox/AGENT). Like services, one root script; HOST_DRY
+# previews it. Root writes nothing in a diplomat's home: the files arrive
+# over runuser's stdin and the diplomat writes them. Who owns what:
+#   /var/lib/pantheon (pantheon, 0711): net/AGENT (0700, keys and logs),
+#     inbox.json (0600), .ssh (0700, the push key), soma/, .opam and the
+#     switch (readable: a diplomat's check builds with them), .ci-lock (0644)
+#   /var/lib/pantheon-diplomats/AGENT (pantheon-AGENT, 0700): its CLI's
+#     login, instructions.md, desk/ (its clone, pantheon-inbox and
+#     pantheon-check wrappers), .profile; /var/lib/pantheon-diplomats/sessions
+#     (root, 0644) names the agents whose sessions start as their user
+#   /var/lib/pantheon-inbox/AGENT (pantheon:inbox-AGENT, 2770): the one
+#     thing a diplomat shares with the nodes
+SVC=/var/lib/pantheon DIPS=/var/lib/pantheon-diplomats INBOXES=/var/lib/pantheon-inbox
+SESSIONS=${HOST_ROOT:-}$DIPS/sessions
+own_session() { grep -qx "$1" "$SESSIONS" 2>/dev/null; }
+session_agents() {
+  for a in $AGENTS; do
+    in_vm_agents "$a" && continue
+    case $(kind "$a") in claude|codex|grok) printf '%s ' "$a" ;; esac
+  done
+}
+
+cmd_sessions() {
+  valid_agent_names
+  [ -n "$(session_agents)" ] || die "no diplomat on this host runs a session here (AGENTS: $AGENTS; VM_AGENTS: $VM_AGENTS)"
+  # rendered in full first: a failure here runs nothing
+  script=$(sessions_script) || die "could not write the sessions script"
+  if [ -n "${HOST_DRY:-}" ]; then
+    mkdir -p "$HOST_DRY"
+    printf '%s\n' "$script" > "$HOST_DRY/sessions.sh"
+  else
+    [ "$(id -u)" = 0 ] || die "sessions requires root (or HOST_DRY=DIR to preview)"
+    printf '%s\n' "$script" | sh -eu
+  fi
+}
+
+sessions_script() {
+  printf '#!/bin/sh\nset -eu\nR=${HOST_ROOT:-}\n'
+  cat <<'ROOT'
+refuse_link() { [ ! -L "$1" ] || { echo "host: refusing symlinked path $1" >&2; exit 1; }; }
+refuse() { echo "host: $*" >&2; exit 1; }
+ROOT
+  for path in "$DIPS" "$INBOXES" "$SVC" "$SVC/.ci-lock" "$DIPS/sessions" /etc/sysctl.d/60-pantheon-tiocsti.conf; do
+    printf 'refuse_link "$R"%s\n' "$(q "$path")"
+  done
+  # the inbox server and the nodes must already be pantheon's: a session
+  # watching /var/lib/pantheon-inbox while the legacy nodes write elsewhere
+  # would answer nothing
+  printf '[ -f "$R/etc/systemd/system/pantheon-node@.service" ] || refuse %s\n' \
+    "$(q 'the nodes are not system services yet: run scripts/host.sh services first, so the nodes write /var/lib/pantheon-inbox')"
+  for a in $(session_agents); do
+    u=pantheon-$a
+    printf '[ -d "$R"%s ] || refuse %s\n' "$(q "$DIPS/$a")" "$(q "no home for $u: run scripts/host.sh users first")"
+    printf '[ -d "$R"%s ] || refuse %s\n' "$(q "$INBOXES/$a")" "$(q "no inbox for $a: run scripts/host.sh users first")"
+    printf 'refuse_link "$R"%s\n' "$(q "$DIPS/$a")"
+    printf 'refuse_link "$R"%s\n' "$(q "$INBOXES/$a")"
+    # what the session runs, reachable as the diplomat itself
+    for p in "$here/scripts/pantheon-inbox" "$here/deploy/host/ci-sandbox"; do
+      printf 'runuser -u %s -- test -x %s || refuse %s\n' "$u" "$(q "$p")" "$(q "$u cannot execute $p: install Pantheon where every user can read it")"
+    done
+    printf 'runuser -u %s -- test -r %s || refuse %s\n' "$u" "$(q "$SVC/soma/_build/install/default/bin/soma")" "$(q "$u cannot read pantheon's Soma build ($SVC/soma): its check builds with it")"
+    for p in "$SVC/.opam" "$SVC/.cache/soma/ocaml"; do
+      printf 'runuser -u %s -- test -r %s -a -x %s || refuse %s\n' "$u" "$(q "$p")" "$(q "$p")" "$(q "$u cannot read $p: its check builds with pantheon's opam root and switch (make them readable, not writable)")"
+    done
+    # and none of the secrets: every node's key, the inbox tokens, the push key
+    for b in $AGENTS; do
+      printf 'if runuser -u %s -- test -r %s; then refuse %s; fi\n' "$u" "$(q "$SVC/net/$b/key.json")" "$(q "$u can read $b's node key: run scripts/host.sh permissions")"
+    done
+    for p in "$SVC/inbox.json" "$SVC/.ssh"; do
+      printf 'if runuser -u %s -- test -r %s; then refuse %s; fi\n' "$u" "$(q "$p")" "$(q "$u can read $p: make it pantheon's alone")"
+    done
+  done
+  cat <<'ROOT'
+stage=$(mktemp -d)
+trap 'rm -rf "$stage"' EXIT HUP INT TERM
+# a file, written by its user from root's stage over stdin
+put() { runuser -u "$1" -- sh -c 'umask 077; cat > "$1.new" && chmod "$2" "$1.new" && mv -f "$1.new" "$1"' sh "$2" "$3" < "$4"; }
+# the host's one CI lock, the nodes' (their unit's CI_LOCK): pantheon's,
+# readable, so a diplomat's check waits on it (ci-sandbox locks it read-only)
+runuser -u pantheon -- sh -c ': >> "$1" && chmod 0644 "$1"' sh "$R/var/lib/pantheon/.ci-lock"
+ROOT
+  for a in $(session_agents); do
+    u=pantheon-$a dh=$DIPS/$a desk=$DIPS/$a/desk
+    tmp=$(mktemp)
+    render_instructions "$a" "$desk" "$tmp" "$SVC/soma" "$SVC/net" "$dh/soma-notes.md" || { rm -f "$tmp"; die "could not render $a's instructions"; }
+    if grep -qx PANTHEON_INSTRUCTIONS_END "$tmp"; then rm -f "$tmp"; die "$a's instructions contain the line that ends them in the script"; fi
+    printf "cat > \"\$stage/instructions-%s.md\" <<'PANTHEON_INSTRUCTIONS_END'\n" "$a"
+    cat "$tmp"
+    # the end marker on a line of its own
+    [ -z "$(tail -c 1 "$tmp")" ] || printf '\n'
+    rm -f "$tmp"
+    printf 'PANTHEON_INSTRUCTIONS_END\n'
+    # the inbox, and the check: pantheon's Soma, opam root and switch read-only, the host's lock
+    inbox_line="PANTHEON_INBOX=$(q "$INBOXES/$a") PANTHEON_REMOTE=$(q "$REMOTE") PANTHEON_BRANCH=$(q "$BRANCH") PANTHEON_CHECK=$(q "$desk/pantheon-check") exec $(q "$here/scripts/pantheon-inbox") \"\$@\""
+    check_line="[ \$# -eq 1 ] && [ -d \"\$1\" ] || { echo 'usage: pantheon-check DIR' >&2; exit 2; }; XDG_RUNTIME_DIR=/run/user/\$(id -u) SOMA_DIR=$(q "$SVC/soma") CI_OPAMROOT=$(q "$SVC/.opam") CI_SWITCH=$(q "$SVC/.cache/soma/ocaml") CI_LOCK=$(q "$SVC/.ci-lock") exec $(q "$here/deploy/host/ci-sandbox") $(q "$CI_MEMORY") \"\$1\" $(q "$CI_CMD")"
+    printf 'printf "%%s\\n" %s %s > "$stage/inbox-%s"\n' "$(q '#!/bin/sh')" "$(q "$inbox_line")" "$a"
+    printf 'printf "%%s\\n" %s %s > "$stage/check-%s"\n' "$(q '#!/bin/sh')" "$(q "$check_line")" "$a"
+    # the login shell a session starts in (sudo -iu): its desk, its wrappers first
+    printf 'printf "%%s\\n" %s %s %s > "$stage/profile-%s"\n' \
+      "$(q 'cd "$HOME/desk" 2>/dev/null || true')" \
+      "$(q 'PATH="$HOME/desk:$HOME/.local/bin:$PATH"; export PATH')" \
+      "$(q 'XDG_RUNTIME_DIR=/run/user/$(id -u); export XDG_RUNTIME_DIR')" "$a"
+    printf 'runuser -u %s -- mkdir -p -m 0700 "$R"%s\n' "$u" "$(q "$desk")"
+    printf 'put %s "$R"%s 0600 "$stage/instructions-%s.md"\n' "$u" "$(q "$dh/instructions.md")" "$a"
+    printf 'put %s "$R"%s 0700 "$stage/inbox-%s"\n' "$u" "$(q "$desk/pantheon-inbox")" "$a"
+    printf 'put %s "$R"%s 0700 "$stage/check-%s"\n' "$u" "$(q "$desk/pantheon-check")" "$a"
+    printf 'put %s "$R"%s 0600 "$stage/profile-%s"\n' "$u" "$(q "$dh/.profile")" "$a"
+    if [ -n "$REMOTE" ]; then
+      # its own clone, for cloud hand-offs, with its own (read-only) GitHub key
+      printf 'runuser -u %s -- test -d "$R"%s || runuser -u %s -- git clone -q %s "$R"%s || echo %s >&2\n' \
+        "$u" "$(q "$desk/pantheon/.git")" "$u" "$(q "$REMOTE")" "$(q "$desk/pantheon")" \
+        "$(q "host: $u can't clone the remote into $desk/pantheon: give it a read-only key; its cloud hand-offs need the clone")"
+    fi
+    # ci-sandbox scopes a check in the user's own systemd manager
+    printf 'loginctl enable-linger %s\n' "$u"
+  done
+  cat <<'ROOT'
+# a session can't type into the operator's terminal (TIOCSTI)
+printf 'dev.tty.legacy_tiocsti = 0\n' > "$stage/tiocsti.conf"
+install -o root -g root -m 0644 "$stage/tiocsti.conf" "$R/etc/sysctl.d/60-pantheon-tiocsti.conf"
+sysctl -q -w dev.tty.legacy_tiocsti=0 2>/dev/null \
+  || echo "host: this kernel has no dev.tty.legacy_tiocsti (before 6.2): sudo's use_pty (its default since 1.9.14) keeps sessions off the operator's terminal" >&2
+ROOT
+  # written last: diplomats starts a session as its user only once all of it is there
+  printf 'printf "%%s\\n"'; for a in $(session_agents); do printf ' %s' "$a"; done; printf ' > "$stage/sessions"\n'
+  printf 'install -o root -g root -m 0644 "$stage/sessions" "$R"%s\n' "$(q "$DIPS/sessions")"
 }
 
 
@@ -400,7 +533,6 @@ render_diplomat() {
   # GitHub remote and branch of the directory they run in
   [ -z "$REMOTE" ] || [ -d "$P/desk/$a/pantheon/.git" ] || git clone -q "$REMOTE" "$P/desk/$a/pantheon" \
     || say "$a: can't clone $REMOTE into $P/desk/$a/pantheon: its cloud hand-offs need it"
-  d=$here/deploy/host/delegate/$(kind "$a").md
   # some agent CLIs (codex) give their commands only a few of their own
   # environment variables: the inbox's settings go in a wrapper instead
   # every value quoted: REMOTE and BRANCH come from the remote (P-11)
@@ -410,11 +542,19 @@ PANTHEON_INBOX=$(q "$P/inbox/$a") PANTHEON_REMOTE=$(q "$REMOTE") PANTHEON_BRANCH
   exec $(q "$here/scripts/pantheon-inbox") "\$@"
 W
   chmod 755 "$P/desk/$a/pantheon-inbox"
+  render_instructions "$a" "$P/desk/$a" "$P/diplomats/$a.md" "$SOMA" "$NET"
+}
+
+# AGENT's instructions, for a session whose desk is DESK, into OUT; SOMA_PATH
+# and NET_PATH as that session sees them
+render_instructions() {
+  ri_a=$1 ri_desk=$2 ri_out=$3 ri_soma=$4 ri_net=$5 ri_notes=${6:-$P/soma-notes.md}
+  ri_d=$here/deploy/host/delegate/$(kind "$ri_a").md
   # the values reach Python through its environment, never its source
-  R_AGENT=$a R_REMOTE=$REMOTE R_BRANCH=$BRANCH R_NET=$NET R_CODEX_ENV=${CODEX_ENV:-ENV_ID} R_DESK=$P/desk/$a \
-  R_SOMA_REMOTE=$SOMA_REMOTE R_SOMA_REF=$SOMA_REF R_SOMA_DIR=$SOMA R_SOMA_COMMIT=$(soma_commit) \
-  R_SOMA_NOTES=$P/soma-notes.md R_GROK_MODEL=$GROK_MODEL R_SOMA_SCOPE=$(soma_scope) \
-  python3 - "$here/deploy/host/diplomat.md" "$d" "$P/diplomats/$a.md" <<'PY'
+  R_AGENT=$ri_a R_REMOTE=$REMOTE R_BRANCH=$BRANCH R_NET=$ri_net R_CODEX_ENV=${CODEX_ENV:-ENV_ID} R_DESK=$ri_desk \
+  R_SOMA_REMOTE=$SOMA_REMOTE R_SOMA_REF=$SOMA_REF R_SOMA_DIR=$ri_soma R_SOMA_COMMIT=$(git -C "$ri_soma" rev-parse HEAD 2>/dev/null || echo unknown) \
+  R_SOMA_NOTES=$ri_notes R_GROK_MODEL=$GROK_MODEL R_SOMA_SCOPE=$(soma_scope) \
+  python3 - "$here/deploy/host/diplomat.md" "$ri_d" "$ri_out" <<'PY'
 import sys, os
 t = open(sys.argv[1]).read()
 d = open(sys.argv[2]).read() if os.path.exists(sys.argv[2]) else "## How you hand off\n\nYou have no workers elsewhere: do patches by hand, small, and skip what's too big."
@@ -576,7 +716,7 @@ watch_agent() {
     case $(herdr agent list 2>/dev/null | jq -r --arg a "$a" '.result.agents[] | select(.name == $a) | .agent_status') in
       idle|done) idle=1 ;; *) idle=0 ;;   # working, blocked (a person's call), or no session
     esac
-    file=$P/diplomats/$a.md
+    if own_session "$a"; then file=$DIPS/$a/instructions.md; else file=$P/diplomats/$a.md; fi
   fi
   [ -z "${dry:-}" ] || { say "watchdog: $a $([ "$idle" = 1 ] && echo idle || echo busy)"; return 0; }
   [ "$idle" = 1 ] || { rm -f "$st/$a"; return 0; }
@@ -637,7 +777,16 @@ cmd_vm() {
 }
 
 cmd_login() {
-  a=${1:-}; in_vm_agents "$a" || die "usage: scripts/host.sh login AGENT (one of VM_AGENTS: $VM_AGENTS; the others log in on this host: claude, codex, cursor-agent login)"
+  a=${1:-}
+  if is_agent "$a" && ! in_vm_agents "$a" && own_session "$a"; then
+    # a diplomat with its own user logs its CLI in as that user, into its home
+    case $(kind "$a") in
+      claude) exec sudo -iu "pantheon-$a" claude ;;
+      codex) exec sudo -iu "pantheon-$a" codex login ;;
+      grok) exec sudo -iu "pantheon-$a" cursor-agent login ;;
+    esac
+  fi
+  in_vm_agents "$a" || die "usage: scripts/host.sh login AGENT (one of VM_AGENTS: $VM_AGENTS, or a diplomat with its own user after sessions; the others log in on this host: claude, codex, cursor-agent login)"
   case $(kind "$a") in muse) exec limactl shell "$(vm "$a")" sh -c 'exec ~/.local/bin/muse login' ;; esac
 }
 
@@ -664,6 +813,23 @@ cmd_diplomats() {
       grok)   kind=cursor exe=cursor-agent args="--yolo --trust --model $GROK_MODEL" ;;
       *) say "$a: no diplomat for it here"; continue ;;
     esac
+    if own_session "$a"; then
+      # as its own user (scripts/host.sh sessions): its login, desk and
+      # instructions are its own, and nothing of the operator's environment
+      # reaches it; it shares only its inbox with the nodes
+      u=pantheon-$a
+      sudo -n -iu "$u" command -v "$exe" >/dev/null 2>&1 \
+        || { say "$a: $u has no $exe: install it where $u finds it, log it in (scripts/host.sh login $a), then run this again"; continue; }
+      p=$(herdr tab create --workspace "$ws" --label "$a" --cwd / --no-focus | jq -r .result.root_pane.pane_id)
+      # the pane's shell becomes the diplomat's login shell (its .profile: its desk, its wrappers first)
+      herdr pane run "$p" "exec sudo -iu $u" >/dev/null
+      # shellcheck disable=SC2086
+      herdr agent start "$a" --kind "$kind" --pane "$p" --timeout 60000 -- $args >/dev/null \
+        || { say "$a: $exe didn't come up ready as $u (logged in? scripts/host.sh login $a; herdr pane read $p)"; continue; }
+      herdr agent prompt "$a" "Read $DIPS/$a/instructions.md: it is your job, as $a's diplomat in a Pantheon network. Follow it now." >/dev/null
+      say "$a: started as $u in tab \"$a\""
+      continue
+    fi
     command -v "$exe" >/dev/null || { say "$a: no $exe on this host: install it and log it in, then run this again"; continue; }
     render_diplomat "$a"
     p=$(herdr tab create --workspace "$ws" --label "$a" --cwd "$P/desk/$a" --no-focus \
@@ -679,7 +845,11 @@ cmd_diplomats() {
 }
 
 cmd_instructions() {
-  for a in $AGENTS; do in_vm_agents "$a" || { render_diplomat "$a"; say "$a: $P/diplomats/$a.md"; }; done
+  for a in $AGENTS; do
+    in_vm_agents "$a" && continue
+    if own_session "$a"; then say "$a: runs as pantheon-$a: its instructions are written by scripts/host.sh sessions (root)"; continue; fi
+    render_diplomat "$a"; say "$a: $P/diplomats/$a.md"
+  done
   [ -z "$VM_AGENTS" ] || say "the VMs' instructions: scripts/host.sh vm AGENT"
 }
 
@@ -714,7 +884,7 @@ cmd_logs() {
 
 c=${1:-}; [ $# -gt 0 ] && shift
 case $c in
-  users|services|permissions|network|keygen|join|start|vm|login|diplomats|watchdog|instructions|mirror|check|stop|status|logs) "cmd_$c" "$@" ;;
+  users|services|sessions|permissions|network|keygen|join|start|vm|login|diplomats|watchdog|instructions|mirror|check|stop|status|logs) "cmd_$c" "$@" ;;
   mirror-loop) cmd_mirror_loop ;;
   watchdog-loop) cmd_watchdog_loop ;;
   *) awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "$0"; [ -z "$c" ] || exit 1 ;;

@@ -28,8 +28,11 @@ mem=$1 work=$2 cmd=$3
 # Docker's sizes (1536m, 3g) in systemd's spelling (1536M, 3G)
 mem=$(printf '%s' "$mem" | tr kmgt KMGT)
 soma=${SOMA_DIR:-$HOME/pantheon/soma}
-switch=$HOME/.cache/soma/ocaml
-for p in "$soma/_build/install/default/bin/soma" "$HOME/.opam" "$switch"; do
+# a diplomat's check (its own user) builds with the node user's opam root and
+# switch, read-only: CI_OPAMROOT and CI_SWITCH name them
+opam=${CI_OPAMROOT:-$HOME/.opam}
+switch=${CI_SWITCH:-$HOME/.cache/soma/ocaml}
+for p in "$soma/_build/install/default/bin/soma" "$opam" "$switch"; do
   [ -e "$p" ] || { echo "ci-sandbox: no $p: build Soma and Pantheon on this host first (scripts/setup-node.sh)"; exit 3; }
 done
 command -v bwrap >/dev/null || { echo "ci-sandbox: no bwrap: install bubblewrap"; exit 3; }
@@ -38,13 +41,15 @@ command -v bwrap >/dev/null || { echo "ci-sandbox: no bwrap: install bubblewrap"
 # unlock it and run builds beside other nodes' checks (docs/SECURITY-REVIEW-2.md
 # P-15). The shell is outside the sandbox's pid namespace, and the lock file
 # isn't in it.
-exec 9>>"${CI_LOCK:-$HOME/pantheon/.ci-lock}"
+lock=${CI_LOCK:-$HOME/pantheon/.ci-lock}
+# a lock another user owns (the node user's, for a diplomat) is locked read-only
+if [ -e "$lock" ] && [ ! -w "$lock" ]; then exec 9<"$lock"; else exec 9>>"$lock"; fi
 flock 9
 # systemd-run's scope ends when its command does; the command reads its own
 # cgroup's oom_kill count before that, to tell a kill for memory from a failure
 exec systemd-run --user --scope --quiet --collect -p "MemoryMax=$mem" -p MemorySwapMax=0 -p TasksMax=512 -- \
   sh -c '
-    soma=$1 switch=$2 work=$3 cmd=$4
+    soma=$1 switch=$2 work=$3 cmd=$4 opam=$5
     # only the /etc files a build reads, not the host /etc and the secrets it may
     # hold (docs/SECURITY-REVIEW-2.md P-12): names, the loader, the time zone,
     # and Debian'\''s alternatives (/usr/bin/awk is a link through them)
@@ -60,14 +65,14 @@ exec systemd-run --user --scope --quiet --collect -p "MemoryMax=$mem" -p MemoryS
       --ro-bind /usr /usr $etc \
       --symlink usr/bin /bin --symlink usr/sbin /sbin --symlink usr/lib /lib --symlink usr/lib64 /lib64 \
       --proc /proc --dev /dev --tmpfs /tmp \
-      --ro-bind "$soma" "$soma" --ro-bind "$HOME/.opam" "$HOME/.opam" --ro-bind "$switch" "$switch" \
-      --tmpfs "$HOME/.opam/log" \
+      --ro-bind "$soma" "$soma" --ro-bind "$opam" "$opam" --ro-bind "$switch" "$switch" \
+      --tmpfs "$opam/log" \
       --ro-bind "$work" /work \
-      --clearenv --setenv HOME /tmp --setenv XDG_CACHE_HOME /tmp/cache --setenv OPAMROOT "$HOME/.opam" \
+      --clearenv --setenv HOME /tmp --setenv XDG_CACHE_HOME /tmp/cache --setenv OPAMROOT "$opam" \
       --setenv SOMA_OCAML_SWITCH "$switch" --setenv PATH "$soma/_build/install/default/bin:/usr/bin:/bin" \
       --setenv LANG C.UTF-8 --chdir /tmp \
       sh -c "cp -R /work /tmp/w && cd /tmp/w && ( $cmd
 ) 2>&1" 9>&-
     r=$?
     if [ $r -ne 0 ] && grep -qs "oom_kill [1-9]" "$cg/memory.events"; then exit 137; fi
-    exit $r' ci-sandbox "$soma" "$switch" "$work" "$cmd"
+    exit $r' ci-sandbox "$soma" "$switch" "$work" "$cmd" "$opam"
