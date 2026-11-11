@@ -671,7 +671,8 @@ let max_conns_per_host = 16
 (* a line's longest: a proposal of max_block_txs transactions, quoted *)
 let max_line = 2 * max_tx_bytes * 60
 
-type job = { jid : string; jfd : Unix.file_descr; jpid : int; jbuf : Buffer.t; jdone : string -> unit; jstarted : float; jlimit : float; jclean : unit -> unit }
+type job = { jid : string; jfd : Unix.file_descr; jpid : int; mutable jchunks : string list;
+             jdone : string -> unit; jstarted : float; jlimit : float; jclean : unit -> unit }
 
 let split_addr s =
   match String.rindex_opt s ':' with
@@ -757,6 +758,9 @@ let argv () = Array.to_list Sys.argv |> List.tl
    built, and the loop drives them by this name (docs/SHELL-IN-SOMA.md 2). *)
 type node_handle = { h_events : unit -> string list list;
                      h_job_complete : string -> string -> string list list;
+                     h_job_buffer : string -> string list;
+                     h_job_store_buffer : string -> string list -> unit;
+                     h_job_flood : string -> unit;
                      h_llm_budget : unit -> string * string;
                      h_llm_hold : string -> string -> string -> string list -> unit;
                      h_llm_start : string -> string -> string -> string -> string list -> string option;
@@ -819,6 +823,9 @@ let node_counter = ref 0
 let lookup_handle id = try Hashtbl.find node_handles id with Not_found -> fail "unknown node handle %s" id
 let events id = (lookup_handle id).h_events ()
 let node_job_complete id job result = (lookup_handle id).h_job_complete job result
+let node_job_buffer id jid = (lookup_handle id).h_job_buffer jid
+let node_job_store_buffer id jid chunks = (lookup_handle id).h_job_store_buffer jid chunks; true
+let node_job_flood id jid = (lookup_handle id).h_job_flood jid; true
 (* a model call's I/O: node.soma's perform_llm decides and builds the prompt *)
 let node_llm_budget id = (lookup_handle id).h_llm_budget ()
 let node_llm_hold id req kind prompt ctx = (lookup_handle id).h_llm_hold req kind prompt ctx; true
@@ -1096,9 +1103,10 @@ let node_open packed home flags =
   in
   (* jobs the node stopped for running past their time limit *)
   let overtime = Hashtbl.create 8 in
-  (* jobs stopped for printing more than any reply can be: the node holds a
-     job's output in memory, and a check that prints forever (a bid's test
-     running `yes`) would otherwise take the node down with it *)
+  (* jobs stopped for printing more than any reply can be. Soma's job_feed
+     decides; node_job_flood marks the job and signals it once. The node
+     holds a job's output in memory, and a check that prints forever (a
+     bid's test running `yes`) would otherwise take the node down with it *)
   let flooded = Hashtbl.create 8 in
   let cut = Hashtbl.create 8 in
   let start_job ?(limit = 600.) prog args ~stdin_text ~env ~on_done ~clean =
@@ -1121,7 +1129,7 @@ let node_open packed home flags =
       Unix.close w; Unix.close ifd; Unix.close devnull;
       let jid = string_of_int !job_counter in
       incr job_counter;
-      jobs := { jid; jfd = r; jpid = pid; jbuf = Buffer.create 4096; jdone = on_done; jstarted = Unix.gettimeofday (); jlimit = limit;
+      jobs := { jid; jfd = r; jpid = pid; jchunks = []; jdone = on_done; jstarted = Unix.gettimeofday (); jlimit = limit;
                 jclean = (fun () -> (try Sys.remove inp with _ -> ()); (try remove_tree_later cwd with _ -> ()); clean ()) } :: !jobs
     end
   in
@@ -1475,14 +1483,9 @@ let node_open packed home flags =
               finished := (j, status) :: !finished;
               false
           | n ->
-              Buffer.add_subbytes j.jbuf buf 0 n;
-              if Buffer.length j.jbuf > max_job_output then begin
-                (* keep the end, which is what a failed check's message shows *)
-                let tail = Buffer.sub j.jbuf (Buffer.length j.jbuf - 65536) 65536 in
-                Buffer.clear j.jbuf; Buffer.add_string j.jbuf tail;
-                if not (Hashtbl.mem flooded j.jpid) then begin
-                  Hashtbl.replace flooded j.jpid (); Hashtbl.replace cut j.jpid (); (try Unix.kill j.jpid Sys.sigkill with _ -> ()) end
-              end;
+              (* Soma appends this chunk and applies the output cap
+                 (job_feed in node.soma). The shell only reads the bytes. *)
+              push [ "job_bytes"; j.jid; Bytes.sub_string buf 0 n ];
               true
           | exception _ -> true)
       !jobs;
@@ -1501,7 +1504,7 @@ let node_open packed home flags =
         let flood = if Hashtbl.mem flooded j.jpid then "1" else "0" in
         Hashtbl.remove overtime j.jpid; Hashtbl.remove flooded j.jpid;
         Hashtbl.replace finished_jobs j.jid j;
-        push [ "job_finished"; j.jid; tag; value; timeout; flood; Buffer.contents j.jbuf ])
+        push [ "job_finished"; j.jid; tag; value; timeout; flood; String.concat "" j.jchunks ])
       (List.rev !finished);
     List.iter (fun p ->
         match p.out with
@@ -1538,6 +1541,14 @@ let node_open packed home flags =
             let evs = ref [] in
             while not (Queue.is_empty queue) do evs := Queue.pop queue :: !evs done;
             List.rev !evs);
+      h_job_buffer = (fun jid -> match List.find_opt (fun j -> j.jid = jid) !jobs with Some j -> j.jchunks | None -> []);
+      h_job_store_buffer = (fun jid chunks -> match List.find_opt (fun j -> j.jid = jid) !jobs with Some j -> j.jchunks <- chunks | None -> ());
+      h_job_flood = (fun jid ->
+        match List.find_opt (fun j -> j.jid = jid) !jobs with
+        | Some j when not (Hashtbl.mem flooded j.jpid) ->
+            Hashtbl.replace flooded j.jpid (); Hashtbl.replace cut j.jpid ();
+            (try Unix.kill j.jpid Sys.sigkill with _ -> ())
+        | _ -> ());
       h_llm_budget = (fun () -> incr calls; (string_of_int !calls, string_of_int !max_calls));
       h_llm_hold = hold;
       h_llm_start = call_model;

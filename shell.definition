@@ -128,6 +128,14 @@ node_job_output_limit : unit -> string.
     callback before cleanup and return the events that callback queued, in
     order. Missing/already-completed identifiers return no events. *)
 node_job_complete : string -> string -> string -> list (list string).
+(** A job's buffered read chunks, in order. Soma's job_feed appends the
+    chunk the shell just read and, past the output cap, keeps the tail;
+    the shell stores that list and, when the feed says the job is over,
+    signals the process once (node.soma job_feed). Reading the bytes stays
+    here. *)
+node_job_buffer : string -> string -> list string.
+node_job_store_buffer : string -> string -> list string -> bool.
+node_job_flood : string -> string -> bool.
 node_reply_open : string -> option string.
 node_reply_close : string -> option string.
 node_json_tokens : string -> option (list string).
