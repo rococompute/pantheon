@@ -1,0 +1,75 @@
+(** Fixed process outcomes and byte framing; no running node or timers. *)
+Import util shell node.
+From Stdlib Require ExtrOcamlNatInt.
+Extract Inlined Constant Nat.div => "(fun a b -> if b = 0 then 0 else a / b)".
+Extract Inlined Constant Nat.modulo => "(fun a b -> if b = 0 then a else a mod b)".
+
+(** Strings run as OCaml's (ExtrOcamlNativeString), which leaves out the
+    operations that count in [nat]. With [nat] as OCaml ints they're
+    OCaml's own, each as total as its definition: offsets past the end give
+    [None] or an empty string. util.soma reads long text through them. *)
+Extract Inlined Constant Stdlib.Strings.String.length => "String.length".
+Extract Inlined Constant Stdlib.Strings.String.get =>
+  "(fun n s -> if n < String.length s then Some (String.unsafe_get s n) else None)".
+Extract Inlined Constant Stdlib.Strings.String.substring =>
+  "(fun n m s -> let l = String.length s in if n >= l then """" else String.sub s n (min m (l - n)))".
+
+
+check (label : string) (ok : bool) : string := append (if ok then "ok " else "FAIL ") label.
+result_is (status : job_status) (timeout : option string) (flooded : bool) (out expected : string) : bool :=
+  seq (job_result status timeout flooded "4" out) expected.
+
+split_first : list string * list string := feed_chunks [] "hel".
+split_second : list string * list string := feed_chunks (snd split_first) "lo
+rest".
+many_lines : list string * list string := feed_chunks [] "one
+
+two
+partial".
+
+checks : list string := [
+  check "empty success is pending" (result_is (JobExit "0") None false "" "pending"),
+  check "successful output preserved byte for byte" (result_is (JobExit "0") None false "a
+b
+" "a
+b
+"),
+  check "nonzero exit preserves diagnostic" (result_is (JobExit "137") None false "killed"
+    "!process failed (exit 137): killed"),
+  check "signal failure" (result_is (JobSignal "SIGTERM") None false "x"
+    "!process failed (killed by SIGTERM): x"),
+  check "unknown platform signal" (result_is (JobSignal "signal -42") None false ""
+    "!process failed (killed by signal -42): "),
+  check "stopped process" (result_is (JobStop "SIGINT") None false "x"
+    "!process failed (stopped by SIGINT): x"),
+  check "timeout replaces signal reason" (result_is (JobSignal "SIGKILL") (Some "600") false "x"
+    "!process failed (it ran past its time limit of 600 s, so the node stopped it): x"),
+  check "flood wins over timeout" (result_is (JobSignal "SIGKILL") (Some "600") true "x"
+    "!process failed (it printed more than 4 MB, so the node stopped it): x"),
+  check "flood wins over zero exit" (result_is (JobExit "0") None true "x"
+    "!process failed (it printed more than 4 MB, so the node stopped it): x"),
+  check "zero exit ignores stale timeout" (result_is (JobExit "0") (Some "600") false "x" "x"),
+  check "exit ignores stale timeout" (result_is (JobExit "124") (Some "600") false "x"
+    "!process failed (exit 124): x"),
+  check "stop ignores stale timeout" (result_is (JobStop "SIGTERM") (Some "600") false "x"
+    "!process failed (stopped by SIGTERM): x"),
+  check "failure tail includes exactly last 3000 bytes"
+    (seq (job_failure_tail (append "drop" (Stdlib.Strings.String.concat "" (repeat "z" 3000))))
+      (append "..." (Stdlib.Strings.String.concat "" (repeat "z" 3000)))),
+  check "failure at 3000 bytes has no ellipsis"
+    (seq (job_failure_tail (Stdlib.Strings.String.concat "" (repeat "z" 3000)))
+      (Stdlib.Strings.String.concat "" (repeat "z" 3000))),
+  check "one peer line across two chunks" (eq_strs (fst split_first) [] && eq_strs (fst split_second) ["hello"]),
+  check "several lines and empty line" (eq_strs (fst many_lines) ["one", "", "two"]),
+  check "trailing partial line retained" (eq_strs (snd many_lines) ["partial"] && eq_strs (snd split_second) ["rest"]),
+  check "empty line is framed then malformed peer is rejected"
+    (eq_strs (fst (feed_chunks [] newline)) [""] &&
+     eq_strs (peer_raw_event "100" "me" "" node_line_parts (fun _ => false)) []),
+  check "malformed peer JSON rejected without event"
+    (eq_strs (peer_raw_event "100" "me" "{bad}" node_line_parts (fun _ => false)) []),
+  check "kept byte cap is strict"
+    (buffer_over (chunks_len ["abc", "de"]) 4 && negb (buffer_over (chunks_len ["abc", "d"]) 4)),
+  check "malformed wait tag rejected" (match job_status_of "unknown" "0" with None => true | _ => false end)
+].
+
+main := print_lines checks.
