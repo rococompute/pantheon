@@ -9,10 +9,15 @@
 # whose provider has no machines of its own (Muse) gets a VM on this host
 # instead, and works its inbox from in there, over HTTP on the host's
 # localhost. CI runs one check at a time, in a sandbox (deploy/host/ci-sandbox).
-# Nothing listens beyond localhost.
+# Nothing listens beyond localhost, unless the host joins a network made
+# elsewhere (keygen, join): then its nodes listen on LISTEN, its tailnet address.
 #
 #   scripts/host.sh permissions        restrict existing node homes and secrets (HOST_DRY=DIR to preview)
 #   scripts/host.sh network            keys, the network and its genesis (once), for Pantheon at HEAD
+#   scripts/host.sh keygen             to join a network made elsewhere: this host's agents' keys, their
+#                                      addresses on LISTEN; prints each one's public part as NAME.json, as tar
+#   scripts/host.sh join               the network directory (as tar, on stdin) that holds every agent's
+#                                      part: each node's genesis from it, and the genesis hash
 #   scripts/host.sh start              write the services and (re)start them all: nodes, mirror, inbox server
 #   scripts/host.sh vm AGENT           AGENT's VM (Muse's): made and started, the agent's CLI in it, a token
 #   scripts/host.sh login AGENT        log AGENT's CLI in, in its VM (device code: you open the URL)
@@ -31,6 +36,10 @@
 # directory), inbox.json (the inbox server's tokens, as hashes), goal.txt.
 #
 # Settings, from the environment:
+#   AGENTS        this host's agents (default: claude codex grok muse); a name's provider is the part
+#                 before a dash, so claude-zucc is Claude Code
+#   LISTEN        the address the nodes listen on (default 127.0.0.1); keygen gives it to the others
+#   BASE_PORT     the first agent's port for keygen (default 26711), one per agent after it
 #   VM_AGENTS     the agents that work from a VM on this host (default: muse)
 #   REMOTE        the GitHub repository workers share (default: this checkout's origin)
 #   CODEX_ENV     the Codex Cloud environment for codex's workers (codex cloud lists them)
@@ -43,8 +52,11 @@ set -eu
 here=$(cd "$(dirname "$0")/.." && pwd)
 P=${PANTHEON_HOST:-$HOME/pantheon}
 [ ! -f "$P/host.env" ] || . "$P/host.env"
-NET=$P/net AGENTS="claude codex grok muse"
-VM_AGENTS=${VM_AGENTS:-muse}
+NET=$P/net AGENTS=${AGENTS:-claude codex grok muse}
+# an agent's provider: its name up to a dash (claude-zucc is claude)
+kind() { printf '%s' "${1%%-*}"; }
+VM_AGENTS=${VM_AGENTS:-$(for a in $AGENTS; do [ "$(kind "$a")" = muse ] && printf '%s ' "$a"; done)}
+LISTEN=${LISTEN:-127.0.0.1} BASE_PORT=${BASE_PORT:-26711}
 BIN=$here/main.exe SOMA=${SOMA_DIR:-$P/soma}
 CI_MEMORY=${CI_MEMORY:-1536m}
 CI_CMD=$(python3 "$here/deploy/ci-command.py" "$here" "${PANTHEON_CI:-timeout 120 soma build main.soma && timeout 120 test/edits.sh && sh test/ci-policy.sh && timeout 120 bash test/cli.sh && timeout 120 bash test/genesis.sh && timeout 120 bash test/double-bid.sh && timeout 120 sh test/soma-misc-runner.sh && timeout 120 sh test/host-quoting.sh}")
@@ -75,7 +87,7 @@ die() { printf 'host: %s\n' "$*" >&2; exit 1; }
 need_bin() { [ -x "$BIN" ] || die "no $BIN: build Pantheon first (SOMA_DIR=$SOMA scripts/setup-node.sh)"; }
 in_vm_agents() { case " $VM_AGENTS " in *" $1 "*) return 0 ;; esac; return 1; }
 is_agent() { case " $AGENTS " in *" $1 "*) return 0 ;; esac; return 1; }
-vm() { printf 'pantheon-%s' "$1"; }
+vm() { printf 'pantheon-%s' "$(kind "$1")"; }
 q() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
 
 # Emit the same permission operations for deployment and for rootless CI.
@@ -116,6 +128,37 @@ cmd_network() {
   say "next: scripts/host.sh start, then scripts/host.sh vm muse, then scripts/host.sh diplomats (from a herdr pane)"
 }
 
+# Joining a network made elsewhere (scripts/sandbox.sh with JOIN): keys here,
+# their public parts to the maker, and back the network directory, from which
+# each node computes the same genesis as every other agent's
+cmd_keygen() {
+  need_bin
+  [ ! -d "$NET" ] || die "$NET already holds a network: stop it and move $NET away first"
+  [ "$LISTEN" != 127.0.0.1 ] || die "set LISTEN to this host's address the other agents reach (its tailnet address: tailscale ip -4)"
+  i=0; out=$(mktemp -d)
+  for a in $AGENTS; do
+    mkdir -p "$NET/$a"
+    "$BIN" keygen "$NET/$a" --name "$a" --addr "$LISTEN:$((BASE_PORT + i))" >/dev/null
+    cp "$NET/$a/public.json" "$out/$a.json"; i=$((i + 1))
+  done
+  cmd_permissions
+  tar -C "$out" -cf - . ; rm -rf "$out"
+}
+
+cmd_join() {
+  need_bin
+  [ -d "$NET" ] || die "no keys yet: scripts/host.sh keygen first"
+  rm -rf "$P/joined"; mkdir -p "$P/joined"; tar -x -C "$P/joined" -f -
+  [ -d "$P/joined/network/parts" ] || die "the tar on stdin has no network/parts: send the maker's network directory"
+  for a in $AGENTS; do
+    h=$("$BIN" genesis "$NET/$a" "$P/joined/network" 2>&1 | grep -o 'genesis hash [0-9a-f]*' | awk '{print $3}')
+    [ -n "$h" ] || die "$a: genesis failed: $BIN genesis $NET/$a $P/joined/network"
+    say "$a: genesis $h"
+  done
+  cmd_permissions
+  mkdir -p "$P/inbox"; for a in $AGENTS; do mkdir -p "$P/inbox/$a"; done
+}
+
 # the instructions a diplomat on this host follows, for its provider
 render_diplomat() {
   a=$1; mkdir -p "$P/diplomats" "$P/desk/$a"
@@ -123,7 +166,7 @@ render_diplomat() {
   # GitHub remote and branch of the directory they run in
   [ -z "$REMOTE" ] || [ -d "$P/desk/$a/pantheon/.git" ] || git clone -q "$REMOTE" "$P/desk/$a/pantheon" \
     || say "$a: can't clone $REMOTE into $P/desk/$a/pantheon: its cloud hand-offs need it"
-  d=$here/deploy/host/delegate/$a.md
+  d=$here/deploy/host/delegate/$(kind "$a").md
   # some agent CLIs (codex) give their commands only a few of their own
   # environment variables: the inbox's settings go in a wrapper instead
   # every value quoted: REMOTE and BRANCH come from the remote (P-11)
@@ -164,7 +207,7 @@ PANTHEON_INBOX=$P/inbox/$a ${url}exec $here/scripts/bidder-inbox.sh
 B
     cat > "$NET/$a/run.sh" <<R
 #!/bin/sh
-exec $BIN node $NET/$a --backend cmd:$NET/$a/backend.sh --goal $P/goal.txt --listen 127.0.0.1 \\
+exec $BIN node $NET/$a --backend cmd:$NET/$a/backend.sh --goal $P/goal.txt --listen $LISTEN \\
   --ci-repo pantheon $(q "$CI_CMD") --ci-sandbox $here/deploy/host/ci-sandbox --ci-memory $CI_MEMORY
 R
     chmod 755 "$NET/$a/backend.sh" "$NET/$a/run.sh"
@@ -226,7 +269,7 @@ U
 # too (scripts/publish.sh)
 cmd_mirror() {
   [ -n "$REMOTE" ] || die "no REMOTE: set it to the GitHub repository workers share"
-  r=$NET/claude/repos/pantheon
+  r=$NET/${AGENTS%% *}/repos/pantheon
   [ -d "$r" ] || die "no network yet: scripts/host.sh network"
   QUIET=${quiet:-} PUBLISH_DIR=$P/publish "$here/scripts/publish.sh" "$r" "$REMOTE" "$BRANCH"
 }
@@ -311,7 +354,7 @@ cmd_vm() {
   v=$(vm "$a")
   limactl list -q 2>/dev/null | grep -qx "$v" || { say "making $v"; limactl create --tty=false --name="$v" "$here/deploy/host/agent-vm.yaml"; }
   [ "$(limactl list --format '{{.Status}}' "$v")" = Running ] || { say "starting $v"; limactl start --tty=false "$v"; }
-  case $a in
+  case $(kind "$a") in
     muse)
       # Muse's launcher fetches its runtime itself, once logged in
       m=$(command -v muse) || die "no muse on this host to copy its launcher from: install it here first"
@@ -336,7 +379,7 @@ cmd_vm() {
     printf '\nYour token is in the file ~/pantheon/token: send it as -H "Authorization: Bearer $(cat ~/pantheon/token)". This VM is your machine: work in it as you like.\n'
     printf '\n## Soma, the language Pantheon is written in\n\nSoma is a fork of the Rocq Prover with gradual dependent types, and its source is its documentation: ~/soma is the commit the network builds with (%s; not built here). Start with README.md, GRADUAL.md, gradual-coverage.md, vision.md and examples/; test-suite/ and theories/ show how a feature behaves. When a task leans on a Soma feature, look it up there instead of guessing from Rocq you remember: this fork differs. This network changes Pantheon only; if you find a Soma bug or gap, say so in your patch note or reason, starting with "soma:".\n' "$(soma_commit)"; } > "$tmp/instructions.md"
   limactl shell "$v" sh -c 'mkdir -p ~/pantheon && chmod 700 ~/pantheon'
-  case $a in
+  case $(kind "$a") in
     muse) printf '#!/bin/sh\ncd ~/pantheon && exec ~/.local/bin/muse --yolo "Read ~/pantheon/instructions.md: it is your job. Follow it now."\n' > "$tmp/start.sh" ;;
   esac
   limactl copy "$tmp"/* "$v:pantheon/"; rm -rf "$tmp"
@@ -347,7 +390,7 @@ cmd_vm() {
 
 cmd_login() {
   a=${1:-}; in_vm_agents "$a" || die "usage: scripts/host.sh login AGENT (one of VM_AGENTS: $VM_AGENTS; the others log in on this host: claude, codex, cursor-agent login)"
-  case $a in muse) exec limactl shell "$(vm "$a")" sh -c 'exec ~/.local/bin/muse login' ;; esac
+  case $(kind "$a") in muse) exec limactl shell "$(vm "$a")" sh -c 'exec ~/.local/bin/muse login' ;; esac
 }
 
 # start: AGENT KIND EXECUTABLE ARGS..., in a herdr tab of its own
@@ -362,12 +405,12 @@ cmd_diplomats() {
   for a in $AGENTS; do
     if in_vm_agents "$a"; then
       p=$(herdr tab create --workspace "$ws" --label "$a (vm)" --cwd "$P" --no-focus | jq -r .result.root_pane.pane_id)
-      case $a in
+      case $(kind "$a") in
         muse) herdr pane run "$p" "$(command -v limactl) shell --workdir / $(vm "$a") sh -c 'exec sh \"\$HOME/pantheon/start.sh\"'" >/dev/null ;;
       esac
       say "$a: in its VM, tab \"$a (vm)\""; continue
     fi
-    case $a in
+    case $(kind "$a") in
       claude) kind=claude exe=claude args="--dangerously-skip-permissions" ;;
       codex)  kind=codex exe=codex args="--dangerously-bypass-approvals-and-sandbox" ;;
       grok)   kind=cursor exe=cursor-agent args="--yolo --trust --model $GROK_MODEL" ;;
@@ -406,7 +449,7 @@ cmd_status() {
     grep -h '^LIMIT' "$NET/$a/status.txt" 2>/dev/null | sed 's/^/   /' || true
     n=$(ls "$P/inbox/$a" 2>/dev/null | grep -c '^[0-9]*-' || true); [ "$n" = 0 ] || printf '   inbox: %s waiting\n' "$n"
   done
-  printf '== tasks and bids (claude'"'"'s view)\n'; grep -E '^(task|bid) ' "$NET/claude/status.txt" 2>/dev/null | cut -c1-160 | tail -12 | sed 's/^/   /' || true
+  printf '== tasks and bids (%s'"'"'s view)\n' "${AGENTS%% *}"; grep -E '^(task|bid) ' "$NET/${AGENTS%% *}/status.txt" 2>/dev/null | cut -c1-160 | tail -12 | sed 's/^/   /' || true
   printf '== services: mirror %s, inbox %s, watchdog %s; VMs: %s\n' "$(systemctl --user is-active pantheon-mirror 2>/dev/null || true)" \
     "$(systemctl --user is-active pantheon-inbox 2>/dev/null || true)" "$(systemctl --user is-active pantheon-watchdog 2>/dev/null || true)" \
     "$(for a in $VM_AGENTS; do printf '%s %s ' "$(vm "$a")" "$(limactl list --format '{{.Status}}' "$(vm "$a")" 2>/dev/null || echo none)"; done)"
@@ -423,7 +466,7 @@ cmd_logs() {
 
 c=${1:-}; [ $# -gt 0 ] && shift
 case $c in
-  permissions|network|start|vm|login|diplomats|watchdog|instructions|mirror|check|stop|status|logs) "cmd_$c" "$@" ;;
+  permissions|network|keygen|join|start|vm|login|diplomats|watchdog|instructions|mirror|check|stop|status|logs) "cmd_$c" "$@" ;;
   mirror-loop) cmd_mirror_loop ;;
   watchdog-loop) cmd_watchdog_loop ;;
   *) awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "$0"; [ -z "$c" ] || exit 1 ;;

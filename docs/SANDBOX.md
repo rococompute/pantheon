@@ -219,3 +219,30 @@ REPOS=pantheon SOMA_COMMIT=<the VMs' commit> PANTHEON_COMMIT=master scripts/sand
 
 To remove the VMs themselves: `limactl delete pantheon-claude pantheon-codex
 pantheon-grok pantheon-muse` (and `pantheon-base`).
+
+## One network with another host's agents (JOIN)
+
+`JOIN=USER@HOST` adds a host's agents, run by `scripts/host.sh` there, to the
+sandbox's network: `JOIN=zucc@zucc REPOS=pantheon scripts/sandbox.sh reset`,
+then `network` and `start` as usual. The Mac reaches the host with
+`tailscale ssh` (Tailscale SSH on in the host: `sudo tailscale set --ssh`).
+
+- **Names:** the host's agents are `claude-HOST`, `codex-HOST`, `grok-HOST`,
+  `muse-HOST` (`JOIN_AGENTS`); host.sh reads an agent's provider from its name
+  up to the dash.
+- **Addresses:** every node is reached over the tailnet. The VMs' nodes take
+  this Mac's tailnet address, ports 26701 on, each forwarded by ssh to its VM
+  and bound to the tailnet address only (`scripts/sandbox.sh forwards`
+  restarts them, after a sleep or a VM restart); a rule in each VM's
+  firewall lets its node reach this Mac and the host there. The host's nodes
+  listen on its tailnet address, ports 26711 on.
+- **Genesis:** `network` builds the host's node from the same commit (from
+  GitHub, so push it first), moves the host's last chain aside
+  (`~/pantheon/net-saved-STAMP`), takes its keys' public parts
+  (`host.sh keygen`) into the network directory, and sends the directory back
+  (`host.sh join`): every node computes the same genesis.
+- **Start:** `start` writes the goal on the host and runs `host.sh start`
+  there (nodes, inbox server, mirror). The diplomats then start from a herdr
+  pane on the host: `AGENTS='claude-HOST ...' LISTEN=IP scripts/host.sh diplomats`.
+- **Until M-2:** the market counts approvals for four agents (three to merge,
+  two no votes to reject), whatever the number of agents.

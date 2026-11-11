@@ -14,6 +14,7 @@
 #   scripts/sandbox.sh session AGENT         an interactive session for an agent on the inbox backend (muse)
 #   scripts/sandbox.sh start [AGENT=BACKEND ...] [-- NODE FLAGS]
 #   scripts/sandbox.sh status | logs AGENT | fetch | stop | shell AGENT
+#   scripts/sandbox.sh forwards              under JOIN: (re)start the forwards to the VMs' nodes
 #   scripts/sandbox.sh reset                 discard the chain: every node's home and the network directory
 #   scripts/sandbox.sh epoch                 a new epoch: every VM's Soma and CI image from SOMA_COMMIT, its node
 #                                            from PANTHEON_COMMIT, and a new chain from both; logins stay
@@ -29,6 +30,11 @@
 #   SOMA_CI_AGENTS   the agents that run Soma's CI (default: claude codex grok; see docs/SANDBOX.md)
 #   REPOS            the repositories genesis governs (default: pantheon soma). REPOS=pantheon
 #                    runs a market on Pantheon alone: no Soma tasks, so no Soma CI builds
+#   JOIN             another host's agents in the same network, by scripts/host.sh there: USER@HOST,
+#                    reached with tailscale ssh (default: none). The VMs' nodes then take addresses on
+#                    this Mac's tailnet address, ports 26701 on, forwarded to them (scripts/sandbox.sh forwards)
+#   JOIN_AGENTS      its agents (default: claude codex grok muse, each with -HOST after it)
+#   JOIN_DIR         its Pantheon checkout, under its home (default: pantheon/pantheon)
 set -eu
 here=$(cd "$(dirname "$0")/.." && pwd)
 AGENTS=${AGENTS:-claude codex grok muse}
@@ -38,6 +44,9 @@ VM_MEMORY=${VM_MEMORY:-4} VM_CPUS=${VM_CPUS:-4} CI_MEMORY=${CI_MEMORY:-3g}
 SOMA_CI_AGENTS=${SOMA_CI_AGENTS:-claude codex grok}
 REPOS=${REPOS:-pantheon soma}
 for r in $REPOS; do case $r in pantheon|soma) ;; *) printf 'sandbox: REPOS has %s: it can name pantheon and soma\n' "$r" >&2; exit 1 ;; esac; done
+JOIN=${JOIN:-}
+JOIN_AGENTS=${JOIN_AGENTS:-$( [ -z "$JOIN" ] || for k in claude codex grok muse; do printf '%s-%s ' "$k" "${JOIN#*@}"; done)}
+JOIN_DIR=${JOIN_DIR:-pantheon/pantheon}
 BASE=pantheon-base
 HOMEDIR=/var/lib/pantheon/home
 NODE=/home/pantheon/pantheon/main.exe
@@ -55,6 +64,35 @@ as_node() { v=$1; shift; in_vm "$v" sudo -u pantheon -H "$@"; }
 need() { command -v "$1" >/dev/null || die "$1 is not installed. $2"; }
 need limactl "Install it with: brew install lima"
 limactl() { command limactl --log-level=warn "$@"; }
+
+# JOIN: the other host, by tailscale ssh; its scripts/host.sh with its agents
+# and its tailnet address (stdin goes through only for remote_in)
+tailnet_ip() { tailscale ip -4 2>/dev/null | head -1; }
+join_ip() { tailscale ip -4 "${JOIN#*@}" 2>/dev/null | head -1; }
+remote() { tailscale ssh "$JOIN" "$@" </dev/null; }
+remote_in() { tailscale ssh "$JOIN" "$@"; }
+host_sh() { printf 'cd ~/%s && AGENTS=%s LISTEN=%s scripts/host.sh' "$JOIN_DIR" "'$JOIN_AGENTS'" "$(join_ip)"; }
+# a VM agent's port under JOIN: 26701 for the first, and on
+agent_port() { i=26701; for x in $AGENTS; do [ "$x" = "$1" ] && { echo $i; return; }; i=$((i + 1)); done; }
+vm_ip() { in_vm "$(vm "$1")" sh -c "ip -4 -o addr show eth0 | awk '{print \$4}' | cut -d/ -f1"; }
+
+# Under JOIN each VM's node is reached at this Mac's tailnet address: an ssh
+# forward per VM, on the tailnet address only (not the LAN), and a firewall
+# rule in the VM letting its node reach this Mac and the other host there
+cmd_forwards() {
+  [ -n "$JOIN" ] || die "forwards are for JOIN: set JOIN=USER@HOST"
+  t=$(tailnet_ip); j=$(join_ip); [ -n "$t" ] && [ -n "$j" ] || die "no tailnet address for this Mac or ${JOIN#*@}: is tailscale up?"
+  for a in $AGENTS; do
+    v=$(vm "$a"); p=$(agent_port "$a"); ip=$(vm_ip "$a")
+    pkill -f -- "-L $t:$p:" 2>/dev/null || true
+    ssh -F "$HOME/.lima/$v/ssh.config" -f -N -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -L "$t:$p:$ip:$p" "lima-$v" \
+      || die "$a: can't forward $t:$p to $v"
+    uid=$(in_vm "$v" id -u pantheon)
+    in_vm "$v" sudo sh -c "nft -a list chain inet pantheon out | sed -n 's/.*comment \"join\".*# handle \([0-9]*\)\$/\1/p' | while read h; do nft delete rule inet pantheon out handle \$h; done
+      nft insert rule inet pantheon out meta skuid $uid ip daddr '{ $t, $j }' tcp dport 26701-26799 accept comment '\"join\"'"
+    say "$a: $t:$p forwarded to $v ($ip:$p)"
+  done
+}
 
 cmd_base() {
   [ -d "$SOMA_CHECKOUT/.git" ] || die "no Soma checkout at $SOMA_CHECKOUT: set SOMA_CHECKOUT"
@@ -126,11 +164,22 @@ cmd_network() {
   mkdir -p "$net/parts" "$net/repos"
   for a in $AGENTS; do
     v=$(vm "$a"); running "$v" || die "$v isn't running: scripts/sandbox.sh nodes"
-    in_vm "$v" sudo test -f $HOMEDIR/key.json || as_node "$v" $NODE keygen $HOMEDIR --name "$a" --addr "lima-$v.internal:26700" >/dev/null
+    if [ -n "$JOIN" ]; then addr="$(tailnet_ip):$(agent_port "$a")"; else addr="lima-$v.internal:26700"; fi
+    in_vm "$v" sudo test -f $HOMEDIR/key.json || as_node "$v" $NODE keygen $HOMEDIR --name "$a" --addr "$addr" >/dev/null
     in_vm "$v" sudo cat $HOMEDIR/public.json > "$net/parts/$a.json"
   done
   soma_commit=$(git -C "$SOMA_CHECKOUT" rev-parse "${SOMA_COMMIT:-gradual}")
   pantheon_commit=$(git -C "$here" rev-parse "${PANTHEON_COMMIT:-HEAD}")
+  if [ -n "$JOIN" ]; then
+    # the other host: its node built from the same commit (from GitHub), its
+    # last chain moved aside, and its agents' public parts
+    say "$JOIN: its node from ${pantheon_commit%"${pantheon_commit#???????}"}, keys for $JOIN_AGENTS"
+    remote "cd ~/$JOIN_DIR && git fetch -q origin && git cat-file -e $pantheon_commit" || die "$JOIN can't get $pantheon_commit: push it to GitHub first"
+    remote "cd ~/$JOIN_DIR && $(host_sh | sed 's/^cd [^&]*&& //') stop >/dev/null 2>&1; git checkout -q --detach $pantheon_commit && PATH=\$HOME/pantheon/soma/_build/install/default/bin:\$PATH && eval \"\$(opam env --switch=soma-build --set-switch)\" && soma build main.soma >/tmp/pantheon-join-build.log 2>&1" \
+      || die "$JOIN: its node didn't build (/tmp/pantheon-join-build.log there)"
+    remote 'P=$HOME/pantheon; [ ! -d $P/net ] || mv $P/net $P/net-saved-$(date +%Y%m%d-%H%M%S)'
+    remote "$(host_sh) keygen" | tar -x -C "$net/parts" -f - || die "$JOIN: keygen failed"
+  fi
   # each governed repository up to its genesis commit, which the VMs clone
   rm -rf "$net/repos"
   for name in $REPOS; do
@@ -156,6 +205,11 @@ cmd_network() {
     [ -n "$h" ] || die "genesis failed on $v: run scripts/sandbox.sh shell $a, then: sudo -u pantheon $NODE genesis $HOMEDIR /var/lib/pantheon/network"
     say "$a: genesis $h"; hashes="$hashes $h"
   done
+  if [ -n "$JOIN" ]; then
+    out=$(tar -C "$SANDBOX_DIR" -cf - network | remote_in "$(host_sh) join") || die "$JOIN: join failed: $out"
+    printf '%s\n' "$out" | sed 's/^host: /sandbox: '"${JOIN#*@}"': /'
+    hashes="$hashes $(printf '%s\n' "$out" | awk '/genesis/ {print $NF}')"
+  fi
   [ "$(echo $hashes | tr ' ' '\n' | sort -u | wc -l | tr -d ' ')" = 1 ] || die "the genesis hashes differ: don't start until they match"
   say "every agent has the same genesis. Next: scripts/sandbox.sh login AGENT for each model, then scripts/sandbox.sh start"
 }
@@ -322,7 +376,14 @@ cmd_start() {
   # all at once: restarted one after another mid-height, a node that came back
   # first can decide a block the others then miss the last votes of, and
   # catching up needs two nodes that have it
-  for a in $AGENTS; do in_vm "$(vm "$a")" sudo systemctl restart pantheon-node & done; wait
+  [ -z "$JOIN" ] || cmd_forwards
+  for a in $AGENTS; do in_vm "$(vm "$a")" sudo systemctl restart pantheon-node & done
+  if [ -n "$JOIN" ]; then
+    # the same goal as here; its nodes, inbox and mirror by host.sh
+    remote_in "cat > ~/pantheon/goal.txt" < "${GOAL_FILE:-$here/examples/dogfood/goal.txt}"
+    remote "$(host_sh) start" | sed "s/^host: /sandbox: ${JOIN#*@}: /" &
+  fi
+  wait
   say "started. Watch it with: scripts/sandbox.sh status"
 }
 
@@ -336,6 +397,7 @@ soma_ci_command() {
 }
 
 cmd_status() {
+  [ -z "$JOIN" ] || remote "$(host_sh) status" 2>/dev/null | sed -n '/^== tasks/q;p' | sed "s/^== /== ${JOIN#*@}: /"
   for a in $AGENTS; do
     v=$(vm "$a")
     printf '== %s (%s)\n' "$a" "$(running "$v" && in_vm "$v" systemctl is-active pantheon-node 2>/dev/null || echo 'VM stopped')"
@@ -350,7 +412,11 @@ cmd_status() {
 
 cmd_logs() { a=${1:?usage: scripts/sandbox.sh logs AGENT [LINES]}; in_vm "$(vm "$a")" sudo journalctl -u pantheon-node -t pantheon --no-pager -o cat -n "${2:-60}"; }
 cmd_shell() { a=${1:?usage: scripts/sandbox.sh shell AGENT}; limactl shell "$(vm "$a")"; }
-cmd_stop() { for a in $AGENTS; do v=$(vm "$a"); running "$v" && { in_vm "$v" sudo systemctl stop pantheon-node; limactl stop "$v" >/dev/null; say "$v stopped"; }; done; true; }
+cmd_stop() {
+  for a in $AGENTS; do v=$(vm "$a"); running "$v" && { in_vm "$v" sudo systemctl stop pantheon-node; limactl stop "$v" >/dev/null; say "$v stopped"; }; done
+  if [ -n "$JOIN" ]; then t=$(tailnet_ip); for a in $AGENTS; do pkill -f -- "-L $t:$(agent_port "$a"):" 2>/dev/null || true; done; remote "$(host_sh) stop" | sed "s/^host: /sandbox: ${JOIN#*@}: /"; fi
+  true
+}
 
 # What the chain merged, saved before its homes go: each repository's head on
 # one node, as pantheon/saved-STAMP in your checkout, unless your checkout's
@@ -458,6 +524,6 @@ cmd_fetch() {
 
 c=${1:-}; [ $# -gt 0 ] && shift
 case $c in
-  base|nodes|network|update|login|session|start|status|logs|shell|stop|fetch|reset|epoch) "cmd_$c" "$@" ;;
+  base|nodes|network|update|login|session|start|status|logs|shell|stop|fetch|reset|epoch|forwards) "cmd_$c" "$@" ;;
   *) awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "$0"; [ -z "$c" ] || exit 1 ;;
 esac
