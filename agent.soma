@@ -93,7 +93,10 @@ edit_text (e : edit) : string :=
 
 edits_text (b : bid) : string := fold_left (fun s e => append s (edit_text e)) (edits b) "".
 
-repo_names (m : obj) : string := fold_left (fun s r => append s (append " " (fst r))) (repos m) "".
+(** the repositories in this agent's scope (genesis may exclude some) *)
+my_repos (a m : obj) : list (string * string) := filter (fun r => negb (excludes m (me a) (fst r))) (repos m).
+
+repo_names (a m : obj) : string := fold_left (fun s r => append s (append " " (fst r))) (my_repos a m) "".
 
 goal_text (a : obj) : string := fold_left (fun s l => append s (append l "
 ")) (goal a) "".
@@ -138,7 +141,7 @@ draft_prompt (a m : obj) : string :=
 "
   (append (append "The repositories, and their files:
 {{REPOS}}
-" (parallel_text m)) (append (append "Write the next task: the open plan item no task above already covers that you judge the best to do next, whole, in one repository. Usually that is the first; take another when it is the better next step: it unblocks the first, the first can't be done yet or keeps failing, or another moves the goal further for the work it takes. Say in the task why you took it if it isn't the first. Don't cut it down to a first piece: say what done looks like for the whole item and how it will be judged. Judge by the floor: the least that does the item correctly (it builds, the tests pass, the behavior is right). Name what is welcome past it without requiring it; in a gradually typed language such as Soma, that's more precise types than Any and proofs of what the code does. A bid at the floor is as mergeable as one past it. Ask for tests a bidder can write and run: a pure function's results checked in the repository's own language, not a timing race against a running program. Bidders may do all of it in one patch or a correct part of it, and the task stays open across merges until its leader judges it done; the leader then marks the item done in .plan, so ask no bid to mark it. A bid can't change a test already in the repository's test/ (CI refuses it): ask for new tests in new files, never for a change to an existing test file. Quote the item at the start of the task and name .plan and the files the item points at as context (up to 8). If no plan item is left and the goal is met, give null. Repositories:" (repo_names m))
+" (parallel_text m)) (append (append "Write the next task: the open plan item no task above already covers that you judge the best to do next, whole, in one repository. Usually that is the first; take another when it is the better next step: it unblocks the first, the first can't be done yet or keeps failing, or another moves the goal further for the work it takes. Say in the task why you took it if it isn't the first. Don't cut it down to a first piece: say what done looks like for the whole item and how it will be judged. Judge by the floor: the least that does the item correctly (it builds, the tests pass, the behavior is right). Name what is welcome past it without requiring it; in a gradually typed language such as Soma, that's more precise types than Any and proofs of what the code does. A bid at the floor is as mergeable as one past it. Ask for tests a bidder can write and run: a pure function's results checked in the repository's own language, not a timing race against a running program. Bidders may do all of it in one patch or a correct part of it, and the task stays open across merges until its leader judges it done; the leader then marks the item done in .plan, so ask no bid to mark it. A bid can't change a test already in the repository's test/ (CI refuses it): ask for new tests in new files, never for a change to an existing test file. Quote the item at the start of the task and name .plan and the files the item points at as context (up to 8). If no plan item is left and the goal is met, give null. Repositories:" (repo_names a m))
   "
 Reply format: {""task"": ""what to do and how it will be judged"", ""repo"": ""name"", ""context"": [""path"", ...]} or {""task"": null}"))))))).
 
@@ -193,7 +196,7 @@ scripted_answer (a m : obj) (data : list string) : list string :=
   match data with
   | "draft" :: _ =>
       (* repositories in turn *)
-      let r := fst (nth (length (tasks m) mod length (repos m)) (repos m) ("", "")) in
+      let r := fst (nth (length (tasks m) mod length (my_repos a m)) (my_repos a m) ("", "")) in
       match find (fun l => negb (existsb (fun t => seq (spec t) l) (tasks m))) (goal a) with
       | Some l => ["task", l, "repo", r] | None => ["task", "null"]
       end
@@ -324,6 +327,10 @@ lead (a m : obj) : obj * list (list string) :=
      rejected bids, or open too long), once nothing for them is pending: a task
      the agents can't finish would otherwise keep the leader from drafting *)
   let for_task t := filter (fun b => btask b =? tid t) (bids m) in
+  (* tasks on a repository outside this agent's scope (genesis may exclude
+     some) are left to a leader whose node checks them: no pick, mark or
+     close here, and the market doesn't count them against this term *)
+  let mine := filter (in_scope m (me a)) in
   (* a leader's own pending bids don't count: no one reviews them this term,
      so waiting for them would keep the task open for as long as it leads *)
   (* a task stays open across merges: its rejections count from its last
@@ -347,7 +354,7 @@ lead (a m : obj) : obj * list (list string) :=
              if stuck t || (judged_done t && (seq line "" || marked)) then enqueue a ["close", show (tid t)]
              else if judged_done t && ask_once a (append "mark." (show (tid t)))
              then enqueue (note_asked a (append "mark." (show (tid t)))) ["markq", show (tid t)]
-             else a) (open_tasks m) a in
+             else a) (mine (open_tasks m)) a in
   (* review bids once the chosen workers have bid or the window has passed *)
   let st := fold_left (fun (st : obj * list (list string)) (t : task) =>
       let cands := filter (fun b => (btask b =? tid t) && is_pending (bst b) && negb (seq (bidder b) (me a))) (bids m) in
@@ -367,11 +374,11 @@ lead (a m : obj) : obj * list (list string) :=
       match good with
       | [] => st
       | _ => with_retry st m (append key ".ask") ("pick" :: show (tid t) :: map (fun b => show (bidn b)) good) (pick_prompt (fst st) m t good) []
-      end) (open_tasks m) (a, []) in
+      end) (mine (open_tasks m)) (a, []) in
   (* room for another task: draft the next one from the goal. With tasks
      open, the model writes one only if it judges it can run beside them, and
      asks again when the count of tasks or of open ones changes *)
-  if (length (open_tasks m) <? param m "max_open_tasks") && negb (length (goal (fst st)) =? 0) then
+  if (length (open_tasks m) <? param m "max_open_tasks") && negb (length (goal (fst st)) =? 0) && negb (length (my_repos (fst st) m) =? 0) then
     with_retry st m (append "draft." (append (show (term m)) (append "." (append (show (length (tasks m))) (append "." (show (length (open_tasks m)))))))) ["draft"] (draft_prompt (fst st) m) []
   else st.
 
@@ -425,7 +432,8 @@ attest_duty (a m : obj) : obj * list (list string) :=
       match bid_by m (pbid p) with
       | None => (a, [])
       | Some b =>
-          if seq (pby p) (me a) || seq (bidder b) (me a) || existsb (fun v => seq (fst v) (me a)) (pvotes p) then (a, []) else
+          if seq (pby p) (me a) || seq (bidder b) (me a) || existsb (fun v => seq (fst v) (me a)) (pvotes p)
+             || excludes m (me a) (bid_repo m b) then (a, []) else
           (* asked again after a failed model call, up to three failures, as a
              draft is: a failure asked once left the merge waiting out the
              whole attest window without this agent's vote *)

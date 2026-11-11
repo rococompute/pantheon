@@ -585,7 +585,9 @@ let build_genesis helpers home net =
   let parts = List.map (fun (f, j) ->
                           let n = to_string (member "name" j) in
                           if n ^ ".json" <> f then fail "%s/%s is named %s inside: rename the file to %s.json" pdir f n n;
-                          `Assoc [ ("name", member "name" j); ("addr", member "addr" j); ("pubkey", member "pubkey" j); ("tip", member "tip" j) ]) raw_parts in
+                          let ex = match member "exclude" j with `List l -> List.map to_string l | `Null -> [] | _ -> fail "%s/%s: exclude is a list of repository names" pdir f in
+                          `Assoc ([ ("name", member "name" j); ("addr", member "addr" j); ("pubkey", member "pubkey" j); ("tip", member "tip" j) ]
+                                  @ (if ex = [] then [] else [ ("exclude", `List (List.map (fun r -> `String r) ex)) ]))) raw_parts in
   let repos = List.map (fun r ->
       let name = to_string (member "name" r) and url = to_string (member "url" r) and commit = to_string (member "commit" r) in
       if not (safe_path helpers name) || String.contains name '/' then fail "bad repository name %s" name;
@@ -593,6 +595,15 @@ let build_genesis helpers home net =
       let tree = git_out dir [ "rev-parse"; commit ^ "^{tree}" ] in
       `Assoc [ ("name", `String name); ("url", `String url); ("commit", `String commit); ("tree", `String tree) ])
       (to_list (member "repos" netj)) in
+  (* a part's exclude names repositories outside that agent's scope: each is
+     one of the network's, and every repository keeps someone whose scope has
+     it, or no one could merge there *)
+  let rnames = List.map (fun r -> to_string (member "name" r)) repos in
+  let excl p = match member "exclude" p with `List l -> List.map to_string l | _ -> [] in
+  List.iter (fun p -> List.iter (fun r -> if not (List.mem r rnames) then
+      fail "%s/%s.json excludes %s, which isn't one of the network's repositories (%s)" pdir (to_string (member "name" p)) r (String.concat ", " rnames)) (excl p)) parts;
+  List.iter (fun r -> if List.for_all (fun p -> List.mem r (excl p)) parts then
+      fail "every part in %s excludes repository %s: no agent could merge there; drop it from network.json or from one part's exclude" pdir r) rnames;
   let body = [ ("block_ms", (match member "block_ms" netj with `Int i -> `Int i | _ -> `Int 1000)); ("agents", `List parts);
                ("params", (match member "params" netj with `Assoc kv -> `Assoc kv | _ -> `Assoc [])); ("repos", `List repos) ] in
   let id = "pantheon-" ^ String.sub (sha256 (Yojson.Safe.to_string (`Assoc body))) 0 16 in
@@ -823,6 +834,9 @@ let node_open plan_open packed json_fn home flags =
   chain_id := to_string (member "chain_id" gen);
   let agents = to_list (member "agents" gen) in
   let names = List.map (fun a -> to_string (member "name" a)) agents in
+  (* repositories outside this agent's scope, from its genesis part *)
+  let my_excluded = List.concat_map (fun a -> if to_string (member "name" a) = me then
+                                       (match member "exclude" a with `List l -> List.map to_string l | _ -> []) else []) agents in
   List.iter (fun a -> Hashtbl.replace pubkeys (to_string (member "name" a)) (key_of_json (member "pubkey" a))) agents;
   let addr_of_agent n = to_string (member "addr" (List.find (fun a -> to_string (member "name" a) = n) agents)) in
   let byz = try Sys.getenv "PANTHEON_BYZ" with Not_found -> "" in
@@ -1179,7 +1193,7 @@ let node_open plan_open packed json_fn home flags =
        its own signals (exit codes, a job that never started), never from
        what the check or the bid's CI printed (docs/SECURITY-REVIEW-2.md P-6) *)
     let result ok tree why stage = let why = plain_text why in push [ "check_result"; id; "ok"; (if ok then "true" else if stage = "node" then "error" else "false"); "tree"; tree; "why"; why; "stage"; stage ] in
-    if List.mem r !no_check then (rm_out (); (try Sys.remove ef with _ -> ()); result false "" ("this node doesn't check " ^ r ^ " (--no-check " ^ r ^ "): it has no room for that build") "node") else
+    if List.mem r !no_check || List.mem r my_excluded then (rm_out (); (try Sys.remove ef with _ -> ()); result false "" ("this node doesn't check " ^ r ^ (if List.mem r my_excluded then " (outside its scope: its genesis part excludes it)" else " (--no-check " ^ r ^ ")")) "node") else
     start_job self_exe [ "check"; rdir r; head; ef; out ] ~stdin_text:"" ~env:(Unix.environment ())
       ~on_done:(fun t ->
         if String.length t > 0 && t.[0] = '!' then (say "check of request %s failed: %s" id t; result false "" t
@@ -1357,6 +1371,8 @@ let node_open plan_open packed json_fn home flags =
   feed [ "param"; "block_ms"; string_of_int (to_int (member "block_ms" gen)) ];
   List.iter (fun (k, v) -> feed [ "param"; k; to_string v ]) (to_assoc (member "params" gen));
   List.iter (fun (n, _, _, tree) -> feed [ "repo"; n; tree ]) repos;
+  List.iter (fun a -> List.iter (fun r -> feed [ "exclude"; to_string (member "name" a); to_string r ])
+                        (match member "exclude" a with `List l -> l | _ -> [])) agents;
   feed [ "me"; me ];
   feed [ "agent"; "backend"; backend_kind ];
   List.iter feed !agent_events;

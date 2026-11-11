@@ -105,6 +105,7 @@ step (n : node_state) (ev : list string) : node_state * list (list string) :=
       if seq k "block_ms" then (with_cons n {| c with block_ms := num v |}, [])
       else (with_mkt n (setf (mkt n) "params" (put k (num v) (params (mkt n)))), [])
   | ["repo", r, tree] => (with_mkt n (setf (mkt n) "repos" (put r tree (repos (mkt n)))), [])
+  | ["exclude", a, r] => (with_mkt n (setf (mkt n) "excluded" (excluded (mkt n) ++ [(a, r)] : list (string * string))), [])
   | ["me", who] => let c := cons n in (with_ag (with_cons n {| c with consensus.me := who |}) (setf (ag n) "me" who), [])
   | ["agent", "goal", line] => (set_agent n "goal" (goal (ag n) ++ [line] : Any), [])
   | ["agent", "deny", p] => (set_agent n "deny" (deny (ag n) ++ [p] : Any), [])

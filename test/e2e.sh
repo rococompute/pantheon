@@ -496,6 +496,26 @@ scenario_nocheck() {
   echo "ok nocheck: the --no-check nodes abstained and ran no CI; $(merged nocheck claude) merges"
 }
 
+# A part's exclude (genesis): muse's scope leaves out calc, as zucc's leaves
+# out Soma. The market never makes it a bidder there, it neither leads nor
+# checks calc's work, and with merge_approvals=1 a leader's merge lands on its
+# own. The other three still merge.
+scenario_scope() {
+  init scope 28800 term_blocks=60 max_merges=2 bid_cooldown=2 merge_approvals=1 || return 1
+  jq '. + {exclude: ["calc"]}' "$ROOT/scope/network/parts/muse.json" > "$ROOT/scope/muse.part" && mv "$ROOT/scope/muse.part" "$ROOT/scope/network/parts/muse.json"
+  for a in $AGENTS; do "$BIN" genesis "$ROOT/scope/$a" "$ROOT/scope/network" >> "$ROOT/scope.init.log" 2>&1 || { echo "FAIL scope: genesis with an exclude failed"; tail -3 "$ROOT/scope.init.log"; return 1; }; done
+  fake=$ROOT/scope/fake-ci
+  printf '#!/bin/sh\ncd "$2" || exit 2\neval "$3"\n' > "$fake"; chmod +x "$fake"
+  for a in $AGENTS; do node scope "$a" -- --ci-sandbox "$fake" --ci 'true' --ci-memory 1g; done
+  wait_for scope claude 150 "two merges" merges_at_least scope claude 2 || { stop scope; return 1; }
+  sleep 2; stop scope
+  if grep -q 'CI for request' "$ROOT/scope/muse/node.log"; then echo "FAIL scope: muse checked calc, outside its scope"; return 1; fi
+  if grep -q '^bid [0-9]* \[[a-z ]*\] task [0-9]* by muse' "$ROOT/scope/claude/status.txt"; then echo "FAIL scope: muse bid on calc, outside its scope"; return 1; fi
+  if grep -q 'outside this' "$ROOT"/scope/*/node.log; then echo "FAIL scope: a node sent a transaction its scope refuses"; grep -h 'outside this' "$ROOT"/scope/*/node.log | head -3; return 1; fi
+  agree scope claude codex grok muse && agree_files scope claude codex grok muse || return 1
+  echo "ok scope: muse, calc outside its scope, neither bid nor checked; $(merged scope claude) merges, each on its leader alone"
+}
+
 # a bid's CI prints forever (its test runs `yes`): the checking nodes stop the
 # check at the output cap, reject the bid for it, and keep going
 scenario_ciflood() {
@@ -882,6 +902,7 @@ run() {
     cispoof) scenario_cispoof ;;
     nocheck) scenario_nocheck ;;
     parallel) scenario_parallel ;;
+    scope) scenario_scope ;;
     flood) scenario_flood ;;
     policy) scenario_policy ;;
     model) scenario_model ;;
@@ -895,7 +916,7 @@ run() {
   esac
 }
 
-ALL="bidders bidder-fallback bidder-timeout happy crash restart-lock equivocate double-vote silent bad-sig withhold bad-tree future-nonce deny silent-model policy model stuck limit limit-cli prune epoch text network ci cifail ciflood cispoof nocheck parallel flood"
+ALL="bidders bidder-fallback bidder-timeout happy crash restart-lock equivocate double-vote silent bad-sig withhold bad-tree future-nonce deny silent-model policy model stuck limit limit-cli prune epoch text network ci cifail ciflood cispoof nocheck parallel scope flood"
 want=${*:-$ALL}
 pids=""
 for s in $want; do (run "$s" > "$ROOT/$s.result" 2>&1; echo $? > "$ROOT/$s.code") & pids="$pids $!"; done

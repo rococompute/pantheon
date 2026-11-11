@@ -180,6 +180,18 @@ cmd_network() {
     remote 'P=$HOME/pantheon; [ ! -d $P/net ] || mv $P/net $P/net-saved-$(date +%Y%m%d-%H%M%S)'
     remote "$(host_sh) keygen" | tar -x -C "$net/parts" -f - || die "$JOIN: keygen failed"
   fi
+  # scopes: an agent here that doesn't run Soma's CI has Soma outside its
+  # scope, in its part's exclude, so the market doesn't ask it to bid, lead or
+  # check there; the other host's parts keep only exclusions of repositories
+  # this network governs (its EXCLUDE, from its host.env)
+  for a in $AGENTS; do
+    case " $REPOS " in *" soma "*) case " $SOMA_CI_AGENTS " in *" $a "*) ;; *)
+      jq '.exclude = ((.exclude // []) + ["soma"] | unique)' "$net/parts/$a.json" > "$net/parts/$a.json.tmp" && mv "$net/parts/$a.json.tmp" "$net/parts/$a.json" ;; esac ;; esac
+  done
+  for f in "$net/parts"/*.json; do
+    jq --arg repos "$REPOS" '($repos | split(" ")) as $r | if has("exclude") then (.exclude |= map(select(. as $x | $r | index($x)))) | (if .exclude == [] then del(.exclude) else . end) else . end' \
+      "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+  done
   # each governed repository up to its genesis commit, which the VMs clone
   rm -rf "$net/repos"
   for name in $REPOS; do
@@ -351,25 +363,22 @@ cmd_start() {
     printf '%s\n' "$CI_MEMORY" | put ci-memory
     # Pantheon's build within a cloud agent's default command time (2 minutes):
     # a change that makes it slower fails CI, as a broken one does
-    pantheon_ci=$(python3 "$here/deploy/ci-command.py" "$here" "${PANTHEON_CI:-timeout 120 soma build main.soma && timeout 120 test/edits.sh && sh test/ci-policy.sh && timeout 120 bash test/cli.sh && timeout 120 bash test/genesis.sh && timeout 120 bash test/double-bid.sh && timeout 120 bash test/parallel-tasks.sh && timeout 120 sh test/soma-misc-runner.sh && timeout 120 sh test/host-quoting.sh}")
+    pantheon_ci=$(python3 "$here/deploy/ci-command.py" "$here" "${PANTHEON_CI:-timeout 120 soma build main.soma && timeout 120 test/edits.sh && sh test/ci-policy.sh && timeout 120 bash test/cli.sh && timeout 120 bash test/genesis.sh && timeout 120 bash test/double-bid.sh && timeout 120 bash test/parallel-tasks.sh && timeout 120 bash test/scopes.sh && timeout 120 sh test/soma-misc-runner.sh && timeout 120 sh test/host-quoting.sh}")
     printf '%s\n' "$pantheon_ci" | put ci/pantheon
-    # Soma's CI is a full build: on three agents (SOMA_CI_AGENTS), so whichever
-    # bids, two attestors run it, and two rejecting a broken build keep it out.
-    # On two, a bidder that was one of them left a single check, which one
-    # "no" can't enforce: a merge needs three approvals, a rejection two.
+    # Soma's CI is a full build: on SOMA_CI_AGENTS only. The others have Soma
+    # outside their scope (their parts' exclude, above), so the market
+    # doesn't ask them to bid, lead or check there.
     governs soma || SOMA_CI_AGENTS=""
     case " $SOMA_CI_AGENTS " in
       # deploy/sandbox/soma-ci: Soma's build, then the CI image's Pantheon built
       # with it, so a change that breaks Soma's biggest user fails here
       # Then the test-suite/misc/soma_*.sh tests a bid adds or changes, by git's
       # hash against the market's Soma commit (docs/DOGFOOD-REPORT.md D-1)
-      *" $a "*) printf '%s\n' "${SOMA_CI:-$(soma_ci_command)}" | put ci/soma; nocheck="" ;;
-      # the others abstain on Soma's bids: a yes from applying the edits alone
-      # would count as a check that never built them
-      *) in_vm "$v" sudo rm -f /etc/pantheon/ci/soma; if governs soma; then nocheck="--no-check soma"; else nocheck=""; fi ;;
+      *" $a "*) printf '%s\n' "${SOMA_CI:-$(soma_ci_command)}" | put ci/soma ;;
+      *) in_vm "$v" sudo rm -f /etc/pantheon/ci/soma ;;
     esac
     # shellcheck disable=SC2086
-    printf '%s\n' --bid-window 900 --max-llm-calls 200 $nocheck $flags | put flags
+    printf '%s\n' --bid-window 900 --max-llm-calls 200 $flags | put flags
     put goal.txt < "${GOAL_FILE:-$here/examples/dogfood/goal.txt}"
     setup_inbox "$v"
     printf '[Service]\nSyslogIdentifier=pantheon\nEnvironment="BIDDER_WRITABLE=/home/pantheon/.opam/log"\nEnvironment="PANTHEON_REPOS=%s/repos"\n' "$HOMEDIR" | in_vm "$v" sudo sh -c 'mkdir -p /etc/systemd/system/pantheon-node.service.d && cat > /etc/systemd/system/pantheon-node.service.d/log.conf && systemctl daemon-reload'

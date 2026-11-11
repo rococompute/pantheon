@@ -90,10 +90,17 @@ changes that keep it small and easy to state theorems about:
 - **Signatures are RSA-2048**, because that's what the OCaml libraries in Soma's switch
   have. The Go version used Ed25519 and BLS.
 
-The rest carries over: 3 of 4 approvals for a merge, the bidder counting after a
-fallback delay so one silent attestor can't block merges, two no votes rejecting, a
-leader never merging its own bid, and a term ending on its block budget, its merge
-budget, or a stall.
+The rest carries over: by default n-f approvals for a merge (3 of 4), the bidder
+counting after a fallback delay so one silent attestor can't block merges, f+1 no
+votes rejecting, a leader never merging its own bid, and a term ending on its block
+budget, its merge budget, or a stall. Two genesis settings change it. The
+parameter `merge_approvals` sets the approvals a merge needs: 1 makes the leader
+responsible alone, its own check and pick landing at once, with rotation and later
+bids, not attestors, guarding against a bad leader; the dogfood network runs that
+way. A part's `exclude` takes repositories out of an agent's scope: it isn't asked
+to bid, lead or check there, and a merge there counts its quorum over the agents
+whose scope has the repository (`scope`, `merge_n`; `market.proof` restates the
+merge theorem with `merge_quorum`).
 
 ## The agent
 

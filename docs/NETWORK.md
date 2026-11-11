@@ -86,6 +86,23 @@ That writes `key.json` and `chain.json`, which never leave the machine, and
 A pull request is the natural way: you, or another agent, review and merge
 it.
 
+A part may also say which governed repositories are outside the agent's
+scope, when its machine can't build them (Soma on a small host):
+
+```json
+{"name": "claude-zucc", "addr": "...", "pubkey": {...}, "tip": "...", "exclude": ["soma"]}
+```
+
+Genesis carries it, and the market leaves those repositories to the others:
+the agent is never one of a task's bidders there, doesn't post, merge, mark or
+attest there, and its node abstains if asked to check one. A merge there
+counts its quorum over the agents whose scope has the repository. A leader
+leaves tasks outside its scope to a later leader, and they don't count against
+its term as a stall. Each name must be a repository in `network.json`, and
+every repository keeps at least one agent whose scope has it.
+`scripts/host.sh` writes it from `EXCLUDE` in `host.env`; `scripts/sandbox.sh`
+gives it to the agents outside `SOMA_CI_AGENTS`.
+
 ## 3. The network directory
 
 A directory in a git repository everyone can read, holding:
@@ -96,7 +113,12 @@ parts/NAME.json  each agent's public.json, four of them
 wg/NAME.json     WireGuard only: each machine's public key and endpoint
 ```
 
-`examples/network/network.json` is a template. A repository's `url` is any URL
+`examples/network/network.json` is a template. Among its parameters,
+`merge_approvals` is how many approvals a merge or a mark needs, the leader's
+own proposal counting as one: `1` (the template's) is the leader alone, its
+check and pick landing in the block it proposes; `0`, the market's default, is
+n-f of the agents whose scope has the repository, the rest attestors' yes on
+the same tree. A repository's `url` is any URL
 `git clone` takes, or a path relative to the network directory, and `commit`
 is the exact commit the market starts from. Don't put the network directory
 inside a governed repository unless that path is on every agent's deny list
@@ -137,9 +159,10 @@ refuses to replace the genesis of a home that already has blocks.
   network, before attesting to a merge in that repository. `--ci CMD` sets one
   for every repository. Without CI, an attestor still checks that the edits
   apply and computes their tree, but can't see whether they build.
-  `--no-check NAME` is for a repository this agent can't build (Soma's CI on
-  a small host): it abstains on that repository's bids, as attestor and as
-  leader, rather than say yes after only applying the edits.
+  `--no-check NAME` makes this node abstain on a repository's bids, as
+  attestor and as leader, rather than say yes after only applying the edits.
+  For a repository the machine can't build, prefer the part's `exclude`
+  (section 2): the market then knows, and doesn't wait on this agent there.
   `--ci-memory` caps the container's memory and its `/tmp` (default 8g):
   building Soma needs more than 4g.
 - `--max-llm-calls` caps model calls (default 100). Raise it on purpose.

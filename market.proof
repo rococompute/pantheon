@@ -243,15 +243,15 @@ Qed.
 
 Lemma settle_preserves_merged : forall P,
   (forall m p, pending m = Some p -> merged_satisfy P m ->
-    quorum (length (agents m)) <= approvals p (mheight m - pat p) (param m "fallback_blocks") ->
+    merge_quorum m p <= approvals p (mheight m - pat p) (param m "fallback_blocks") ->
     merged_satisfy P (fst (finalize m p))) ->
   forall m, merged_satisfy P m -> merged_satisfy P (fst (settle m)).
 Proof.
   intros P Hfinal m Hm. unfold settle.
   destruct (pending m) as [p|] eqn:Hp; [|exact Hm].
-  destruct (quorum (length (agents m)) <=? approvals p (mheight m - pat p) (param m "fallback_blocks")) eqn:Hyes.
+  destruct (merge_quorum m p <=? approvals p (mheight m - pat p) (param m "fallback_blocks")) eqn:Hyes.
   - apply Hfinal; [exact Hp|exact Hm|]. apply Nat.leb_le. exact Hyes.
-  - destruct (reject_quorum (length (agents m)) <=? length (filter (fun v => negb (snd v)) (pvotes p)));
+  - destruct (reject_quorum (merge_n m p) <=? length (filter (fun v => negb (snd v)) (pvotes p)));
       [destruct (bid_by m (pbid p)) as [b|] |
        destruct (param m "attest_window" <=? mheight m - pat p)]; simpl;
       repeat first [apply merged_count | apply merged_setf_other; [reflexivity|] |
@@ -269,7 +269,7 @@ Qed.
 
 Lemma apply_preserves_merged : forall P,
   (forall m p, pending m = Some p -> merged_satisfy P m ->
-    quorum (length (agents m)) <= approvals p (mheight m - pat p) (param m "fallback_blocks") ->
+    merge_quorum m p <= approvals p (mheight m - pat p) (param m "fallback_blocks") ->
     merged_satisfy P (fst (finalize m p))) ->
   forall m a fields, merged_satisfy P m ->
     merged_satisfy P (fst (fst (apply m a fields))).
@@ -354,7 +354,7 @@ Qed.
     finalize preserve it. Every other transition preserves it on its own. *)
 Lemma apply_block_preserves_merged : forall P,
   (forall m p, pending m = Some p -> merged_satisfy P m ->
-    quorum (length (agents m)) <= approvals p (mheight m - pat p) (param m "fallback_blocks") ->
+    merge_quorum m p <= approvals p (mheight m - pat p) (param m "fallback_blocks") ->
     merged_satisfy P (fst (finalize m p))) ->
   forall m h txs, merged_satisfy P m ->
     merged_satisfy P (fst (apply_block m h txs)).
@@ -392,21 +392,23 @@ Proof.
 Qed.
 
 (** A newly Merged bid in a block came from finalize, at a settlement state
-    with at least n-f approvals. Existing Merged bids may survive a block;
+    with the approvals merge_quorum asks: genesis's merge_approvals, or by
+    default n-f, n being the agents whose scope has the bid's repository
+    (every agent unless genesis excludes some: scope_all). Existing Merged bids may survive a block;
     their presence alone does not assert a new finalization. *)
 Theorem merged_only_through_finalize_with_quorum_approvals :
   forall (m : obj) (h : nat) (txs : list string) (b : bid),
     In b (bids (fst (apply_block m h txs))) -> bst b = Merged ->
     ~ In b (bids m) ->
     exists (before : obj) (p : proposal),
-      quorum (length (agents before)) <= approvals p (mheight before - pat p) (param before "fallback_blocks") /\
+      merge_quorum before p <= approvals p (mheight before - pat p) (param before "fallback_blocks") /\
       pending before = Some p /\ ~ In b (bids before) /\
       In b (bids (fst (finalize before p))).
 Proof.
   intros m h txs b Hin Hb Hnew.
   let P := constr:(fun b => In b (bids m) \/
     exists before p,
-      quorum (length (agents before)) <= approvals p (mheight before - pat p) (param before "fallback_blocks") /\
+      merge_quorum before p <= approvals p (mheight before - pat p) (param before "fallback_blocks") /\
       pending before = Some p /\ ~ In b (bids before) /\
       In b (bids (fst (finalize before p)))) in
   assert (H : merged_satisfy P (fst (apply_block m h txs))).
@@ -417,6 +419,25 @@ Proof.
       + right. exists before, p. auto.
     - intros x Hx Hmerged. left. exact Hx. }
   destruct (H b Hin Hb) as [Hold|Hfinal]; [contradiction|exact Hfinal].
+Qed.
+
+(** With nothing excluded, a merge's roster is every agent, so the quorum in
+    merged_only_through_finalize_with_quorum_approvals is n-f of the whole
+    network; exclusions only ever shrink it. *)
+Theorem scope_all : forall (m : obj) (r : string),
+  excluded m = [] -> scope m r = agents m.
+Proof.
+  intros m r H. unfold scope, excludes. rewrite H.
+  generalize (agents m) as l. induction l as [|a l IH]; simpl; [reflexivity|].
+  f_equal. exact IH.
+Qed.
+
+Theorem merge_n_le_agents : forall (m : obj) (p : proposal),
+  merge_n m p <= length (agents m).
+Proof.
+  intros m p. unfold merge_n. destruct (bid_by m (pbid p)) as [b|]; [|lia].
+  unfold scope. generalize (agents m) as l. induction l as [|a l IH]; simpl; [lia|].
+  destruct (negb _); simpl; lia.
 Qed.
 
 (** Selection is bounded even for malformed rosters or exhausted windows. *)

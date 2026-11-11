@@ -8,7 +8,8 @@
     "attest_window": "3600",
     "fallback_blocks": "300",
     "reveal_window": "30",
-    "bid_cooldown": "5"
+    "bid_cooldown": "5",
+    "merge_approvals": "1"
   },
   "repos": [
     {"name": "pantheon", "url": "git@github.com:YOU/pantheon.git", "commit": "THE-FULL-COMMIT-TO-START-FROM"},

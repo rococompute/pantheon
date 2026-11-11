@@ -14,8 +14,10 @@
     leader clears one whose edits no longer apply (conflict), which isn't a
     rejection, and its bidder writes an updated bid. Attestors apply the edits to the head, and a yes names the tree
     they got. The leader's merge names the tree its own check gave, and an
-    attestor's yes counts only for that same tree. A merge needs n-f approvals (market.proof); the leader and bidder
-    supply at most two of them. Every node then checks its own
+    attestor's yes counts only for that same tree. A merge needs merge_quorum
+    approvals (market.proof): genesis's merge_approvals (1 is the leader
+    alone), or by default n-f of the agents whose scope has the repository,
+    of which the leader and bidder supply at most two. Every node then checks its own
     checkout reaches it.
 
     The next leader is drawn from values each agent committed to at genesis:
@@ -90,6 +92,16 @@ nonces (m : obj) : list (string * nat) := getf m "nonces".
 lastbid (m : obj) : list (string * nat) := getf m "lastbid".
 counters (m : obj) : list (string * nat) := getf m "counters".
 params (m : obj) : list (string * nat) := getf m "params".
+(** (agent, repository) pairs from genesis: the repository is outside the
+    agent's scope, as its part says ("exclude"). Its node doesn't check that
+    repository's bids, so the agent doesn't bid on, post, merge, mark or
+    attest them, and a merge there needs a quorum of the agents whose scope
+    has it. Empty unless genesis says *)
+excluded (m : obj) : list (string * string) := getf m "excluded".
+excludes (m : obj) (a r : string) : bool := existsb (fun x => seq (fst x) a && seq (snd x) r) (excluded m).
+(** the agents whose scope has repository r: all of them unless genesis excludes some *)
+scope (m : obj) (r : string) : list string := filter (fun a => negb (excludes m a r)) (agents m).
+in_scope (m : obj) (a : string) (t : task) : bool := negb (excludes m a (trepo t)).
 
 (** Parameters, set at genesis. Block counts. *)
 default_params : list (string * nat) :=
@@ -98,6 +110,11 @@ default_params : list (string * nat) :=
    (* tasks open at once: the leader drafts another while fewer are open, when
       it judges one can run beside them (agent.soma); 1 unless genesis says *)
    ("max_open_tasks", 1), ("max_pending_bids", 3), ("bid_cooldown", 5),
+   (* approvals a merge or a mark needs, the leader's proposal counting as
+      one: 1 is the leader alone, its own check and pick, landing in the block
+      it's proposed in; 0 (the default) is n-f of the agents whose scope has
+      the repository, every other one an attestor's yes on the same tree *)
+   ("merge_approvals", 0),
    ("reveal_window", 10), ("max_files", 20), ("keep_settled", 100), ("max_block_txs", 50),
    (* a leader closes a task no bid could do: this many rejected bids, or open
       this many blocks, with no bid pending *)
@@ -118,9 +135,11 @@ new_market (agents : list string) : obj :=
    ("version", 0 : Any), ("repos", ([] : list (string * string)) : Any), ("paths", ([] : list (string * nat)) : Any),
    ("tasks", ([] : list task) : Any), ("bids", ([] : list bid) : Any), ("nbids", 0 : Any), ("pending", (None : option proposal) : Any),
    ("nonces", ([] : list (string * nat)) : Any), ("lastbid", ([] : list (string * nat)) : Any),
-   ("counters", ([] : list (string * nat)) : Any), ("params", ([] : list (string * nat)) : Any)].
+   ("counters", ([] : list (string * nat)) : Any), ("params", ([] : list (string * nat)) : Any),
+   ("excluded", ([] : list (string * string)) : Any)].
 
-(** Rotate a task's two-worker window through the nonleaders. A worker is
+(** Rotate a task's two-worker window through the nonleaders whose scope
+    has the task's repository. A worker is
     spent only after it has bid and every one of its bids was rejected or
     cleared: an unstarted worker or a pending bid keeps the window open. *)
 bidder_spent (m : obj) (t : task) (a : string) : bool :=
@@ -145,7 +164,7 @@ Fixpoint next_bidders (fuel : nat) (m : obj) (t : task) (pool : list string) : l
     also moves on by one every bid_blocks while the task is open, so workers
     chosen but silent give way to the next ones. *)
 bidders_for (m : obj) (t : task) : list string :=
-  let pool := filter (fun a => negb (seq a (leader m))) (nodup_s (agents m)) in
+  let pool := filter (fun a => negb (seq a (leader m))) (nodup_s (scope m (trepo t))) in
   let start := (tid t + version m + (mheight m - posted_at t) / param m "bid_blocks") mod length pool in
   let pool := skipn start pool ++ firstn start pool in
   firstn 2 (filter (fun a => negb (seq a (leader m)))
@@ -225,6 +244,14 @@ faults (n : nat) : nat := (n - 1) / 3.
 quorum (n : nat) : nat := n - faults n.
 reject_quorum (n : nat) : nat := faults n + 1.
 
+(** the roster a merge's quorums count: the agents whose scope has the bid's
+    repository (all of them unless genesis excludes some) *)
+merge_n (m : obj) (p : proposal) : nat :=
+  length (match bid_by m (pbid p) with Some b => scope m (bid_repo m b) | None => agents m end).
+
+merge_quorum (m : obj) (p : proposal) : nat :=
+  match param m "merge_approvals" with 0 => quorum (merge_n m p) | k => k end.
+
 approvals (p : proposal) (age fb : nat) : nat :=
   1 + length (filter snd (pvotes p)) + (if (0 <? fb) && (fb <=? age) then 1 else 0).
 
@@ -235,8 +262,8 @@ settle (m : obj) : obj * list (list string) :=
       let no := length (filter (fun v => negb (snd v)) (pvotes p)) in
       let age := mheight m - pat p in
       let yes := approvals p age (param m "fallback_blocks") in
-      if quorum (length (agents m)) <=? yes then finalize m p
-      else if reject_quorum (length (agents m)) <=? no then
+      if merge_quorum m p <=? yes then finalize m p
+      else if reject_quorum (merge_n m p) <=? no then
         match bid_by m (pbid p) with
         | Some b => (count (setf (set_bid m (with_votes (with_status b Rejected "attestors voted no") (pvotes p))) "pending" (None : option proposal)) (bidder b) "rejected", [])
         | None => (setf m "pending" (None : option proposal), [])
@@ -278,6 +305,7 @@ apply (m : obj) (a : string) (fields : list string) : obj * list (list string) *
       else if seq s "" then fail "empty task, or no repository named: post REPO SPEC [CONTEXT-PATH...]"
       else if negb (plain_text s) then fail "a task's spec has a NUL or control character"
       else if negb (existsb (fun x => seq (fst x) r) (repos m)) then fail "no such repository"
+      else if excludes m a r then fail "that repository is outside this leader's scope (its genesis part excludes it): a leader whose scope has it posts its tasks"
       else if (8 <? length ctx) || negb (forallb safe_path ctx) then fail "context is up to 8 safe paths"
       else if param m "max_open_tasks" <=? length (open_tasks m) then fail "too many open tasks"
       else
@@ -329,6 +357,7 @@ apply (m : obj) (a : string) (fields : list string) : obj * list (list string) *
           else if negb (pending_bid_id m =? 0) then fail "a merge is already pending"
           else if param m "max_merges" <=? merges m then fail "merge limit for this term"
           else if negb (is_pending (bst b)) || seq (bidder b) a then fail "not a bid this leader can merge"
+          else if excludes m a (bid_repo m b) then fail "the bid's repository is outside this leader's scope (its genesis part excludes it): a leader whose scope has it merges it"
           else ok (setf m "pending" (Some {| pbid := bidn b; pby := a; pat := mheight m; pvotes := []; ptree := tree |}))
       | None => fail "no such bid"
       end
@@ -340,6 +369,7 @@ apply (m : obj) (a : string) (fields : list string) : obj * list (list string) *
           if negb (pbid p =? bidn b) then fail "that bid isn't pending merge"
           else if seq a (pby p) || seq a (bidder b) then fail "the leader and the bidder don't attest"
           else if existsb (fun v => seq (fst v) a) (pvotes p) then fail "already attested"
+          else if excludes m a (bid_repo m b) then fail "the bid's repository is outside this agent's scope (its genesis part excludes it): it doesn't attest there"
           else if seq yes "yes" && seq tree "" then fail "a yes names the tree it checked: attest BID yes TREE"
           else
             (* a yes for another tree than the leader's counts as a no *)
@@ -355,6 +385,7 @@ apply (m : obj) (a : string) (fields : list string) : obj * list (list string) *
       | Some tk =>
           if negb lead then fail "only the term leader marks a task done"
           else if negb (topen tk) then fail "task is closed"
+          else if excludes m a (trepo tk) then fail "the task's repository is outside this leader's scope (its genesis part excludes it)"
           else if seq tree "" then fail "a mark names the tree its edit gives on the head: mark TASK LINE TREE"
           else if negb (pending_bid_id m =? 0) then fail "a merge is already pending"
           else if seq line "" || negb (plain_text line) || contains newline line then fail "a mark names one line of .plan, as it is there"
@@ -436,13 +467,15 @@ maybe_draw (m : obj) : obj :=
   else m.
 
 (** A term ends after term_blocks, after max_merges, or when its leader has
-    done nothing for stall_blocks while bids wait or no task is open. A
-    pending merge finishes first. *)
+    done nothing for stall_blocks while bids wait or no task is open, both
+    within its scope: bids on a repository outside it wait for a leader whose
+    scope has it, and don't count against this one. A pending merge
+    finishes first. *)
 maybe_end_term (m : obj) : obj :=
   if awaiting m || negb (pending_bid_id m =? 0) then m else
   let idle := param m "stall_blocks" <=? mheight m - active m in
-  let waiting := existsb (fun b => is_pending (bst b)) (bids m) in
-  let stalled := idle && (waiting || (length (open_tasks m) =? 0)) in
+  let waiting := existsb (fun b => is_pending (bst b) && negb (excludes m (leader m) (bid_repo m b))) (bids m) in
+  let stalled := idle && (waiting || (length (filter (in_scope m (leader m)) (open_tasks m)) =? 0)) in
   if (param m "term_blocks" <=? mheight m - tstart m) || (param m "max_merges" <=? merges m) || stalled then
     let m := if stalled && waiting then count m (leader m) "stalls" else m in
     setf (setf (setf m "leader" "") "awaiting" true) "asince" (mheight m)

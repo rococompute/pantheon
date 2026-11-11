@@ -1,0 +1,141 @@
+(** Scopes and leader-alone merges, deterministically.
+
+    An agent's genesis part may exclude repositories: outside its scope, its
+    node doesn't check them, so it isn't chosen to bid there, doesn't post,
+    merge, mark or attest there, and a merge there needs a quorum of the
+    agents whose scope has it. A leader leaves tasks outside its scope to a
+    later leader, and those don't count against its term. With genesis's
+    merge_approvals at 1, the leader's merge lands on its own. Run with
+    test/scopes.sh. *)
+Import util shell market agent.
+
+say (cond : bool) (what : string) : list string :=
+  [if cond then append "ok " what else append "FAIL " what].
+
+has (s sub : string) : bool := contains sub s.
+
+roster : list string := ["claude", "codex", "grok", "muse", "x1", "x2", "x3", "x4"].
+
+(** muse and the four x agents can't build lib: as zucc's nodes and the
+    laptop's Muse can't build Soma *)
+outside_lib : list string := ["muse", "x1", "x2", "x3", "x4"].
+
+base (lead : string) (approvals : nat) : obj :=
+  let m := new_market roster in
+  let m := setf m "leader" lead in
+  let m := setf m "h" 10 in
+  let m := setf m "repos" ([("calc", "t0"), ("lib", "l0")] : list (string * string)) in
+  let m := setf m "awaiting" false in
+  let m := setf m "params" ([("max_open_tasks", 3), ("merge_approvals", approvals)] : list (string * nat)) in
+  setf m "excluded" (map (fun a => (a, "lib")) outside_lib : list (string * string)).
+
+post (m : obj) (who r s : string) : obj * string :=
+  let '(m, _, why) := apply m who ["post", r, s] in (m, why).
+
+first_bidder (m : obj) (id : nat) : string :=
+  match task_by m id with
+  | Some t => match bidders_for m t with a :: _ => a | [] => "" end
+  | None => ""
+  end.
+
+status_of (m : obj) (id : nat) : string :=
+  match bid_by m id with Some b => status_name (bst b) | None => "none" end.
+
+(** a lib task (1) with a bid (1), under leader lead *)
+with_lib_bid (lead : string) (approvals : nat) : obj :=
+  let (m, _) := post (base lead approvals) lead "lib" "a lib task" in
+  let '(m, _, _) := apply m (first_bidder m 1) ["bid", "1", "0", "lib bid", "f.txt", "", "x"] in m.
+
+lines_scope : list string :=
+  let m := base "claude" 0 in
+  say (seq (show (length (scope m "lib"))) "3" && seq (show (length (scope m "calc"))) "8") "lib's scope is the three that build it, calc's all eight"
+  ++ say (forallb (fun a => negb (in_scope m a {| tid := 1; spec := ""; poster := ""; posted_at := 0; topen := true; trepo := "lib"; tctx := [] |})) outside_lib) "a lib task is outside the excluded agents' scope".
+
+(** the two-bidder window, as it moves with the height: always in scope *)
+lines_bidders : list string :=
+  let (m, _) := post (base "claude" 0) "claude" "lib" "a lib task" in
+  let bids_at h := match task_by (setf m "h" h) 1 with Some t => bidders_for (setf m "h" h) t | None => [] end in
+  let hs := [10, 2500, 5000, 7500, 10000, 12500] in
+  let ok_at h := forallb (fun a => negb (mem a outside_lib)) (bids_at h) && (0 <? length (bids_at h)) in
+  let (mc, _) := post (base "claude" 0) "claude" "calc" "a calc task" in
+  let calc_at h := match task_by (setf mc "h" h) 1 with Some t => bidders_for (setf mc "h" h) t | None => [] end in
+  say (forallb ok_at hs) "a lib task's bidders are never agents whose scope excludes lib"
+  ++ say (existsb (fun h => existsb (fun a => mem a outside_lib) (calc_at h)) hs) "a calc task's bidders still come from everyone".
+
+lines_leader : list string :=
+  let (_, wl) := post (base "x1" 0) "x1" "lib" "a lib task" in
+  let (_, wc) := post (base "x1" 0) "x1" "calc" "a calc task" in
+  (* a lib bid made under claude, then x1 leads *)
+  let m := setf (with_lib_bid "claude" 0) "leader" "x1" in
+  let '(_, _, wm) := apply m "x1" ["merge", "1", "tree1"] in
+  let '(_, _, wk) := apply m "x1" ["mark", "1", "a plan line", "tree1"] in
+  say (has wl "outside this leader's scope") "a leader doesn't post on a repository outside its scope"
+  ++ say (seq wc "") "it posts on one inside"
+  ++ say (has wm "outside this leader's scope") "nor merges a bid there"
+  ++ say (has wk "outside this leader's scope") "nor marks a task there".
+
+lines_quorum : list string :=
+  let m := with_lib_bid "claude" 0 in
+  let bidder := first_bidder m 1 in
+  let other := match filter (fun a => negb (seq a "claude") && negb (seq a bidder)) ["codex", "grok"] with a :: _ => a | [] => "" end in
+  let '(m, _, _) := apply m "claude" ["merge", "1", "tree1"] in
+  let '(_, _, wx) := apply m "x2" ["attest", "1", "yes", "tree1"] in
+  let n := match pending m with Some p => merge_n m p | None => 0 end in
+  let '(mn, _, _) := apply m other ["attest", "1", "no"] in
+  say (n =? 3) "a lib merge counts its quorum over lib's scope: 3, not 8"
+  ++ say (has wx "outside this agent's scope") "an agent outside lib's scope doesn't attest there"
+  ++ say (seq (status_of mn 1) "rejected") "one no of three rejects it (f + 1 for n = 3)".
+
+lines_alone : list string :=
+  let m := with_lib_bid "claude" 1 in
+  let '(m, _, w) := apply m "claude" ["merge", "1", "tree1"] in
+  let (ms, o) := settle m in
+  let m8 := base "claude" 0 in
+  let (mc, _) := post m8 "claude" "calc" "a calc task" in
+  let '(mc, _, _) := apply mc (first_bidder mc 1) ["bid", "1", "0", "calc bid", "f.txt", "", "x"] in
+  let '(mc, _, _) := apply mc "claude" ["merge", "1", "tree1"] in
+  let (mcs, _) := settle mc in
+  say (seq w "" && seq (status_of ms 1) "merged" && (version ms =? 1)) "merge_approvals 1: the leader's merge lands with no attestor"
+  ++ say (existsb (fun x => match x with "merge" :: _ => true | _ => false end) o) "and the node is told to apply it"
+  ++ say (seq (status_of mcs 1) "pending") "by default a merge still waits for n-f approvals".
+
+(** idle past stall_blocks, with only a lib task open and a lib bid waiting *)
+idle (m : obj) : obj := setf (setf (setf m "active" 0) "tstart" 0) "h" 200.
+
+lines_stall : list string :=
+  let mx := maybe_end_term (idle (setf (with_lib_bid "claude" 0) "leader" "x1")) in
+  let mc := maybe_end_term (idle (with_lib_bid "claude" 0)) in
+  say (awaiting mx) "a leader with nothing in its scope to do ends its term at stall_blocks"
+  ++ say (get_or 0 "x1.stalls" (counters mx) =? 0) "without a stall counted: the waiting bid is outside its scope"
+  ++ say (awaiting mc && (get_or 0 "claude.stalls" (counters mc) =? 1)) "a leader idle on a bid in its scope is counted a stall".
+
+llm (who : string) : obj := setf (new_agent who) "backend" "llm".
+
+draft_asks (o : list (list string)) : list string :=
+  flat_map (fun x => match x with "llm" :: _ :: "draft" :: p :: _ => [p] | _ => [] end) o.
+
+pick_asks (o : list (list string)) : nat :=
+  length (filter (fun x => match x with "llm" :: _ :: "pick" :: _ => true | _ => false end) o).
+
+check_reqs (o : list (list string)) : nat :=
+  length (filter (fun x => match x with "check" :: _ => true | _ => false end) o).
+
+lines_agent : list string :=
+  (* the lib bid's window closed: a leader whose scope has lib asks for a pick *)
+  let m := setf (with_lib_bid "claude" 0) "h" 5000 in
+  let (_, oc) := lead (setf (setf (llm "claude") "goal" ["- more"]) "bid_window" 1) m in
+  let (_, ox) := lead (setf (setf (llm "x1") "goal" ["- more"]) "bid_window" 1) (setf m "leader" "x1") in
+  let (_, dx) := lead (setf (llm "x1") "goal" ["- more"]) (setf (base "x1" 0) "leader" "x1") in
+  let '(mp, _, _) := apply m "claude" ["merge", "1", "tree1"] in
+  let other := match filter (fun a => negb (seq a (first_bidder m 1))) ["codex", "grok"] with a :: _ => a | [] => "" end in
+  let (_, ax) := attest_duty (llm "x3") mp in
+  let (_, ai) := attest_duty (llm other) mp in
+  say (pick_asks oc =? 1) "a leader whose scope has lib reviews a lib bid"
+  ++ say (pick_asks ox =? 0) "a leader outside it leaves the bid for a later leader"
+  ++ say (forallb (fun p => has p "Repositories: calc" && negb (has p "lib")) (draft_asks dx) && (0 <? length (draft_asks dx))) "its draft prompt offers only calc"
+  ++ say ((check_reqs ax =? 0) && (check_reqs ai =? 1)) "only an agent whose scope has lib checks a lib merge".
+
+report : list string :=
+  lines_scope ++ lines_bidders ++ lines_leader ++ lines_quorum ++ lines_alone ++ lines_stall ++ lines_agent.
+
+main := print_lines report.

@@ -47,6 +47,9 @@
 #   SOMA_REMOTE   Soma's repository, for the agents to read (default: https://github.com/yevbar/soma.git)
 #   BRANCH        the branch of REMOTE the market publishes to and workers start from (default: its default branch)
 #   SOMA_REF      the branch there at the commit SOMA_DIR is built from (default: gradual, Soma's default branch)
+#   EXCLUDE       repositories outside this host's agents' scope, e.g. "soma" on a host with no room for
+#                 its build: keygen puts them in each part's "exclude", so genesis has the market leave
+#                 those repositories' tasks to other agents (no bids, picks or checks here; default: none)
 # or from PANTHEON_HOST/host.env (lines like CODEX_ENV=soma), read first.
 set -eu
 here=$(cd "$(dirname "$0")/.." && pwd)
@@ -59,7 +62,8 @@ VM_AGENTS=${VM_AGENTS:-$(for a in $AGENTS; do [ "$(kind "$a")" != muse ] || prin
 LISTEN=${LISTEN:-127.0.0.1} BASE_PORT=${BASE_PORT:-26711}
 BIN=$here/main.exe SOMA=${SOMA_DIR:-$P/soma}
 CI_MEMORY=${CI_MEMORY:-1536m}
-CI_CMD=$(python3 "$here/deploy/ci-command.py" "$here" "${PANTHEON_CI:-timeout 120 soma build main.soma && timeout 120 test/edits.sh && sh test/ci-policy.sh && timeout 120 bash test/cli.sh && timeout 120 bash test/genesis.sh && timeout 120 bash test/double-bid.sh && timeout 120 bash test/parallel-tasks.sh && timeout 120 sh test/soma-misc-runner.sh && timeout 120 sh test/host-quoting.sh}")
+EXCLUDE=${EXCLUDE:-}
+CI_CMD=$(python3 "$here/deploy/ci-command.py" "$here" "${PANTHEON_CI:-timeout 120 soma build main.soma && timeout 120 test/edits.sh && sh test/ci-policy.sh && timeout 120 bash test/cli.sh && timeout 120 bash test/genesis.sh && timeout 120 bash test/double-bid.sh && timeout 120 bash test/parallel-tasks.sh && timeout 120 bash test/scopes.sh && timeout 120 sh test/soma-misc-runner.sh && timeout 120 sh test/host-quoting.sh}")
 PORT=${INBOX_PORT:-8787}
 # a Lima VM (plain, user-mode network) reaches the host's localhost here
 VM_HOST=192.168.5.2
@@ -81,11 +85,14 @@ SOMA_REMOTE=${SOMA_REMOTE:-https://github.com/yevbar/soma.git}
 SOMA_REF=${SOMA_REF:-gradual}
 soma_commit() { git -C "$SOMA" rev-parse HEAD 2>/dev/null || echo unknown; }
 # whether the network's genesis governs Soma too (scripts/sandbox.sh's JOIN
-# makes one that does); this host's nodes then abstain on Soma's bids
+# makes one that does), and whether this host's agents have it in scope
 governs_soma() { jq -e '.repos[] | select(.name == "soma")' "$NET/${AGENTS%% *}/genesis.json" >/dev/null 2>&1; }
+excludes_soma() { case " $EXCLUDE " in *" soma "*) true ;; *) false ;; esac; }
 soma_scope() {
-  if governs_soma; then
-    printf '%s' "This network governs Soma too: its .plan has Soma's items (Sandbox's pieces for the unikernel, first), and a task on Soma comes with a checkout of Soma in the request, the market's head, which is what you change; {{SOMA_DIR}} is for reading. This host has no room to build Soma (a build takes about 2.5 GB): its nodes don't check Soma's bids (they abstain), and the other host's nodes run Soma's CI, so do a Soma patch by reading the source and the tests near it, keep it small, and add a test-suite/misc/soma_*.sh test, which CI runs; a rejection says what failed. A Soma bug you find while working on Pantheon goes in {{SOMA_NOTES}} too: what you tried, what happened, and the smallest example."
+  if governs_soma && excludes_soma; then
+    printf '%s' "This network governs Soma too, but Soma is outside this host's scope (EXCLUDE in host.env, so each agent's genesis part excludes it): this host has no room to build it, so the market doesn't ask its agents to bid on Soma's tasks, and its leaders leave Soma's bids to leaders on the other host, whose nodes build Soma. {{SOMA_DIR}} is for reading. A Soma bug or gap you find while working on Pantheon goes in {{SOMA_NOTES}}: what you tried, what happened, and the smallest example; those become Soma's tasks."
+  elif governs_soma; then
+    printf '%s' "This network governs Soma too: its .plan has Soma's items (Sandbox's pieces for the unikernel, first), and a task on Soma comes with a checkout of Soma in the request, the market's head, which is what you change; {{SOMA_DIR}} is for reading. Keep a Soma patch small, read the tests near what you change, and add a test-suite/misc/soma_*.sh test, which CI runs; a rejection says what failed. A Soma bug you find while working on Pantheon goes in {{SOMA_NOTES}} too: what you tried, what happened, and the smallest example."
   else
     printf '%s' "This network governs Pantheon only: no one changes Soma through it. If you or a worker find a Soma bug, a missing feature, or a place where the language fights you, add a line to \`{{SOMA_NOTES}}\`: what you tried, what happened, and the smallest example you have. Those become Soma's next work."
   fi
@@ -130,7 +137,8 @@ cmd_network() {
   # term, attest window and stuck-task limit; fallback after 15 minutes
   "$BIN" init "$NET" --repo "pantheon=$here" --base-port 26701 --block-ms 1000 \
     --param term_blocks=3600 --param max_merges=2 --param stall_blocks=1800 --param attest_window=3600 \
-    --param fallback_blocks=900 --param reveal_window=30 --param bid_cooldown=5 --param max_open_tasks=2
+    --param fallback_blocks=900 --param reveal_window=30 --param bid_cooldown=5 --param max_open_tasks=2 \
+    --param merge_approvals=1
   cmd_permissions
   [ -f "$P/goal.txt" ] || cp "$here/examples/cloud/goal.txt" "$P/goal.txt"
   mkdir -p "$P/inbox"; for a in $AGENTS; do mkdir -p "$P/inbox/$a"; done
@@ -149,7 +157,10 @@ cmd_keygen() {
   for a in $AGENTS; do
     mkdir -p "$NET/$a"
     "$BIN" keygen "$NET/$a" --name "$a" --addr "$LISTEN:$((BASE_PORT + i))" >/dev/null
-    cp "$NET/$a/public.json" "$out/$a.json"; i=$((i + 1))
+    # the part says which repositories are outside this agent's scope; the
+    # network's maker keeps only those its network governs
+    jq --arg ex "$EXCLUDE" '. + (($ex | split(" ") | map(select(. != ""))) as $l | if $l == [] then {} else {exclude: $l} end)' \
+      "$NET/$a/public.json" > "$out/$a.json"; i=$((i + 1))
   done
   cmd_permissions
   tar -C "$out" -cf - . ; rm -rf "$out"
@@ -219,7 +230,7 @@ B
     cat > "$NET/$a/run.sh" <<R
 #!/bin/sh
 exec $BIN node $NET/$a --backend cmd:$NET/$a/backend.sh --goal $P/goal.txt --listen $LISTEN \\
-  --ci-repo pantheon $(q "$CI_CMD") --no-check soma --ci-sandbox $here/deploy/host/ci-sandbox --ci-memory $CI_MEMORY
+  --ci-repo pantheon $(q "$CI_CMD") --ci-sandbox $here/deploy/host/ci-sandbox --ci-memory $CI_MEMORY
 R
     chmod 755 "$NET/$a/backend.sh" "$NET/$a/run.sh"
     in_vm_agents "$a" || render_diplomat "$a"
@@ -388,7 +399,7 @@ cmd_vm() {
   else tok="its token as it was"; fi
   { sed -e "s|{{AGENT}}|$a|g" -e "s|{{URL}}|http://$VM_HOST:$PORT|g" "$here/deploy/cloud/agent.md"
     printf '\nYour token is in the file ~/pantheon/token: send it as -H "Authorization: Bearer $(cat ~/pantheon/token)". This VM is your machine: work in it as you like.\n'
-    printf '\n## Soma, the language Pantheon is written in\n\nSoma is a fork of the Rocq Prover with gradual dependent types, and its source is its documentation: ~/soma is the commit the network builds with (%s; not built here). Start with README.md, GRADUAL.md, gradual-coverage.md, vision.md and examples/; test-suite/ and theories/ show how a feature behaves. When a task leans on a Soma feature, look it up there instead of guessing from Rocq you remember: this fork differs. %s\n' "$(soma_commit)" "$(if governs_soma; then echo 'This network governs Soma too: a task on Soma gives you the market'"'"'s Soma to change, as a task on Pantheon gives you Pantheon; ~/soma is for reading. This VM has no room to build Soma (a build takes about 2.5 GB), so keep a Soma patch small, read the tests near what you change, and add a test-suite/misc/soma_*.sh test: the other host'"'"'s nodes run Soma'"'"'s CI, and a rejection says what failed.'; else echo 'This network changes Pantheon only; if you find a Soma bug or gap, say so in your patch note or reason, starting with "soma:".'; fi)"; } > "$tmp/instructions.md"
+    printf '\n## Soma, the language Pantheon is written in\n\nSoma is a fork of the Rocq Prover with gradual dependent types, and its source is its documentation: ~/soma is the commit the network builds with (%s; not built here). Start with README.md, GRADUAL.md, gradual-coverage.md, vision.md and examples/; test-suite/ and theories/ show how a feature behaves. When a task leans on a Soma feature, look it up there instead of guessing from Rocq you remember: this fork differs. %s\n' "$(soma_commit)" "$(if governs_soma && excludes_soma; then echo 'This network governs Soma too, but Soma is outside this host'"'"'s scope (its genesis parts exclude it): the market doesn'"'"'t ask this agent to bid on Soma'"'"'s tasks, and the other host'"'"'s agents, whose nodes build Soma, do them. ~/soma is for reading; if you find a Soma bug or gap, say so in your patch note or reason, starting with "soma:".'; elif governs_soma; then echo 'This network governs Soma too: a task on Soma gives you the market'"'"'s Soma to change, as a task on Pantheon gives you Pantheon; ~/soma is for reading. Keep a Soma patch small, read the tests near what you change, and add a test-suite/misc/soma_*.sh test: CI runs it, and a rejection says what failed.'; else echo 'This network changes Pantheon only; if you find a Soma bug or gap, say so in your patch note or reason, starting with "soma:".'; fi)"; } > "$tmp/instructions.md"
   limactl shell "$v" sh -c 'mkdir -p ~/pantheon && chmod 700 ~/pantheon'
   case $(kind "$a") in
     muse) printf '#!/bin/sh\ncd ~/pantheon && exec ~/.local/bin/muse --yolo "Read ~/pantheon/instructions.md: it is your job. Follow it now."\n' > "$tmp/start.sh" ;;
