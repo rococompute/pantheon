@@ -43,14 +43,14 @@ a patch request also gets a scratch checkout in $PANTHEON_WORKTREE: see scripts/
 
 dispatch (args : list string) : unit :=
   match args with
-  | "init" :: rest => cmd_init contains shell_safe_path rest
+  | "init" :: rest => cmd_init (pack_helpers node_helpers) rest
   | "keygen" :: rest => cmd_keygen rest
-  | ["genesis", home, net] => cmd_genesis contains shell_safe_path home net
-  | "edits" :: dir :: rest => cmd_edits edit_once contains shell_safe_path dir rest
+  | ["genesis", home, net] => cmd_genesis (pack_helpers node_helpers) home net
+  | "edits" :: dir :: rest => cmd_edits (pack_helpers node_helpers) dir rest
   | ["plan"] => print_lines (plan_open (read_plan ".plan"))
   | ["plan", file] => print_lines (plan_open (read_plan file))
-  | ["apply-edits", dir, file] => cmd_apply_edits edit_once contains shell_safe_path dir file
-  | ["check", repo, head, file, out] => cmd_check edit_once contains shell_safe_path repo head file out
+  | ["apply-edits", dir, file] => cmd_apply_edits (pack_helpers node_helpers) dir file
+  | ["check", repo, head, file, out] => cmd_check (pack_helpers node_helpers) repo head file out
   | ["status", home] => cmd_status home
   | "tx" :: home :: field :: rest => cmd_tx home (field :: rest)
   | "up" :: dir :: rest => cmd_up dir rest

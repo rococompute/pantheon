@@ -218,5 +218,5 @@ Fixpoint run_events (h : node_t) (st : node_state) (evs : list (list string)) : 
 node_tick (h : node_t) (st : node_state) : node_state := run_events h st (events h).
 
 run_node (home : string) (flags : list string) : unit :=
-  let h := node_open empty_node step cons restore_cons plan_open replace_all edit_once contains shell_safe_path shallow_json home flags in
+  let h := node_open empty_node step cons restore_cons plan_open (pack_helpers node_helpers) shallow_json home flags in
   forever (node_tick h) (take_state h).
