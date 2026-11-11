@@ -97,14 +97,21 @@ node_llm_budget : string -> string * string.
 node_llm_hold : string -> string -> string -> string -> list string -> bool.
 node_llm_start : string -> string -> string -> string -> string -> list string -> option string.
 (** What a model's output becomes is decided in Soma (node.soma's
-    reply_events). node_llm_start gives the output at once when the
-    process couldn't start (none: it runs, and its output comes back as an
-    llm_output event). A reply's JSON object, flattened to key, value, ...
-    (none: there is none); a run of decimal digits as a float (OCaml's
-    float_of_string); noting a limit (until when, its reason, the next
-    backoff; the probe is over); and setting the backoff after an answer
-    (the probe is over). *)
-node_reply_fields : string -> option (list string).
+    reply_events and reply_fields). node_llm_start gives the output at once
+    when the process couldn't start (none: it runs, and its output comes
+    back as an llm_output event). The job-output cap as a decimal string;
+    the byte offset of the first "{" and of the last "}" (none when that
+    byte is absent); a JSON value, parsed by yojson, as tokens ("A" count
+    key value..., "L" count value..., "S" text, "B" true/false, "U", "I"
+    digits, "F" the %.0f text), none when it does not parse. Soma cuts the
+    slice, applies the length and shallow_json guards, and flattens.
+    A run of decimal digits as a float (OCaml's float_of_string); noting a
+    limit (until when, its reason, the next backoff; the probe is over);
+    and setting the backoff after an answer (the probe is over). *)
+node_job_output_limit : unit -> string.
+node_reply_open : string -> option string.
+node_reply_close : string -> option string.
+node_json_tokens : string -> option (list string).
 node_float_of_digits : string -> float.
 node_limit_set : string -> float -> string -> float -> bool.
 node_limit_clear : string -> float -> bool.

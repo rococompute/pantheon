@@ -52,7 +52,8 @@ let chain_id = ref ""
 let pubkeys : (string, Cryptokit.RSA.key) Hashtbl.t = Hashtbl.create 8
 let max_tx_bytes = 256 * 1024
 (* the most a job (a model's reply, a CI check) may print: well past any
-   reply a transaction can carry *)
+   reply a transaction can carry. Soma reads the cap as a decimal string
+   ([node_job_output_limit]); it is not a nat. *)
 let max_job_output = 16 * max_tx_bytes
 
 let strings_json l = `List (List.map (fun s -> `String s) l)
@@ -688,38 +689,6 @@ let resolve s =
   | [] -> None
   | exception _ -> None
 
-(* JSON reply -> flat [key; value; ...], arrays as indices: files.0.path *)
-let flatten_reply j =
-  let out = ref [] in
-  let pending = Stack.create () in
-  Stack.push ("", j) pending;
-  while not (Stack.is_empty pending) do
-    let prefix, value = Stack.pop pending in
-    match value with
-    | `Assoc kv ->
-        List.iter (fun (k, v) -> Stack.push ((if prefix = "" then k else prefix ^ "." ^ k), v) pending) (List.rev kv)
-    | `List l ->
-        List.iter (fun (i, v) -> Stack.push (prefix ^ "." ^ string_of_int i, v) pending)
-          (List.rev (List.mapi (fun i v -> (i, v)) l))
-    | `String s -> out := s :: prefix :: !out
-    | `Bool b -> out := string_of_bool b :: prefix :: !out
-    | `Null -> out := "null" :: prefix :: !out
-    | `Int i -> out := string_of_int i :: prefix :: !out
-    | `Intlit s -> out := s :: prefix :: !out
-    | `Float f -> out := Printf.sprintf "%.0f" f :: prefix :: !out
-    | _ -> ()
-  done;
-  List.rev !out
-
-let json_in_reply text =
-  if String.length text > max_job_output then None
-  else match String.index_opt text '{', String.rindex_opt text '}' with
-  | Some a, Some b when b > a ->
-      let raw = String.sub text a (b - a + 1) in
-      if not (shallow_json ~max_items:4096 raw) then None
-      else (try Some (Yojson.Safe.from_string raw) with _ -> None)
-  | _ -> None
-
 let cmd_edits packed dir rest =
   let helpers = unpack_helpers packed in
       (* for a model with tools: what it changed in its checkout, as the reply a patch request wants *)
@@ -847,8 +816,40 @@ let events id = (lookup_handle id).h_events ()
 let node_llm_budget id = (lookup_handle id).h_llm_budget ()
 let node_llm_hold id req kind prompt ctx = (lookup_handle id).h_llm_hold req kind prompt ctx; true
 let node_llm_start id req kind raw prompt ctx = (lookup_handle id).h_llm_start req kind raw prompt ctx
-(* a model's output: node.soma's reply_events decides what it becomes *)
-let node_reply_fields text = Option.map flatten_reply (json_in_reply text)
+(* a model's output: node.soma's reply_fields decides what it becomes.
+   These bindings only report the cap, where the braces are, and yojson's
+   value as tokens. The slice, the guards and the key paths are Soma. *)
+let node_job_output_limit () = string_of_int max_job_output
+let node_reply_open text =
+  match String.index_opt text '{' with Some i -> Some (string_of_int i) | None -> None
+let node_reply_close text =
+  match String.rindex_opt text '}' with Some i -> Some (string_of_int i) | None -> None
+(* "A" count key value...; "L" count value...; "S" text; "B" true/false;
+   "U"; "I" digits (an int or an intlit); "F" printed with %.0f. *)
+let json_tokens j =
+  let out = ref [] in
+  let stack : ([ `E of string | `V of Yojson.Safe.t ]) Stack.t = Stack.create () in
+  Stack.push (`V j) stack;
+  while not (Stack.is_empty stack) do
+    match Stack.pop stack with
+    | `E s -> out := s :: !out
+    | `V (`Assoc kv) ->
+        List.iter (fun (k, v) -> Stack.push (`V v) stack; Stack.push (`E k) stack) (List.rev kv);
+        Stack.push (`E (string_of_int (List.length kv))) stack;
+        Stack.push (`E "A") stack
+    | `V (`List l) ->
+        List.iter (fun v -> Stack.push (`V v) stack) (List.rev l);
+        Stack.push (`E (string_of_int (List.length l))) stack;
+        Stack.push (`E "L") stack
+    | `V (`String s) -> Stack.push (`E s) stack; Stack.push (`E "S") stack
+    | `V (`Bool b) -> Stack.push (`E (string_of_bool b)) stack; Stack.push (`E "B") stack
+    | `V `Null -> Stack.push (`E "U") stack
+    | `V (`Int i) -> Stack.push (`E (string_of_int i)) stack; Stack.push (`E "I") stack
+    | `V (`Intlit s) -> Stack.push (`E s) stack; Stack.push (`E "I") stack
+    | `V (`Float f) -> Stack.push (`E (Printf.sprintf "%.0f" f)) stack; Stack.push (`E "F") stack
+  done;
+  List.rev !out
+let node_json_tokens raw = try Some (json_tokens (Yojson.Safe.from_string raw)) with _ -> None
 let node_float_of_digits s = float_of_string s
 let node_limit_set id until reason backoff = (lookup_handle id).h_limit_set until reason backoff; true
 let node_limit_clear id backoff = (lookup_handle id).h_limit_clear backoff; true
