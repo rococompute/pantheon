@@ -793,7 +793,9 @@ let argv () = Array.to_list Sys.argv |> List.tl
 type node_handle = { h_events : unit -> string list list;
                      h_llm_budget : unit -> string * string;
                      h_llm_hold : string -> string -> string -> string list -> unit;
-                     h_llm_start : string -> string -> string -> string -> string list -> unit;
+                     h_llm_start : string -> string -> string -> string -> string list -> string option;
+                     h_limit_set : float -> string -> float -> unit;
+                     h_limit_clear : float -> unit;
                      h_repo_names : unit -> string list;
                      h_ls_files : string -> string;
                      h_head_file : string -> string -> string option;
@@ -811,6 +813,9 @@ type node_handle = { h_events : unit -> string list list;
                      h_checkout_heads : unit -> (string * string) list;
                      h_divergences : unit -> (string * string) list;
                      h_limit_info : unit -> float * (string * (string * string));
+                     h_release_state : unit -> float * bool;
+                     h_release_one : unit -> string list;
+                     h_release_all : unit -> string list list;
                      h_write_status : string -> unit;
                      h_encode_tx : string -> string list -> string;
                      h_track_tx : string -> unit;
@@ -841,7 +846,12 @@ let events id = (lookup_handle id).h_events ()
 (* a model call's I/O: node.soma's perform_llm decides and builds the prompt *)
 let node_llm_budget id = (lookup_handle id).h_llm_budget ()
 let node_llm_hold id req kind prompt ctx = (lookup_handle id).h_llm_hold req kind prompt ctx; true
-let node_llm_start id req kind raw prompt ctx = (lookup_handle id).h_llm_start req kind raw prompt ctx; true
+let node_llm_start id req kind raw prompt ctx = (lookup_handle id).h_llm_start req kind raw prompt ctx
+(* a model's output: node.soma's reply_events decides what it becomes *)
+let node_reply_fields text = Option.map flatten_reply (json_in_reply text)
+let node_float_of_digits s = float_of_string s
+let node_limit_set id until reason backoff = (lookup_handle id).h_limit_set until reason backoff; true
+let node_limit_clear id backoff = (lookup_handle id).h_limit_clear backoff; true
 let node_repo_names id = (lookup_handle id).h_repo_names ()
 let node_ls_files id r = (lookup_handle id).h_ls_files r
 let node_head_file id r p = (lookup_handle id).h_head_file r p
@@ -869,6 +879,9 @@ let node_peer_send id who fields = (lookup_handle id).h_peer_send who fields; tr
 let node_checkout_heads id = (lookup_handle id).h_checkout_heads ()
 let node_divergences id = (lookup_handle id).h_divergences ()
 let node_limit_info id = (lookup_handle id).h_limit_info ()
+let node_release_state id = (lookup_handle id).h_release_state ()
+let node_release_one id = (lookup_handle id).h_release_one ()
+let node_release_all id = (lookup_handle id).h_release_all ()
 let node_local_time until =
   let tm = Unix.localtime until in Printf.sprintf "%02d:%02d" tm.Unix.tm_hour tm.Unix.tm_min
 let node_write_status id text = (lookup_handle id).h_write_status text; true
@@ -1078,68 +1091,22 @@ let node_open packed json_fn home flags =
      the limit should have reset (the time it gives, or a backoff from 15
      minutes, doubling to 2 hours), then asked again. Failing them would spend
      the agent's tries on calls bound to fail. *)
+  (* What a model's output becomes (held for a limit, an error, a reply),
+     how long a limit holds and the backoff are decided in Soma (node.soma's
+     reply_events); the shell keeps their state. *)
   let limited_until = ref 0. and limit_reason = ref "" and limit_backoff = ref 900. and held = ref [] and probing = ref false in
-  let limit_words = [ "usage limit"; "rate limit"; "rate-limit"; "ratelimit"; "limit reached"; "limit exceeded"; "quota";
-                      "too many requests"; "hit your limit"; "out of credits"; "credit balance"; "resource_exhausted";
-                      (* Grok Build: "API error (status 402 Payment Required): Grok Build usage balance exhausted" *)
-                      "balance exhausted"; "payment required"; "insufficient credit"; "insufficient balance" ] in
-  (* HTTP 429 only as a number of its own: a reply holding "k429" or "14290" is no limit *)
-  let has_number t w =
-    let n = String.length t and m = String.length w in
-    let alnum c = (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') in
-    let rec go i = i + m <= n && ((String.sub t i m = w && (i = 0 || not (alnum t.[i - 1])) && (i + m = n || not (alnum t.[i + m]))) || go (i + 1)) in
-    go 0 in
-  let is_limit text = let t = String.lowercase_ascii text in List.exists (fun w -> contains helpers t w) limit_words || has_number t "429" in
-  (* seconds until the limit resets, if the message says *)
-  let reset_in text =
-    let t = String.lowercase_ascii text and now = Unix.gettimeofday () in
-    let num_after i = let j = ref i in while !j < String.length t && t.[!j] >= '0' && t.[!j] <= '9' do incr j done;
-                      if !j > i then Some (float_of_string (String.sub t i (!j - i)), !j) else None in
-    let rec find_from k sub = if k + String.length sub > String.length t then None
-                              else if String.sub t k (String.length sub) = sub then Some (k + String.length sub) else find_from (k + 1) sub in
-    let unit_secs j = let rest = String.sub t j (min 12 (String.length t - j)) |> String.trim in
-                      if String.length rest > 0 && rest.[0] = 'h' then 3600. else if String.length rest > 0 && rest.[0] = 's' then 1. else 60. in
-    (* "...|1736000000": Claude Code's limit message ends with the reset time *)
-    match String.rindex_opt t '|' with
-    | Some i when (match num_after (i + 1) with Some (e, j) -> j = String.length (String.trim t) && e > now | None -> false) ->
-        (match num_after (i + 1) with Some (e, _) -> Some (e -. now) | None -> None)
-    | _ ->
-        let after phrase = match find_from 0 phrase with
-          | Some k -> let k = ref k in while !k < String.length t && t.[!k] = ' ' do incr k done;
-                      (match num_after !k with Some (n, j) -> Some (n *. unit_secs j) | None -> None)
-          | None -> None in
-        match after "try again in" with Some x -> Some x | None -> after "resets in" in
-  let note_limit text =
-    let wait = match reset_in text with Some x when x > 0. -> x +. 10. | _ -> !limit_backoff in
-    limit_backoff := min 7200. (!limit_backoff *. 2.);
-    limited_until := Unix.gettimeofday () +. wait;
-    limit_reason := String.sub text 0 (min 300 (String.length text));
-    probing := false;
-    say "LIMIT: %s says it has hit its limit, so its model calls are held for %.0f minutes: %s" !backend (wait /. 60.) !limit_reason in
   (* a held request, raw: Soma assembles its prompt again when it's asked *)
   let hold id kind prompt0 ctx = held := (id, kind, prompt0, ctx) :: !held in
-  (* the model process for a prompt Soma assembled from prompt0 *)
+  (* the model process for a prompt Soma assembled from prompt0. Its output
+     comes back raw as an llm_output event, or at once when the process
+     couldn't start *)
   let call_model id kind prompt0 prompt ctx =
+    let starting = ref true and immediate = ref None in
     let reply text =
-      let failed = String.length text > 0 && text.[0] = '!' in
-      if (failed || json_in_reply text = None) && is_limit text then begin
-        note_limit (if failed then String.sub text 1 (String.length text - 1) else text);
-        hold id kind prompt0 ctx
-      end
-      else if failed then (limit_backoff := 900.; probing := false; push [ "llm_error"; id; String.sub text 1 (String.length text - 1) ])
-      else begin
-      limit_backoff := 900.; probing := false;
-        match json_in_reply text with
-        | Some j -> push ("llm_reply" :: id :: flatten_reply j)
-        | None ->
-            (* what came back instead, on one line, so the log shows why *)
-            let t = String.trim (String.map (fun c -> if c = '\n' || c = '\r' then ' ' else c) text) in
-            push [ "llm_error"; id;
-                   if t = "" then "the reply was empty"
-                   else Printf.sprintf "the reply had no JSON object: %s%s" (String.sub t 0 (min 200 (String.length t))) (if String.length t > 200 then "..." else "") ]
-      end
+      if !starting then immediate := Some text
+      else push ("llm_output" :: id :: kind :: prompt0 :: text :: ctx)
     in
-    match !backend with
+    (match !backend with
     | "claude" ->
         start_job "claude" [ "-p"; "--tools"; ""; "--strict-mcp-config"; "--no-session-persistence"; "--setting-sources"; ""; "--output-format"; "text" ]
           ~stdin_text:prompt ~env:(model_env ()) ~on_done:reply ~clean:ignore
@@ -1187,7 +1154,9 @@ let node_open packed json_fn home flags =
           | _ -> ([], ignore, 1200.)
         in
         start_job ~limit (String.sub b 4 (String.length b - 4)) [] ~stdin_text:prompt ~env:(Array.append (Array.of_list extra) (model_env ())) ~on_done:reply ~clean
-    | b -> push [ "llm_error"; id; "unknown backend " ^ b ]
+    | b -> push [ "llm_error"; id; "unknown backend " ^ b ]);
+    starting := false;
+    !immediate
   in
   (* One CI job at a time on this node, the rest waiting their turn: two at
      once (a leader's merge check beside an attest) can take more memory than
@@ -1379,21 +1348,6 @@ let node_open packed json_fn home flags =
       my_txs := List.filter (fun (t, _) -> now -. t < 120.) !my_txs;
       List.iter (fun (_, raw) -> broadcast_fields [ "tx"; raw ]) !my_txs
     end;
-    (* after a limit's wait, one held request first: only when it comes back
-       without the limit (which resets the backoff) do the rest go *)
-    (* they go back to Soma first among this turn's events, as llm_release *)
-    let released = ref [] in
-    let release (id, kind, prompt0, ctx) = released := ("llm_release" :: id :: kind :: prompt0 :: ctx) :: !released in
-    if !held <> [] && now >= !limited_until && not !probing then begin
-      let hs = List.rev !held in
-      if !limit_backoff > 900. then begin
-        say "the limit's wait is over: asking %s one held request first (%d held)" !backend (List.length hs);
-        held := List.rev (List.tl hs); probing := true; release (List.hd hs)
-      end else begin
-        say "%s answers again: asking its %d held requests" !backend (List.length hs);
-        held := []; List.iter release hs
-      end
-    end;
     if now -. !last_inbox > 1. then begin
       last_inbox := now;
       let d = Filename.concat home "inbox" in
@@ -1544,7 +1498,7 @@ let node_open packed json_fn home flags =
     let evs = ref [] in
     while not (Queue.is_empty queue) do evs := Queue.pop queue :: !evs done;
     if debug then List.iter (fun ev -> say "event: %s" (brief ev)) (List.rev !evs);
-    List.rev_append !released (List.rev !evs)
+    List.rev !evs
   in
   let handle_id = string_of_int !node_counter in
   incr node_counter;
@@ -1553,6 +1507,9 @@ let node_open packed json_fn home flags =
       h_llm_budget = (fun () -> incr calls; (string_of_int !calls, string_of_int !max_calls));
       h_llm_hold = hold;
       h_llm_start = call_model;
+      h_limit_set = (fun until reason backoff ->
+        limited_until := until; limit_reason := reason; limit_backoff := backoff; probing := false);
+      h_limit_clear = (fun backoff -> limit_backoff := backoff; probing := false);
       h_repo_names = (fun () -> List.map (fun (n, _, _, _) -> n) repos);
       h_ls_files = (fun r -> git_out (rdir r) [ "ls-files" ]);
       h_head_file = (fun r p -> let ok, c = git (rdir r) [ "show"; "HEAD:" ^ p ] in if ok then Some c else None);
@@ -1579,6 +1536,16 @@ let node_open packed json_fn home flags =
       h_checkout_heads = (fun () -> List.map (fun (n, _, _, _) -> (n, git_out (rdir n) [ "rev-parse"; "--short"; "HEAD" ])) repos);
       h_divergences = (fun () -> !diverged);
       h_limit_info = (fun () -> (!limited_until, (!backend, (string_of_int (List.length !held), !limit_reason))));
+      (* held requests, oldest first, as llm_release events: node.soma's release_held decides when *)
+      h_release_state = (fun () -> (!limit_backoff, !probing));
+      h_release_one = (fun () ->
+        match List.rev !held with
+        | (id, kind, prompt0, ctx) :: rest -> held := List.rev rest; probing := true; "llm_release" :: id :: kind :: prompt0 :: ctx
+        | [] -> []);
+      h_release_all = (fun () ->
+        let hs = List.rev !held in
+        held := [];
+        List.map (fun (id, kind, prompt0, ctx) -> "llm_release" :: id :: kind :: prompt0 :: ctx) hs);
       h_write_status = (fun text -> write_file (Filename.concat home "status.txt") text);
       h_encode_tx = encode_tx key me;
       h_track_tx = (fun raw -> my_txs := (Unix.gettimeofday (), raw) :: !my_txs);

@@ -2,6 +2,7 @@
     pool of transactions waiting for a block. [step] is everything the shell
     runs: it takes one event and gives back what to do. *)
 Import util shell consensus market agent.
+From Stdlib Require Import Ascii.
 
 Record node_state := { cons : consensus_state; mkt : obj; ag : obj; pool : list string; live : bool }.
 
@@ -642,6 +643,219 @@ prompt_assemble (token prompt : string) (ctx : list string) (repos plan : unit -
   | [] => p
   end.
 
+(** ---- What a model call's output becomes (step 5) ----
+    A reply is held for a usage limit, fails, or becomes an llm_reply
+    event with its JSON's fields; when the model says when its limit
+    resets, the hold lasts that long. The shell only parses the JSON
+    (node_reply_fields), reads a run of digits as a float, and keeps the
+    limit's state. *)
+limit_words : list string :=
+  ["usage limit", "rate limit", "rate-limit", "ratelimit", "limit reached", "limit exceeded", "quota",
+   "too many requests", "hit your limit", "out of credits", "credit balance", "resource_exhausted",
+   (* Grok Build: "API error (status 402 Payment Required): Grok Build usage balance exhausted" *)
+   "balance exhausted", "payment required", "insufficient credit", "insufficient balance"].
+
+code_at (t : string) (i : nat) : nat :=
+  match char_at t i with Some c => nat_of_ascii c | None => 256 end.
+
+alnum_at (t : string) (i : nat) : bool :=
+  let n := code_at t i in ((97 <=? n) && (n <=? 122)) || ((48 <=? n) && (n <=? 57)).
+
+(** [w] in [t] as a number of its own: no letter or digit right before or
+    after it (HTTP 429, but not "k429" or "14290") *)
+Fixpoint has_number_go (fuel : nat) (t w : string) (i : nat) : bool :=
+  match fuel with
+  | 0 => false
+  | Succ f =>
+      match find_str w t i with
+      | None => false
+      | Some k =>
+          if (if k =? 0 then true else negb (alnum_at t (k - 1))) && negb (alnum_at t (k + slen w))
+          then true else has_number_go f t w (Succ k)
+      end
+  end.
+
+has_number (t w : string) : bool := has_number_go (slen t + 1) t w 0.
+
+(** a model's output saying it has hit a subscription or rate limit *)
+is_limit (text : string) : bool :=
+  let t := lower text in existsb (fun w => contains w t) limit_words || has_number t "429".
+
+(** OCaml's String.trim blanks: space, form feed, newline, return, tab *)
+ocaml_blank (n : nat) : bool := (n =? 32) || (n =? 12) || (n =? 10) || (n =? 13) || (n =? 9).
+
+Fixpoint blank_from (fuel : nat) (t : string) (i : nat) : nat :=
+  match fuel with
+  | 0 => i
+  | Succ f => if ocaml_blank (code_at t i) then blank_from f t (Succ i) else i
+  end.
+
+Fixpoint blank_back (fuel : nat) (t : string) (j : nat) : nat :=
+  match fuel, j with
+  | Succ f, Succ j' => if ocaml_blank (code_at t j') then blank_back f t j' else j
+  | _, _ => j
+  end.
+
+(** [t] without OCaml's leading and trailing blanks *)
+ocaml_trim (t : string) : string :=
+  let a := blank_from (slen t) t 0 in
+  let b := blank_back (slen t) t (slen t) in
+  if b <=? a then "" else substr t a (b - a).
+
+Fixpoint digits_end (fuel : nat) (t : string) (i : nat) : nat :=
+  match fuel with
+  | 0 => i
+  | Succ f => let n := code_at t i in if (48 <=? n) && (n <=? 57) then digits_end f t (Succ i) else i
+  end.
+
+(** the run of digits at [i], read by [of_digits], and the offset after it *)
+num_after (of_digits : string -> float) (t : string) (i : nat) : option (float * nat) :=
+  let j := digits_end (slen t) t i in
+  if i <? j then Some (of_digits (substr t i (j - i)), j) else None.
+
+Fixpoint last_bar (fuel : nat) (t : string) (j : nat) : option nat :=
+  match fuel, j with
+  | Succ f, Succ j' => if code_at t j' =? 124 then Some j' else last_bar f t j'
+  | _, _ => None
+  end.
+
+Fixpoint skip_spaces (fuel : nat) (t : string) (k : nat) : nat :=
+  match fuel with
+  | 0 => k
+  | Succ f => if code_at t k =? 32 then skip_spaces f t (Succ k) else k
+  end.
+
+(** a number's unit, from the first of the next twelve characters that
+    isn't blank: hours, seconds, or else minutes *)
+unit_secs (t : string) (j : nat) : float :=
+  let r := substr t j 12 in
+  let n := code_at r (blank_from 12 r 0) in
+  if n =? 104 then 3600%float else if n =? 115 then 1%float else 60%float.
+
+reset_after (of_digits : string -> float) (t phrase : string) : option float :=
+  match find_str phrase t 0 with
+  | Some k =>
+      match num_after of_digits t (skip_spaces (slen t) t (k + slen phrase)) with
+      | Some (n, j) => Some (PrimFloat.mul n (unit_secs t j))
+      | None => None
+      end
+  | None => None
+  end.
+
+(** Seconds until the limit resets, if the message says: Claude Code's
+    message ends with "|" and the reset's Unix time; others say "try again
+    in N" or "resets in N" minutes, hours or seconds. *)
+reset_in (of_digits : string -> float) (now : float) (text : string) : option float :=
+  let t := lower text in
+  let at_end :=
+    match last_bar (slen t) t (slen t) with
+    | Some i =>
+        match num_after of_digits t (i + 1) with
+        | Some (e, j) => if (j =? slen (ocaml_trim t)) && PrimFloat.ltb now e then Some (PrimFloat.sub e now) else None
+        | None => None
+        end
+    | None => None
+    end in
+  match at_end with
+  | Some x => Some x
+  | None =>
+      match reset_after of_digits t "try again in" with
+      | Some x => Some x
+      | None => reset_after of_digits t "resets in"
+      end
+  end.
+
+(** A digit run as a float, exactly for up to 15 digits: the Examples' reader
+    (the node reads with OCaml's float_of_string, a binding). *)
+digit_float (c : nat) : float :=
+  nth (c - 48) [0%float, 1%float, 2%float, 3%float, 4%float, 5%float, 6%float, 7%float, 8%float, 9%float] 0%float.
+
+digits_float (s : string) : float :=
+  fold_left (fun a c => PrimFloat.add (PrimFloat.mul a 10%float) (digit_float (nat_of_ascii c))) (chars s) 0%float.
+
+(** how long a limit holds: the time it gives and ten seconds, or the backoff *)
+limit_wait (reset : option float) (backoff : float) : float :=
+  match reset with
+  | Some x => if PrimFloat.ltb 0%float x then PrimFloat.add x 10%float else backoff
+  | None => backoff
+  end.
+
+(** the backoff doubles, to at most two hours *)
+limit_next_backoff (backoff : float) : float :=
+  let d := PrimFloat.mul backoff 2%float in if PrimFloat.leb 7200%float d then 7200%float else d.
+
+limit_reason_of (text : string) : string := take_str 300 text.
+
+limit_log_text (backend minutes reason : string) : string :=
+  append "LIMIT: " (append backend (append " says it has hit its limit, so its model calls are held for "
+    (append minutes (append " minutes: " reason)))).
+
+(** what came back instead of JSON, on one line, so the log shows why *)
+reply_no_json_text (text : string) : string :=
+  let t := ocaml_trim (map_chars (fun c => let n := nat_of_ascii c in
+                                   if (n =? 10) || (n =? 13) then " "%char else c) text) in
+  if seq t "" then "the reply was empty"
+  else append "the reply had no JSON object: " (append (take_str 200 t) (if 200 <? slen t then "..." else "")).
+
+Inductive reply_outcome :=
+| ReplyHold (text : string)
+| ReplyError (why : string)
+| ReplyFields (kv : list string).
+
+(** A job's output: "!..." when it failed (or couldn't start). [fields] is
+    the reply's JSON object flattened, None when it has none; it is asked
+    only when the job didn't fail, and a JSON reply is never a limit. *)
+reply_outcome_of (text : string) (fields : string -> option (list string)) : reply_outcome :=
+  if starts "!" text then
+    if is_limit text then ReplyHold (drop_str 1 text) else ReplyError (drop_str 1 text)
+  else
+    match fields text with
+    | Some kv => ReplyFields kv
+    | None => if is_limit text then ReplyHold text else ReplyError (reply_no_json_text text)
+    end.
+
+(** The outcome carried out: a limit is noted (its wait, reason and doubled
+    backoff, the log line) and the raw request held; otherwise the backoff
+    goes back to 15 minutes and the reply or error is the event. *)
+reply_events (h : node_t) (id kind prompt0 text : string) (ctx : list string) : list (list string) :=
+  match reply_outcome_of text node_reply_fields with
+  | ReplyHold body =>
+      let now := node_clock tt in
+      let (backoff, _) := node_release_state h in
+      let (_, info) := node_limit_info h in
+      let wait := limit_wait (reset_in node_float_of_digits now body) backoff in
+      let reason := limit_reason_of body in
+      if node_limit_set h (PrimFloat.add now wait) reason (limit_next_backoff backoff)
+         && node_log h (limit_log_text (fst info) (node_float_text (PrimFloat.div wait 60%float)) reason)
+         && node_llm_hold h id kind prompt0 ctx
+      then [] else [["llm_error", id, "the request couldn't be held"]]
+  | ReplyError why => if node_limit_clear h 900%float then [["llm_error", id, why]] else []
+  | ReplyFields kv => if node_limit_clear h 900%float then [("llm_reply" :: id :: kv)] else []
+  end.
+
+(** A finished job's raw output comes back as an llm_output event; it is
+    turned into what it becomes before any of the turn's events runs, in
+    order, as the shell did when the job finished. *)
+job_output_events (h : node_t) (ev : list string) : list (list string) :=
+  match ev with
+  | "llm_output" :: id :: kind :: prompt0 :: text :: ctx => reply_events h id kind prompt0 text ctx
+  | _ => [ev]
+  end.
+
+Fixpoint job_outputs_go (h : node_t) (evs acc : list (list string)) : list (list string) :=
+  match evs with
+  | [] => rev_onto acc []
+  | ev :: rest => job_outputs_go h rest (rev_onto (job_output_events h ev) acc)
+  end.
+
+job_outputs (h : node_t) (evs : list (list string)) : list (list string) := job_outputs_go h evs [].
+
+Fixpoint push_all (h : node_t) (evs : list (list string)) : bool :=
+  match evs with
+  | [] => true
+  | ev :: rest => node_push h ev && push_all h rest
+  end.
+
 llm_repos_text (h : node_t) (token : string) : string :=
   repos_text_of token (map (fun n => (n, node_ls_files h n)) (node_repo_names h)).
 
@@ -657,9 +871,13 @@ llm_repo_text (h : node_t) (token r : string) (paths : list string) : string :=
 
 llm_call (h : node_t) (id kind prompt : string) (ctx : list string) : bool :=
   let token := node_token tt in
-  node_llm_start h id kind prompt
+  match node_llm_start h id kind prompt
     (prompt_assemble token prompt ctx (fun _ => llm_repos_text h token) (fun _ => llm_plan_text h token)
-       (llm_repo_text h token)) ctx.
+       (llm_repo_text h token)) ctx with
+  | None => true
+  (* the process couldn't start: its output is here at once *)
+  | Some text => push_all h (reply_events h id kind prompt text ctx)
+  end.
 
 perform_llm (h : node_t) (id kind prompt : string) (ctx : list string) : bool :=
   let (calls, max) := node_llm_budget h in
@@ -757,7 +975,41 @@ Fixpoint run_events (h : node_t) (st : node_state) (evs : list (list string)) : 
   | ev :: rest => run_events h (run_event h st ev) rest
   end.
 
-node_tick (h : node_t) (st : node_state) : node_state := run_events h st (events h).
+(** After a limit's wait, held model requests go back: one first while the
+    backoff is up (only when it comes back without the limit, which resets
+    the backoff, do the rest go), all of them otherwise; none while the
+    limit lasts, while that first one is out, or when none are held. *)
+Inductive release_plan := ReleaseNone | ReleaseOne | ReleaseAll.
+
+release_plan_of (held : nat) (over probing backed_off : bool) : release_plan :=
+  if (held =? 0) || negb over || probing then ReleaseNone
+  else if backed_off then ReleaseOne else ReleaseAll.
+
+release_one_text (backend held : string) : string :=
+  append "the limit's wait is over: asking " (append backend
+    (append " one held request first (" (append held " held)"))).
+
+release_all_text (backend held : string) : string :=
+  append backend (append " answers again: asking its " (append held " held requests")).
+
+(** The held requests this turn gives back, oldest first, as llm_release
+    events; the shell only keeps them and hands them over. *)
+release_held (h : node_t) : list (list string) :=
+  let (until, info) := node_limit_info h in
+  let (backend, detail) := info in
+  let (held, _) := detail in
+  let (backoff, probing) := node_release_state h in
+  let over := negb (PrimFloat.ltb (node_clock tt) until) in
+  match release_plan_of (num held) over probing (PrimFloat.ltb 900%float backoff) with
+  | ReleaseNone => []
+  | ReleaseOne => if node_log h (release_one_text backend held) then [node_release_one h] else []
+  | ReleaseAll => if node_log h (release_all_text backend held) then node_release_all h else []
+  end.
+
+(** Released requests come first among a turn's events, as they did. *)
+node_tick (h : node_t) (st : node_state) : node_state :=
+  let st := run_events h st (release_held h) in
+  run_events h st (job_outputs h (events h)).
 
 (** Replay has no consensus snapshot effects, just as before: a restored
     snapshot is checked against the fully replayed height before start. *)
