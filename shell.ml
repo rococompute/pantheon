@@ -52,7 +52,8 @@ let chain_id = ref ""
 let pubkeys : (string, Cryptokit.RSA.key) Hashtbl.t = Hashtbl.create 8
 let max_tx_bytes = 256 * 1024
 (* the most a job (a model's reply, a CI check) may print: well past any
-   reply a transaction can carry *)
+   reply a transaction can carry. Soma reads the cap as a decimal string
+   ([node_job_output_limit]); it is not a nat. *)
 let max_job_output = 16 * max_tx_bytes
 
 let strings_json l = `List (List.map (fun s -> `String s) l)
@@ -61,27 +62,23 @@ let json_strings = function `List l -> List.map (function `String s -> s | _ -> 
 let tx_bytes agent nonce fields =
   String.concat "\x00" [ "tx"; !chain_id; agent; nonce; Yojson.Safe.to_string (strings_json fields) ]
 
-let all_digits s = s <> "" && String.length s < 18 && String.for_all (fun c -> c >= '0' && c <= '9') s
 
-(* Soma's bounded JSON scan, installed by [node_open]. Decimal limits keep
-   extracted nat abstract at the OCaml boundary. *)
-let soma_shallow_json : (string -> string -> string -> bool) ref =
-  ref (fun _ _ _ -> failwith "shallow_json: not set by command")
-let shallow_json ?(max = 4) ?(max_items = max_int) s =
-  !soma_shallow_json (string_of_int max) (string_of_int max_items) s
-
-let decode_tx raw =
-  if String.length raw > max_tx_bytes || not (shallow_json raw) then []
-  else
-    try
-      let j = Yojson.Safe.from_string raw in
-      let open Yojson.Safe.Util in
-      let agent = to_string (member "agent" j) and nonce = to_string (member "nonce" j) in
-      let fields = json_strings (member "fields" j) and sg = to_string (member "sig" j) in
-      match Hashtbl.find_opt pubkeys agent with
-      | Some key when all_digits nonce && verify key (tx_bytes agent nonce fields) sg -> agent :: nonce :: fields
-      | _ -> []
-    with _ -> []
+(* A signed transaction's I/O: market.soma's decode_tx decides (the caps,
+   the bounded scan, the nonce, the signature's verdict). *)
+let tx_parts raw =
+  try
+    let j = Yojson.Safe.from_string raw in
+    let open Yojson.Safe.Util in
+    let agent = to_string (member "agent" j) and nonce = to_string (member "nonce" j) in
+    let fields = json_strings (member "fields" j) and sg = to_string (member "sig" j) in
+    Some (agent, (nonce, (fields, sg)))
+  with _ -> None
+let tx_verify agent nonce fields sg =
+  match Hashtbl.find_opt pubkeys agent with
+  | Some key -> (try verify key (tx_bytes agent nonce fields) sg with _ -> false)
+  | None -> false
+let tx_byte_cap () = string_of_int max_tx_bytes
+let tx_item_cap () = string_of_int max_int
 
 let encode_tx key agent nonce fields =
   Yojson.Safe.to_string
@@ -666,7 +663,7 @@ let cmd_genesis packed home net =
 type peer = { name : string; addr : string; mutable out : Unix.file_descr option; mutable connecting : bool;
               obuf : Buffer.t; mutable next_try : float }
 
-type conn = { fd : Unix.file_descr; ibuf : Buffer.t; host : string; mutable last : float }
+type conn = { cid : int; fd : Unix.file_descr; ibuf : Buffer.t; host : string; mutable last : float }
 
 (* inbound connections: peers are a handful, so these are generous *)
 let max_conns = 64
@@ -687,38 +684,6 @@ let resolve s =
   | a :: _ -> Some a.Unix.ai_addr
   | [] -> None
   | exception _ -> None
-
-(* JSON reply -> flat [key; value; ...], arrays as indices: files.0.path *)
-let flatten_reply j =
-  let out = ref [] in
-  let pending = Stack.create () in
-  Stack.push ("", j) pending;
-  while not (Stack.is_empty pending) do
-    let prefix, value = Stack.pop pending in
-    match value with
-    | `Assoc kv ->
-        List.iter (fun (k, v) -> Stack.push ((if prefix = "" then k else prefix ^ "." ^ k), v) pending) (List.rev kv)
-    | `List l ->
-        List.iter (fun (i, v) -> Stack.push (prefix ^ "." ^ string_of_int i, v) pending)
-          (List.rev (List.mapi (fun i v -> (i, v)) l))
-    | `String s -> out := s :: prefix :: !out
-    | `Bool b -> out := string_of_bool b :: prefix :: !out
-    | `Null -> out := "null" :: prefix :: !out
-    | `Int i -> out := string_of_int i :: prefix :: !out
-    | `Intlit s -> out := s :: prefix :: !out
-    | `Float f -> out := Printf.sprintf "%.0f" f :: prefix :: !out
-    | _ -> ()
-  done;
-  List.rev !out
-
-let json_in_reply text =
-  if String.length text > max_job_output then None
-  else match String.index_opt text '{', String.rindex_opt text '}' with
-  | Some a, Some b when b > a ->
-      let raw = String.sub text a (b - a + 1) in
-      if not (shallow_json ~max_items:4096 raw) then None
-      else (try Some (Yojson.Safe.from_string raw) with _ -> None)
-  | _ -> None
 
 let cmd_edits packed dir rest =
   let helpers = unpack_helpers packed in
@@ -799,6 +764,10 @@ type node_handle = { h_events : unit -> string list list;
                      h_repo_names : unit -> string list;
                      h_ls_files : string -> string;
                      h_head_file : string -> string -> string option;
+                     h_conn_admit : string -> string -> string -> unit;
+                     h_conns : unit -> (string * float) list;
+                     h_conn_close : string -> unit;
+                     h_line_limit : unit -> string;
                      h_save : Obj.t -> unit; h_refuse : string -> unit; h_boot : string list list; h_snapshot : Obj.t option; h_replayed : string;
                      h_timer : string -> string list -> unit; h_log : string -> unit;
                      h_push : string list -> unit; h_draw : string * (string * string);
@@ -829,6 +798,9 @@ type node_handle = { h_events : unit -> string list list;
                      h_peer_count : unit -> string;
                      h_send_peer : string -> string list -> unit;
                      h_run_check : string -> string -> string -> string list -> unit;
+                     h_identity : string;
+                     h_seen_refused : string -> bool;
+                     h_verify_line : string -> string -> string list -> bool;
                      h_merge_applied : string -> string option;
                      h_merge_diverged : string -> bool;
                      h_merge_reset : string -> unit;
@@ -847,8 +819,40 @@ let events id = (lookup_handle id).h_events ()
 let node_llm_budget id = (lookup_handle id).h_llm_budget ()
 let node_llm_hold id req kind prompt ctx = (lookup_handle id).h_llm_hold req kind prompt ctx; true
 let node_llm_start id req kind raw prompt ctx = (lookup_handle id).h_llm_start req kind raw prompt ctx
-(* a model's output: node.soma's reply_events decides what it becomes *)
-let node_reply_fields text = Option.map flatten_reply (json_in_reply text)
+(* a model's output: node.soma's reply_fields decides what it becomes.
+   These bindings only report the cap, where the braces are, and yojson's
+   value as tokens. The slice, the guards and the key paths are Soma. *)
+let node_job_output_limit () = string_of_int max_job_output
+let node_reply_open text =
+  match String.index_opt text '{' with Some i -> Some (string_of_int i) | None -> None
+let node_reply_close text =
+  match String.rindex_opt text '}' with Some i -> Some (string_of_int i) | None -> None
+(* "A" count key value...; "L" count value...; "S" text; "B" true/false;
+   "U"; "I" digits (an int or an intlit); "F" printed with %.0f. *)
+let json_tokens j =
+  let out = ref [] in
+  let stack : ([ `E of string | `V of Yojson.Safe.t ]) Stack.t = Stack.create () in
+  Stack.push (`V j) stack;
+  while not (Stack.is_empty stack) do
+    match Stack.pop stack with
+    | `E s -> out := s :: !out
+    | `V (`Assoc kv) ->
+        List.iter (fun (k, v) -> Stack.push (`V v) stack; Stack.push (`E k) stack) (List.rev kv);
+        Stack.push (`E (string_of_int (List.length kv))) stack;
+        Stack.push (`E "A") stack
+    | `V (`List l) ->
+        List.iter (fun v -> Stack.push (`V v) stack) (List.rev l);
+        Stack.push (`E (string_of_int (List.length l))) stack;
+        Stack.push (`E "L") stack
+    | `V (`String s) -> Stack.push (`E s) stack; Stack.push (`E "S") stack
+    | `V (`Bool b) -> Stack.push (`E (string_of_bool b)) stack; Stack.push (`E "B") stack
+    | `V `Null -> Stack.push (`E "U") stack
+    | `V (`Int i) -> Stack.push (`E (string_of_int i)) stack; Stack.push (`E "I") stack
+    | `V (`Intlit s) -> Stack.push (`E s) stack; Stack.push (`E "I") stack
+    | `V (`Float f) -> Stack.push (`E (Printf.sprintf "%.0f" f)) stack; Stack.push (`E "F") stack
+  done;
+  List.rev !out
+let node_json_tokens raw = try Some (json_tokens (Yojson.Safe.from_string raw)) with _ -> None
 let node_float_of_digits s = float_of_string s
 let node_limit_set id until reason backoff = (lookup_handle id).h_limit_set until reason backoff; true
 let node_limit_clear id backoff = (lookup_handle id).h_limit_clear backoff; true
@@ -863,6 +867,10 @@ let boot_events id = (lookup_handle id).h_boot
 let boot_snapshot id = Option.map Obj.obj (lookup_handle id).h_snapshot
 let replay_count id = (lookup_handle id).h_replayed
 let node_timer id ms ev = (lookup_handle id).h_timer ms ev; true
+let node_conn_admit id oid mode target = (lookup_handle id).h_conn_admit oid mode target; true
+let node_conns id = (lookup_handle id).h_conns ()
+let node_conn_close id cid = (lookup_handle id).h_conn_close cid; true
+let node_line_limit id = (lookup_handle id).h_line_limit ()
 let node_log id text = (lookup_handle id).h_log text; true
 let node_push id ev = (lookup_handle id).h_push ev; true
 let node_draw id = (lookup_handle id).h_draw
@@ -897,6 +905,20 @@ let node_remember_vote id slot vid fields = (lookup_handle id).h_remember_vote s
 let node_remember_broadcast id height kind fields alt = (lookup_handle id).h_remember_broadcast height kind fields alt; true
 let node_peer_count id = (lookup_handle id).h_peer_count ()
 let node_send_peer id index fields = (lookup_handle id).h_send_peer index fields; true
+(* Raw Yojson member reads and node metadata. Soma gates the parse and
+   decides whether to verify and which event the fields carry. *)
+let node_line_parts raw =
+  try
+    let open Yojson.Safe.Util in
+    let j = Yojson.Safe.from_string raw in
+    let from = to_string (member "from" j) and sg = to_string (member "sig" j) in
+    let fields = json_strings (member "fields" j) in
+    Some (from, (sg, fields))
+  with _ -> None
+let node_line_item_cap () = string_of_int max_int
+let node_identity id = (lookup_handle id).h_identity
+let node_seen_refused id raw = (lookup_handle id).h_seen_refused raw
+let node_verify_line id from sg fields = (lookup_handle id).h_verify_line from sg fields
 (* a decided merge's I/O: node.soma's perform_merge decides *)
 let node_merge_applied id r = (lookup_handle id).h_merge_applied r
 let node_merge_diverged id r = (lookup_handle id).h_merge_diverged r
@@ -910,9 +932,8 @@ let node_merge_set_applied id r v = (lookup_handle id).h_merge_set_applied r v; 
 let node_merge_note_diverged id r entry = (lookup_handle id).h_merge_note_diverged r entry; true
 let rec forever f s = forever f (f s)
 
-let node_open packed json_fn home flags =
+let node_open packed home flags =
   let helpers = unpack_helpers packed in
-  soma_shallow_json := json_fn;
   Sys.set_signal Sys.sigpipe Sys.Signal_ignore;
   (* jobs run from scratch directories: every path the node hands out is absolute *)
   let home = if Filename.is_relative home then Filename.concat (Sys.getcwd ()) home else home in
@@ -1030,6 +1051,8 @@ let node_open packed json_fn home flags =
       names
   in
   let conns : conn list ref = ref [] in
+  let conn_counter = ref 0 in
+  let pending_conns : (int * Unix.file_descr * string) list ref = ref [] in
   let msg_bytes from fields = String.concat "\x00" [ "msg"; !chain_id; from; Yojson.Safe.to_string (strings_json fields) ] in
   let wire fields =
     let sg = if byz = "bad-sig" then String.make 512 '0' else sign key (msg_bytes me fields) in
@@ -1312,18 +1335,6 @@ let node_open packed json_fn home flags =
   say "%s listening; peers %s; backend %s" me (String.concat ", " (List.map (fun p -> p.name) peers)) !backend;
   let last_rebroadcast = ref 0. and last_inbox = ref 0. in
   let close_peer p = (match p.out with Some fd -> (try Unix.close fd with _ -> ()) | None -> ()); p.out <- None; p.connecting <- false; Buffer.clear p.obuf in
-  let on_line line =
-    if shallow_json line then
-    try
-      let j = Yojson.Safe.from_string line in
-      let from = to_string (member "from" j) and fields = json_strings (member "fields" j) and sg = to_string (member "sig" j) in
-      match Hashtbl.find_opt pubkeys from with
-      | _ when (match fields with [ "tx"; raw ] -> Hashtbl.mem refused raw | _ -> false) -> ()
-      | Some k when from <> me && verify k (msg_bytes from fields) sg ->
-          (match fields with [ "tx"; raw ] -> push [ "tx"; raw ] | _ -> push ("msg" :: from :: fields))
-      | _ -> ()
-    with _ -> ()
-  in
   let collect_events () =
     let now = Unix.gettimeofday () in
     (* connect to peers we have no link to *)
@@ -1387,16 +1398,12 @@ let node_open packed json_fn home flags =
                  peer with no key can't use up the node's descriptors; when
                  full, the one quiet longest makes room (a real peer
                  reconnects) *)
-              if List.length (List.filter (fun x -> x.host = host) !conns) >= max_conns_per_host then Unix.close c
-              else begin
-                if List.length !conns >= max_conns then begin
-                  let oldest = List.fold_left (fun o x -> if x.last < o.last then x else o) (List.hd !conns) !conns in
-                  (try Unix.close oldest.fd with _ -> ());
-                  conns := List.filter (fun x -> x != oldest) !conns
-                end;
-                Unix.set_nonblock c;
-                conns := { fd = c; ibuf = Buffer.create 4096; host; last = now } :: !conns
-              end)
+              let oid = !conn_counter in
+              incr conn_counter;
+              pending_conns := (oid, c, host) :: !pending_conns;
+              push [ "conn_offer"; string_of_int oid;
+                     string_of_int (List.length (List.filter (fun x -> x.host = host) !conns));
+                     string_of_int (List.length !conns) ])
       r;
     let buf = Bytes.create 65536 in
     conns := List.filter (fun c ->
@@ -1414,10 +1421,10 @@ let node_open packed json_fn home flags =
                    Buffer.add_subbytes c.ibuf buf 0 n;
                    let s = Buffer.contents c.ibuf in
                    let parts = String.split_on_char '\n' s in
-                   let rec take = function [ rest ] -> rest | l :: more -> on_line l; take more | [] -> "" in
+                   let rec take = function [ rest ] -> rest | l :: more -> push [ "peer_raw"; l ]; take more | [] -> "" in
                    let rest = take parts in
                    Buffer.clear c.ibuf; Buffer.add_string c.ibuf rest);
-              if Buffer.length c.ibuf > max_line then (Unix.close c.fd; false) else true
+              push [ "conn_buffer"; string_of_int c.cid; string_of_int (Buffer.length c.ibuf) ]; true
           | exception Unix.Unix_error ((EAGAIN | EWOULDBLOCK), _, _) -> true
           | exception _ -> (try Unix.close c.fd with _ -> ()); false)
       !conns;
@@ -1518,6 +1525,29 @@ let node_open packed json_fn home flags =
       h_refuse = (fun raw -> if Hashtbl.length refused < 10000 then Hashtbl.replace refused raw ());
       h_boot = List.rev !boot_rev; h_snapshot = boot_saved;
       h_replayed = string_of_int !replayed;
+      h_conn_admit = (fun oid mode target ->
+        match List.find_opt (fun (i, _, _) -> string_of_int i = oid) !pending_conns with
+        | None -> ()
+        | Some (_, c, host) ->
+            pending_conns := List.filter (fun (i, _, _) -> string_of_int i <> oid) !pending_conns;
+            (match mode with
+             | "refuse" -> (try Unix.close c with _ -> ())
+             | _ ->
+                 if mode = "evict" then
+                   (match List.find_opt (fun x -> string_of_int x.cid = target) !conns with
+                    | Some old -> (try Unix.close old.fd with _ -> ()); conns := List.filter (fun x -> x != old) !conns
+                    | None -> ());
+                 Unix.set_nonblock c;
+                 let cid = !conn_counter in
+                 incr conn_counter;
+                 conns := { cid; fd = c; ibuf = Buffer.create 4096; host; last = Unix.gettimeofday () } :: !conns));
+      h_conns = (fun () -> List.map (fun x -> (string_of_int x.cid, x.last)) !conns);
+      h_conn_close = (fun cid ->
+        match List.find_opt (fun x -> string_of_int x.cid = cid) !conns with
+        | Some x -> (try Unix.close x.fd with _ -> ()); conns := List.filter (fun y -> y != x) !conns
+        | None -> ());
+      h_line_limit = (fun () -> string_of_int max_line);
+      
       h_timer = (fun ms ev -> timers := (Unix.gettimeofday () +. float_of_string ms /. 1000., ev) :: !timers);
       h_log = (fun text -> say "%s" text); h_push = push;
       h_draw = (byz, (string_of_int chain_len, secret));
@@ -1564,6 +1594,12 @@ let node_open packed json_fn home flags =
         match List.nth_opt peers (int_of_string index) with
         | Some p -> send_to p (wire fields)
         | None -> ());
+      h_identity = me;
+      h_seen_refused = (fun raw -> Hashtbl.mem refused raw);
+      h_verify_line = (fun from sg fields ->
+        match Hashtbl.find_opt pubkeys from with
+        | Some k -> verify k (msg_bytes from fields) sg
+        | None -> false);
       h_run_check = run_check;
       h_merge_applied = (fun r -> Option.map string_of_int (Hashtbl.find_opt applied r));
       h_merge_diverged = (fun r -> List.mem_assoc r !diverged);

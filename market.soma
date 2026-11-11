@@ -28,6 +28,44 @@
     seeds, so an agent that held back in one draw is barred from the next: a
     recent leader can't steer a draw now and be repaid with a term later. *)
 Import util shell.
+From Stdlib Require Import Ascii.
+
+(** ---- A signed transaction (step 5: decode_tx in Soma) ----
+    Its fields [agent; nonce; type; args...], or [] when it's over the byte
+    cap, not bounded JSON (depth 4), not a transaction's JSON, its nonce
+    isn't 1 to 17 digits, or its signature doesn't verify against the
+    genesis key of its agent. The same on every node, given one genesis.
+    The shell only reads the JSON's members and checks the signature. *)
+Fixpoint digits_only (fuel : nat) (s : string) (i : nat) : bool :=
+  match fuel with
+  | 0 => true
+  | Succ f =>
+      match char_at s i with
+      | None => true
+      | Some c => let n := nat_of_ascii c in if (48 <=? n) && (n <=? 57) then digits_only f s (Succ i) else false
+      end
+  end.
+
+nonce_ok (s : string) : bool := negb (seq s "") && (slen s <? 18) && digits_only (slen s) s 0.
+
+(** within the byte cap, and bounded JSON; the caps are decimal strings *)
+tx_shape_ok (cap items raw : string) : bool :=
+  if num cap <? slen raw then false else shallow_json "4" items raw.
+
+(** the parts once read: a nonce that isn't digits is refused before the
+    signature is checked *)
+tx_decision (parts : option (string * (string * (list string * string))))
+    (verified : string -> string -> list string -> string -> bool) : list string :=
+  match parts with
+  | None => []
+  | Some (agent, rest) =>
+      let (nonce, more) := rest in
+      let (fields, sg) := more in
+      if nonce_ok nonce then (if verified agent nonce fields sg then agent :: nonce :: fields else []) else []
+  end.
+
+decode_tx (raw : string) : list string :=
+  if tx_shape_ok (tx_byte_cap tt) (tx_item_cap tt) raw then tx_decision (tx_parts raw) tx_verify else [].
 
 Inductive status := Pending | Merged | Cleared | Rejected | Withdrawn.
 Scheme Boolean Equality for status.
@@ -244,6 +282,17 @@ faults (n : nat) : nat := (n - 1) / 3.
 quorum (n : nat) : nat := n - faults n.
 reject_quorum (n : nat) : nat := faults n + 1.
 
+(** The three thresholds as decisions on counts, for a roster of n: a merge
+    is approved at n - f approvals, rejected at f + 1 no votes, and a draw
+    goes ahead at n - f reveals once reveal_window has passed (at all n at
+    once). For n = 4 (f = 1): 3 approvals, 2 no votes, 3 reveals, as before
+    n was a parameter. settle and maybe_draw decide with these; market.proof
+    checks them at n = 1, 4, 7 and 8 around each threshold. *)
+approved_at (n yes : nat) : bool := quorum n <=? yes.
+rejected_at (n no : nat) : bool := reject_quorum n <=? no.
+draw_ready (n revealed : nat) (window_passed : bool) : bool :=
+  (revealed =? n) || (window_passed && (quorum n <=? revealed)).
+
 (** the roster a merge's quorums count: the agents whose scope has the bid's
     repository (all of them unless genesis excludes some) *)
 merge_n (m : obj) (p : proposal) : nat :=
@@ -263,7 +312,7 @@ settle (m : obj) : obj * list (list string) :=
       let age := mheight m - pat p in
       let yes := approvals p age (param m "fallback_blocks") in
       if merge_quorum m p <=? yes then finalize m p
-      else if reject_quorum (merge_n m p) <=? no then
+      else if rejected_at (merge_n m p) no then
         match bid_by m (pbid p) with
         | Some b => (count (setf (set_bid m (with_votes (with_status b Rejected "attestors voted no") (pvotes p))) "pending" (None : option proposal)) (bidder b) "rejected", [])
         | None => (setf m "pending" (None : option proposal), [])
@@ -450,12 +499,14 @@ revealed (m : obj) : list string := filter (fun a => existsb (fun r => seq (fst 
 eligible (m : obj) : list string :=
   draw_pool (revealed m) (held_back m) (last_n 2 (history m)) (last_n 1 (history m)).
 
-(** The draw waits for all n reveals, or for n-f once reveal_window blocks
-    have passed. The seed hashes the reveals in agent order, so no proposer
-    can choose among them. *)
+(** The draw goes ahead at n - f reveals, n the genesis roster, once
+    reveal_window blocks have passed, and at once when all n are in
+    (draw_ready). The window gives a slow honest agent its few blocks to
+    reveal before it is counted as holding back and barred from the next
+    draw; up to f silent agents can't stop it. The seed hashes the reveals
+    in agent order, so no proposer can choose among them. *)
 maybe_draw (m : obj) : obj :=
-  let n := length (reveals m) in
-  if awaiting m && ((n =? length (agents m)) || ((quorum (length (agents m)) <=? n) && (asince m + param m "reveal_window" <=? mheight m))) then
+  if awaiting m && draw_ready (length (agents m)) (length (reveals m)) (asince m + param m "reveal_window" <=? mheight m) then
     let el := eligible m in
     let seed := hash_list (map (fun a => get_or "" a (reveals m)) (agents m)) in
     let l := nth (hexnum seed 12 0 mod length el) el "" in

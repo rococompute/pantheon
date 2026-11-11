@@ -168,6 +168,51 @@ worth a note in this file rather than a workaround.
 
 ## Done so far
 
+- Step 5, connection and line limits: an accepted socket reaches Soma
+  as a `conn_offer` event carrying its per-host and total counts;
+  `admit_decision_of` refuses at the per-host cap, evicts the
+  connection `oldest_conn` names (the quietest, first of equals) at
+  the overall cap, or admits it, and the shell only holds the offered
+  socket and carries the mode out. After a read, a `conn_buffer` event
+  reports the buffered bytes and `buffer_over` applies the cap Soma is
+  given as a decimal string (no unary literal), closing through a
+  binding. `node.proof` checks both caps at and past their edges and
+  the oldest choice. With this, step 5's listed work is in Soma;
+  select and reading bytes remain bindings.
+
+- Step 5, raw peer lines: socket framing queues a raw line. Soma applies
+  the depth/item scan before the Yojson member binding, assembles sender,
+  signature and field metadata, then uses the existing own/refused-before-
+  verify path. Invalid lines return the state immediately without running
+  consensus comparisons. The old `on_line` and global `soma_shallow_json`
+  callback are gone; `node_open` no longer receives a scan callback.
+  Examples and `test/peer-raw.sh` cover shape limits, bad members, exact
+  fields and own/refused flags without racing a running node. Connection
+  admission and buffered-line byte limits remain in the shell.
+
+- Step 5, part: `decode_tx` is Soma (market.soma). It refuses a raw
+  transaction over the byte cap or not bounded JSON (`tx_shape_ok`, the caps
+  as decimal strings), one the shell can't read as a transaction's JSON, one
+  whose nonce isn't 1 to 17 digits (`nonce_ok`, before any signature is
+  checked) and one whose signature doesn't verify (`tx_decision`). The shell
+  only reads the JSON's members (`tx_parts`) and checks the signature
+  (`tx_verify`). Left of step 5: the limits on lines and connections.
+
+- Step 5, part: a model reply's JSON is decided in Soma. `json_in_reply`
+  takes the job-output cap and the byte offsets of the first `{` and the
+  last `}` as decimal strings (the cap is about 4 MB, so it is not a unary
+  nat) and keeps the old guards: too long, a missing brace, the close not
+  after the open, or `shallow_json` at depth 4 and 4096 items, and there
+  is no object. `flatten_reply` turns the yojson binding's tokens into the
+  old key, value, ... list (dotted names, list indices, left to right).
+  The shell only reports the cap, finds the two bytes, and tokenizes;
+  its `json_in_reply` and `flatten_reply` are gone. `node.proof` checks
+  slices, nesting, absent objects and the flattened fields, and proves a
+  reply with no object or past the cap never becomes a reply event, and
+  that a parsed object becomes a reply with those fields. Left of step 5:
+  lines into events (`on_line`, `decode_tx`, the line and connection
+  limits).
+
 - Step 5, part: what a model call's output becomes is decided in Soma.
   A finished model job comes back raw as an `llm_output` event (or at once
   from `node_llm_start` when the process couldn't start), and `node_tick`
@@ -185,8 +230,18 @@ worth a note in this file rather than a workaround.
   non-limit texts, deadlines past and future, units, the backoff's cap and
   each outcome, with theorems that a reply with no JSON object or a failed
   job never becomes a reply event. Left of step 5: lines into events
-  (`on_line`, `decode_tx`, the line and connection limits) and the reply's
+  (`decode_tx`, the line and connection limits) and the reply's
   JSON (`json_in_reply`, `flatten_reply`).
+
+- Step 5, part: a peer line is accepted or dropped in Soma. The shell
+  parses the JSON and hands Soma the sender, signature, fields, and
+  whether the line is its own or an already-refused transaction;
+  `run_event` drops those without a verify (so refused transactions
+  resent every few seconds never pay for one), verifies the rest
+  through `node_verify_line`, and turns a verified line into its
+  `tx` or `msg` event. `node.proof` checks the drops and both
+  events. Left of step 5: `decode_tx`, the line and connection
+  limits, and the reply JSON.
 
 - Step 5, part: when held model requests go back is decided in Soma.
   `node_tick` asks `release_held` first each turn: pure `release_plan_of`

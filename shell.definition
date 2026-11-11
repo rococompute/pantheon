@@ -11,10 +11,15 @@ sha256 : string -> string.
 (** hex sha256 of a list of strings, unambiguous about where each one ends *)
 hash_list : list string -> string.
 
-(** A signed transaction, checked against the genesis keys: its fields
-    [agent; nonce; type; args...], or [] when it's malformed, oversized, or
-    its signature doesn't verify. The same on every node, given one genesis. *)
-decode_tx : string -> list string.
+(** A signed transaction's I/O; market.soma's decode_tx decides. Its parts
+    as JSON: agent, nonce, fields and signature (none when it isn't that
+    JSON); whether the signature verifies against that agent's genesis key
+    (an unknown agent's doesn't); the transaction byte cap and the item cap
+    of its bounded scan, as decimal strings. *)
+tx_parts : string -> option (string * (string * (list string * string))).
+tx_verify : string -> string -> list string -> string -> bool.
+tx_byte_cap : unit -> string.
+tx_item_cap : unit -> string.
 
 (** Process arguments exclude the executable name. Soma chooses the command. *)
 argv : unit -> list string.
@@ -37,7 +42,7 @@ cmd_up : string -> list string -> unit.
     handle is a string naming the shell's side of the node. Existing Soma
     helpers are passed once as util.soma's shell_helpers record, packed as a
     product (edit_once, contains, shell_safe_path) at the binding boundary. *)
-node_open : (((string -> string -> string -> option string) * (string -> string -> bool)) * (string -> bool)) -> (string -> string -> string -> bool) -> string -> list string -> string.
+node_open : (((string -> string -> string -> option string) * (string -> string -> bool)) * (string -> bool)) -> string -> list string -> string.
 events : string -> list (list string).
 save_snapshot : forall {C : Type}, string -> C -> bool.
 note_refused : string -> string -> bool.
@@ -63,6 +68,16 @@ node_last_served : string -> string -> string -> option float.
 node_mark_served : string -> string -> string -> float -> bool.
 node_peer_exists : string -> string -> bool.
 node_peer_send : string -> string -> list string -> bool.
+(** Verify a peer line's signature; Soma asks only for lines that are
+    neither this node's own nor an already-refused transaction. *)
+(** Raw Yojson members, the item's cap as decimal text, and metadata reads.
+    Soma scans each raw line before invoking the JSON library, then drops
+    own/refused lines before invoking node_verify_line. *)
+node_line_parts : string -> option (string * (string * list string)).
+node_line_item_cap : unit -> string.
+node_identity : string -> string.
+node_seen_refused : string -> string -> bool.
+node_verify_line : string -> string -> string -> list string -> bool.
 
 (** Status metadata and atomic file I/O; Soma assembles every status line. *)
 node_checkout_heads : string -> list (string * string).
@@ -97,14 +112,21 @@ node_llm_budget : string -> string * string.
 node_llm_hold : string -> string -> string -> string -> list string -> bool.
 node_llm_start : string -> string -> string -> string -> string -> list string -> option string.
 (** What a model's output becomes is decided in Soma (node.soma's
-    reply_events). node_llm_start gives the output at once when the
-    process couldn't start (none: it runs, and its output comes back as an
-    llm_output event). A reply's JSON object, flattened to key, value, ...
-    (none: there is none); a run of decimal digits as a float (OCaml's
-    float_of_string); noting a limit (until when, its reason, the next
-    backoff; the probe is over); and setting the backoff after an answer
-    (the probe is over). *)
-node_reply_fields : string -> option (list string).
+    reply_events and reply_fields). node_llm_start gives the output at once
+    when the process couldn't start (none: it runs, and its output comes
+    back as an llm_output event). The job-output cap as a decimal string;
+    the byte offset of the first "{" and of the last "}" (none when that
+    byte is absent); a JSON value, parsed by yojson, as tokens ("A" count
+    key value..., "L" count value..., "S" text, "B" true/false, "U", "I"
+    digits, "F" the %.0f text), none when it does not parse. Soma cuts the
+    slice, applies the length and shallow_json guards, and flattens.
+    A run of decimal digits as a float (OCaml's float_of_string); noting a
+    limit (until when, its reason, the next backoff; the probe is over);
+    and setting the backoff after an answer (the probe is over). *)
+node_job_output_limit : unit -> string.
+node_reply_open : string -> option string.
+node_reply_close : string -> option string.
+node_json_tokens : string -> option (list string).
 node_float_of_digits : string -> float.
 node_limit_set : string -> float -> string -> float -> bool.
 node_limit_clear : string -> float -> bool.
@@ -113,6 +135,17 @@ node_ls_files : string -> string -> string.
 node_head_file : string -> string -> string -> option string.
 node_token : unit -> string.
 node_float_text : float -> string.
+
+(** Connection admission and the buffered-line cap are Soma's
+    (node.soma admit_decision_of, buffer_over): an offered socket the
+    shell is holding, admitted in the mode Soma names (closing the
+    named connection when evicting), the live connections and their
+    last-activity times, closing one, and the line byte cap as a
+    decimal string. The shell only accepts, reads and closes sockets. *)
+node_conn_admit : string -> string -> string -> string -> bool.
+node_conns : string -> list (string * float).
+node_conn_close : string -> string -> bool.
+node_line_limit : string -> string.
 
 (** The CI check job; Soma selects it, the shell runs the process. *)
 node_run_check : string -> string -> string -> string -> list string -> bool.

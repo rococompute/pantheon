@@ -646,9 +646,9 @@ prompt_assemble (token prompt : string) (ctx : list string) (repos plan : unit -
 (** ---- What a model call's output becomes (step 5) ----
     A reply is held for a usage limit, fails, or becomes an llm_reply
     event with its JSON's fields; when the model says when its limit
-    resets, the hold lasts that long. The shell only parses the JSON
-    (node_reply_fields), reads a run of digits as a float, and keeps the
-    limit's state. *)
+    resets, the hold lasts that long. The shell reads a run of digits as
+    a float, keeps the limit's state, and for the JSON only reports the
+    output cap, the brace offsets and yojson's tokens. *)
 limit_words : list string :=
   ["usage limit", "rate limit", "rate-limit", "ratelimit", "limit reached", "limit exceeded", "quota",
    "too many requests", "hit your limit", "out of credits", "credit balance", "resource_exhausted",
@@ -814,11 +814,97 @@ reply_outcome_of (text : string) (fields : string -> option (list string)) : rep
     | None => if is_limit text then ReplyHold text else ReplyError (reply_no_json_text text)
     end.
 
+(** One JSON value while it is flattened. [FramePairs] and [FrameElems]
+    still have [left] children to walk, left to right, under [prefix]. *)
+Inductive reply_frame :=
+| FrameValue (prefix : string)
+| FramePairs (left : nat) (prefix : string)
+| FrameElems (left : nat) (prefix : string) (index : nat).
+
+(** Tokens from the yojson binding, in order: "A" count, then each key and
+    its value; "L" count, then each element; "S" text; "B" "true" or
+    "false"; "U"; "I" digits; "F" the binding's "%.0f" text. The same
+    key, value, ... list the old walk produced, dotted names and list
+    indices included. A list index is always ".<n>", even at the root. *)
+Fixpoint flatten_walk (fuel : nat) (stack : list reply_frame) (toks acc : list string) : list string :=
+  match fuel, stack with
+  | Succ f, FrameValue prefix :: stack =>
+      match toks with
+      | "A" :: ns :: rest => flatten_walk f (FramePairs (num ns) prefix :: stack) rest acc
+      | "L" :: ns :: rest => flatten_walk f (FrameElems (num ns) prefix 0 :: stack) rest acc
+      | "S" :: s :: rest => flatten_walk f stack rest (s :: prefix :: acc)
+      | "B" :: b :: rest => flatten_walk f stack rest (b :: prefix :: acc)
+      | "U" :: rest => flatten_walk f stack rest ("null" :: prefix :: acc)
+      | "I" :: s :: rest => flatten_walk f stack rest (s :: prefix :: acc)
+      | "F" :: s :: rest => flatten_walk f stack rest (s :: prefix :: acc)
+      | _ => flatten_walk f stack [] acc
+      end
+  | Succ f, FramePairs n prefix :: stack =>
+      match n, toks with
+      | 0, _ => flatten_walk f stack toks acc
+      | Succ n', k :: rest =>
+          let p := if seq prefix "" then k else append prefix (append "." k) in
+          flatten_walk f (FrameValue p :: FramePairs n' prefix :: stack) rest acc
+      | _, [] => rev_onto acc []
+      end
+  | Succ f, FrameElems n prefix i :: stack =>
+      match n with
+      | 0 => flatten_walk f stack toks acc
+      | Succ n' =>
+          let p := append prefix (append "." (show i)) in
+          flatten_walk f (FrameValue p :: FrameElems n' prefix (Succ i) :: stack) toks acc
+      end
+  | _, _ => rev_onto acc []
+  end.
+
+(** Two steps a token, plus the frame that opens each container. *)
+flatten_reply (toks : list string) : list string :=
+  flatten_walk (length toks + length toks + length toks + 1) (FrameValue "" :: []) toks [].
+
+(** The object's text, from the first "{" through the last "}", when the
+    reply is within the job's output cap and that slice passes the old
+    shallow_json guard (depth 4, 4096 items). The cap and the two offsets
+    are decimal strings: an output is up to 4 MB, and that length is not
+    a unary nat. Missing braces, a close that is not after the open, and
+    a slice that is too deep or too wide are no object. *)
+json_in_reply (text limit : string) (open_at close_at : option string) : option string :=
+  if num limit <? slen text then None
+  else match open_at, close_at with
+       | Some a, Some b =>
+           let i := num a in
+           let j := num b in
+           if i <? j then
+             let raw := substr text i (j - i + 1) in
+             if shallow_json "4" "4096" raw then Some raw else None
+           else None
+       | _, _ => None
+       end.
+
+(** [tokens] is yojson on the slice (none: it did not parse). Empty
+    objects flatten to an empty field list, which is still a reply. *)
+reply_fields_of (text limit : string) (open_at close_at : option string)
+    (tokens : string -> option (list string)) : option (list string) :=
+  match json_in_reply text limit open_at close_at with
+  | None => None
+  | Some raw =>
+      match tokens raw with
+      | None => None
+      | Some toks => Some (flatten_reply toks)
+      end
+  end.
+
+(** Over the cap, the braces are not even looked up: the same short
+    circuit as before, and no walk of a multi-megabyte output. *)
+reply_fields (text : string) : option (list string) :=
+  let limit := node_job_output_limit tt in
+  if num limit <? slen text then None
+  else reply_fields_of text limit (node_reply_open text) (node_reply_close text) node_json_tokens.
+
 (** The outcome carried out: a limit is noted (its wait, reason and doubled
     backoff, the log line) and the raw request held; otherwise the backoff
     goes back to 15 minutes and the reply or error is the event. *)
 reply_events (h : node_t) (id kind prompt0 text : string) (ctx : list string) : list (list string) :=
-  match reply_outcome_of text node_reply_fields with
+  match reply_outcome_of text reply_fields with
   | ReplyHold body =>
       let now := node_clock tt in
       let (backoff, _) := node_release_state h in
@@ -960,10 +1046,97 @@ Fixpoint carry_all (h : node_t) (snap : consensus_state) (effs : list (list stri
     second count against the budget. It isn't a [step] event: the state is
     the same either way (the branches differ only so extraction keeps the
     call). *)
+(** A peer line, parsed by the shell (JSON and signature stay
+    bindings): dropped when it is this node's own or an
+    already-refused transaction -- neither pays for a verify -- and
+    otherwise turned into the event it carries once verified. *)
+(** The peer JSON scan has the old depth four and caller-supplied item
+    cap. Invalid structure is refused before any JSON member reads. *)
+peer_line_shape (items raw : string) : bool := shallow_json "4" items raw.
+
+peer_wire_fields (me : string) (refused : string -> bool)
+    (parts : option (string * (string * list string))) : list string :=
+  match parts with
+  | None => []
+  | Some (from, (sig, fields)) =>
+      let self := if seq from me then "1" else "0" in
+      let seen := match fields with
+                  | ["tx", raw] => if refused raw then "1" else "0"
+                  | _ => "0"
+                  end in
+      "peer_line" :: self :: seen :: from :: sig :: fields
+  end.
+
+peer_raw_event (items me raw : string)
+    (parts : string -> option (string * (string * list string)))
+    (refused : string -> bool) : list string :=
+  if peer_line_shape items raw then peer_wire_fields me refused (parts raw) else [].
+
+line_dropped (self refused : string) : bool :=
+  seq self "1" || seq refused "1".
+
+line_event (from : string) (fields : list string) : list string :=
+  match fields with
+  | ["tx", raw] => ["tx", raw]
+  | _ => "msg" :: from :: fields
+  end.
+
+
+(** ---- Step 5, connection admission and line limits, in Soma ----
+    [admit_decision_of] is the old accept test: at the per-host cap the
+    new socket is refused; at the overall cap the quietest connection
+    (the one [oldest_conn] names, first of equals in list order) makes
+    room; otherwise the socket joins. [buffer_over] is the buffered-line
+    byte cap, compared as numbers the bindings pass as decimal strings,
+    never as unary literals built in Soma. *)
+Inductive admit_decision := AdmitRefuse | AdmitEvict | AdmitNew.
+
+admit_decision_of (same_host total : nat) : admit_decision :=
+  if 16 <=? same_host then AdmitRefuse
+  else if 64 <=? total then AdmitEvict
+  else AdmitNew.
+
+Fixpoint oldest_go (best : string * float) (rest : list (string * float)) : string :=
+  match rest with
+  | [] => fst best
+  | (id, last) :: r =>
+      if PrimFloat.ltb last (snd best) then oldest_go (id, last) r
+      else oldest_go best r
+  end.
+
+oldest_conn (l : list (string * float)) : string :=
+  match l with [] => "" | b :: r => oldest_go b r end.
+
+buffer_over (len limit : nat) : bool := limit <? len.
+
 run_event (h : node_t) (st : node_state) (ev : list string) : node_state :=
+  let ev := match ev with
+            | ["peer_raw", raw] => peer_raw_event (node_line_item_cap tt) (node_identity h) raw
+                                    node_line_parts (node_seen_refused h)
+            | _ => ev
+            end in
   match ev with
+  | [] => st
   | "llm_release" :: id :: kind :: prompt :: ctx =>
       if llm_call h id kind prompt ctx then st else with_live st (live st)
+  | "peer_line" :: self :: refused :: from :: sig :: fields =>
+      if line_dropped self refused then st
+      else if node_verify_line h from sig fields then
+        let (s, outs) := step st (line_event from fields) in
+        if carry_all h (cons s) (order_effects (line_event from fields) st s outs) then s else st
+      else st
+  | ["conn_offer", oid, same, total] =>
+      match admit_decision_of (num same) (num total) with
+      | AdmitRefuse => if node_conn_admit h oid "refuse" "" then st else with_live st (live st)
+      | AdmitNew => if node_conn_admit h oid "new" "" then st else with_live st (live st)
+      | AdmitEvict =>
+          if node_conn_admit h oid "evict" (oldest_conn (node_conns h))
+          then st else with_live st (live st)
+      end
+  | ["conn_buffer", cid, len] =>
+      if buffer_over (num len) (num (node_line_limit h)) then
+        if node_conn_close h cid then st else with_live st (live st)
+      else st
   | _ =>
       let (s, outs) := step st ev in
       if carry_all h (cons s) (order_effects ev st s outs) then s else st
@@ -1039,7 +1212,7 @@ start_node (h : node_t) (st : node_state) : node_state :=
   if carry_all h (cons s) (startup_effects outs) then s else st.
 
 run_node (home : string) (flags : list string) : unit :=
-  let h := node_open (pack_helpers node_helpers) shallow_json home flags in
+  let h := node_open (pack_helpers node_helpers) home flags in
   let st := run_boot h empty_node (boot_events h) in
   let n := replay_count h in
   let logged := if seq n "0" then true else node_log h (append "replayed " (append n " blocks from disk")) in

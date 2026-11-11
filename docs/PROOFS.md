@@ -56,8 +56,18 @@ commands need not do so. Trusted toolchains and build-cache provenance matter.
 
 | Name | What it proves; limits |
 |---|---|
-| `without_fallback_two_attestors_must_approve` | Approvals >= 3 with fallback disabled requires two true vote entries; distinct authorized voters and tree checks are not proved here. |
-| `fallback_still_needs_an_attestor` | Approvals >= 3 requires at least one true vote entry even with fallback; does not prove who computed its tree. |
+| `without_fallback_attestors_must_approve` | For any n, approvals >= n - f with fallback disabled requires n - f - 1 true vote entries; distinct authorized voters and tree checks are not proved here. |
+| `fallback_attestors_must_approve` | For any n, approvals >= n - f requires n - f - 2 true vote entries even with fallback; does not prove who computed its tree. |
+| `quorum_one`, `quorum_four`, `quorum_seven`, `quorum_eight` | The thresholds (n - f, f + 1, n - f) at n = 1, 4, 7, 8; n = 4 gives 3, 2, 3 as before n was a parameter. |
+| `thresholds_one`, `thresholds_four`, `thresholds_seven`, `thresholds_eight` | approved_at, rejected_at and draw_ready at, just below and just above each threshold. |
+| `q7_*` | settle and maybe_draw themselves at n = 7: 4 approvals pending, 5 merge; 2 no pending, 3 reject; 4 reveals wait, 5 draw after the window, wait inside it; 7 draw at once. |
+| `faults_spec` | 3f <= n - 1: f = (n-1)/3 is below a third of n. |
+| `quorum_plus_reject` | (n - f) + (f + 1) = n + 1 for every n, so n distinct voters can't reach both. |
+| `approval_quorums_intersect_in_an_honest_agent` | n + f + 1 <= 2(n - f) for n >= 1: two approval quorums share f + 1 agents, one of them honest with at most f faulty; set membership is an external premise. |
+| `approved_and_rejected_exclusive` | yes + no <= n rules out both approved_at and rejected_at. |
+| `votes_split` | True and false vote entries add up to all of them. |
+| `merge_never_both_approved_and_rejected` | With at most n - 2 vote entries, a proposal can't have n - f approvals (fallback or not) and f + 1 no votes; that the entries are distinct agents is the attest rule's, not proved here. |
+| `draw_goes_on_with_f_silent` | With k <= f agents silent, n - k reveals make draw_ready true once the window passed. |
 | `holding_back_bars_you_from_the_next_draw` | A held name is excluded from draw_pool if a non-held revealer exists; no unbiased randomness guarantee. |
 | `draw_pool_not_nil` | The pool is nonempty if a non-held revealer exists; no guarantee anyone reveals. |
 | `getf_setf_other` | Updating a different key preserves lookup; only a record helper. |
@@ -79,7 +89,7 @@ commands need not do so. Trusted toolchains and build-cache provenance matter.
 | `merged_block_fold` | A block fold preserves the property if each step does; conditional helper. |
 | `apply_block_preserves_merged` | A whole block preserves the property given the authorized-finalize premise; does not discharge that premise for a concrete property. |
 | `bid_eq_dec` | Bid equality is decidable; no bid validity claim. |
-| `merged_only_through_finalize_with_three_approvals` | A Merged bid record absent from the input comes from finalize with pending proposal and >= 3 approvals; not a tree-agreement proof or an assertion of fresh finalization for old records. |
+| `merged_only_through_finalize_with_quorum_approvals` | A Merged bid record absent from the input comes from finalize with pending proposal and merge_quorum approvals (n - f of the bid's roster by default); not a tree-agreement proof or an assertion of fresh finalization for old records. |
 | `bidders_for_at_most_two` | Selection returns at most two bidders even for malformed rosters; no fairness guarantee. |
 | `bidders_for_excludes_leader` | The selected bidders exclude the current leader; no claim about earlier leaders' bids. |
 | `self_merge_makes_no_proposal` | A merge naming the sender's bid fails with a reason and unchanged state; no liveness guarantee. |

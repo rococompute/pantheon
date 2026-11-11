@@ -3,6 +3,16 @@
     effect appears only when consensus changed (as [empty_node]'s has not),
     decided outputs come before it, and the rest come after. *)
 
+Example connection_admission_and_line_cap_edges :
+  admit_decision_of 15 63 = AdmitNew /\ admit_decision_of 16 0 = AdmitRefuse /\
+  admit_decision_of 0 64 = AdmitEvict /\ admit_decision_of 16 64 = AdmitRefuse /\
+  admit_decision_of 15 64 = AdmitEvict /\ admit_decision_of 0 0 = AdmitNew /\
+  oldest_conn [] = "" /\ oldest_conn [("a", 5%float)] = "a" /\
+  oldest_conn [("a", 5%float), ("b", 3%float), ("c", 3%float)] = "b" /\
+  oldest_conn [("a", 1%float), ("b", 2%float)] = "a" /\
+  buffer_over 10 10 = false /\ buffer_over 11 10 = true /\ buffer_over 0 0 = false.
+Proof. repeat split; reflexivity. Qed.
+
 Example decided_snapshot_rest :
   order_effects ["msg", "peer", "x"] empty_node (with_cons empty_node (new_consensus "me" ["me"] 2))
     [["broadcast", "vote"], ["decided", "1", "tx"], ["status", "s"]]
@@ -172,6 +182,14 @@ Example check_selects_the_ci_job :
   plan_output ["check", "9", "calc", "head1"] = CheckRequest "9" "calc" "head1" [] /\
   plan_output ["check", "9", "calc"] = LegacyOutput ["check", "9", "calc"] /\
   plan_output ["check"] = LegacyOutput ["check"].
+Proof. repeat split; reflexivity. Qed.
+
+Example peer_line_drops_and_events :
+  line_dropped "1" "0" = true /\ line_dropped "0" "1" = true /\
+  line_dropped "0" "0" = false /\
+  line_event "peer" ["tx", "raw"] = ["tx", "raw"] /\
+  line_event "peer" ["prevote", "7", "0"] = ["msg", "peer", "prevote", "7", "0"] /\
+  line_event "peer" [] = ["msg", "peer"].
 Proof. repeat split; reflexivity. Qed.
 
 Example status_and_submit_select_the_shared_interpreter :
@@ -545,3 +563,123 @@ Theorem json_reply_is_the_reply : forall text f kv,
 Proof.
   intros text f kv H J. unfold reply_outcome_of. rewrite H, J. reflexivity.
 Qed.
+
+(** A reply's JSON object: the slice from the first "{" through the last
+    "}", the cap, and the shallow_json guard. Offsets and the cap are
+    decimal strings, the way they cross the binding. *)
+Example json_in_reply_slice_bounds_and_depth :
+  json_in_reply "{""a"":{""b"":""c""}}" "15" (Some "0") (Some "14") = Some "{""a"":{""b"":""c""}}" /\
+  json_in_reply "{""a"":{""b"":""c""}}" "14" (Some "0") (Some "14") = None /\
+  json_in_reply "abcd" "4" (Some "0") (Some "3") = Some "abcd" /\
+  json_in_reply "abcd" "3" (Some "0") (Some "3") = None /\
+  json_in_reply "{""a"":1}" "100" None (Some "6") = None /\
+  json_in_reply "{""a"":1}" "100" (Some "0") None = None /\
+  json_in_reply "}{" "15" (Some "1") (Some "0") = None /\
+  json_in_reply "{}" "15" (Some "0") (Some "0") = None /\
+  json_in_reply "{}" "15" (Some "0") (Some "1") = Some "{}" /\
+  json_in_reply " pre {""k"":""v""} " "100" (Some "5") (Some "13") = Some "{""k"":""v""}" /\
+  json_in_reply "{{{{{x}}}}}" "100" (Some "0") (Some "10") = None /\
+  json_in_reply "{{{{x}}}}" "100" (Some "0") (Some "8") = Some "{{{{x}}}}".
+Proof. repeat split; reflexivity. Qed.
+
+(** Flattened tokens: nested objects, list indices, scalars, empty and
+    duplicate keys, in the old left-to-right order. *)
+Example flatten_reply_shapes :
+  flatten_reply ["A", "0"] = [] /\
+  flatten_reply ["A", "1", "a", "A", "0"] = [] /\
+  flatten_reply ["A", "1", "a", "S", "hi"] = ["a", "hi"] /\
+  flatten_reply ["A", "2", "b", "S", "1", "a", "A", "1", "c", "S", "2"] = ["b", "1", "a.c", "2"] /\
+  flatten_reply ["A", "1", "files", "L", "2", "A", "1", "path", "S", "a", "A", "1", "path", "S", "b"]
+    = ["files.0.path", "a", "files.1.path", "b"] /\
+  flatten_reply ["A", "4", "ok", "B", "true", "z", "U", "n", "I", "0", "f", "F", "2"]
+    = ["ok", "true", "z", "null", "n", "0", "f", "2"] /\
+  flatten_reply ["A", "1", "a", "L", "0"] = [] /\
+  flatten_reply ["A", "2", "a", "S", "1", "a", "S", "2"] = ["a", "1", "a", "2"] /\
+  flatten_reply ["L", "2", "I", "7", "S", "q"] = [".0", "7", ".1", "q"] /\
+  flatten_reply ["A", "1", "a", "S", ""] = ["a", ""].
+Proof. repeat split; reflexivity. Qed.
+
+(** The slice and the tokens together are the fields. A slice yojson
+    refuses, or no slice at all, is no fields. *)
+Example reply_fields_of_nested_and_absent :
+  reply_fields_of "{""a"":{""b"":""c""}}" "15" (Some "0") (Some "14")
+    (fun _ => Some ["A", "1", "a", "A", "1", "b", "S", "c"]) = Some ["a.b", "c"] /\
+  reply_fields_of "{x}" "10" (Some "0") (Some "2") (fun _ => None) = None /\
+  reply_fields_of "no json here" "100" None None (fun _ => Some ["A", "0"]) = None /\
+  reply_fields_of "{}" "1" (Some "0") (Some "1") (fun _ => Some ["A", "0"]) = None /\
+  reply_fields_of "{}" "2" (Some "0") (Some "1") (fun _ => Some ["A", "0"]) = Some [].
+Proof. repeat split; reflexivity. Qed.
+
+(** No braces: there is no object, so the job is not a reply event. *)
+Theorem reply_without_braces_is_not_a_reply : forall text limit tokens kv,
+  reply_outcome_of text (fun _ => reply_fields_of text limit None None tokens) <> ReplyFields kv.
+Proof.
+  intros text limit tokens kv. unfold reply_outcome_of.
+  destruct (starts "!" text).
+  - destruct (is_limit text); discriminate.
+  - unfold reply_fields_of, json_in_reply.
+    destruct (num limit <? slen text); destruct (is_limit text); discriminate.
+Qed.
+
+(** Past the output cap: not a reply event, whatever the braces were. *)
+Theorem reply_over_limit_is_not_a_reply : forall text limit open_at close_at tokens kv,
+  (num limit <? slen text) = true ->
+  reply_outcome_of text (fun _ => reply_fields_of text limit open_at close_at tokens) <> ReplyFields kv.
+Proof.
+  intros text limit open_at close_at tokens kv H. unfold reply_outcome_of.
+  destruct (starts "!" text).
+  - destruct (is_limit text); discriminate.
+  - unfold reply_fields_of, json_in_reply. rewrite H.
+    destruct (is_limit text); discriminate.
+Qed.
+
+(** A slice that parses becomes a reply whose fields are exactly the
+    flattened tokens. *)
+Theorem flattened_object_is_the_reply : forall text limit open_at close_at tokens raw toks,
+  starts "!" text = false ->
+  json_in_reply text limit open_at close_at = Some raw ->
+  tokens raw = Some toks ->
+  reply_outcome_of text (fun _ => reply_fields_of text limit open_at close_at tokens)
+    = ReplyFields (flatten_reply toks).
+Proof.
+  intros text limit open_at close_at tokens raw toks H S T.
+  unfold reply_outcome_of. rewrite H.
+  unfold reply_fields_of. rewrite S. rewrite T. reflexivity.
+Qed.
+
+Example peer_shape_item_and_depth_boundaries :
+  peer_line_shape "2" "{""x"":0}" = true /\
+  peer_line_shape "1" "{""x"":0}" = false /\
+  peer_line_shape "4" "{""x"":0,""y"":1}" = true /\
+  peer_line_shape "3" "{""x"":0,""y"":1}" = false /\
+  peer_line_shape "100" "{""x"":[[[]]]}" = true /\
+  peer_line_shape "100" "{""x"":[[[[]]]]}" = false.
+Proof. repeat split; reflexivity. Qed.
+
+Example peer_wire_fields_preserve_sender_signature_and_field_order :
+  peer_wire_fields "me" (fun _ => false) (Some ("peer", ("sig", ["prevote", "3", "2"]))) =
+    ["peer_line", "0", "0", "peer", "sig", "prevote", "3", "2"] /\
+  peer_wire_fields "me" (fun _ => false) (Some ("peer", ("sig", []))) =
+    ["peer_line", "0", "0", "peer", "sig"].
+Proof. split; reflexivity. Qed.
+
+Example peer_own_and_refused_flags_precede_signature_verification :
+  peer_wire_fields "me" (fun _ => false) (Some ("me", ("sig", ["tx", "raw"]))) =
+    ["peer_line", "1", "0", "me", "sig", "tx", "raw"] /\
+  peer_wire_fields "me" (fun raw => seq raw "bad") (Some ("peer", ("sig", ["tx", "bad"]))) =
+    ["peer_line", "0", "1", "peer", "sig", "tx", "bad"] /\
+  peer_wire_fields "me" (fun _ => true) (Some ("peer", ("sig", ["tx", "raw", "extra"]))) =
+    ["peer_line", "0", "0", "peer", "sig", "tx", "raw", "extra"] /\
+  line_dropped "1" "0" = true /\ line_dropped "0" "1" = true.
+Proof. repeat split; reflexivity. Qed.
+
+Example peer_bad_members_produce_no_event :
+  peer_wire_fields "me" (fun _ => false) None = [] /\
+  peer_raw_event "100" "me" "{bad}" (fun _ => None) (fun _ => false) = [] /\
+  peer_raw_event "1" "me" "{""x"":0}"
+    (fun _ => Some ("peer", ("sig", ["tx", "raw"]))) (fun _ => false) = [].
+Proof. repeat split; reflexivity. Qed.
+
+Theorem malformed_peer_shape_needs_no_json_members : forall cap me raw parts refused,
+  peer_line_shape cap raw = false -> peer_raw_event cap me raw parts refused = [].
+Proof. intros cap me raw parts refused H. unfold peer_raw_event. rewrite H. reflexivity. Qed.
