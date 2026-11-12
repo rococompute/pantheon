@@ -34,6 +34,17 @@ c
   chunks_len ["ab", "cde"] = 5 /\ chunks_len [] = 0.
 Proof. repeat split; reflexivity. Qed.
 
+Example peer_buffers_live_in_node_state :
+  peer_buffer empty_node "7" = [] /\
+  pbufs (peer_remember empty_node "7" ["tw"]) = [("7", ["tw"])] /\
+  peer_buffer (peer_remember (peer_remember empty_node "7" ["tw"]) "8" ["x"]) "7" = ["tw"] /\
+  peer_buffer (peer_remember (peer_remember empty_node "7" ["tw"]) "7" ["three"]) "7" = ["three"] /\
+  pbufs (peer_remember (peer_remember empty_node "7" ["tw"]) "7" []) = [] /\
+  peer_buffer (peer_forget (peer_remember empty_node "7" ["tw"]) "7") "7" = [] /\
+  pbufs (peer_forget (peer_remember (peer_remember empty_node "7" ["tw"]) "8" ["x"]) "8") =
+    [("7", ["tw"])].
+Proof. repeat split; reflexivity. Qed.
+
 Example connection_admission_and_line_cap_edges :
   admit_decision_of 15 63 = AdmitNew /\ admit_decision_of 16 0 = AdmitRefuse /\
   admit_decision_of 0 64 = AdmitEvict /\ admit_decision_of 16 64 = AdmitRefuse /\
@@ -905,4 +916,95 @@ Example inbox_tx_shapes :
   inbox_tx (Some ["L", "1", "S", "a", "S", "b"]) = None /\
   inbox_tx (Some ["L", "2", "S", "a"]) = None /\
   inbox_tx (Some ["S", "x"]) = None.
+Proof. repeat split; reflexivity. Qed.
+
+(** A job past its limit is stopped once. The same instant as the limit,
+    a time before it, and a clock behind the start are not. *)
+Example job_deadline_is_strict_and_once :
+  job_should_expire 10%float 0%float 10%float false = false /\
+  job_should_expire 11%float 0%float 10%float false = true /\
+  job_should_expire 11%float 0%float 10%float true = false /\
+  job_should_expire 9%float 0%float 10%float false = false /\
+  job_should_expire 0%float 5%float 10%float false = false.
+Proof. repeat split; reflexivity. Qed.
+
+Theorem marked_job_is_kept : forall now started limit,
+  job_should_expire now started limit true = false.
+Proof. reflexivity. Qed.
+
+(** Due timers are those at or before now, in the stored order; the rest
+    stay in that order too. *)
+Theorem timers_due_partitions : forall now l,
+  timers_due now l =
+    (filter (fun p => PrimFloat.leb (fst p) now) l,
+     filter (fun p => negb (PrimFloat.leb (fst p) now)) l).
+Proof.
+  intros now l. induction l as [|p r IH].
+  - reflexivity.
+  - simpl. rewrite IH. destruct (PrimFloat.leb (fst p) now) eqn:E; reflexivity.
+Qed.
+
+Example timer_edges_and_old_sort_order :
+  timers_due 10%float [] = ([], []) /\
+  timers_due 10%float [(10%float, ["now"]), (11%float, ["later"]), (9%float, ["early"])]
+    = ([(10%float, ["now"]), (9%float, ["early"])], [(11%float, ["later"])]) /\
+  timer_events (sort_timers [(10%float, ["timeout", "b"]), (10%float, ["timeout", "a"]),
+                             (10%float, ["timeout"]), (9%float, ["early"]),
+                             (10%float, ["timeout", "a"])])
+    = [["early"], ["timeout"], ["timeout", "a"], ["timeout", "a"], ["timeout", "b"]] /\
+  str_ord "a" "b" = OrdLt /\ str_ord "b" "a" = OrdGt /\ str_ord "aa" "aa" = OrdEq /\
+  str_ord "" "a" = OrdLt /\
+  strs_ord ["timeout"] ["timeout", "commit"] = OrdLt /\
+  strs_ord ["timeout", "a"] ["timeout", "b"] = OrdLt.
+Proof. repeat split; reflexivity. Qed.
+
+(** No wait while an event is already queued. An empty timer list waits
+    the old fifth of a second. A sooner timer waits that gap, and a
+    deadline already past does not wait. *)
+Example select_wait_cap_gap_and_queued :
+  select_wait 100%float false [(101%float, ["t"])] = 0%float /\
+  select_wait 100%float true [] = select_cap /\
+  select_wait 100%float true [(101%float, ["t"])] = select_cap /\
+  select_wait 100%float true [(PrimFloat.add 100%float 0.125%float, ["soon"])] = 0.125%float /\
+  select_wait 100%float true [(99%float, ["past"])] = 0%float /\
+  select_wait 100%float true [(PrimFloat.add 100%float 0.5%float, ["late"]),
+                              (PrimFloat.add 100%float 0.125%float, ["soon"])] = 0.125%float.
+Proof. repeat split; reflexivity. Qed.
+
+Theorem select_does_not_wait_on_a_queued_event : forall now timers,
+  select_wait now false timers = 0%float.
+Proof. reflexivity. Qed.
+
+(** A CI check's outcome: passed, the bid's failures (with the budget named
+    or the output's tail), and this node's problems, from the node's own
+    exit codes only. *)
+Example ci_outcome_cases :
+  ci_outcome "tree ok" false "3g" = (true, ("", "")) /\
+  ci_outcome "!process failed (exit 86): boom" false "3g" = (false, ("CI failed: !process failed (exit 86): boom", "ci")) /\
+  ci_outcome "!process failed (exit 137): x" false "3g" = (false, ("CI went over its memory budget (3g, no swap): the build needs less memory than that to merge", "ci")) /\
+  ci_outcome "!process failed (exit 124): x" false "3g" = (false, ("CI went over its time budget: the build has to finish within the limit its CI command gives", "ci")) /\
+  ci_outcome "!process failed (exit 2): no docker" false "3g" = (false, ("node problem: docker: !process failed (exit 2): no docker", "node")) /\
+  ci_outcome "!process failed (exit 2): x" true "3g" = (false, ("node problem: ci-sandbox: !process failed (exit 2): x", "node")) /\
+  ci_outcome "!couldn't start" false "3g" = (false, ("node problem: docker: !couldn't start", "node")) /\
+  ci_outcome "!process failed (signal 9): x" false "3g" = (false, ("CI failed: !process failed (signal 9): x", "ci")) /\
+  ci_outcome "!process failed (printed more than 4 MB): x" false "3g" = (false, ("CI printed more than 4 MB: a check has to print less than that", "ci")).
+Proof. repeat split; reflexivity. Qed.
+
+Example ci_exit_codes_and_tail :
+  ci_exit_code "exit 0" = Some 0 /\ ci_exit_code "exit 12x" = None /\ ci_exit_code "exit " = None /\
+  ci_exit_code "signal 9" = None /\
+  ci_node_problem false (Some "exit 1") = true /\ ci_node_problem false (Some "exit 128") = false /\
+  ci_node_problem false (Some "exit 86") = false /\ ci_node_problem true None = false /\
+  ci_tail "  a
+b  " = "CI failed: a b".
+Proof. repeat split; reflexivity. Qed.
+
+(** A check that failed applying a bid: the bid's (exit 1, or a signal),
+    or this node's (couldn't run, or another exit code). *)
+Example check_apply_stage_cases :
+  check_apply_stage "!process failed (exit 1): the old text isn't in the file" = "apply" /\
+  check_apply_stage "!process failed (signal 9): x" = "apply" /\
+  check_apply_stage "!process failed (exit 2): x" = "node" /\
+  check_apply_stage "!process failed (exit 0): x" = "node" /\
+  check_apply_stage "!couldn't start the check" = "node".
 Proof. repeat split; reflexivity. Qed.

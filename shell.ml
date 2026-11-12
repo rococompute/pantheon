@@ -663,7 +663,7 @@ let cmd_genesis packed home net =
 type peer = { name : string; addr : string; mutable out : Unix.file_descr option; mutable connecting : bool;
               obuf : Buffer.t; mutable next_try : float }
 
-type conn = { cid : int; fd : Unix.file_descr; host : string; mutable last : float; mutable chunks : string list }
+type conn = { cid : int; fd : Unix.file_descr; host : string; mutable last : float }
 
 (* inbound connections: peers are a handful, so these are generous *)
 let max_conns = 64
@@ -756,11 +756,12 @@ let argv () = Array.to_list Sys.argv |> List.tl
 
 (* The Soma node loop's handle: node_open registers the closures its setup
    built, and the loop drives them by this name (docs/SHELL-IN-SOMA.md 2). *)
-type node_handle = { h_events : unit -> string list list;
+type node_handle = { h_events : float -> string list list;
                      h_job_complete : string -> string -> string list list;
                      h_job_buffer : string -> string list;
                      h_job_store_buffer : string -> string list -> unit;
                      h_job_flood : string -> unit;
+                     h_check_result : string -> bool -> string -> string -> string -> unit;
                      h_llm_budget : unit -> string * string;
                      h_llm_hold : string -> string -> string -> string list -> unit;
                      h_llm_start : string -> string -> string -> string -> string list -> string list -> string list -> string list -> string list option;
@@ -772,11 +773,17 @@ type node_handle = { h_events : unit -> string list list;
                      h_head_file : string -> string -> string option;
                      h_conn_admit : string -> string -> string -> unit;
                      h_conns : unit -> (string * float) list;
-                     h_conn_buffer : string -> string list;
-                     h_conn_store_buffer : string -> string list -> unit;
                      h_conn_close : string -> unit;
                      h_line_limit : unit -> string;
+                     h_poll_prep : unit -> unit;
+                     h_turn_now : unit -> float;
+                     h_timers : unit -> (float * string list) list;
+                     h_set_timers : (float * string list) list -> unit;
+                     h_jobs : unit -> (string * (float * (float * bool))) list;
+                     h_job_expire : string -> unit;
+                     h_queue_empty : unit -> bool;
                      h_save : Obj.t -> unit; h_refuse : string -> unit; h_boot : string list list; h_snapshot : Obj.t option; h_replayed : string;
+                     h_remember_block : string -> string list -> bool;
                      h_timer : string -> string list -> unit; h_log : string -> unit;
                      h_push : string list -> unit; h_draw : string * (string * string);
                      h_block : string -> string list option;
@@ -822,11 +829,19 @@ type node_handle = { h_events : unit -> string list list;
 let node_handles : (string, node_handle) Hashtbl.t = Hashtbl.create 4
 let node_counter = ref 0
 let lookup_handle id = try Hashtbl.find node_handles id with Not_found -> fail "unknown node handle %s" id
-let events id = (lookup_handle id).h_events ()
+let events id wait = (lookup_handle id).h_events wait
+let node_poll_prep id = (lookup_handle id).h_poll_prep (); true
+let node_turn_now id = (lookup_handle id).h_turn_now ()
+let node_timers id = (lookup_handle id).h_timers ()
+let node_set_timers id ts = (lookup_handle id).h_set_timers ts; true
+let node_jobs id = (lookup_handle id).h_jobs ()
+let node_job_expire id jid = (lookup_handle id).h_job_expire jid; true
+let node_queue_empty id = (lookup_handle id).h_queue_empty ()
 let node_job_complete id job result = (lookup_handle id).h_job_complete job result
 let node_job_buffer id jid = (lookup_handle id).h_job_buffer jid
 let node_job_store_buffer id jid chunks = (lookup_handle id).h_job_store_buffer jid chunks; true
 let node_job_flood id jid = (lookup_handle id).h_job_flood jid; true
+let node_check_result id req ok tree why stage = (lookup_handle id).h_check_result req ok tree why stage; true
 (* a model call's I/O: node.soma's perform_llm decides and builds the prompt *)
 let node_llm_budget id = (lookup_handle id).h_llm_budget ()
 let node_llm_hold id req kind prompt ctx = (lookup_handle id).h_llm_hold req kind prompt ctx; true
@@ -882,6 +897,7 @@ let note_refused id raw = (lookup_handle id).h_refuse raw; true
 let boot_events id = (lookup_handle id).h_boot
 let boot_snapshot id = Option.map Obj.obj (lookup_handle id).h_snapshot
 let replay_count id = (lookup_handle id).h_replayed
+let node_remember_block id h txs = (lookup_handle id).h_remember_block h txs
 (* The node's operations (node.soma's node_op, U-1), one at a time in their
    wire form (node.soma's io_wire; this match is its io_of_wire): the only
    place the node logs, sets a timer, queues an event, sends on a peer
@@ -912,8 +928,6 @@ let node_io id op =
   | _ -> fail "unknown node operation %s" (String.concat " " op)
 let node_conn_admit id oid mode target = (lookup_handle id).h_conn_admit oid mode target; true
 let node_conns id = (lookup_handle id).h_conns ()
-let node_conn_buffer id cid = (lookup_handle id).h_conn_buffer cid
-let node_conn_store_buffer id cid chunks = (lookup_handle id).h_conn_store_buffer cid chunks; true
 let node_conn_close id cid = (lookup_handle id).h_conn_close cid; true
 let node_line_limit id = (lookup_handle id).h_line_limit ()
 let node_draw id = (lookup_handle id).h_draw
@@ -1106,7 +1120,7 @@ let node_open packed home flags =
     | "all" -> let line = wire fields in List.iter (fun p -> send_to p line) peers
     | _ -> ()
   in
-  (* jobs the node stopped for running past their time limit *)
+  (* jobs Soma stopped for running past their time limit (job_should_expire) *)
   let overtime = Hashtbl.create 8 in
   (* jobs stopped for printing more than any reply can be. Soma's job_feed
      decides; node_job_flood marks the job and signals it once. The node
@@ -1193,6 +1207,11 @@ let node_open packed home flags =
   (* A check for an attestor: the bid's edits on the head, in a fresh clone,
      give a tree; then the repository's CI, if this node has one, runs on it in
      a container with no network, a read-only root and nobody's uid. *)
+  (* a check's result event; why is the bid's own output, so no control
+     character of it goes on to a rejection's reason *)
+  let push_check_result id ok tree why stage =
+    let why = plain_text why in
+    push [ "check_result"; id; "ok"; (if ok then "true" else if stage = "node" then "error" else "false"); "tree"; tree; "why"; why; "stage"; stage ] in
   let run_check id r head edits =
     let out = Filename.temp_dir "pantheon-check" "" in
     let ef = Filename.temp_file "pantheon-edits" ".json" in
@@ -1208,14 +1227,12 @@ let node_open packed home flags =
     (* whose a failure is comes from stage alone, which the node decides from
        its own signals (exit codes, a job that never started), never from
        what the check or the bid's CI printed (docs/SECURITY-REVIEW-2.md P-6) *)
-    let result ok tree why stage = let why = plain_text why in push [ "check_result"; id; "ok"; (if ok then "true" else if stage = "node" then "error" else "false"); "tree"; tree; "why"; why; "stage"; stage ] in
+    let result ok tree why stage = push_check_result id ok tree why stage in
     if List.mem r !no_check || List.mem r my_excluded then (rm_out (); (try Sys.remove ef with _ -> ()); result false "" ("this node doesn't check " ^ r ^ (if List.mem r my_excluded then " (outside its scope: its genesis part excludes it)" else " (--no-check " ^ r ^ ")")) "node") else
     start_job self_exe [ "check"; rdir r; head; ef; out ] ~stdin_text:"" ~env:(Unix.environment ())
       ~on_done:(fun t ->
-        if String.length t > 0 && t.[0] = '!' then (say "check of request %s failed: %s" id t; result false "" t
-              (match job_how t with
-               | None -> "node"
-               | Some h -> (match exit_code h with Some c when c <> check_bid_failed -> "node" | _ -> "apply")))
+        (* whose a failed apply is: node.soma's check_apply_stage decides *)
+        if String.length t > 0 && t.[0] = '!' then push [ "check_failed"; id; t ]
         else
           let tree = if byz = "bad-tree" then (say "FAULT INJECTION: naming a wrong tree"; sha256 ("lie" ^ id)) |> fun x -> String.sub x 0 40 else String.trim t in
           if ci = "" then result true tree "" ""
@@ -1242,40 +1259,10 @@ let node_open packed home flags =
             start_job ~limit:3600. prog args
               ~stdin_text:"" ~env:(Unix.environment ())
               ~on_done:(fun t ->
-                let ok = not (String.length t > 0 && t.[0] = '!') in
-                say "CI for request %s: %s" id (if ok then "passed" else "failed");
-                (* the runner itself failing (docker, ci-sandbox) is this node's
-                   problem, not the bid's: decided from the node's own signals --
-                   the job never started, or the runner exited with a code of its
-                   own, which ci_wrap keeps the bid's exits from using -- never
-                   from what the bid printed (docs/SECURITY-REVIEW-2.md P-6). A run
-                   ended by a signal (the node's time or output limit, or a bid
-                   killing its own shell) is the bid's. *)
-                let docker_down = (not ok) && (match job_how t with
-                                               | None -> true
-                                               | Some h -> (match exit_code h with
-                                                            | Some c -> c >= 1 && c < 128 && c <> ci_bid_failed && c <> 124
-                                                            | None -> false)) in
-                if not ok then say "CI for request %s said: %s" id (String.map (fun c -> if c = '\n' then ' ' else c) t);
-                (* over budget is the bid's fault, but say which budget: docker ends
-                   a container that passes its memory with 137, timeout with 124 *)
-                (* how the check ended, from the node's own "!process failed (HOW): "
-                   prefix: the output after it is the bid's, and could say anything *)
-                let how = match job_how t with Some h -> h | None -> "" in
-                let why =
-                  if ok then ""
-                  else if docker_down then "node problem: " ^ (if !ci_sandbox <> "" then "ci-sandbox: " else "docker: ") ^ t
-                  else if contains helpers how "printed more than" then "CI " ^ how ^ ": a check has to print less than that"
-                  else if how = "exit 137" then "CI went over its memory budget (" ^ !ci_memory ^ ", no swap): the build needs less memory than that to merge"
-                  else if how = "exit 124" then "CI went over its time budget: the build has to finish within the limit its CI command gives"
-                  else begin
-                    (* the end of what CI said, where its error is: a rejection carries it to
-                       the next bidder, who otherwise can't see why bids keep failing *)
-                    let one = String.trim (String.map (fun c -> if c = '\n' || c = '\r' then ' ' else c) t) in
-                    let n = String.length one in
-                    "CI failed: " ^ (if n > 400 then "..." ^ String.sub one (n - 400) 400 else one)
-                  end in
-                result ok tree why (if ok then "" else if docker_down then "node" else "ci");
+                (* what the check's outcome is (passed, the bid's failure or
+                   this node's problem, and why) is node.soma's ci_outcome,
+                   from the node's own signals only (docs/SECURITY-REVIEW-2.md P-6) *)
+                push [ "ci_done"; id; tree; !ci_memory; (if !ci_sandbox <> "" then "sandbox" else "docker"); t ];
                 ci_next ())
               ~clean:(fun () -> if !ci_sandbox = "" then ignore (Sys.command ("docker rm -f " ^ name ^ " >/dev/null 2>&1")); rm_out ())
           end)
@@ -1323,13 +1310,7 @@ let node_open packed home flags =
   feed [ "agent"; "backend"; backend_kind ];
   List.iter feed !agent_events;
   let replayed = ref 0 in
-  List.iter (fun l ->
-      try
-        let j = Yojson.Safe.from_string l in
-        let h = to_int (member "h" j) and txs = json_strings (member "txs" j) in
-        if h = !replayed + 1 then (Hashtbl.replace blocks h txs; feed ("replay" :: string_of_int h :: txs); replayed := h)
-      with _ -> ())
-    (lines blocks_path);
+  List.iter (fun l -> feed ["block_log"; l]) (lines blocks_path);
   let boot_saved = if Sys.file_exists checkpoint_path then
       Some (Obj.repr (load_consensus checkpoint_path)) else None in
   if boot_saved = None && Hashtbl.length signed > 0 then
@@ -1345,8 +1326,19 @@ let node_open packed home flags =
   say "%s listening; peers %s; backend %s" me (String.concat ", " (List.map (fun p -> p.name) peers)) !backend;
   let last_rebroadcast = ref 0. and last_inbox = ref 0. in
   let close_peer p = (match p.out with Some fd -> (try Unix.close fd with _ -> ()) | None -> ()); p.out <- None; p.connecting <- false; Buffer.clear p.obuf in
-  let collect_events () =
+  (* One clock reading for dial, resend, the inbox, Soma's deadlines and the
+     select wait. [prep_turn] samples it; Soma reads it back; select consumes it. *)
+  let turn_now = ref 0. in
+  let have_turn_now = ref false in
+  let sample_turn () =
     let now = Unix.gettimeofday () in
+    turn_now := now;
+    have_turn_now := true;
+    now
+  in
+  let turn_clock () = if !have_turn_now then !turn_now else sample_turn () in
+  let prep_turn () =
+    let now = sample_turn () in
     (* connect to peers we have no link to *)
     List.iter (fun p ->
         if p.out = None && now >= p.next_try then begin
@@ -1381,17 +1373,21 @@ let node_open packed home flags =
               Sys.remove p
             end)
           (Sys.readdir d)
-    end;
-    (* timers due *)
-    let due, later = List.partition (fun (t, _) -> t <= now) !timers in
-    timers := later;
-    List.iter (fun (_, ev) -> push ev) (List.sort compare due);
-    (* model calls that ran too long *)
-    List.iter (fun j -> if now -. j.jstarted > j.jlimit && not (Hashtbl.mem overtime j.jpid) then begin
-        Hashtbl.replace overtime j.jpid j.jlimit; Hashtbl.replace cut j.jpid (); (try Unix.kill j.jpid Sys.sigkill with _ -> ()) end) !jobs;
-    (* events already queued (timers due now, what perform pushed) go to the
-       loop without waiting: the old loop drained them before select *)
-    let wait = if Queue.is_empty queue then List.fold_left (fun m (t, _) -> min m (t -. now)) 0.2 !timers |> max 0. else 0. in
+    end
+  in
+  (* Soma names the job. The limit stored here is the one the finish report uses. *)
+  let expire_job jid =
+    match List.find_opt (fun j -> j.jid = jid) !jobs with
+    | Some j when not (Hashtbl.mem overtime j.jpid) ->
+        Hashtbl.replace overtime j.jpid j.jlimit;
+        Hashtbl.replace cut j.jpid ();
+        (try Unix.kill j.jpid Sys.sigkill with _ -> ())
+    | _ -> ()
+  in
+  let collect_events wait =
+    (* Same reading as the deadlines: a peer's last activity, for eviction. *)
+    let now = if !have_turn_now then !turn_now else Unix.gettimeofday () in
+    have_turn_now := false;
     let reads = listener :: List.map (fun c -> c.fd) !conns @ List.map (fun j -> j.jfd) !jobs in
     let writes = List.filter_map (fun p -> match p.out with Some fd when p.connecting || Buffer.length p.obuf > 0 -> Some fd | _ -> None) peers in
     (* a failed select (a descriptor past FD_SETSIZE, EBADF) waits a moment
@@ -1421,7 +1417,7 @@ let node_open packed home flags =
         if not (List.mem c.fd r) then true
         else
           match Unix.read c.fd buf 0 65536 with
-          | 0 -> Unix.close c.fd; false
+          | 0 -> Unix.close c.fd; push [ "peer_closed"; string_of_int c.cid ]; false
           | n ->
               c.last <- now;
               (* Soma splits these bytes into lines (feed_chunks in
@@ -1429,7 +1425,7 @@ let node_open packed home flags =
                  only reads the bytes from the descriptor *)
               push [ "peer_bytes"; string_of_int c.cid; Bytes.sub_string buf 0 n ]; true
           | exception Unix.Unix_error ((EAGAIN | EWOULDBLOCK), _, _) -> true
-          | exception _ -> (try Unix.close c.fd with _ -> ()); false)
+          | exception _ -> (try Unix.close c.fd with _ -> ()); push [ "peer_closed"; string_of_int c.cid ]; false)
       !conns;
     (* finished jobs are taken off the list before their callbacks run: a
        callback may start the next job *)
@@ -1515,6 +1511,7 @@ let node_open packed home flags =
             List.rev !evs);
       h_job_buffer = (fun jid -> match List.find_opt (fun j -> j.jid = jid) !jobs with Some j -> j.jchunks | None -> []);
       h_job_store_buffer = (fun jid chunks -> match List.find_opt (fun j -> j.jid = jid) !jobs with Some j -> j.jchunks <- chunks | None -> ());
+      h_check_result = push_check_result;
       h_job_flood = (fun jid ->
         match List.find_opt (fun j -> j.jid = jid) !jobs with
         | Some j when not (Hashtbl.mem flooded j.jpid) ->
@@ -1541,6 +1538,7 @@ let node_open packed home flags =
       h_refuse = (fun raw -> if Hashtbl.length refused < 10000 then Hashtbl.replace refused raw ());
       h_boot = List.rev !boot_rev; h_snapshot = boot_saved;
       h_replayed = string_of_int !replayed;
+      h_remember_block = (fun hs txs -> match int_of_string_opt hs with None -> false | Some n -> Hashtbl.replace blocks n txs; replayed := n; true);
       h_conn_admit = (fun oid mode target ->
         match List.find_opt (fun (i, _, _) -> string_of_int i = oid) !pending_conns with
         | None -> ()
@@ -1556,16 +1554,20 @@ let node_open packed home flags =
                  Unix.set_nonblock c;
                  let cid = !conn_counter in
                  incr conn_counter;
-                 conns := { cid; fd = c; host; last = Unix.gettimeofday (); chunks = [] } :: !conns));
+                 conns := { cid; fd = c; host; last = Unix.gettimeofday () } :: !conns));
       h_conns = (fun () -> List.map (fun x -> (string_of_int x.cid, x.last)) !conns);
-      h_conn_buffer = (fun cid -> match List.find_opt (fun x -> string_of_int x.cid = cid) !conns with Some x -> x.chunks | None -> []);
-      h_conn_store_buffer = (fun cid chunks -> match List.find_opt (fun x -> string_of_int x.cid = cid) !conns with Some x -> x.chunks <- chunks | None -> ());
       h_conn_close = (fun cid ->
         match List.find_opt (fun x -> string_of_int x.cid = cid) !conns with
         | Some x -> (try Unix.close x.fd with _ -> ()); conns := List.filter (fun y -> y != x) !conns
         | None -> ());
       h_line_limit = (fun () -> string_of_int max_line);
-      
+      h_poll_prep = prep_turn;
+      h_turn_now = turn_clock;
+      h_timers = (fun () -> !timers);
+      h_set_timers = (fun ts -> timers := ts);
+      h_jobs = (fun () -> List.map (fun j -> (j.jid, (j.jstarted, (j.jlimit, Hashtbl.mem overtime j.jpid)))) !jobs);
+      h_job_expire = expire_job;
+      h_queue_empty = (fun () -> Queue.is_empty queue);
       h_timer = (fun ms ev -> timers := (Unix.gettimeofday () +. float_of_string ms /. 1000., ev) :: !timers);
       h_log = (fun text -> say "%s" text); h_push = push;
       h_draw = (byz, (string_of_int chain_len, secret));

@@ -4,22 +4,39 @@
 Import util shell consensus market agent.
 From Stdlib Require Import Ascii.
 
-Record node_state := { cons : consensus_state; mkt : obj; ag : obj; pool : list string; live : bool }.
+Record node_state := { cons : consensus_state; mkt : obj; ag : obj; pool : list string; live : bool;
+                       pbufs : list (string * list string) }.
 
 with_cons (c : node_state) (v : consensus_state) : node_state :=
-  {| cons := v; mkt := mkt c; ag := ag c; pool := pool c; live := live c |}.
+  {| cons := v; mkt := mkt c; ag := ag c; pool := pool c; live := live c; pbufs := pbufs c |}.
 
 with_mkt (c : node_state) (v : obj) : node_state :=
-  {| cons := cons c; mkt := v; ag := ag c; pool := pool c; live := live c |}.
+  {| cons := cons c; mkt := v; ag := ag c; pool := pool c; live := live c; pbufs := pbufs c |}.
 
 with_ag (c : node_state) (v : obj) : node_state :=
-  {| cons := cons c; mkt := mkt c; ag := v; pool := pool c; live := live c |}.
+  {| cons := cons c; mkt := mkt c; ag := v; pool := pool c; live := live c; pbufs := pbufs c |}.
 
 with_pool (c : node_state) (v : list string) : node_state :=
-  {| cons := cons c; mkt := mkt c; ag := ag c; pool := v; live := live c |}.
+  {| cons := cons c; mkt := mkt c; ag := ag c; pool := v; live := live c; pbufs := pbufs c |}.
 
 with_live (c : node_state) (v : bool) : node_state :=
-  {| cons := cons c; mkt := mkt c; ag := ag c; pool := pool c; live := v |}.
+  {| cons := cons c; mkt := mkt c; ag := ag c; pool := pool c; live := v; pbufs := pbufs c |}.
+
+with_pbufs (c : node_state) (v : list (string * list string)) : node_state :=
+  {| cons := cons c; mkt := mkt c; ag := ag c; pool := pool c; live := live c; pbufs := v |}.
+
+(** A peer connection's buffered read chunks live here, keyed by the
+    connection id the shell names: the shell only reads the bytes. *)
+peer_buffer (c : node_state) (cid : string) : list string := get_or [] cid (pbufs c).
+
+peer_forget (c : node_state) (cid : string) : node_state :=
+  with_pbufs c (filter (fun kv => negb (seq cid (fst kv))) (pbufs c)).
+
+peer_remember (c : node_state) (cid : string) (kept : list string) : node_state :=
+  match kept with
+  | [] => peer_forget c cid
+  | _ => with_pbufs c (put cid kept (pbufs c))
+  end.
 
 (** A snapshot from a completed height may remain if the process crashed
     after syncing blocks.log. Never roll the replayed chain back. *)
@@ -27,7 +44,8 @@ restore_cons (n : node_state) (c : consensus_state) : node_state :=
   if height c =? height (cons n) then with_cons n c else n.
 
 empty_node : node_state :=
-  {| cons := new_consensus "" [] 1; mkt := new_market []; ag := new_agent ""; pool := []; live := false |}.
+  {| cons := new_consensus "" [] 1; mkt := new_market []; ag := new_agent ""; pool := []; live := false;
+     pbufs := [] |}.
 
 (** How far ahead of an agent's next nonce the pool looks, and how many of
     one agent's transactions it keeps (docs/SECURITY-REVIEW-2.md P-5). A block
@@ -1533,6 +1551,19 @@ job_feed (chunks : list string) (chunk : string) (limit keep : nat) : list strin
     ([tail], true)
   else (chunks ++ [chunk], false).
 
+(** One peer read's complete parsing plan. Complete lines are queued even
+    when the trailing partial exceeds the cap, before closing the socket. *)
+Record peer_feed_result := {
+  peer_lines : list string;
+  peer_kept : list string;
+  peer_over : bool
+}.
+
+peer_feed (chunks : list string) (chunk limit : string) : peer_feed_result :=
+  let (lines, kept) := feed_chunks chunks chunk in
+  {| peer_lines := lines; peer_kept := kept;
+     peer_over := buffer_over (chunks_len kept) (num limit) |}.
+
 Fixpoint queue_lines (h : node_t) (lines : list string) : bool :=
   match lines with
   | [] => true
@@ -1557,6 +1588,115 @@ inbox_tx (tokens : option (list string)) : option (list string) :=
   | _ => None
   end.
 
+(** ---- A CI check's outcome (step 5) ----
+    The shell hands back a CI run's raw output as a ci_done fact. Whether
+    it passed, whose a failure is, and why are decided here from the node's
+    own signals only: the "!process failed (HOW): " prefix and its exit
+    code, never what the bid printed (docs/SECURITY-REVIEW-2.md P-6). The
+    runner failing to start or exiting with a code of its own (1 to 127,
+    neither the bid's 86 nor timeout's 124) is this node's problem; a run
+    ended by a signal is the bid's. *)
+ci_job_how (t : string) : option string :=
+  let pre := "!process failed (" in
+  if (slen pre <? slen t) && starts pre t then
+    let rest := drop_str (slen pre) t in
+    match find_str ")" rest 0 with Some i => Some (take_str i rest) | None => Some "" end
+  else None.
+
+Fixpoint ci_digits (fuel : nat) (s : string) (i : nat) : bool :=
+  match fuel with
+  | 0 => true
+  | Succ f =>
+      match char_at s i with
+      | None => true
+      | Some c => let n := nat_of_ascii c in if (48 <=? n) && (n <=? 57) then ci_digits f s (Succ i) else false
+      end
+  end.
+
+ci_exit_code (how : string) : option nat :=
+  if (5 <? slen how) && starts "exit " how then
+    let d := drop_str 5 how in if ci_digits (slen d) d 0 then Some (num d) else None
+  else None.
+
+ci_node_problem (ok : bool) (how : option string) : bool :=
+  if ok then false
+  else match how with
+       | None => true
+       | Some h =>
+           match ci_exit_code h with
+           | Some c => (1 <=? c) && (c <? 128) && negb (c =? 86) && negb (c =? 124)
+           | None => false
+           end
+       end.
+
+ci_blank (c : ascii) : bool :=
+  let n := nat_of_ascii c in Nat.eqb n 32 || Nat.eqb n 9 || Nat.eqb n 10 || Nat.eqb n 12 || Nat.eqb n 13.
+
+Fixpoint ci_blank_from (fuel : nat) (s : string) (i : nat) : nat :=
+  match fuel with
+  | 0 => i
+  | Succ f => match char_at s i with Some c => if ci_blank c then ci_blank_from f s (Succ i) else i | None => i end
+  end.
+
+Fixpoint ci_blank_back (fuel : nat) (s : string) (j : nat) : nat :=
+  match fuel, j with
+  | Succ f, Succ k => match char_at s k with Some c => if ci_blank c then ci_blank_back f s k else j | None => j end
+  | _, _ => j
+  end.
+
+(** OCaml's String.trim: space, tab, newline, form feed, carriage return *)
+ci_trim (s : string) : string :=
+  let a := ci_blank_from (slen s) s 0 in
+  let b := ci_blank_back (slen s) s (slen s) in
+  if b <=? a then "" else substr s a (b - a).
+
+(** the end of what CI said, on one line, where its error is *)
+ci_tail (t : string) : string :=
+  let one := ci_trim (replace_all (replace_all t newline " ") (SCons (ascii_of_nat 13) SNil) " ") in
+  let n := slen one in
+  append "CI failed: " (if 400 <? n then append "..." (substr one (n - 400) 400) else one).
+
+(** passed, why, and the stage ("" passed, "node" this node's, "ci" the bid's) *)
+ci_outcome (t : string) (sandbox : bool) (memory : string) : bool * (string * string) :=
+  let ok := negb (starts "!" t) in
+  let how_opt := ci_job_how t in
+  let down := ci_node_problem ok how_opt in
+  let how := match how_opt with Some h => h | None => "" end in
+  let why :=
+    if ok then ""
+    else if down then append "node problem: " (append (if sandbox then "ci-sandbox: " else "docker: ") t)
+    else if contains "printed more than" how then append "CI " (append how ": a check has to print less than that")
+    else if seq how "exit 137" then append "CI went over its memory budget (" (append memory ", no swap): the build needs less memory than that to merge")
+    else if seq how "exit 124" then "CI went over its time budget: the build has to finish within the limit its CI command gives"
+    else ci_tail t in
+  (ok, (why, if ok then "" else if down then "node" else "ci")).
+
+(** A check that failed before CI (applying the bid's edits): the bid's
+    when the check itself exited with its own code for that (1) or ended
+    some other way it reports (a signal), this node's when the check
+    couldn't run or exited with any other code. From the node's own
+    signals only, never what the bid's edits printed. *)
+check_apply_stage (t : string) : string :=
+  match ci_job_how t with
+  | None => "node"
+  | Some h =>
+      match ci_exit_code h with
+      | Some c => if c =? 1 then "apply" else "node"
+      | None => "apply"
+      end
+  end.
+
+perform_check_failed (h : node_t) (id t : string) : bool :=
+  io_log h (append "check of request " (append id (append " failed: " t))) &&
+  node_check_result h id false "" t (check_apply_stage t).
+
+perform_ci_done (h : node_t) (id tree memory runner t : string) : bool :=
+  let (ok, rest) := ci_outcome t (seq runner "sandbox") memory in
+  let (why, stage) := rest in
+  io_log h (append "CI for request " (append id (append ": " (if ok then "passed" else "failed")))) &&
+  (if ok then true else io_log h (append "CI for request " (append id (append " said: " (replace_all t newline " "))))) &&
+  node_check_result h id ok tree why stage.
+
 run_event (h : node_t) (st : node_state) (ev : list string) : node_state :=
   let ev := match ev with
             | ["peer_raw", raw] => peer_raw_event (node_line_item_cap tt) (node_identity h) raw
@@ -1578,13 +1718,19 @@ run_event (h : node_t) (st : node_state) (ev : list string) : node_state :=
       | AdmitRefuse => if node_conn_admit h oid "refuse" "" then st else with_live st (live st)
       | AdmitNew => if node_conn_admit h oid "new" "" then st else with_live st (live st)
       | AdmitEvict =>
-          if node_conn_admit h oid "evict" (oldest_conn (node_conns h))
-          then st else with_live st (live st)
+          let target := oldest_conn (node_conns h) in
+          if node_conn_admit h oid "evict" target
+          then peer_forget st target else with_live st (live st)
       end
   | ["conn_buffer", cid, len] =>
       if buffer_over (num len) (num (node_line_limit h)) then
-        if node_conn_close h cid then st else with_live st (live st)
+        if node_conn_close h cid then peer_forget st cid else with_live st (live st)
       else st
+  | ["peer_closed", cid] => peer_forget st cid
+  | ["check_failed", id, t] =>
+      if perform_check_failed h id t then st else with_live st (live st)
+  | ["ci_done", id, tree, memory, runner, t] =>
+      if perform_ci_done h id tree memory runner t then st else with_live st (live st)
   | ["inbox_file", path, content] =>
       match inbox_tx (node_json_tokens content) with
       | Some fields =>
@@ -1594,12 +1740,13 @@ run_event (h : node_t) (st : node_state) (ev : list string) : node_state :=
       | None => if io_log h (append "ignoring malformed " path) then st else with_live st (live st)
       end
   | ["peer_bytes", cid, chunk] =>
-      let (lines, kept) := feed_chunks (node_conn_buffer h cid) chunk in
-      if node_conn_store_buffer h cid kept && queue_lines h lines then
-        if buffer_over (chunks_len kept) (num (node_line_limit h)) then
-          if node_conn_close h cid then st else with_live st (live st)
+      let parsed := peer_feed (peer_buffer st cid) chunk (node_line_limit h) in
+      let st := peer_remember st cid (peer_kept parsed) in
+      if queue_lines h (peer_lines parsed) then
+        if peer_over parsed then
+          if node_conn_close h cid then peer_forget st cid else with_live st (live st)
         else st
-      else st
+      else with_live st (live st)
   | ["job_bytes", id, chunk] =>
       let (kept, over) := job_feed (node_job_buffer h id) chunk
                             (num (node_job_output_limit tt)) (num job_keep_text) in
@@ -1649,10 +1796,124 @@ release_held (h : node_t) : list (list string) :=
   | ReleaseAll => if io_log h (release_all_text backend held) then node_release_all h else []
   end.
 
-(** Released requests come first among a turn's events, as they did. *)
+(** ---- Step 5: job deadlines and which timers fire ----
+    A job is stopped once the elapsed time is greater than its limit, and
+    not again after that. A timer fires when its deadline is at or before
+    the turn's clock. Due timers are ordered as the shell's sort was:
+    earliest deadline, then the event list byte by byte, and equal events
+    in the order the list stored them. The select waits at most a fifth of
+    a second, or until the next timer, and not at all when the queue
+    already has an event. The shell samples one clock reading, stores the
+    timers and signals the job Soma names. *)
+job_should_expire (now started limit : float) (marked : bool) : bool :=
+  negb marked && PrimFloat.ltb limit (PrimFloat.sub now started).
+
+Fixpoint expire_jobs (h : node_t) (now : float)
+    (jobs : list (string * (float * (float * bool)))) : bool :=
+  match jobs with
+  | [] => true
+  | (id, (started, (limit, marked))) :: r =>
+      (if job_should_expire now started limit marked then node_job_expire h id else true)
+      && expire_jobs h now r
+  end.
+
+(** Deadlines at or before [now], and the rest, each in list order. *)
+Fixpoint timers_due (now : float) (l : list (float * list string))
+    : list (float * list string) * list (float * list string) :=
+  match l with
+  | [] => ([], [])
+  | p :: r =>
+      let (d, later) := timers_due now r in
+      if PrimFloat.leb (fst p) now then (p :: d, later) else (d, p :: later)
+  end.
+
+Inductive ord := OrdLt | OrdEq | OrdGt.
+
+Fixpoint str_ord_go (fuel : nat) (a b : string) (i : nat) : ord :=
+  match fuel with
+  | 0 => OrdEq
+  | Succ f =>
+      match char_at a i, char_at b i with
+      | None, None => OrdEq
+      | None, Some _ => OrdLt
+      | Some _, None => OrdGt
+      | Some ca, Some cb =>
+          let na := nat_of_ascii ca in
+          let nb := nat_of_ascii cb in
+          if na <? nb then OrdLt
+          else if nb <? na then OrdGt
+          else str_ord_go f a b (Succ i)
+      end
+  end.
+
+str_ord (a b : string) : ord := str_ord_go (slen a + slen b + 1) a b 0.
+
+Fixpoint strs_ord (a b : list string) : ord :=
+  match a, b with
+  | [], [] => OrdEq
+  | [], _ => OrdLt
+  | _, [] => OrdGt
+  | x :: xs, y :: ys => match str_ord x y with OrdEq => strs_ord xs ys | c => c end
+  end.
+
+(** OCaml's polymorphic order on a (deadline, event) pair. *)
+timer_ord (a b : float * list string) : ord :=
+  if PrimFloat.ltb (fst a) (fst b) then OrdLt
+  else if PrimFloat.ltb (fst b) (fst a) then OrdGt
+  else strs_ord (snd a) (snd b).
+
+(** Stable: an equal pair stays in front of the one inserted later. *)
+Fixpoint insert_timer (x : float * list string) (l : list (float * list string))
+    : list (float * list string) :=
+  match l with
+  | [] => [x]
+  | y :: r => match timer_ord x y with OrdGt => y :: insert_timer x r | _ => x :: y :: r end
+  end.
+
+Fixpoint sort_timers (l : list (float * list string)) : list (float * list string) :=
+  match l with
+  | [] => []
+  | x :: r => insert_timer x (sort_timers r)
+  end.
+
+Fixpoint timer_events (l : list (float * list string)) : list (list string) :=
+  match l with [] => [] | (_, ev) :: r => ev :: timer_events r end.
+
+float_min (a b : float) : float := if PrimFloat.ltb a b then a else b.
+
+(** The old select cap, a fifth of a second. One divided by five is that
+    double, so the literal that is not a binary64 value stays out. *)
+select_cap : float := PrimFloat.div 1%float 5%float.
+
+Fixpoint next_gap (now acc : float) (timers : list (float * list string)) : float :=
+  match timers with
+  | [] => acc
+  | (t, _) :: r => next_gap now (float_min acc (PrimFloat.sub t now)) r
+  end.
+
+select_wait (now : float) (queue_empty : bool) (timers : list (float * list string)) : float :=
+  if queue_empty then
+    let gap := next_gap now select_cap timers in
+    if PrimFloat.ltb gap 0%float then 0%float else gap
+  else 0%float.
+
+(** Stop overdue jobs, keep the timers that have not fired, and queue the
+    due ones. Dial, resend and the inbox have already run, so their events
+    stay ahead of these, and both run before select. *)
+clock_arm (h : node_t) : bool :=
+  let now := node_turn_now h in
+  let (due, later) := timers_due now (node_timers h) in
+  expire_jobs h now (node_jobs h) &&
+  node_set_timers h later &&
+  push_all h (timer_events (sort_timers due)).
+
+(** Released requests come first. Then dial, resend and the inbox, then
+    deadlines and due timers, then one select. *)
 node_tick (h : node_t) (st : node_state) : node_state :=
   let st := run_events h st (release_held h) in
-  run_events h st (job_outputs h (events h)).
+  if node_poll_prep h && clock_arm h then
+    run_events h st (job_outputs h (events h (select_wait (node_turn_now h) (node_queue_empty h) (node_timers h))))
+  else st.
 
 (** Replay has no consensus snapshot effects, just as before: a restored
     snapshot is checked against the fully replayed height before start. *)
@@ -1662,9 +1923,55 @@ Fixpoint perform_outputs (h : node_t) (outs : list (list string)) : bool :=
   | out :: rest => perform_output h out && perform_outputs h rest
   end.
 
+(** One blocks.log line, as the yojson binding's tokens. The height has to
+    be the next one ([expect], an int), and every transaction a string;
+    anything else is skipped, as a line that failed to parse was. *)
+Fixpoint json_strings_go (n : nat) (toks : list string) : option (list string) :=
+  match n, toks with
+  | 0, _ => Some []
+  | Succ j, "S" :: s :: rest =>
+      match json_strings_go j rest with Some r => Some (s :: r) | None => None end
+  | _, _ => None
+  end.
+
+json_string_list (toks : list string) : option (list string) :=
+  match toks with
+  | "L" :: n :: rest => json_strings_go (num n) rest
+  | _ => None
+  end.
+
+json_int (toks : list string) : option string :=
+  match toks with "I" :: s :: _ => Some s | _ => None end.
+
+block_log_replay (toks : option (list string)) (expect : string) : option (string * list string) :=
+  match toks with
+  | None => None
+  | Some t =>
+      let hv := match json_member "h" t with Some v => v | None => [] end in
+      match json_int hv with
+      | None => None
+      | Some h =>
+          if negb (seq h expect) then None else
+          match json_member "txs" t with
+          | None => None
+          | Some v =>
+              match json_string_list v with Some txs => Some (h, txs) | None => None end
+          end
+      end
+  end.
+
 Fixpoint run_boot (h : node_t) (st : node_state) (evs : list (list string)) : node_state :=
   match evs with
   | [] => st
+  | ("block_log" :: line :: _) :: rest =>
+      match block_log_replay (node_json_tokens line) (show (height (cons st))) with
+      | None => run_boot h st rest
+      | Some (bh, txs) =>
+          if node_remember_block h bh txs then
+            let (s, outs) := step st ("replay" :: bh :: txs) in
+            if perform_outputs h outs then run_boot h s rest else st
+          else run_boot h st rest
+      end
   | ev :: rest =>
       let (s, outs) := step st ev in
       if perform_outputs h outs then run_boot h s rest else st
