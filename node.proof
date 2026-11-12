@@ -855,7 +855,7 @@ Proof.
     who fields | height txs | height | text | slot vid fields | raw | |
     id repo head edits | repo version | repo entry | | height kind fields alternate |
     offer mode target | conn | job | job | who | | repo | who first | who first timestamp |
-    | height | | | slot | slot | nonce fields | ]; try reflexivity.
+    | height | | | slot | slot | nonce fields | | | | | stamp ]; try reflexivity.
   change (match resend_parts (resend_fields fields ++ ("alternate" :: alternate)) with
     | Some (original, alt) => Some (IoRememberBroadcast height kind original alt)
     | None => None end = Some (IoRememberBroadcast height kind fields alternate)).
@@ -1129,6 +1129,20 @@ Qed.
 Theorem served_result_presence : forall now,
   served_result (true,(now,[])) = Some now /\ served_result (false,(now,[])) = None.
 Proof. intros; split; reflexivity. Qed.
+
+(** The status file reads its facts in the order the bindings did (the
+    checkouts' heads, the divergences, the clock, the limit) and then
+    writes it; with no limit on, it reads no time of day. *)
+Theorem status_reads_in_order : forall ans lines,
+  status_limit_active (ans_float (ans IoClock)) (ans_float (ans IoLimitInfo)) = false ->
+  exists text, ntrace ans (status_prog lines) =
+    [IoCheckoutHeads, IoDivergences, IoClock, IoLimitInfo, IoWriteStatus text].
+Proof.
+  intros ans lines H. unfold status_prog, ans_float, status_limit_active in *. simpl.
+  rewrite H.
+  repeat match goal with |- context [match ?e with _ => _ end] => destruct e end;
+  eexists; reflexivity.
+Qed.
 
 Theorem remember_peer_is_served_operation : forall who first now,
   action_prog (RememberPeer who first now) =

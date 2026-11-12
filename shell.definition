@@ -80,7 +80,10 @@ node_io : string -> list string -> bool * (float * list string).
     "signed_body" SLOT the message signed there (found or not),
     "encode_tx" NONCE FIELDS the transaction signed with the node's key,
     "check_exclusions" the --no-check names then the scope's, framed as
-    "field" NAME... "alternate" NAME... . *)
+    "field" NAME... "alternate" NAME... . The status file's facts too:
+    "checkout_heads" and "divergences" answer pairs flattened (REPO
+    VALUE...), "limit_info" (the time the limit lasts until, [backend,
+    held, reason]), "local_time" STAMP (node_float_wire's text) [HH:MM]. *)
 forever : forall {A : Type}, (A -> A) -> A -> unit.
 
 (** Metadata reads. The clock and the height are node_io operations.
@@ -97,15 +100,12 @@ node_seen_refused : string -> string -> bool.
 node_verify_line : string -> string -> string -> list string -> bool.
 
 (** Status metadata and atomic file I/O; Soma assembles every status line. *)
-node_checkout_heads : string -> list (string * string).
-node_divergences : string -> list (string * string).
 node_limit_info : string -> float * (string * (string * string)).
 (** Held model request facts: newest-first raw queue and probe metadata.
     Soma chooses the next queue and probe flag and constructs release events. *)
 node_release_state : string -> float * bool.
 node_held_requests : string -> list (string * string * string * list string).
 node_held_store : string -> list (string * string * string * list string) -> bool -> bool.
-node_local_time : float -> string.
 
 (** A model call's I/O; node.soma's perform_llm decides and assembles the
     prompt. The call count, bumped for this call, and the budget; holding a

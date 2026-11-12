@@ -943,18 +943,21 @@ let node_io id op =
   | [ "check_exclusions" ] ->
       let denied, excluded = h.h_check_exclusions () in
       (true, (0., List.concat_map (fun d -> [ "field"; d ]) denied @ ("alternate" :: excluded)))
+  | [ "checkout_heads" ] -> (true, (0., List.concat_map (fun (r, v) -> [ r; v ]) (h.h_checkout_heads ())))
+  | [ "divergences" ] -> (true, (0., List.concat_map (fun (r, v) -> [ r; v ]) (h.h_divergences ())))
+  | [ "limit_info" ] ->
+      let until, (backend, (held, reason)) = h.h_limit_info () in (true, (until, [ backend; held; reason ]))
+  | [ "local_time"; stamp ] ->
+      let tm = Unix.localtime (node_float_of_digits stamp) in
+      (true, (0., [ Printf.sprintf "%02d:%02d" tm.Unix.tm_hour tm.Unix.tm_min ]))
   | _ -> fail "unknown node operation %s" (String.concat " " op)
 let node_conns id = (lookup_handle id).h_conns ()
 (* Reads/writes and authenticated socket sends; catch-up policy is Soma.
    The clock is the "clock" arm of node_io. *)
-let node_checkout_heads id = (lookup_handle id).h_checkout_heads ()
-let node_divergences id = (lookup_handle id).h_divergences ()
 let node_limit_info id = (lookup_handle id).h_limit_info ()
 let node_release_state id = (lookup_handle id).h_release_state ()
 let node_held_requests id = (lookup_handle id).h_held_requests ()
 let node_held_store id requests probing = (lookup_handle id).h_held_store requests probing; true
-let node_local_time until =
-  let tm = Unix.localtime until in Printf.sprintf "%02d:%02d" tm.Unix.tm_hour tm.Unix.tm_min
 (* signed.log's bytes, raw, and noting one vote Soma read from them (without
    appending it again); Soma's log_lines splits them and signed_log_entry
    parses each line *)

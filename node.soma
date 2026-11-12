@@ -1498,23 +1498,28 @@ perform_llm (h : node_t) (id kind prompt : string) (ctx : list string) : bool :=
   | LlmAsk => io_log h (llm_ask_text backend kind id calls max) && llm_call h id kind prompt ctx
   end.
 
-(** The status file: its facts are still bindings (the checkouts'
-    heads, the divergences, the limit), so it stays a function for now. *)
-perform_status (h : node_t) (lines : list string) : bool :=
-  let heads := node_checkout_heads h in
-  let bad := node_divergences h in
-  let now := io_now h in
-  let (until, info) := node_limit_info h in
-  let (backend, detail) := info in
-  let (held, reason) := detail in
-  let limited := status_limit_active now until in
-  let clock := if limited then node_local_time until else "" in
-  io_do h (IoWriteStatus (status_output lines heads bad limited backend clock held reason)).
+(** The status file, as a node program: its facts are operations, read
+    in the order the bindings were (the checkouts' heads, the divergences,
+    the clock, the limit, and the limit's end as a time of day only when
+    a limit is on). *)
+status_prog (lines : list string) : nprog bool :=
+  nbind (nask IoCheckoutHeads) (fun heads =>
+  nbind (nask IoDivergences) (fun bad =>
+  nbind (nask IoClock) (fun now =>
+  nbind (nask IoLimitInfo) (fun limit =>
+  let until := ans_float limit in
+  let (backend, rest) := match ans_list limit with b :: r => (b, r) | [] => ("", []) end in
+  let (held, reason) := match rest with x :: y :: _ => (x, y) | [x] => (x, "") | [] => ("", "") end in
+  let limited := status_limit_active (ans_float now) until in
+  let write clock := nexec (IoWriteStatus (status_output lines (ans_pairs heads) (ans_pairs bad)
+                                             limited backend clock held reason)) in
+  if limited then nbind (nask (IoLocalTime (node_float_wire until))) (fun t => write (ans_one t))
+  else write "")))).
 
 (** What an output does, as a node program: its reads are operations
     ([IoDraw], [IoBlock], [IoHeight], [IoPeerCount], the signed-vote
-    table, the check exclusions), and so is everything it does. The
-    status file, a merge and a model call are still functions over
+    table, the check exclusions, the status file's facts), and so is
+    everything it does. A merge and a model call are still functions over
     bindings: the program is just their result. *)
 output_prog (h : node_t) (out : list string) : nprog bool :=
   match plan_output out with
@@ -1537,7 +1542,7 @@ output_prog (h : node_t) (out : list string) : nprog bool :=
       nbind (nask (IoPeerExists who)) (fun has_peer =>
       actions_prog (catchup_plan who first (ans_one current) (ans_float clock)
                       (served_result last) (fst has_peer) (seq (fst (ans_draw draw)) "silent")))))))
-  | WriteStatus lines => NDone (perform_status h lines)
+  | WriteStatus lines => status_prog lines
   | SubmitTransaction nonce fields =>
       nbind (nask IoDraw) (fun draw =>
       nbind (nask IoNonceFlooded) (fun flooded =>

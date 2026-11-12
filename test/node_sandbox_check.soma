@@ -9,7 +9,10 @@ world : nio_world :=
      w_check := fun id _ _ _ => print (Stdlib.Strings.String.append "check asked: " id);
      w_draw := ["false", "1", "secret"];
      w_encode_tx := fun nonce fields => nio_json_strings (nonce :: fields);
-     w_exclusions := ["alternate"] |}.
+     w_exclusions := ["alternate"];
+     w_heads := ["calc", "abc1234"];
+     w_backend := "claude";
+     w_local_time := fun _ => "00:00" |}.
 
 (** A decided block as node.soma's outputs make it: logged, stored, the
     height set, the status written, a timer armed; the block and the peer

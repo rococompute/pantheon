@@ -65,7 +65,16 @@ Inductive node_op :=
 | IoSignedVote (slot : string)
 | IoSignedBody (slot : string)
 | IoEncodeTx (nonce : string) (fields : list string)
-| IoCheckExclusions.
+| IoCheckExclusions
+(** the status file's facts (U-1): each checkout's head and the diverged
+    repositories (pairs, flattened: [repo, value, ...]), the model limit
+    (the time it lasts until, then [backend, held requests, reason]), and
+    a time of day as hours and minutes (for a timestamp in
+    node_float_wire's text) *)
+| IoCheckoutHeads
+| IoDivergences
+| IoLimitInfo
+| IoLocalTime (stamp : string).
 
 (** Two arbitrary lists on one wire: tagged field/value pairs, then the
     alternate-list marker. A marker occurring as a value is never a tag.
@@ -118,6 +127,10 @@ io_wire (op : node_op) : list string :=
   | IoSignedBody slot => ["signed_body", slot]
   | IoEncodeTx nonce fields => "encode_tx" :: nonce :: fields
   | IoCheckExclusions => ["check_exclusions"]
+  | IoCheckoutHeads => ["checkout_heads"]
+  | IoDivergences => ["divergences"]
+  | IoLimitInfo => ["limit_info"]
+  | IoLocalTime stamp => ["local_time", stamp]
   end.
 
 io_of_wire (w : list string) : option node_op :=
@@ -160,6 +173,10 @@ io_of_wire (w : list string) : option node_op :=
   | ["signed_body", slot] => Some (IoSignedBody slot)
   | "encode_tx" :: nonce :: fields => Some (IoEncodeTx nonce fields)
   | ["check_exclusions"] => Some IoCheckExclusions
+  | ["checkout_heads"] => Some IoCheckoutHeads
+  | ["divergences"] => Some IoDivergences
+  | ["limit_info"] => Some IoLimitInfo
+  | ["local_time", stamp] => Some (IoLocalTime stamp)
   | _ => None
   end.
 
@@ -189,6 +206,15 @@ ans_list (a : nanswer) : list string := snd (snd a).
     nothing found (the binary never gives one). *)
 ans_one (a : nanswer) : string := match ans_list a with [x] => x | _ => "" end.
 ans_found (a : nanswer) : option (list string) := if fst a then Some (ans_list a) else None.
+(** pairs on the wire, flattened: [a, b, c, d] is [(a, b), (c, d)] *)
+Fixpoint nio_pairs (l : list string) : list (string * string) :=
+  match l with a :: b :: rest => (a, b) :: nio_pairs rest | _ => [] end.
+
+Fixpoint nio_flat_pairs (l : list (string * string)) : list string :=
+  match l with [] => [] | (a, b) :: rest => a :: b :: nio_flat_pairs rest end.
+
+ans_pairs (a : nanswer) : list (string * string) := nio_pairs (ans_list a).
+
 ans_found_one (a : nanswer) : option string :=
   match ans_found a with Some [x] => Some x | _ => None end.
 ans_draw (a : nanswer) : string * (string * string) :=
@@ -460,6 +486,7 @@ nio_table_op (now : PrimFloat.float) (t : nio_tables) (op : node_op)
       Some (nio_ok, nio_with_applied t ((r, v) :: List.filter (fun p => negb (nio_eq (fst p) r)) (t_applied t)))
   | IoMergeDiverged r entry => Some (nio_ok, nio_with_diverged t ((r, entry) :: t_diverged t))
   | IoIsDiverged r => Some (ans_flag (nio_has r (t_diverged t)), t)
+  | IoDivergences => Some (ans_data true (nio_flat_pairs (t_diverged t)), t)
   | IoRememberBroadcast h kind fields alt => Some (nio_ok, nio_with_mine t ((h, (kind, (fields, alt))) :: t_mine t))
   | IoServedAt who first =>
       match nio_find (nio_key_is who first) (t_served t) with

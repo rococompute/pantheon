@@ -166,8 +166,11 @@ those operations, in order. Output handling is one program too (`output_prog`): 
 a slot, a transaction's signed line, the check exclusions) are operations
 whose answers carry data (`nanswer`'s list), asked in the program's
 continuations after the operations before them, so they happen when they
-did. Reads that are still bindings of their own (the status facts, the
-merge's git work) are the next ones to turn into operations; each one is
+did. The status file is a program as well (`status_prog`): the checkouts'
+heads, the divergences, the clock, the model limit and, when a limit is
+on, its end as a time of day, read in the old order (`node.proof`'s
+`status_reads_in_order`). Reads that are still bindings of their own (the
+merge's git work, a model call's) are the next ones to turn into operations; each one is
 one less thing a unikernel can't run.
 The resend write uses tagged `field`/value pairs followed by `alternate`
 and the untouched second list. Values may themselves contain either tag.
@@ -182,8 +185,9 @@ pure part, `soma build --no-image` on a unikernel that runs a node
 program). What Sandbox doesn't give yet is the program's to supply, in
 `nio_world`: a message's bytes on a peer link (`w_wire`: the binary signs
 it with RSA), starting a CI check (`w_check`), the epoch's draw
-(`w_draw`), a transaction's signed line (`w_encode_tx`) and the check
-exclusions (`w_exclusions`). Decided blocks and signed votes are kept in
+(`w_draw`), a transaction's signed line (`w_encode_tx`), the check
+exclusions (`w_exclusions`), the checkouts' heads (`w_heads`), the model
+backend (`w_backend`) and a time of day (`w_local_time`). Decided blocks and signed votes are kept in
 memory beside their files, as the binary keeps them (`nio_store_op`).
 Each operation:
 
@@ -205,11 +209,12 @@ Each operation:
 | `IoBlock height`, `IoHeight`, `IoSignedVote slot`, `IoSignedBody slot` | the decided-block and signed-vote tables beside blocks.log and signed.log, the height; absent is `false` | the stores (`nio_store_op`), filled by `IoStore` and `IoSignVote` |
 | `IoPeerCount` | the genesis peers, counted | the peer links, counted |
 | `IoDraw`, `IoEncodeTx nonce fields`, `IoCheckExclusions` | the epoch's draw (Byzantine flag, chain length, link secret); a transaction signed with the node's key; the fields this node won't check, `field`-tagged, then `alternate` and the excluded alternates | `w_draw`, `w_encode_tx` (RSA again), `w_exclusions` |
+| `IoCheckoutHeads`, `IoDivergences` | `git rev-parse --short HEAD` in each checkout; the divergence list (pairs, flattened) | `w_heads`; the tables' divergences |
+| `IoLimitInfo`, `IoLocalTime stamp` | the model limit (until, backend, held requests, reason); `Unix.localtime` as HH:MM | no limit, `w_backend` (the limit is the model calls', not operations yet); `w_local_time` |
 | `IoConnAdmit`, `IoConnClose`, `IoJobFlood`, `IoJobExpire` | admit, refuse or close a socket; kill a job's process | nothing to do: a unikernel's links are its listen handlers', and it runs no processes |
 
 Not yet operations, still bindings of their own (the next parts of U-1):
-the status facts (checkout heads, divergences, limit information, local
-time),
+a model call's facts (the limit, held requests, the call count),
 the snapshot (Soma's "storage" still), the merge's git work (reset, probe,
 read, write, remove, commit), the listener and
 accepted connections (links), SHA-256 and RSA (Soma's item), and git,

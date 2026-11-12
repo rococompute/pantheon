@@ -30,7 +30,16 @@ Record nio_world := {
   w_encode_tx : string -> list string -> string;
   (** the fields this node won't check and the excluded alternates, in
       [IoCheckExclusions]'s wire form *)
-  w_exclusions : list string }.
+  w_exclusions : list string;
+  (** each checkout's head, as [IoCheckoutHeads] answers ([repo, head,
+      ...]): a unikernel's repositories are a git service's *)
+  w_heads : list string;
+  (** the model backend the status names; its limit is the model calls',
+      which aren't operations yet, so a unikernel reports none *)
+  w_backend : string;
+  (** a time of day for a timestamp's text (Sandbox's clock is monotonic,
+      not the time of day) *)
+  w_local_time : string -> string }.
 
 (** The interpreter's state: the operations' tables and the peer links,
     in genesis order, by name. *)
@@ -96,8 +105,9 @@ nio_kernel_stores (s : nio_kernel) (op : node_op) : io (nanswer * nio_kernel) :=
     writes the named file; peer sends go on the links; a CI check asks
     [w_check]; connection and job control have nothing to do in a
     unikernel (its links are its listen handlers', and it runs no
-    processes); the draw, signing a transaction and the check exclusions
-    are [nio_world]'s; the rest is the tables' and the stores'. *)
+    processes); the draw, signing a transaction, the check exclusions,
+    the checkouts' heads, the backend and the time of day are
+    [nio_world]'s; the rest is the tables' and the stores'. *)
 nio_kernel_op (w : nio_world) (s : nio_kernel) (op : node_op)
     : io (nanswer * nio_kernel) :=
   match op with
@@ -113,6 +123,9 @@ nio_kernel_op (w : nio_world) (s : nio_kernel) (op : node_op)
   | IoPeerCount => ret (ans_data true [nio_show_nat (List.length (k_peers s))], s)
   | IoEncodeTx nonce fields => ret (ans_data true [w_encode_tx w nonce fields], s)
   | IoCheckExclusions => ret (ans_data true (w_exclusions w), s)
+  | IoCheckoutHeads => ret (ans_data true (w_heads w), s)
+  | IoLimitInfo => ret ((true, (PrimFloat.zero, [w_backend w, "0", ""])), s)
+  | IoLocalTime stamp => ret (ans_data true [w_local_time w stamp], s)
   | IoWriteStatus text => write_file "status.txt" text ;; ret (nio_ok, s)
   | IoSendAll fields => nio_send_each (List.map snd (k_peers s)) (w_wire w fields) ;; ret (nio_ok, s)
   | IoSendPeer index fields =>

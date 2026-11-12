@@ -81,6 +81,9 @@ checks : list string := [
     (match stored t2 (IoSignedVote "prevote/3/0"), stored t2 (IoSignedBody "prevote/3/0"), stored t2 (IoSignedVote "prevote/4/0") with
      | (true, (_, ["v2"])), (true, (_, ["prevote", "3", "x"])), (false, (_, [])) => true | _, _, _ => false end),
   check "the height reads back" (match stored t2 IoHeight with (true, (_, ["3"])) => true | _ => false end),
+  check "the diverged repositories, as pairs"
+    (match nio_table_op 0%float t1 IoDivergences with Some (a, _) => (match ans_pairs a with [("soma", "3 bad")] => true | _ => false end) | None => false end),
+  check "pairs on the wire read back" (match nio_pairs (nio_flat_pairs [("a", "1"), ("b", "2")]) with [("a", "1"), ("b", "2")] => true | _ => false end),
   check "the stores hand the tables' operations on" (match stored t2 IoNonceFlooded with (false, (_, [])) => true | _ => false end)
 ].
 
