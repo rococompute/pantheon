@@ -1,0 +1,70 @@
+(** Pantheon: a private, Byzantine-fault-tolerant labor market where LLM
+    agents take turns as term leader. Soma selects commands and node.soma decides the market;
+    shell.ml supplies command implementations and I/O. *)
+Import util shell node.
+
+(** Numbers run as OCaml ints. The kernel and the proofs still see Peano
+    naturals: these only say how extracted code computes them. *)
+From Stdlib Require ExtrOcamlNatInt.
+Extract Inlined Constant Nat.div => "(fun a b -> if b = 0 then 0 else a / b)".
+Extract Inlined Constant Nat.modulo => "(fun a b -> if b = 0 then a else a mod b)".
+
+(** Strings run as OCaml's (ExtrOcamlNativeString), which leaves out the
+    operations that count in [nat]. With [nat] as OCaml ints they're
+    OCaml's own, each as total as its definition: offsets past the end give
+    [None] or an empty string. util.soma reads long text through them. *)
+Extract Inlined Constant Stdlib.Strings.String.length => "String.length".
+Extract Inlined Constant Stdlib.Strings.String.get =>
+  "(fun n s -> if n < String.length s then Some (String.unsafe_get s n) else None)".
+Extract Inlined Constant Stdlib.Strings.String.substring =>
+  "(fun n m s -> let l = String.length s in if n >= l then """" else String.sub s n (min m (l - n)))".
+
+
+check (label : string) (ok : bool) : string := append (if ok then "ok " else "FAIL ") label.
+plan_eq (a b : list inbox_file_action) : bool :=
+  match a, b with
+  | [InboxQueue p c, InboxRemove r], [InboxQueue q d, InboxRemove s] => seq p q && seq c d && seq r s
+  | _, _ => false
+  end.
+fields_eq (a b : option (list string)) : bool :=
+  match a, b with Some x, Some y => eq_strs x y | None, None => true | _, _ => false end.
+checks : list string := [
+  check "exactly one second is not due" (negb (inbox_poll_due 11%float 10%float)),
+  check "past one second is due" (inbox_poll_due 11.125%float 10%float),
+  check "less than one second waits" (negb (inbox_poll_due 10.5%float 10%float)),
+  check "initial wall clock is due" (inbox_poll_due 100%float 0%float),
+  check "clock behind last stamp waits" (negb (inbox_poll_due 9%float 10%float)),
+  check "identical time waits" (negb (inbox_poll_due 10%float 10%float)),
+  check "normal json file" (inbox_json_name "a.json"),
+  check "suffix alone is accepted" (inbox_json_name ".json"),
+  check "empty name rejected" (negb (inbox_json_name "")),
+  check "short name rejected" (negb (inbox_json_name "json")),
+  check "suffix is case sensitive" (negb (inbox_json_name "a.JSON")),
+  check "prefix is not suffix" (negb (inbox_json_name "a.json.tmp")),
+  check "suffix in longer name" (inbox_json_name "a.b.json"),
+  check "spaced name preserved" (eq_strs (inbox_paths "home/inbox" ["a b.json"]) ["home/inbox/a b.json"]),
+  check "directory order retained" (eq_strs (inbox_paths "/inbox" ["z.json", "ignore", "a.json", ".json", "B.JSON"]) ["/inbox/z.json", "/inbox/a.json", "/inbox/.json"]),
+  check "missing directory has no paths" (eq_strs (inbox_paths "/inbox" []) []),
+  check "queue before remove" (plan_eq (inbox_file_plan "/p" (Some "bytes")) [InboxQueue "/p" "bytes", InboxRemove "/p"]),
+  check "failed read queues empty before remove" (plan_eq (inbox_file_plan "/p" None) [InboxQueue "/p" "", InboxRemove "/p"]),
+  check "empty read is still a fact" (plan_eq (inbox_file_plan "/p" (Some "")) [InboxQueue "/p" "", InboxRemove "/p"]),
+  check "raw bytes unchanged" (plan_eq (inbox_file_plan "/p" (Some "a
+b")) [InboxQueue "/p" "a
+b", InboxRemove "/p"]),
+  check "chunk split" (eq_strs (fst (feed_chunks ["hel"] "lo
+")) ["hello"]),
+  check "several lines" (eq_strs (fst (feed_chunks [] "one
+two
+part")) ["one", "two"]),
+  check "trailing partial kept" (eq_strs (snd (feed_chunks [] "one
+part")) ["part"]),
+  check "empty line" (eq_strs (fst (feed_chunks [] "
+")) [""]),
+  check "buffer at cap" (negb (buffer_over 4 4)),
+  check "buffer past cap" (buffer_over 5 4),
+  check "nested reply JSON" (fields_eq (reply_fields_of "{}" "100" (Some "0") (Some "1") (fun _ => Some ["A", "1", "a", "A", "1", "b", "S", "c"])) (Some ["a.b", "c"])),
+  check "absent reply JSON" (fields_eq (reply_fields_of "plain" "100" None None (fun _ => None)) None),
+  check "limit text" (is_limit "usage limit reached"),
+  check "ordinary text" (negb (is_limit "a regular reply"))
+].
+main := print_lines checks.

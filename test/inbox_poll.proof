@@ -1,0 +1,16 @@
+Theorem inbox_file_read_failure : forall path,
+  inbox_file_plan path None = [InboxQueue path "", InboxRemove path].
+Proof. reflexivity. Qed.
+
+Theorem inbox_file_read_success : forall path content,
+  inbox_file_plan path (Some content) = [InboxQueue path content, InboxRemove path].
+Proof. reflexivity. Qed.
+
+Theorem inbox_empty_listing : forall directory, inbox_paths directory [] = [].
+Proof. reflexivity. Qed.
+
+Example inbox_suffix_and_order :
+  inbox_json_name ".json" = true /\
+  inbox_json_name "x.JSON" = false /\
+  inbox_paths "/inbox" ["z.json", "skip", "a.json"] = ["/inbox/z.json", "/inbox/a.json"].
+Proof. repeat split; reflexivity. Qed.
