@@ -174,11 +174,19 @@ node_conns : string -> list (string * float).
     (node.soma feed_chunks) and keeps what is left. *)
 node_conn_close : string -> string -> bool.
 node_line_limit : string -> string.
-(** Dial, resend and the inbox, then the turn's clock. Soma decides which
+(** Sample the turn clock, dial and resend. Soma polls the inbox, decides which
     jobs are past their limit and which timers fire, replaces the timer
     list with the ones still waiting, and chooses the select wait. The
     shell only stores those facts, signals a job Soma names, and selects. *)
 node_poll_prep : string -> bool.
+(** Inbox metadata and file I/O only. Soma chooses when and which files
+    to read, queues their facts, then removes them. Directory errors and
+    removal errors propagate as before; read errors return None. *)
+node_inbox_state : string -> float * string.
+node_inbox_stamp : string -> float -> bool.
+fs_dir_entries : string -> list string.
+fs_read_text : string -> option string.
+fs_remove : string -> bool.
 node_turn_now : string -> float.
 node_timers : string -> list (float * list string).
 node_set_timers : string -> list (float * list string) -> bool.

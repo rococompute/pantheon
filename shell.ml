@@ -758,13 +758,15 @@ type node_handle = { h_events : float -> string list list;
                      h_conn_close : string -> unit;
                      h_line_limit : unit -> string;
                      h_poll_prep : unit -> unit;
+                     h_inbox_state : unit -> float * string;
+                     h_inbox_stamp : float -> unit;
                      h_turn_now : unit -> float;
                      h_timers : unit -> (float * string list) list;
                      h_set_timers : (float * string list) list -> unit;
                      h_jobs : unit -> (string * (float * (float * bool))) list;
                      h_job_expire : string -> unit;
                      h_queue_empty : unit -> bool;
-                     h_save : Obj.t -> unit; h_refuse : string -> unit; h_boot : string list list; h_snapshot : Obj.t option; h_replayed : string;
+                     h_save : Obj.t -> unit; h_refuse : string -> unit; h_boot : string list list; h_snapshot : Obj.t option; h_replayed : unit -> string;
                      h_remember_block : string -> string list -> bool;
                      h_timer : string -> string list -> unit; h_log : string -> unit;
                      h_push : string list -> unit; h_draw : string * (string * string);
@@ -815,6 +817,11 @@ let node_counter = ref 0
 let lookup_handle id = try Hashtbl.find node_handles id with Not_found -> fail "unknown node handle %s" id
 let events id wait = (lookup_handle id).h_events wait
 let node_poll_prep id = (lookup_handle id).h_poll_prep (); true
+let node_inbox_state id = (lookup_handle id).h_inbox_state ()
+let node_inbox_stamp id now = (lookup_handle id).h_inbox_stamp now; true
+let fs_dir_entries path = if Sys.file_exists path then Array.to_list (Sys.readdir path) else []
+let fs_read_text path = try Some (read_file path) with _ -> None
+let fs_remove path = Sys.remove path; true
 let node_turn_now id = (lookup_handle id).h_turn_now ()
 let node_timers id = (lookup_handle id).h_timers ()
 let node_set_timers id ts = (lookup_handle id).h_set_timers ts; true
@@ -877,7 +884,7 @@ let save_snapshot id snap = (lookup_handle id).h_save (Obj.repr snap); true
 let note_refused id raw = (lookup_handle id).h_refuse raw; true
 let boot_events id = (lookup_handle id).h_boot
 let boot_snapshot id = Option.map Obj.obj (lookup_handle id).h_snapshot
-let replay_count id = (lookup_handle id).h_replayed
+let replay_count id = (lookup_handle id).h_replayed ()
 let node_remember_block id h txs = (lookup_handle id).h_remember_block h txs
 (* The node's operations (node.soma's node_op, U-1), one at a time in their
    wire form (node.soma's io_wire; this match is its io_of_wire): the only
@@ -1322,19 +1329,6 @@ let node_open packed home flags =
       List.iter (fun (_, (kind, fields, alt)) -> resend_recorded kind fields alt) (List.rev !mine);
       my_txs := List.filter (fun (t, _) -> now -. t < 120.) !my_txs;
       List.iter (fun (_, raw) -> broadcast_fields [ "tx"; raw ]) !my_txs
-    end;
-    if now -. !last_inbox > 1. then begin
-      last_inbox := now;
-      let d = Filename.concat home "inbox" in
-      if Sys.file_exists d then
-        Array.iter (fun f ->
-            let p = Filename.concat d f in
-            if Filename.check_suffix f ".json" then begin
-              (* node.soma's inbox_tx decides what the file becomes *)
-              push [ "inbox_file"; p; (try read_file p with _ -> "") ];
-              Sys.remove p
-            end)
-          (Sys.readdir d)
     end
   in
   (* Soma names the job. The limit stored here is the one the finish report uses. *)
@@ -1499,7 +1493,7 @@ let node_open packed home flags =
                 match !saved with Some p when p == c || p = c -> () | _ -> save_consensus checkpoint_path c; saved := Some c);
       h_refuse = (fun raw -> if Hashtbl.length refused < 10000 then Hashtbl.replace refused raw ());
       h_boot = List.rev !boot_rev; h_snapshot = boot_saved;
-      h_replayed = string_of_int !replayed;
+      h_replayed = (fun () -> string_of_int !replayed);
       h_remember_block = (fun hs txs -> match int_of_string_opt hs with None -> false | Some n -> Hashtbl.replace blocks n txs; replayed := n; true);
       h_conn_admit = (fun oid mode target ->
         match List.find_opt (fun (i, _, _) -> string_of_int i = oid) !pending_conns with
@@ -1524,6 +1518,8 @@ let node_open packed home flags =
         | None -> ());
       h_line_limit = (fun () -> string_of_int max_line);
       h_poll_prep = prep_turn;
+      h_inbox_state = (fun () -> (!last_inbox, Filename.concat home "inbox"));
+      h_inbox_stamp = (fun now -> last_inbox := now);
       h_turn_now = turn_clock;
       h_timers = (fun () -> !timers);
       h_set_timers = (fun ts -> timers := ts);
