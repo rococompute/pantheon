@@ -152,6 +152,9 @@ governs Soma too); the interface is Pantheon's (the `U-1` line in `.plan`).
 The interface so far is `node.soma`'s `node_op`, carried out by `io_do`
 through one binding, `node_io` (shell.ml interprets the operation's wire
 form, `io_wire`; `io_of_wire` reads it back, proved for every operation).
+The resend write uses tagged `field`/value pairs followed by `alternate`
+and the untouched second list. Values may themselves contain either tag.
+Resend reads and the native table remain unchanged.
 What a `Sandbox` interpreter of each operation still lacks:
 
 | `node_op` | binary (shell.ml) | Sandbox lacks |
@@ -164,6 +167,7 @@ What a `Sandbox` interpreter of each operation still lacks:
 | `IoStore height txs`, `IoSetHeight height`, `IoWriteStatus text` | append the block to blocks.log, note the height (dropping old resends), write status.txt | storage (Soma's "storage": named files on the image) |
 | `IoSignVote slot vid fields` | note the vote and append it, synced, to signed.log | storage, with a synced append (Soma's "storage") |
 | `IoTrackTx raw`, `IoMarkNonceFlood` | the own-transaction retry table (stamped with the time), the flood flag | nothing: state in the program (the stamp with the clock above) |
+| `IoRememberBroadcast height kind fields alternate` | prepend both message variants to resend memory | nothing: state in the program; expiry on height changes stays unchanged |
 | `IoMergeApplied repo v`, `IoMergeDiverged repo entry` | the applied-version table, the divergence list | nothing: state in the program |
 | `IoCheck id repo head edits` | the CI job: a fresh clone, the edits, the CI command as a process; its result comes back as a `check_result` event | services (Soma's "services": a CI service asked over HTTP POST, with a timeout) and git (applying edits to a tree) |
 
@@ -171,9 +175,7 @@ Not yet operations, still bindings of their own (the next parts of U-1):
 the node's tables (reads, which need operations with a result, as
 `Sandbox.io`'s binds have; the clock is the first of those), the
 catch-up served table (`node_mark_served` carries a float, which has no
-wire form yet), the resend memory (`node_remember_broadcast` carries two
-lists, which one flat wire form can't read back without a count), the
-snapshot (Soma's "storage" still), the merge's git work (reset, probe,
+wire form yet), the snapshot (Soma's "storage" still), the merge's git work (reset, probe,
 read, write, remove, commit), the listener and
 accepted connections (links), SHA-256 and RSA (Soma's item), and git,
 model and CI jobs (Soma's "services": `fetch` with a timeout and HTTP POST).

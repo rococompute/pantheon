@@ -305,7 +305,22 @@ Inductive node_op :=
 | IoCheck (id repo head : string) (edits : list string)
 | IoMergeApplied (repo version : string)
 | IoMergeDiverged (repo entry : string)
-| IoClock.
+| IoClock
+| IoRememberBroadcast (height kind : string) (fields alternate : list string).
+
+(** Two arbitrary lists on one wire: tagged field/value pairs, then the
+    alternate-list marker. A marker occurring as a value is never a tag.
+    This avoids a bounded decimal count in the total round-trip property. *)
+Fixpoint resend_fields (fields : list string) : list string :=
+  match fields with [] => [] | field :: rest => "field" :: field :: resend_fields rest end.
+
+Fixpoint resend_parts (wire : list string) : option (list string * list string) :=
+  match wire with
+  | "alternate" :: alternate => Some ([], alternate)
+  | "field" :: value :: rest =>
+      match resend_parts rest with Some (fields, alternate) => Some (value :: fields, alternate) | None => None end
+  | _ => None
+  end.
 
 io_wire (op : node_op) : list string :=
   match op with
@@ -325,6 +340,8 @@ io_wire (op : node_op) : list string :=
   | IoMergeApplied repo version => ["merge_applied", repo, version]
   | IoMergeDiverged repo entry => ["merge_diverged", repo, entry]
   | IoClock => ["clock"]
+  | IoRememberBroadcast height kind fields alternate =>
+      ["remember_broadcast", height, kind] ++ resend_fields fields ++ ("alternate" :: alternate)
   end.
 
 io_of_wire (w : list string) : option node_op :=
@@ -345,6 +362,11 @@ io_of_wire (w : list string) : option node_op :=
   | ["merge_applied", repo, version] => Some (IoMergeApplied repo version)
   | ["merge_diverged", repo, entry] => Some (IoMergeDiverged repo entry)
   | ["clock"] => Some IoClock
+  | "remember_broadcast" :: height :: kind :: parts =>
+      match resend_parts parts with
+      | Some (fields, alternate) => Some (IoRememberBroadcast height kind fields alternate)
+      | None => None
+      end
   | _ => None
   end.
 
@@ -377,6 +399,7 @@ action_io (action : output_action) : option node_op :=
   | SendEveryone fields => Some (IoSendAll fields)
   | StoreAction height txs => Some (IoStore height txs)
   | RememberVote slot vid fields => Some (IoSignVote slot vid fields)
+  | RememberBroadcast height kind fields alternate => Some (IoRememberBroadcast height kind fields alternate)
   | MarkNonceFlood => Some IoMarkNonceFlood
   | _ => None
   end.
@@ -565,7 +588,7 @@ carry_output_action (h : node_t) (action : output_action) : bool :=
       (match submission_send (fst (node_draw h)) raw with
        | None => true | Some fields => io_do h (IoSendAll fields) end)
   | RememberVote slot vid fields => io_do h (IoSignVote slot vid fields)
-  | RememberBroadcast height kind fields alt => node_remember_broadcast h height kind fields alt
+  | RememberBroadcast height kind fields alt => io_do h (IoRememberBroadcast height kind fields alt)
   | SendPeer index fields => io_do h (IoSendPeer index fields)
   | SendEveryone fields => io_do h (IoSendAll fields)
   | ReadPeerBlock who k =>
