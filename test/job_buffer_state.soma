@@ -1,0 +1,15 @@
+Import util shell node.
+From Stdlib Require ExtrOcamlNatInt.
+check (label : string) (ok : bool) : string := append (if ok then "ok " else "FAIL ") label.
+a := job_remember empty_node "1" ["first", " chunk"].
+b := job_remember a "2" ["other"].
+checks := [
+  check "empty" (eq_strs (job_buffer empty_node "1") []),
+  check "chunks" (eq_strs (job_buffer a "1") ["first", " chunk"]),
+  check "separate jobs" (eq_strs (job_buffer b "1") ["first", " chunk"] && eq_strs (job_buffer b "2") ["other"]),
+  check "replace" (eq_strs (job_buffer (job_remember b "1" ["new"]) "1") ["new"]),
+  check "forget" (eq_strs (job_buffer (job_forget b "1") "1") [] && eq_strs (job_buffer (job_forget b "1") "2") ["other"]),
+  check "empty removes" (eq_strs (job_buffer (job_remember b "1" []) "1") []),
+  check "peer independent" (eq_strs (peer_buffer (job_remember (peer_remember b "1" ["peer"]) "1" ["job"]) "1") ["peer"])
+].
+main := print_lines checks.

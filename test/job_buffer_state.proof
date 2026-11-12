@@ -1,0 +1,13 @@
+Example buffers_are_separate_and_forgotten :
+  job_buffer (job_remember empty_node "1" ["a", "b"]) "1" = ["a", "b"] /\
+  job_buffer (job_forget (job_remember empty_node "1" ["a"]) "1") "1" = [] /\
+  job_buffer (job_remember (job_remember empty_node "1" ["a"]) "2" ["b"]) "1" = ["a"].
+Proof. repeat split; reflexivity. Qed.
+
+Theorem job_buffer_changes_preserve_peer_buffers : forall st id chunks,
+  pbufs (job_remember st id chunks) = pbufs st.
+Proof. intros st id chunks. destruct chunks; reflexivity. Qed.
+
+Theorem peer_buffer_changes_preserve_job_buffers : forall st id chunks,
+  jbufs (peer_remember st id chunks) = jbufs st.
+Proof. intros st id chunks. destruct chunks; reflexivity. Qed.

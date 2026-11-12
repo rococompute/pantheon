@@ -230,6 +230,17 @@ separate work; this status does not mark `.plan`.
 
 ## Done so far
 
+- Step 5, job buffer storage: output chunks now live in node_state's
+  jbufs, through job_buffer, job_remember and job_forget. job_bytes uses
+  that state with the existing job_feed cap plan; job_outputs threads the
+  state, resolves a completion's output and forgets it before calling the
+  callback at its original queue position. The shell only reads bytes and
+  reports wait facts; its jchunks and buffer bindings are gone.
+  test/job-buffer-state.sh checks isolated jobs, replacement, removal and
+  independence from peer buffers on fixed inputs. The existing job-feed
+  tests continue to check framing and cap behavior. This is partial step 5.
+
+
 - Step 5, Codex reply files: the callback queues only a process result and
   reply path. Soma's `codex_file_reply` applies the process-failure guard
   before opening the file through the existing `fs_read_text` binding,
