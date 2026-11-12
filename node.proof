@@ -855,7 +855,9 @@ Proof.
     who fields | height txs | height | text | slot vid fields | raw | |
     id repo head edits | repo version | repo entry | | height kind fields alternate |
     offer mode target | conn | job | job | who | | repo | who first | who first timestamp |
-    | height | | | slot | slot | nonce fields | | | | | stamp ]; try reflexivity.
+    | height | | | slot | slot | nonce fields | | | | | stamp |
+    repo | repo | repo path | repo path | repo path text | repo path |
+    repo version tree bid task bidder spec ]; try reflexivity.
   change (match resend_parts (resend_fields fields ++ ("alternate" :: alternate)) with
     | Some (original, alt) => Some (IoRememberBroadcast height kind original alt)
     | None => None end = Some (IoRememberBroadcast height kind fields alternate)).
@@ -1143,6 +1145,35 @@ Proof.
   repeat match goal with |- context [match ?e with _ => _ end] => destruct e end;
   eexists; reflexivity.
 Qed.
+
+(** A merge that writes one new file, with every operation carried out:
+    the gate's reads, the reset, the look at the path, the write, the
+    commit (reaching the attested tree), the applied version, the log line;
+    and one whose commit reaches another tree diverges instead. *)
+merge_answers (tree : string) (op : node_op) : nanswer :=
+  match op with
+  | IoIsDiverged _ => (false,(0%float,[]))
+  | IoAppliedVersion _ => (true,(0%float,["0"]))
+  | IoMergeProbe _ _ => (true,(0%float,["none"]))
+  | IoMergeWrite _ _ _ => (true,(0%float,[""]))
+  | IoMergeCommit _ _ _ _ _ _ _ => (true,(0%float,[tree, "abc1234"]))
+  | _ => (true,(0%float,[]))
+  end.
+
+Example merge_trace :
+  ntrace (merge_answers "t1") (merge_prog "calc" "1" "t1" "b" "task" "codex" "spec" ["a.txt", "", "hi"]) =
+  [IoIsDiverged "calc", IoAppliedVersion "calc", IoMergeReset "calc", IoMergeProbe "calc" "a.txt",
+   IoMergeWrite "calc" "a.txt" "hi", IoMergeCommit "calc" "1" "t1" "b" "task" "codex" "spec",
+   IoMergeApplied "calc" "1", IoLog "merged bid b into calc: abc1234"].
+Proof. reflexivity. Qed.
+
+Example merge_wrong_tree_diverges :
+  ntrace (merge_answers "t2") (merge_prog "calc" "1" "t1" "b" "task" "codex" "spec" ["a.txt", "", "hi"]) =
+  [IoIsDiverged "calc", IoAppliedVersion "calc", IoMergeReset "calc", IoMergeProbe "calc" "a.txt",
+   IoMergeWrite "calc" "a.txt" "hi", IoMergeCommit "calc" "1" "t1" "b" "task" "codex" "spec",
+   IoLog (merge_diverged_text "calc" "1" "got tree t2, attested t1"),
+   IoMergeDiverged "calc" "1: got tree t2, attested t1"].
+Proof. reflexivity. Qed.
 
 Theorem remember_peer_is_served_operation : forall who first now,
   action_prog (RememberPeer who first now) =

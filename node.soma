@@ -603,56 +603,72 @@ merge_tree_check (tree : string) (committed : option (string * string)) : option
       else Some (append "got tree " (append got (append ", attested " tree)))
   end.
 
-(** The edits in order; the first that can't be made stops them, with why. *)
-Fixpoint merge_apply_edits (h : node_t) (r : string) (es : list (string * string * string)) : option string :=
+(** An edit's plan: a safe path is looked at first ([IoMergeProbe]), and
+    an edit of a file's text reads it ([IoMergeRead]). *)
+merge_edit_prog (r p o n : string) : nprog edit_plan :=
+  if shell_safe_path p then
+    nbind (nask (IoMergeProbe r p)) (fun kind =>
+    match merge_edit_plan p o n (ans_one kind) with
+    | EditRead q =>
+        nbind (nask (IoMergeRead r q)) (fun c =>
+        NDone (match ans_found_one c with
+               | Some text => merge_edit_apply q o n text
+               | None => EditFail (append q ": couldn't be read")
+               end))
+    | other => NDone other
+    end)
+  else NDone (EditFail (append "unsafe path " p)).
+
+(** The edits in order, as a node program; the first that can't be made
+    stops them, with why. *)
+Fixpoint merge_edits_prog (r : string) (es : list (string * string * string)) : nprog (option string) :=
   match es with
-  | [] => None
+  | [] => NDone None
   | (p, o, n) :: rest =>
-      let first := if shell_safe_path p then merge_edit_plan p o n (node_merge_probe h r p)
-                   else EditFail (append "unsafe path " p) in
-      let plan := match first with
-                  | EditRead q =>
-                      match node_merge_read h r q with
-                      | Some c => merge_edit_apply q o n c
-                      | None => EditFail (append q ": couldn't be read")
-                      end
-                  | other => other
-                  end in
+      nbind (merge_edit_prog r p o n) (fun plan =>
+      let written failed := if seq (ans_one failed) "" then merge_edits_prog r rest
+                            else NDone (Some (ans_one failed)) in
       match plan with
-      | EditWrite q text =>
-          let failed := node_merge_write h r q text in
-          if seq failed "" then merge_apply_edits h r rest else Some failed
-      | EditRemove q =>
-          let failed := node_merge_remove h r q in
-          if seq failed "" then merge_apply_edits h r rest else Some failed
-      | EditFail why => Some why
-      | EditRead q => Some (append q ": couldn't be read")
-      end
+      | EditWrite q text => nbind (nask (IoMergeWrite r q text)) written
+      | EditRemove q => nbind (nask (IoMergeRemove r q)) written
+      | EditFail why => NDone (Some why)
+      | EditRead q => NDone (Some (append q ": couldn't be read"))
+      end)
   end.
 
-merge_diverge (h : node_t) (r v why : string) : bool :=
-  io_log h (merge_diverged_text r v why) &&
-  io_do h (IoMergeDiverged r (append (show (num v)) (append ": " why))).
+merge_diverge_prog (r v why : string) : nprog bool :=
+  nand (nexec (IoLog (merge_diverged_text r v why))) (fun _ =>
+  nexec (IoMergeDiverged r (append (show (num v)) (append ": " why)))).
 
-perform_merge (h : node_t) (r v tree bid task bidder spec : string) (edits : list string) : bool :=
-  match merge_gate_of (node_merge_applied h r) v (io_read_bool h (IoIsDiverged r)) with
-  | MergeUnknown => io_log h (append "a merge for repository " (append r ", which this node doesn't have"))
-  | MergeSkip => true
+(** A commit's answer: the tree and short hash it made, or none. *)
+merge_committed (a : nanswer) : option (string * string) :=
+  match ans_found a with Some [got, short] => Some (got, short) | _ => None end.
+
+(** A decided merge, as a node program: the gate's reads, then the reset,
+    the edits, the commit and the tree check, each an operation. *)
+merge_prog (r v tree bid task bidder spec : string) (edits : list string) : nprog bool :=
+  nbind (nask (IoIsDiverged r)) (fun diverged =>
+  nbind (nask (IoAppliedVersion r)) (fun applied =>
+  match merge_gate_of (ans_found_one applied) v (fst diverged) with
+  | MergeUnknown => nexec (IoLog (append "a merge for repository " (append r ", which this node doesn't have")))
+  | MergeSkip => NDone true
   | MergeApply =>
-      node_merge_reset h r &&
-      (match merge_apply_edits h r (merge_triples edits) with
-       | Some why => merge_diverge h r v why
-       | None =>
-           let committed := node_merge_commit h r v tree bid task bidder spec in
-           match merge_tree_check tree committed with
-           | Some why => merge_diverge h r v why
-           | None =>
-               let short := match committed with Some (_, s) => s | None => "" end in
-               io_do h (IoMergeApplied r v) &&
-               io_log h (append "merged bid " (append bid (append " into " (append r (append ": " short)))))
-           end
-       end)
-  end.
+      ndo (IoMergeReset r) (fun _ =>
+      nbind (merge_edits_prog r (merge_triples edits)) (fun failed =>
+      match failed with
+      | Some why => merge_diverge_prog r v why
+      | None =>
+          nbind (nask (IoMergeCommit r v tree bid task bidder spec)) (fun c =>
+          let committed := merge_committed c in
+          match merge_tree_check tree committed with
+          | Some why => merge_diverge_prog r v why
+          | None =>
+              let short := match committed with Some (_, s) => s | None => "" end in
+              ndo (IoMergeApplied r v) (fun _ =>
+              nexec (IoLog (append "merged bid " (append bid (append " into " (append r (append ": " short)))))))
+          end)
+      end))
+  end)).
 
 (** ---- A model call (the "llm" output) ----
     Soma decides the call budget and the rate-limit hold, writes the log
@@ -1518,9 +1534,9 @@ status_prog (lines : list string) : nprog bool :=
 
 (** What an output does, as a node program: its reads are operations
     ([IoDraw], [IoBlock], [IoHeight], [IoPeerCount], the signed-vote
-    table, the check exclusions, the status file's facts), and so is
-    everything it does. A merge and a model call are still functions over
-    bindings: the program is just their result. *)
+    table, the check exclusions, the status file's facts, a merge's
+    checkout work), and so is everything it does. A model call is still a
+    function over bindings: the program is just its result. *)
 output_prog (h : node_t) (out : list string) : nprog bool :=
   match plan_output out with
   | SetTimer ms ev => nexec (IoTimer ms ev)
@@ -1565,7 +1581,7 @@ output_prog (h : node_t) (out : list string) : nprog bool :=
       nbind (nask IoCheckExclusions) (fun ex =>
       let (denied, excluded) := ans_exclusions ex in
       nexec (check_request_op id r head edits denied excluded))
-  | MergeRequest r v tree bid task bidder spec edits => NDone (perform_merge h r v tree bid task bidder spec edits)
+  | MergeRequest r v tree bid task bidder spec edits => merge_prog r v tree bid task bidder spec edits
   | LlmRequest id kind prompt ctx => NDone (perform_llm h id kind prompt ctx)
   | LegacyOutput _ => NDone true
   end.

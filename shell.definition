@@ -211,20 +211,15 @@ node_set_timers : string -> list (float * list string) -> bool.
 node_jobs : string -> list (string * (float * (float * bool))).
 node_queue_empty : string -> bool.
 
-(** A decided merge's I/O; node.soma's perform_merge decides. The version
-    applied to a repository (none: this node doesn't have it), whether its
-    checkout diverged, a hard reset and clean of it, a path's kind there
-    ("symlink", "dir", "file" or "none"), reading, writing (keeping the mode)
-    and removing a file ("" or what went wrong), the commit (its tree and
-    short id, or none when git commit failed), and recording the version
-    applied or a divergence. *)
-node_merge_applied : string -> string -> option string.
-node_merge_reset : string -> string -> bool.
-node_merge_probe : string -> string -> string -> string.
-node_merge_read : string -> string -> string -> option string.
-node_merge_write : string -> string -> string -> string -> string.
-node_merge_remove : string -> string -> string -> string.
-node_merge_commit : string -> string -> string -> string -> string -> string -> string -> string -> option (string * string).
+(** A decided merge's I/O is node_io operations (nodeio.soma's
+    IoAppliedVersion ... IoMergeCommit; node.soma's merge_prog decides):
+    "applied_version" REPO the version applied (not found: this node
+    doesn't have it), "merge_reset" REPO a hard reset and clean,
+    "merge_probe" REPO PATH a path's kind ("symlink", "dir", "file" or
+    "none"), "merge_read" REPO PATH a file (found or not), "merge_write"
+    REPO PATH TEXT (keeping the mode) and "merge_remove" REPO PATH answer
+    "" or what went wrong, "merge_commit" REPO V TREE BID TASK BIDDER SPEC
+    [tree, short id] (not found when git commit failed). *)
 
 (** signed.log at startup: the file's bytes, raw ("" when there is none;
     node.soma's log_lines splits them); noting one vote Soma read from them

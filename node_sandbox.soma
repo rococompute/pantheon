@@ -39,7 +39,11 @@ Record nio_world := {
   w_backend : string;
   (** a time of day for a timestamp's text (Sandbox's clock is monotonic,
       not the time of day) *)
-  w_local_time : string -> string }.
+  w_local_time : string -> string;
+  (** a merge's checkout work ([IoMergeReset] ... [IoMergeCommit], in
+      their wire form): a unikernel's checkouts are a git service's, which
+      needs Soma's "services" item *)
+  w_git : list string -> io nanswer }.
 
 (** The interpreter's state: the operations' tables and the peer links,
     in genesis order, by name. *)
@@ -106,8 +110,8 @@ nio_kernel_stores (s : nio_kernel) (op : node_op) : io (nanswer * nio_kernel) :=
     [w_check]; connection and job control have nothing to do in a
     unikernel (its links are its listen handlers', and it runs no
     processes); the draw, signing a transaction, the check exclusions,
-    the checkouts' heads, the backend and the time of day are
-    [nio_world]'s; the rest is the tables' and the stores'. *)
+    the checkouts' heads, the backend, the time of day and a merge's git
+    work are [nio_world]'s; the rest is the tables' and the stores'. *)
 nio_kernel_op (w : nio_world) (s : nio_kernel) (op : node_op)
     : io (nanswer * nio_kernel) :=
   match op with
@@ -126,6 +130,9 @@ nio_kernel_op (w : nio_world) (s : nio_kernel) (op : node_op)
   | IoCheckoutHeads => ret (ans_data true (w_heads w), s)
   | IoLimitInfo => ret ((true, (PrimFloat.zero, [w_backend w, "0", ""])), s)
   | IoLocalTime stamp => ret (ans_data true [w_local_time w stamp], s)
+  | IoMergeReset _ | IoMergeProbe _ _ | IoMergeRead _ _ | IoMergeWrite _ _ _
+  | IoMergeRemove _ _ | IoMergeCommit _ _ _ _ _ _ _ =>
+      a <- w_git w (io_wire op) ;; ret (a, s)
   | IoWriteStatus text => write_file "status.txt" text ;; ret (nio_ok, s)
   | IoSendAll fields => nio_send_each (List.map snd (k_peers s)) (w_wire w fields) ;; ret (nio_ok, s)
   | IoSendPeer index fields =>

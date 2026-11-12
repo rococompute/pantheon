@@ -74,7 +74,20 @@ Inductive node_op :=
 | IoCheckoutHeads
 | IoDivergences
 | IoLimitInfo
-| IoLocalTime (stamp : string).
+| IoLocalTime (stamp : string)
+(** a merge's checkout work (U-1): the version applied to a repository
+    (found or not: not, for a repository this node doesn't have); reset
+    the checkout; look at a path ([kind]: "symlink", "dir", "file" or
+    "none"); read a file (found or not); write or remove one ([why] it
+    failed, "" if it didn't); commit the merge (found or not: [tree,
+    short hash]) *)
+| IoAppliedVersion (repo : string)
+| IoMergeReset (repo : string)
+| IoMergeProbe (repo path : string)
+| IoMergeRead (repo path : string)
+| IoMergeWrite (repo path text : string)
+| IoMergeRemove (repo path : string)
+| IoMergeCommit (repo version tree bid task bidder spec : string).
 
 (** Two arbitrary lists on one wire: tagged field/value pairs, then the
     alternate-list marker. A marker occurring as a value is never a tag.
@@ -131,6 +144,14 @@ io_wire (op : node_op) : list string :=
   | IoDivergences => ["divergences"]
   | IoLimitInfo => ["limit_info"]
   | IoLocalTime stamp => ["local_time", stamp]
+  | IoAppliedVersion repo => ["applied_version", repo]
+  | IoMergeReset repo => ["merge_reset", repo]
+  | IoMergeProbe repo path => ["merge_probe", repo, path]
+  | IoMergeRead repo path => ["merge_read", repo, path]
+  | IoMergeWrite repo path text => ["merge_write", repo, path, text]
+  | IoMergeRemove repo path => ["merge_remove", repo, path]
+  | IoMergeCommit repo version tree bid task bidder spec =>
+      ["merge_commit", repo, version, tree, bid, task, bidder, spec]
   end.
 
 io_of_wire (w : list string) : option node_op :=
@@ -177,6 +198,14 @@ io_of_wire (w : list string) : option node_op :=
   | ["divergences"] => Some IoDivergences
   | ["limit_info"] => Some IoLimitInfo
   | ["local_time", stamp] => Some (IoLocalTime stamp)
+  | ["applied_version", repo] => Some (IoAppliedVersion repo)
+  | ["merge_reset", repo] => Some (IoMergeReset repo)
+  | ["merge_probe", repo, path] => Some (IoMergeProbe repo path)
+  | ["merge_read", repo, path] => Some (IoMergeRead repo path)
+  | ["merge_write", repo, path, text] => Some (IoMergeWrite repo path text)
+  | ["merge_remove", repo, path] => Some (IoMergeRemove repo path)
+  | ["merge_commit", repo, version, tree, bid, task, bidder, spec] =>
+      Some (IoMergeCommit repo version tree bid task bidder spec)
   | _ => None
   end.
 
@@ -464,6 +493,9 @@ nio_with_height (t : nio_tables) (v : string) : nio_tables :=
      t_diverged := t_diverged t; t_applied := t_applied t; t_mine := t_mine t; t_txs := t_txs t;
      t_height := v; t_blocks := t_blocks t; t_signed := t_signed t |}.
 
+Fixpoint nio_lookup {A : Type} (k : string) (l : list (string * A)) : option A :=
+  match l with [] => None | (x, v) :: rest => if nio_eq x k then Some v else nio_lookup k rest end.
+
 (** What an operation does to the tables, at the clock's [now], as
     shell.ml's handle does it: a timer is due [ms] milliseconds from now;
     the height drops resend memory below it; the served table and the
@@ -487,6 +519,11 @@ nio_table_op (now : PrimFloat.float) (t : nio_tables) (op : node_op)
   | IoMergeDiverged r entry => Some (nio_ok, nio_with_diverged t ((r, entry) :: t_diverged t))
   | IoIsDiverged r => Some (ans_flag (nio_has r (t_diverged t)), t)
   | IoDivergences => Some (ans_data true (nio_flat_pairs (t_diverged t)), t)
+  | IoAppliedVersion r =>
+      match nio_lookup r (t_applied t) with
+      | Some v => Some (ans_data true [v], t)
+      | None => Some (ans_data false [], t)
+      end
   | IoRememberBroadcast h kind fields alt => Some (nio_ok, nio_with_mine t ((h, (kind, (fields, alt))) :: t_mine t))
   | IoServedAt who first =>
       match nio_find (nio_key_is who first) (t_served t) with
@@ -507,9 +544,6 @@ nio_with_signed (t : nio_tables) (v : list (string * (string * list string))) : 
   {| t_timers := t_timers t; t_queue := t_queue t; t_served := t_served t; t_flood := t_flood t;
      t_diverged := t_diverged t; t_applied := t_applied t; t_mine := t_mine t; t_txs := t_txs t;
      t_height := t_height t; t_blocks := t_blocks t; t_signed := v |}.
-
-Fixpoint nio_lookup {A : Type} (k : string) (l : list (string * A)) : option A :=
-  match l with [] => None | (x, v) :: rest => if nio_eq x k then Some v else nio_lookup k rest end.
 
 (** The stores the binary keeps in memory beside its files: decided blocks
     by height (what catch-up and [IoBlock] read) and the vote signed at

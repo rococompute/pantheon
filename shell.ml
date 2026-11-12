@@ -947,6 +947,18 @@ let node_io id op =
   | [ "divergences" ] -> (true, (0., List.concat_map (fun (r, v) -> [ r; v ]) (h.h_divergences ())))
   | [ "limit_info" ] ->
       let until, (backend, (held, reason)) = h.h_limit_info () in (true, (until, [ backend; held; reason ]))
+  | [ "applied_version"; r ] ->
+      (match h.h_merge_applied r with Some v -> (true, (0., [ v ])) | None -> (false, (0., [])))
+  | [ "merge_reset"; r ] -> h.h_merge_reset r; (true, (0., []))
+  | [ "merge_probe"; r; p ] -> (true, (0., [ h.h_merge_probe r p ]))
+  | [ "merge_read"; r; p ] ->
+      (match h.h_merge_read r p with Some c -> (true, (0., [ c ])) | None -> (false, (0., [])))
+  | [ "merge_write"; r; p; text ] -> (true, (0., [ h.h_merge_write r p text ]))
+  | [ "merge_remove"; r; p ] -> (true, (0., [ h.h_merge_remove r p ]))
+  | [ "merge_commit"; r; v; tree; bid; task; bidder; spec ] ->
+      (match h.h_merge_commit r v tree bid task bidder spec with
+       | Some (got, short) -> (true, (0., [ got; short ]))
+       | None -> (false, (0., [])))
   | [ "local_time"; stamp ] ->
       let tm = Unix.localtime (node_float_of_digits stamp) in
       (true, (0., [ Printf.sprintf "%02d:%02d" tm.Unix.tm_hour tm.Unix.tm_min ]))
@@ -973,13 +985,6 @@ let node_identity id = (lookup_handle id).h_identity
 let node_seen_refused id raw = (lookup_handle id).h_seen_refused raw
 let node_verify_line id from sg fields = (lookup_handle id).h_verify_line from sg fields
 (* a decided merge's I/O: node.soma's perform_merge decides *)
-let node_merge_applied id r = (lookup_handle id).h_merge_applied r
-let node_merge_reset id r = (lookup_handle id).h_merge_reset r; true
-let node_merge_probe id r p = (lookup_handle id).h_merge_probe r p
-let node_merge_read id r p = (lookup_handle id).h_merge_read r p
-let node_merge_write id r p text = (lookup_handle id).h_merge_write r p text
-let node_merge_remove id r p = (lookup_handle id).h_merge_remove r p
-let node_merge_commit id r v tree bid task bidder spec = (lookup_handle id).h_merge_commit r v tree bid task bidder spec
 let rec forever f s = forever f (f s)
 
 let node_open packed home flags =
