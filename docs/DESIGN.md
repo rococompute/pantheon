@@ -237,6 +237,21 @@ history, but retain the signed-sender/genesis/pending-change admission rules.
 The two lookups must be adapters over committed blocks; a local certificate
 cache or peer-supplied history does not meet their contract. Wire encoding,
 these chain adapters, live dispatch and roster activation remain unimplemented.
+The market now follows the roster at its height: `roster_now` is
+`roster_at` over genesis's agents and the market's `roster_changes`, which
+stay empty until a roster transaction is dispatched, so a stable roster
+counts exactly as before. Scope, bidder choice, merge quorums, rejection and
+the draw count it. `settle` counts only the votes of agents on that roster
+(`counted_votes`), including the leader's implicit approval and the bidder's
+fallback, so a vote cast before its voter was removed counts for nothing and
+counts again once it rejoins. The draw counts and seeds with reveals of that
+roster only, and holds back only its members. A removed leader isn't
+`is_leader`, and its term ends in the block its removal takes effect, even
+with a merge pending, which then settles on the attestors' votes or lapses.
+`test/roster-activation.sh` checks these through `settle`, `maybe_draw` and
+`maybe_end_term`. Still to do: committing precommit certificates in blocks,
+dispatching roster transactions, and consensus switching its validators.
+
 The bridge is pure and enables no live removals. The new per-height quorum,
 window-length and certified commit-height theorems accompany 26 fixed bridge
 checks and the 32 signed-witness checks. This extends the earlier validation

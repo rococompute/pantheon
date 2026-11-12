@@ -328,7 +328,7 @@ Theorem maybe_draw_bars_who_held_back :
     maybe_draw m = m \/ leader (maybe_draw m) <> a.
 Proof.
   intros m a b Ha Hb Hbh. unfold maybe_draw.
-  destruct (awaiting m && draw_ready (length (agents m)) (length (reveals m))
+  destruct (awaiting m && draw_ready (length (roster_now m)) (length (revealed m))
     (asince m + param m "reveal_window" <=? mheight m));
     [right|left; reflexivity].
   cbv zeta. unfold count.
@@ -398,15 +398,16 @@ Qed.
 
 Lemma settle_preserves_merged : forall P,
   (forall m p, pending m = Some p -> merged_satisfy P m ->
-    merge_quorum m p <= approvals p (mheight m - pat p) (param m "fallback_blocks") ->
+    merge_quorum m p <= counted_approvals m p ->
     merged_satisfy P (fst (finalize m p))) ->
   forall m, merged_satisfy P m -> merged_satisfy P (fst (settle m)).
 Proof.
   intros P Hfinal m Hm. unfold settle.
   destruct (pending m) as [p|] eqn:Hp; [|exact Hm].
-  destruct (merge_quorum m p <=? approvals p (mheight m - pat p) (param m "fallback_blocks")) eqn:Hyes.
+  cbv zeta.
+  destruct (merge_quorum m p <=? counted_approvals m p) eqn:Hyes.
   - apply Hfinal; [exact Hp|exact Hm|]. apply Nat.leb_le. exact Hyes.
-  - destruct (rejected_at (merge_n m p) (length (filter (fun v => negb (snd v)) (pvotes p))));
+  - destruct (rejected_at (merge_n m p) (counted_noes m p));
       [destruct (bid_by m (pbid p)) as [b|] |
        destruct (param m "attest_window" <=? mheight m - pat p)]; simpl;
       repeat first [apply merged_count | apply merged_setf_other; [reflexivity|] |
@@ -424,7 +425,7 @@ Qed.
 
 Lemma apply_preserves_merged : forall P,
   (forall m p, pending m = Some p -> merged_satisfy P m ->
-    merge_quorum m p <= approvals p (mheight m - pat p) (param m "fallback_blocks") ->
+    merge_quorum m p <= counted_approvals m p ->
     merged_satisfy P (fst (finalize m p))) ->
   forall m a fields, merged_satisfy P m ->
     merged_satisfy P (fst (fst (apply m a fields))).
@@ -478,11 +479,11 @@ Lemma draw_preserves_merged : forall P m,
   merged_satisfy P m -> merged_satisfy P (maybe_draw m).
 Proof.
   intros P m Hm. unfold maybe_draw.
-  destruct (awaiting m && draw_ready (length (agents m)) (length (reveals m))
+  destruct (awaiting m && draw_ready (length (roster_now m)) (length (revealed m))
     (asince m + param m "reveal_window" <=? mheight m));
     [|exact Hm].
   cbv zeta. merged_steps.
-  generalize (filter (fun a => negb (mem a (revealed m))) (agents m)).
+  generalize (filter (fun a => negb (mem a (revealed m))) (roster_now m)).
   intros held. induction held as [|a rest IH] using rev_ind.
   - simpl. merged_steps.
   - rewrite fold_left_app. simpl. apply merged_count. exact IH.
@@ -508,7 +509,7 @@ Qed.
     finalize preserve it. Every other transition preserves it on its own. *)
 Lemma apply_block_preserves_merged : forall P,
   (forall m p, pending m = Some p -> merged_satisfy P m ->
-    merge_quorum m p <= approvals p (mheight m - pat p) (param m "fallback_blocks") ->
+    merge_quorum m p <= counted_approvals m p ->
     merged_satisfy P (fst (finalize m p))) ->
   forall m h txs, merged_satisfy P m ->
     merged_satisfy P (fst (apply_block m h txs)).
@@ -555,14 +556,14 @@ Theorem merged_only_through_finalize_with_quorum_approvals :
     In b (bids (fst (apply_block m h txs))) -> bst b = Merged ->
     ~ In b (bids m) ->
     exists (before : obj) (p : proposal),
-      merge_quorum before p <= approvals p (mheight before - pat p) (param before "fallback_blocks") /\
+      merge_quorum before p <= counted_approvals before p /\
       pending before = Some p /\ ~ In b (bids before) /\
       In b (bids (fst (finalize before p))).
 Proof.
   intros m h txs b Hin Hb Hnew.
   let P := constr:(fun b => In b (bids m) \/
     exists before p,
-      merge_quorum before p <= approvals p (mheight before - pat p) (param before "fallback_blocks") /\
+      merge_quorum before p <= counted_approvals before p /\
       pending before = Some p /\ ~ In b (bids before) /\
       In b (bids (fst (finalize before p)))) in
   assert (H : merged_satisfy P (fst (apply_block m h txs))).
@@ -575,22 +576,24 @@ Proof.
   destruct (H b Hin Hb) as [Hold|Hfinal]; [contradiction|exact Hfinal].
 Qed.
 
-(** With nothing excluded, a merge's roster is every agent, so the quorum in
+(** With nothing excluded, a merge's roster is every agent on the roster at
+    the market's height, so the quorum in
     merged_only_through_finalize_with_quorum_approvals is n-f of the whole
-    network; exclusions only ever shrink it. *)
+    network at that height (the genesis roster while no roster change has
+    taken effect: roster_now_without_changes); exclusions only ever shrink it. *)
 Theorem scope_all : forall (m : obj) (r : string),
-  excluded m = [] -> scope m r = agents m.
+  excluded m = [] -> scope m r = roster_now m.
 Proof.
   intros m r H. unfold scope, excludes. rewrite H.
-  generalize (agents m) as l. induction l as [|a l IH]; simpl; [reflexivity|].
+  generalize (roster_now m) as l. induction l as [|a l IH]; simpl; [reflexivity|].
   f_equal. exact IH.
 Qed.
 
 Theorem merge_n_le_agents : forall (m : obj) (p : proposal),
-  merge_n m p <= length (agents m).
+  merge_n m p <= length (roster_now m).
 Proof.
-  intros m p. unfold merge_n. destruct (bid_by m (pbid p)) as [b|]; [|lia].
-  unfold scope. generalize (agents m) as l. induction l as [|a l IH]; simpl; [lia|].
+  intros m p. unfold merge_n, merge_roster. destruct (bid_by m (pbid p)) as [b|]; [|lia].
+  unfold scope. generalize (roster_now m) as l. induction l as [|a l IH]; simpl; [lia|].
   destruct (negb _); simpl; lia.
 Qed.
 
@@ -968,3 +971,119 @@ Proof.
   rewrite (certified_admission_keeps_commit_height_roster verify p cs block_at agreed_at h l s fields next H).
   split; reflexivity.
 Qed.
+
+(** M-3: the market follows the roster at its height. The rules count
+    roster_now, the roster in effect at the market's height, which is the
+    genesis roster while no change has taken effect: existing behavior with
+    a full, stable roster is unchanged. *)
+Theorem roster_now_is_roster_at_the_height : forall m : obj,
+  roster_now m = roster_at (agents m) (roster_changes m) (mheight m).
+Proof. intros m. reflexivity. Qed.
+
+Theorem roster_now_without_changes : forall m : obj,
+  roster_changes m = [] -> roster_now m = agents m.
+Proof. intros m H. unfold roster_now. rewrite H. reflexivity. Qed.
+
+(** A change committed at the market's height c takes effect at c + 1 +
+    delay: recording it leaves the roster the market counts at c as it was. *)
+Theorem committed_change_keeps_market_roster : forall (m : obj) (a : string) (j : bool) (d : nat),
+  roster_now (setf m "roster_changes" (roster_changes m ++ [(a, j, effective_height (mheight m) d)])) =
+  roster_now m.
+Proof.
+  intros m a j d. unfold roster_now, agents, mheight, roster_changes.
+  rewrite (getf_setf_other m "roster_changes" "agents") by reflexivity.
+  rewrite (getf_setf_other m "roster_changes" "h") by reflexivity.
+  rewrite getf_setf_same.
+  apply roster_unchanged_at_commit.
+Qed.
+
+(** By default a merge's quorums are those of the roster at the height. *)
+Theorem merge_quorums_are_the_heights : forall (m : obj) (p : proposal),
+  param m "merge_approvals" = 0 -> excluded m = [] ->
+  merge_quorum m p = quorum_at (agents m) (roster_changes m) (mheight m) /\
+  reject_quorum (merge_n m p) = reject_quorum_at (agents m) (roster_changes m) (mheight m).
+Proof.
+  intros m p Hk He.
+  assert (Hn : merge_n m p = length (roster_now m)).
+  { unfold merge_n, merge_roster. destruct (bid_by m (pbid p)) as [b|];
+      [rewrite (scope_all m (bid_repo m b) He)|]; reflexivity. }
+  unfold merge_quorum. rewrite Hk.
+  change (quorum (merge_n m p) = quorum_at (agents m) (roster_changes m) (mheight m) /\
+    reject_quorum (merge_n m p) = reject_quorum_at (agents m) (roster_changes m) (mheight m)).
+  rewrite Hn. split; reflexivity.
+Qed.
+
+Lemma market_mem_In : forall (x : string) (l : list string), mem x l = true -> In x l.
+Proof.
+  intros x l. induction l as [|y r IH]; cbn [mem In]; intro H; [discriminate H|].
+  apply Bool.orb_true_iff in H. destruct H as [H|H].
+  - left. unfold seq in H. apply Stdlib.Strings.String.eqb_eq in H. symmetry. exact H.
+  - right. exact (IH H).
+Qed.
+
+Theorem merge_roster_is_on_the_roster : forall (m : obj) (p : proposal) (a : string),
+  In a (merge_roster m p) -> In a (roster_now m).
+Proof.
+  intros m p a H. unfold merge_roster in H.
+  destruct (bid_by m (pbid p)) as [b|]; [|exact H].
+  unfold scope in H. apply filter_In in H. exact (proj1 H).
+Qed.
+
+(** Only votes of agents on the roster at the height count, yes or no: a
+    vote cast before its voter was removed counts for nothing. *)
+Theorem counted_votes_are_on_the_roster : forall (m : obj) (p : proposal) (v : string * bool),
+  In v (counted_votes m p) -> In v (pvotes p) /\ In (fst v) (roster_now m).
+Proof.
+  intros m p v H. unfold counted_votes in H. apply filter_In in H. destruct H as [Hv Hm].
+  split; [exact Hv|]. apply (merge_roster_is_on_the_roster m p). exact (market_mem_In _ _ Hm).
+Qed.
+
+Theorem removed_voter_is_not_counted : forall (m : obj) (p : proposal) (a : string) (b : bool),
+  ~ In a (roster_now m) -> ~ In (a, b) (counted_votes m p).
+Proof.
+  intros m p a b Ha H. apply Ha. exact (proj2 (counted_votes_are_on_the_roster m p (a, b) H)).
+Qed.
+
+(** The leader and the bidder's fallback supply at most two approvals, so a
+    merge at n - f needs n - f - 2 yes votes from attestors on the roster. *)
+Theorem counted_attestors_must_approve : forall (n : nat) (m : obj) (p : proposal),
+  quorum n <= counted_approvals m p ->
+  quorum n - 2 <= length (filter snd (counted_votes m p)).
+Proof.
+  intros n m p H. unfold counted_approvals in H. cbv zeta in H.
+  destruct (mem (pby p) (merge_roster m p)); destruct (_ && _ && _); lia.
+Qed.
+
+(** A merge's approvals and rejections at one height still exclude each
+    other: the counted voters are at most n - 2 of that height's roster. *)
+Theorem counted_merge_never_both : forall (n : nat) (m : obj) (p : proposal),
+  length (counted_votes m p) + 2 <= n ->
+  quorum n <= counted_approvals m p -> reject_quorum n <= counted_noes m p -> False.
+Proof.
+  intros n m p Hl Hy Hn. unfold counted_noes in Hn.
+  pose proof (quorum_plus_reject n). pose proof (votes_split (counted_votes m p)).
+  unfold counted_approvals in Hy. cbv zeta in Hy.
+  destruct (mem (pby p) (merge_roster m p)); destruct (_ && _ && _); lia.
+Qed.
+
+(** The draw counts reveals of the roster at the height only. *)
+Theorem revealed_are_on_the_roster : forall (m : obj) (a : string),
+  In a (revealed m) -> In a (roster_now m).
+Proof. intros m a H. unfold revealed in H. apply filter_In in H. exact (proj1 H). Qed.
+
+(** A leader the roster no longer has ends its term in that block, a pending
+    merge or not. *)
+Theorem removed_leader_term_ends : forall m : obj,
+  awaiting m = false -> leader_removed m = true ->
+  awaiting (maybe_end_term m) = true /\ leader (maybe_end_term m) = "".
+Proof.
+  intros m Ha Hr. unfold maybe_end_term. rewrite Ha, Hr. cbn [negb andb].
+  split.
+  - unfold awaiting. rewrite getf_setf_other by reflexivity. rewrite getf_setf_same. reflexivity.
+  - repeat rewrite leader_setf_other by reflexivity. apply leader_setf_leader.
+Qed.
+
+(** And a removed agent doesn't lead: it isn't the leader to apply. *)
+Theorem removed_agent_does_not_lead : forall (m : obj) (a : string),
+  on_roster m a = false -> is_leader m a = false.
+Proof. intros m a H. unfold is_leader. rewrite H. apply Bool.andb_false_r. Qed.
