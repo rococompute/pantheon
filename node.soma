@@ -2064,6 +2064,8 @@ block_log_replay (toks : option (list string)) (expect : string) : option (strin
 Fixpoint run_boot (h : node_t) (st : node_state) (evs : list (list string)) : node_state :=
   match evs with
   | [] => st
+  | ("applied_body" :: repo :: body :: _) :: rest =>
+      if io_do h (IoMergeApplied repo (commit_version body)) then run_boot h st rest else st
   | ("block_log" :: line :: _) :: rest =>
       match block_log_replay (node_json_tokens line) (show (height (cons st))) with
       | None => run_boot h st rest

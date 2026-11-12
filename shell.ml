@@ -63,16 +63,8 @@ let tx_bytes agent nonce fields =
   String.concat "\x00" [ "tx"; !chain_id; agent; nonce; Yojson.Safe.to_string (strings_json fields) ]
 
 
-(* A signed transaction's I/O: market.soma's decode_tx decides (the caps,
-   the bounded scan, the nonce, the signature's verdict). *)
-let tx_parts raw =
-  try
-    let j = Yojson.Safe.from_string raw in
-    let open Yojson.Safe.Util in
-    let agent = to_string (member "agent" j) and nonce = to_string (member "nonce" j) in
-    let fields = json_strings (member "fields" j) and sg = to_string (member "sig" j) in
-    Some (agent, (nonce, (fields, sg)))
-  with _ -> None
+(* A signed transaction's signature I/O: market.soma reads JSON tokens
+   and decides the caps, bounded scan, members, nonce and verdict. *)
 let tx_verify agent nonce fields sg =
   match Hashtbl.find_opt pubkeys agent with
   | Some key -> (try verify key (tx_bytes agent nonce fields) sg with _ -> false)
@@ -1050,17 +1042,14 @@ let node_open packed home flags =
   (* the version of the last merge applied to a checkout: the merges
      replayed from blocks.log at startup are already in it *)
   let genesis_commit n = match List.find_opt (fun (m, _, _, _) -> m = n) repos with Some (_, _, c, _) -> c | None -> "" in
-  let applied_of n =
-    (* at genesis, none of this chain's merges: a genesis commit that is an
-       earlier chain's merge (a new epoch) carries that chain's version, and
-       taking it skipped this chain's first merges on every node *)
-    if git_out (rdir n) [ "rev-parse"; "HEAD" ] = git_out (rdir n) [ "rev-parse"; genesis_commit n ] then 0 else
-    let body = snd (git (rdir n) [ "log"; "-1"; "--format=%B" ]) in
-    List.fold_left (fun acc l -> match String.split_on_char ' ' l with [ "Pantheon-Version:"; v ] -> (try int_of_string v with _ -> acc) | _ -> acc) 0
-      (String.split_on_char '\n' body)
+  (* Genesis stays 0. Soma reads Pantheon-Version out of any later commit. *)
+  let applied_body n =
+    if git_out (rdir n) [ "rev-parse"; "HEAD" ] = git_out (rdir n) [ "rev-parse"; genesis_commit n ] then None
+    else Some (snd (git (rdir n) [ "log"; "-1"; "--format=%B" ]))
   in
   let applied = Hashtbl.create 4 in
-  List.iter (fun (n, _, _, _) -> Hashtbl.replace applied n (applied_of n)) repos;
+  let pending_applied = ref [] in
+  List.iter (fun (n, _, _, _) -> match applied_body n with None -> Hashtbl.replace applied n 0 | Some body -> pending_applied := (n, body) :: !pending_applied) repos;
   let diverged = ref [] in
   let ci_for r = try List.assoc r !ci_repo with Not_found -> !ci_cmd in
   let peers =
@@ -1281,6 +1270,7 @@ let node_open packed home flags =
   feed [ "me"; me ];
   feed [ "agent"; "backend"; backend_kind ];
   List.iter feed !agent_events;
+  List.iter (fun (n, body) -> feed ["applied_body"; n; body]) (List.rev !pending_applied);
   let replayed = ref 0 in
   List.iter (fun l -> feed ["block_log"; l]) (lines blocks_path);
   let boot_saved = if Sys.file_exists checkpoint_path then

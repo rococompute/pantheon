@@ -11,12 +11,10 @@ sha256 : string -> string.
 (** hex sha256 of a list of strings, unambiguous about where each one ends *)
 hash_list : list string -> string.
 
-(** A signed transaction's I/O; market.soma's decode_tx decides. Its parts
-    as JSON: agent, nonce, fields and signature (none when it isn't that
-    JSON); whether the signature verifies against that agent's genesis key
+(** A signed transaction's I/O; market.soma's decode_tx decides.
+    Whether the signature verifies against that agent's genesis key
     (an unknown agent's doesn't); the transaction byte cap and the item cap
     of its bounded scan, as decimal strings. *)
-tx_parts : string -> option (string * (string * (list string * string))).
 tx_verify : string -> string -> list string -> string -> bool.
 tx_byte_cap : unit -> string.
 tx_item_cap : unit -> string.

@@ -230,6 +230,17 @@ separate work; this status does not mark `.plan`.
 
 ## Done so far
 
+- Step 5, transaction members: `tx_parts` and `tx_parts_of` in
+  market.soma read agent, nonce, fields and signature from the shared JSON
+  token binding. Each of the four member lookups spends one token budget
+  through nested skips, so wide objects take linear work. First duplicate
+  keys win, including wrong kinds. The native transaction member parser
+  and its binding are gone. Byte and shape guards still precede tokenizing,
+  and nonce validation still precedes signature verification.
+  `test/tx-members.sh` checks fixed real JSON, including 20000 unrelated
+  members, and `test/tx_members.proof` checks tokens and the nonce guard.
+  This is a partial step 5 bid; the plan remains open.
+
 - Step 5, a peer line's members: `from`, `sig` and `fields` are read in
   Soma (`peer_line_parts`, under `node_line_parts` over the
   `node_json_tokens` binding) with Yojson.Safe.Util's old rules: the

@@ -1,0 +1,43 @@
+(** A peer line's members, read in Soma (node.soma's peer_line_parts and
+    node_line_parts) from real yojson tokens, with no sockets, running node
+    or timing. *)
+Import util shell market.
+From Stdlib Require ExtrOcamlNatInt.
+Extract Inlined Constant Nat.div => "(fun a b -> if b = 0 then 0 else a / b)".
+Extract Inlined Constant Nat.modulo => "(fun a b -> if b = 0 then a else a mod b)".
+Extract Inlined Constant Stdlib.Strings.String.length => "String.length".
+Extract Inlined Constant Stdlib.Strings.String.get =>
+  "(fun n s -> if n < String.length s then Some (String.unsafe_get s n) else None)".
+Extract Inlined Constant Stdlib.Strings.String.substring =>
+  "(fun n m s -> let l = String.length s in if n >= l then """" else String.sub s n (min m (l - n)))".
+
+Fixpoint fields_eq (a b : list string) : bool :=
+  match a, b with
+  | [], [] => true
+  | x :: xs, y :: ys => seq x y && fields_eq xs ys
+  | _, _ => false
+  end.
+
+parts_eq (a b : option (string * (string * (list string * string)))) : bool :=
+  match a, b with
+  | None, None => true
+  | Some (a, (n, (fs, sg))), Some (b, (m, (gs, tg))) =>
+      seq a b && seq n m && seq sg tg &&
+      fields_eq fs gs
+  | _, _ => false
+  end.
+
+check (label raw : string) (expected : option (string * (string * (list string * string)))) : string :=
+  append (if parts_eq (tx_parts raw) expected then "ok " else "FAIL ") label.
+
+expected : option (string * (string * (list string * string))) := Some ("p", ("1", (["x", "y"], "s"))).
+main := print_lines [
+  check "members" "{""agent"":""p"",""nonce"":""1"",""fields"":[""x"",""y""],""sig"":""s""}" expected,
+  check "duplicate first" "{""agent"":""p"",""agent"":""p"",""nonce"":""1"",""fields"":[""x"",""y""],""sig"":""s""}" expected,
+  check "duplicate wrong first" "{""agent"":null,""agent"":""p"",""nonce"":""1"",""fields"":[""x"",""y""],""sig"":""s""}" None,
+  check "missing" "{""agent"":""p"",""nonce"":""1"",""fields"":[]}" None,
+  check "wrong fields" "{""agent"":""p"",""nonce"":""1"",""fields"":[1],""sig"":""s""}" None,
+  check "malformed" "{bad}" None,
+  check "nonobject" "[]" None,
+  check "wide object" (append "{" (append (Stdlib.Strings.String.concat "" (repeat """z"":[1,{""a"":null}]," (num "20000"))) """agent"":""p"",""nonce"":""1"",""fields"":[""x"",""y""],""sig"":""s""}")) expected
+].
