@@ -230,6 +230,42 @@ separate work; this status does not mark `.plan`.
 
 ## Done so far
 
+- Step 5, a peer line's members: `from`, `sig` and `fields` are read in
+  Soma (`peer_line_parts`, under `node_line_parts` over the
+  `node_json_tokens` binding) with Yojson.Safe.Util's old rules: the
+  first matching key wins, and a missing member, one of another kind, a
+  non-string in `fields` or a non-object is no event. One walk over the
+  top-level members skips each value with one shared fuel (every step
+  uses a token), so a wide object is linear work, as the old member
+  reads were. The shape scan still runs first and the signature check
+  still comes after the own/refused drop. The OCaml `node_line_parts`
+  binding is gone. `test/peer-members.sh` checks real lines, including
+  20000 unrelated keys before the three that count, and
+  `test/peer_members.proof` fixed token streams.
+
+- Step 5, a reply's braces: where a model reply's JSON object starts and
+  ends (the first `{` and the last `}`, by byte offset) is found in Soma by
+  `reply_open_at` and `reply_close_at`, one tail-recursive `char_at` scan
+  each way with no substring per step, still only after the output-cap
+  check. The `node_reply_open` and `node_reply_close` bindings are gone;
+  the shell only reports the cap and yojson's tokens. `node.proof` checks
+  the offsets, and `test/reply-braces.sh` checks them on fixed inputs
+  (none, only one brace, a close before the open, several objects, a
+  200 KB reply) and the fields they lead to.
+
+- Step 5, signed.log at startup: the shell only reads the file's
+  nonempty lines (`node_signed_lines`); Soma's pure `signed_log_entry`
+  makes each a vote (slot, value id, fields through the JSON token
+  binding), a line cut short (no vote after the slot, a value id neither
+  empty nor 64 bytes, a vote that isn't a JSON list of strings: logged
+  with the old text and skipped) or nothing (no space). `restore_signed`
+  notes each vote through `node_signed_restore` before replay, and
+  `signed_needs_snapshot` refuses to start, through `node_fail`, when
+  votes were read and there is no consensus.state, as before. The OCaml
+  parser is gone, and so are the shell's unused `job_how` and `exit_code`
+  (Soma's `ci_job_how`, `ci_exit_code`) and the dead `conn_buffer` branch.
+  `test/signed-log.sh` and `test/signed_log.proof` check fixed lines.
+
 - Step 5, peer buffer storage: a connection's retained read chunks now
   live in Soma's `node_state` (`pbufs`, through `peer_buffer`,
   `peer_remember` and `peer_forget`), not in the shell's connection

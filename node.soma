@@ -1022,12 +1022,34 @@ reply_fields_of (text limit : string) (open_at close_at : option string)
       end
   end.
 
+(** Where a reply's braces are, by byte offset (as OCaml's String.index_opt
+    and String.rindex_opt found them): a tail-recursive scan by [char_at],
+    no substring per step, so a 4 MB reply is one pass each way. *)
+Fixpoint first_code (fuel : nat) (t : string) (c i : nat) : option nat :=
+  match fuel with
+  | 0 => None
+  | Succ f => if code_at t i =? c then Some i else first_code f t c (Succ i)
+  end.
+
+Fixpoint last_code (fuel : nat) (t : string) (c j : nat) : option nat :=
+  match fuel, j with
+  | Succ f, Succ j' => if code_at t j' =? c then Some j' else last_code f t c j'
+  | _, _ => None
+  end.
+
+(** The offsets cross to [json_in_reply] as decimal strings, as before. *)
+reply_open_at (text : string) : option string :=
+  match first_code (slen text) text 123 0 with Some i => Some (show i) | None => None end.
+
+reply_close_at (text : string) : option string :=
+  match last_code (slen text) text 125 (slen text) with Some j => Some (show j) | None => None end.
+
 (** Over the cap, the braces are not even looked up: the same short
     circuit as before, and no walk of a multi-megabyte output. *)
 reply_fields (text : string) : option (list string) :=
   let limit := node_job_output_limit tt in
   if num limit <? slen text then None
-  else reply_fields_of text limit (node_reply_open text) (node_reply_close text) node_json_tokens.
+  else reply_fields_of text limit (reply_open_at text) (reply_close_at text) node_json_tokens.
 
 (** The outcome carried out: a limit is noted (its wait, reason and doubled
     backoff, the log line) and the raw request held; otherwise the backoff
@@ -1464,6 +1486,89 @@ peer_wire_fields (me : string) (refused : string -> bool)
       "peer_line" :: self :: seen :: from :: sig :: fields
   end.
 
+(** A peer line's members, read in Soma from the yojson binding's tokens
+    with Yojson.Safe.Util's old rules: the first key that matches wins, and
+    a missing member, a member of another kind or a non-object is None.
+    One walk over the top level's members, skipping each value with one
+    shared fuel (every step uses a token), so a wide object costs linear
+    work, never a recount per member. A member's value is kept as the
+    token tail where it starts, read after the walk. *)
+peer_first (k key : string) (rest : list string) (cur : option (list string)) : option (list string) :=
+  match cur with
+  | Some _ => cur
+  | None => if seq key k then Some rest else None
+  end.
+
+Fixpoint peer_members_go (fuel left : nat) (pending : list bool) (toks : list string)
+    (from sg fields : option (list string))
+    : option (option (list string) * (option (list string) * option (list string))) :=
+  match fuel with
+  | 0 => None
+  | Succ f =>
+      match pending with
+      | true :: p =>
+          match toks with
+          | _ :: rest => peer_members_go f left p rest from sg fields
+          | [] => None
+          end
+      | false :: p =>
+          match toks with
+          | "A" :: ns :: rest =>
+              peer_members_go f left (flat_map (fun _ => [true, false]) (List.seq 0 (num ns)) ++ p) rest from sg fields
+          | "L" :: ns :: rest =>
+              peer_members_go f left (map (fun _ => false) (List.seq 0 (num ns)) ++ p) rest from sg fields
+          | "U" :: rest => peer_members_go f left p rest from sg fields
+          | _ :: _ :: rest => peer_members_go f left p rest from sg fields
+          | _ => None
+          end
+      | [] =>
+          match left, toks with
+          | 0, _ => Some (from, (sg, fields))
+          | Succ l, key :: rest =>
+              peer_members_go f l [false] rest
+                (peer_first "from" key rest from) (peer_first "sig" key rest sg)
+                (peer_first "fields" key rest fields)
+          | Succ _, [] => None
+          end
+      end
+  end.
+
+(** A JSON list of strings, tail recursive (a block's list can be long). *)
+Fixpoint peer_strings_go (n : nat) (toks acc : list string) : option (list string) :=
+  match n, toks with
+  | 0, _ => Some (rev_onto acc [])
+  | Succ j, "S" :: s :: rest => peer_strings_go j rest (s :: acc)
+  | _, _ => None
+  end.
+
+peer_string_list (toks : list string) : option (list string) :=
+  match toks with
+  | "L" :: n :: rest => peer_strings_go (num n) rest []
+  | _ => None
+  end.
+
+peer_line_parts (toks : list string) : option (string * (string * list string)) :=
+  match toks with
+  | "A" :: ns :: rest =>
+      match peer_members_go (Succ (length rest)) (num ns) [] rest None None None with
+      | Some (Some ("S" :: from :: _), (Some ("S" :: sig :: _), Some fv)) =>
+          match peer_string_list fv with
+          | Some fields => Some (from, (sig, fields))
+          | None => None
+          end
+      | _ => None
+      end
+  | _ => None
+  end.
+
+(** What the shell's Yojson member reads gave: the line through the JSON
+    token binding, then its members in Soma. *)
+node_line_parts (raw : string) : option (string * (string * list string)) :=
+  match node_json_tokens raw with
+  | Some toks => peer_line_parts toks
+  | None => None
+  end.
+
 peer_raw_event (items me raw : string)
     (parts : string -> option (string * (string * list string)))
     (refused : string -> bool) : list string :=
@@ -1722,10 +1827,6 @@ run_event (h : node_t) (st : node_state) (ev : list string) : node_state :=
           if node_conn_admit h oid "evict" target
           then peer_forget st target else with_live st (live st)
       end
-  | ["conn_buffer", cid, len] =>
-      if buffer_over (num len) (num (node_line_limit h)) then
-        if node_conn_close h cid then peer_forget st cid else with_live st (live st)
-      else st
   | ["peer_closed", cid] => peer_forget st cid
   | ["check_failed", id, t] =>
       if perform_check_failed h id t then st else with_live st (live st)
@@ -1988,10 +2089,77 @@ start_node (h : node_t) (st : node_state) : node_state :=
   let (s, outs) := step st ["start"] in
   if carry_all h (cons s) (startup_effects outs) then s else st.
 
+(** ---- signed.log at startup (step 5) ----
+    Each line is "SLOT VID VOTE-AS-JSON". A line with no space is not a
+    vote and is passed over quietly. A line cut short (a node stopped while
+    writing it) is no vote either: the line is written before the vote is
+    sent, so that vote never went out, and taking it as signed, with
+    nothing to send again, left a node refusing to vote at that height. It
+    is said and skipped: no vote after the slot, a value id that is
+    neither empty nor 64 bytes, or a vote that isn't a JSON list of
+    strings. [tokens] is the yojson binding's (node_json_tokens). *)
+Inductive signed_entry :=
+| SignedVote (slot vid : string) (fields : list string)
+| SignedCut (slot why : string)
+| SignedSkip.
+
+signed_log_entry (tokens : string -> option (list string)) (line : string) : signed_entry :=
+  match find_str " " line 0 with
+  | None => SignedSkip
+  | Some i =>
+      let k := substr line 0 i in
+      let rest := drop_str (i + 1) line in
+      match find_str " " rest 0 with
+      | None => SignedCut k "no vote in it"
+      | Some j =>
+          let v := substr rest 0 j in
+          let js := drop_str (j + 1) rest in
+          if negb (seq v "") && negb (slen v =? 64) then SignedCut k "its value id is cut"
+          else
+            match tokens js with
+            | None => SignedCut k "its vote doesn't parse"
+            | Some t =>
+                match json_string_list t with
+                | Some f => SignedVote k v f
+                | None => SignedCut k "its vote doesn't parse"
+                end
+            end
+      end
+  end.
+
+signed_cut_text (slot why : string) : string :=
+  append "signed.log: skipping " (append slot (append ", a line cut short ("
+    (append why "): that vote was never sent"))).
+
+(** The lines in order (a later line for a slot replaces an earlier one, in
+    the shell's table). The second of the pair: whether any vote was read. *)
+Fixpoint restore_signed (h : node_t) (lines : list string) (found : bool) : bool * bool :=
+  match lines with
+  | [] => (true, found)
+  | l :: rest =>
+      match signed_log_entry node_json_tokens l with
+      | SignedVote k v f => if node_signed_restore h k v f then restore_signed h rest true else (false, found)
+      | SignedCut k why => if io_log h (signed_cut_text k why) then restore_signed h rest found else (false, found)
+      | SignedSkip => restore_signed h rest found
+      end
+  end.
+
+(** Votes signed with no consensus.state to go with them: a node that
+    started would forget its lock, so it doesn't start. *)
+signed_needs_snapshot (snapshot_missing votes_found : bool) : bool := snapshot_missing && votes_found.
+
+signed_missing_text : string := "missing consensus.state with existing votes: start a new chain".
+
 run_node (home : string) (flags : list string) : unit :=
   let h := node_open (pack_helpers node_helpers) home flags in
-  let st := run_boot h empty_node (boot_events h) in
-  let n := replay_count h in
-  let logged := if seq n "0" then true else io_log h (append "replayed " (append n " blocks from disk")) in
-  let st := match boot_snapshot h with Some c => restore_cons st c | None => st end in
-  if logged then forever (node_tick h) (start_node h st) else print_text "".
+  let snap : option consensus_state := boot_snapshot h in
+  let (restored, found) := restore_signed h (node_signed_lines h) false in
+  let missing := match snap with None => true | Some _ => false end in
+  let guarded := if signed_needs_snapshot missing found then node_fail signed_missing_text else true in
+  if restored && guarded then
+    let st := run_boot h empty_node (boot_events h) in
+    let n := replay_count h in
+    let logged := if seq n "0" then true else io_log h (append "replayed " (append n " blocks from disk")) in
+    let st := match snap with Some c => restore_cons st c | None => st end in
+    if logged then forever (node_tick h) (start_node h st) else print_text ""
+  else print_text "".

@@ -1,0 +1,57 @@
+(** Where a model reply's braces are, found in Soma (reply_open_at,
+    reply_close_at), and the fields they lead to. No running node. *)
+Import util shell node.
+From Stdlib Require ExtrOcamlNatInt.
+Extract Inlined Constant Nat.div => "(fun a b -> if b = 0 then 0 else a / b)".
+Extract Inlined Constant Nat.modulo => "(fun a b -> if b = 0 then a else a mod b)".
+Extract Inlined Constant Stdlib.Strings.String.length => "String.length".
+Extract Inlined Constant Stdlib.Strings.String.get =>
+  "(fun n s -> if n < String.length s then Some (String.unsafe_get s n) else None)".
+Extract Inlined Constant Stdlib.Strings.String.substring =>
+  "(fun n m s -> let l = String.length s in if n >= l then """" else String.sub s n (min m (l - n)))".
+
+check (label : string) (ok : bool) : string := append (if ok then "ok " else "FAIL ") label.
+
+opt_eq (a b : option string) : bool :=
+  match a, b with
+  | Some x, Some y => seq x y
+  | None, None => true
+  | _, _ => false
+  end.
+
+fields_eq (a b : option (list string)) : bool :=
+  match a, b with
+  | Some x, Some y => eq_strs x y
+  | None, None => true
+  | _, _ => false
+  end.
+
+braces (t : string) (o c : option string) : bool :=
+  opt_eq (reply_open_at t) o && opt_eq (reply_close_at t) c.
+
+(** the fields, with the braces found here and the given tokens *)
+fields (t limit : string) (toks : option (list string)) : option (list string) :=
+  reply_fields_of t limit (reply_open_at t) (reply_close_at t) (fun _ => toks).
+
+big : string := append (Stdlib.Strings.String.concat "" (repeat "x" 100000))
+                  (append "{""k"":""v""}" (Stdlib.Strings.String.concat "" (repeat "y" 100000))).
+
+checks : list string := [
+  check "first open and last close" (braces " pre {""a"":{""b"":1}} post" (Some "5") (Some "17")),
+  check "no braces" (braces "no json here" None None),
+  check "empty text" (braces "" None None),
+  check "only an open" (braces "x{" (Some "1") None),
+  check "only a close" (braces "}x" None (Some "0")),
+  check "close before open" (braces "}{" (Some "1") (Some "0")),
+  check "brace at both ends" (braces "{}" (Some "0") (Some "1")),
+  check "several objects span first to last" (braces "{a} and {b}" (Some "0") (Some "10")),
+  check "nested reply flattens"
+    (fields_eq (fields "say {""a"":{""b"":""c""}} done" "100"
+                  (Some ["A", "1", "a", "A", "1", "b", "S", "c"])) (Some ["a.b", "c"])),
+  check "absent object is no fields" (fields_eq (fields "plain words" "100" (Some ["A", "0"])) None),
+  check "close before open is no fields" (fields_eq (fields "} x {" "100" (Some ["A", "0"])) None),
+  check "past the cap is no fields" (fields_eq (fields "{}" "1" (Some ["A", "0"])) None),
+  check "long reply found in one pass"
+    (braces big (Some "100000") (Some "100008"))
+].
+main := print_lines checks.

@@ -78,10 +78,10 @@ node_mark_served : string -> string -> string -> float -> bool.
 node_peer_exists : string -> string -> bool.
 (** Verify a peer line's signature; Soma asks only for lines that are
     neither this node's own nor an already-refused transaction. *)
-(** Raw Yojson members, the item's cap as decimal text, and metadata reads.
-    Soma scans each raw line before invoking the JSON library, then drops
+(** The item's cap as decimal text, and metadata reads. Soma scans each
+    raw line before invoking the JSON library (node_json_tokens), reads
+    its members itself (node.soma's node_line_parts), then drops
     own/refused lines before invoking node_verify_line. *)
-node_line_parts : string -> option (string * (string * list string)).
 node_line_item_cap : unit -> string.
 node_identity : string -> string.
 node_seen_refused : string -> string -> bool.
@@ -153,8 +153,6 @@ node_job_flood : string -> string -> bool.
     passed, the tree, why (made plain text here) and the stage ("", "ci" or
     "node"), queued as the check_result event. *)
 node_check_result : string -> string -> bool -> string -> string -> string -> bool.
-node_reply_open : string -> option string.
-node_reply_close : string -> option string.
 node_json_tokens : string -> option (list string).
 node_float_of_digits : string -> float.
 node_limit_set : string -> float -> string -> float -> bool.
@@ -209,5 +207,11 @@ node_merge_commit : string -> string -> string -> string -> string -> string -> 
 (** Vote table, resend memory and socket writes. Soma chooses the message. *)
 node_signed_vote : string -> string -> option string.
 node_signed_body : string -> string -> option (list string).
+(** signed.log at startup: its nonempty lines, raw; noting one vote Soma
+    read from them (node.soma's signed_log_entry), not appended again; and
+    refusing to start (the message on stderr, exit 1). *)
+node_signed_lines : string -> list string.
+node_signed_restore : string -> string -> string -> list string -> bool.
+node_fail : string -> bool.
 node_remember_broadcast : string -> string -> string -> list string -> list string -> bool.
 node_peer_count : string -> string.
