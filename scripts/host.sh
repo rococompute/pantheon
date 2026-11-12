@@ -209,6 +209,59 @@ account() {
   [ ! -L "$home" ] || { echo "host: symlinked home $home" >&2; exit 1; }
   chown "$name" "$home"
 }
+# Repeat provisioning must not adopt an identity that already crosses the
+# isolation boundary. Audit every configured account and inbox before the
+# first useradd/chown/install (including a bad account late in AGENTS).
+# Disable globbing while splitting NSS group names and member lists.
+set -f
+seen_uids=' '
+audit_account() {
+  audit_name=$1 audit_home=$2 audit_inbox=$3
+  audit_entry=$(getent passwd "$audit_name" || :)
+  [ -n "$audit_entry" ] || return 0
+  audit_actual=$(printf '%s\n' "$audit_entry" | cut -d: -f6)
+  [ "$audit_actual" = "$audit_home" ] || { echo "host: $audit_name has unexpected home $audit_actual" >&2; exit 1; }
+  audit_uid=$(printf '%s\n' "$audit_entry" | cut -d: -f3)
+  case $audit_uid in ''|*[!0-9]*) echo "host: unsafe uid for $audit_name" >&2; exit 1 ;; esac
+  [ "$audit_uid" -gt 0 ] || { echo "host: unsafe uid for $audit_name" >&2; exit 1; }
+  case $seen_uids in *" $audit_uid "*) echo "host: configured accounts share uid $audit_uid" >&2; exit 1 ;; esac
+  seen_uids="$seen_uids$audit_uid "
+  audit_aliases=$(getent passwd | awk -F: -v uid="$audit_uid" -v name="$audit_name" '$3 == uid && $1 != name {print $1}')
+  [ -z "$audit_aliases" ] || { echo "host: $audit_name shares its uid with $audit_aliases" >&2; exit 1; }
+  if [ -n "$audit_inbox" ]; then
+    audit_groups=$(id -nG "$audit_name")
+    for audit_group in $audit_groups; do
+      case $audit_group in "$audit_name"|"$audit_inbox") ;; *)
+        echo "host: $audit_name has unrelated group $audit_group; remove it before provisioning" >&2; exit 1 ;;
+      esac
+    done
+  fi
+}
+audit_inbox() {
+  audit_group=$1 audit_diplomat=$2
+  audit_entry=$(getent group "$audit_group" || :)
+  [ -n "$audit_entry" ] || return 0
+  audit_gid=$(printf '%s\n' "$audit_entry" | cut -d: -f3)
+  case $audit_gid in ''|*[!0-9]*) echo "host: unsafe gid for $audit_group" >&2; exit 1 ;; esac
+  [ "$audit_gid" -gt 0 ] || { echo "host: unsafe gid for $audit_group" >&2; exit 1; }
+  audit_aliases=$(getent group | awk -F: -v gid="$audit_gid" -v name="$audit_group" '$3 == gid && $1 != name {print $1}')
+  [ -z "$audit_aliases" ] || { echo "host: $audit_group shares its gid with $audit_aliases" >&2; exit 1; }
+  audit_members=$(printf '%s\n' "$audit_entry" | cut -d: -f4 | tr ',' ' ')
+  # A primary-group member need not occur in the group's member list.
+  audit_primary=$(getent passwd | awk -F: -v gid="$audit_gid" '$4 == gid {print $1}')
+  for audit_member in $audit_members $audit_primary; do
+    case $audit_member in pantheon|"$audit_diplomat") ;; *)
+      echo "host: $audit_group admits unrelated account $audit_member; remove it before provisioning" >&2; exit 1 ;;
+    esac
+  done
+}
+ROOT
+  printf 'audit_account pantheon /var/lib/pantheon ""\n'
+  for a in $AGENTS; do
+    printf 'audit_account pantheon-%s /var/lib/pantheon-diplomats/%s inbox-%s\n' "$a" "$a" "$a"
+    printf 'audit_inbox inbox-%s pantheon-%s\n' "$a" "$a"
+  done
+  cat <<'ROOT'
 account pantheon /var/lib/pantheon
 # Traversable so shared builds and repositories can live below it. Secrets
 # belong in net/AGENT (0700), inbox.json (0600), and .ssh (0700).
