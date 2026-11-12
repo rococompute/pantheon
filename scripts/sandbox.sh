@@ -209,7 +209,15 @@ cmd_network() {
     reach_join
     remote "cd ~/$JOIN_DIR && git fetch -q origin" || die "$JOIN: git fetch failed in ~/$JOIN_DIR (can it reach GitHub?)"
     remote "cd ~/$JOIN_DIR && git cat-file -e $pantheon_commit" || die "$JOIN can't get $pantheon_commit: push it to GitHub first"
-    remote "cd ~/$JOIN_DIR && $(host_sh | sed 's/^cd [^&]*&& //') stop >/dev/null 2>&1; git checkout -q --detach $pantheon_commit && PATH=\$HOME/pantheon/soma/_build/install/default/bin:\$PATH && eval \"\$(opam env --switch=soma-build --set-switch)\" && soma build main.soma >/tmp/pantheon-join-build.log 2>&1" \
+    # its Soma at the genesis commit too, when Soma is in the network: it
+    # builds the node, and its Soma CI compares a bid's misc tests with it
+    remote "cd ~/$JOIN_DIR && $(host_sh | sed 's/^cd [^&]*&& //') stop >/dev/null 2>&1; true"
+    if governs soma; then
+      say "$JOIN: its Soma at ${soma_commit%"${soma_commit#?????????}"} (a few minutes, if it isn't there yet)"
+      remote "cd ~/pantheon/soma && { [ \"\$(git rev-parse HEAD)\" = $soma_commit ] || { git fetch -q origin && git checkout -q --detach $soma_commit && eval \"\$(opam env --switch=soma-build --set-switch)\" && make dunestrap >/tmp/pantheon-join-soma.log 2>&1 && dune build -j 2 soma-runtime.install soma-core.install >>/tmp/pantheon-join-soma.log 2>&1 && rm -rf ~/$JOIN_DIR/.soma-cache ~/$JOIN_DIR/main.exe; }; }" \
+        || die "$JOIN: its Soma didn't reach $soma_commit (push it to GitHub first; the build's log is /tmp/pantheon-join-soma.log there)"
+    fi
+    remote "cd ~/$JOIN_DIR && git checkout -q --detach $pantheon_commit && PATH=\$HOME/pantheon/soma/_build/install/default/bin:\$PATH && eval \"\$(opam env --switch=soma-build --set-switch)\" && soma build main.soma >/tmp/pantheon-join-build.log 2>&1" \
       || die "$JOIN: its node didn't build (/tmp/pantheon-join-build.log there)"
     remote 'P=$HOME/pantheon; [ ! -d $P/net ] || mv $P/net $P/net-saved-$(date +%Y%m%d-%H%M%S)'
     remote "$(host_sh) keygen" | tar -x -C "$net/parts" -f - || die "$JOIN: keygen failed"
