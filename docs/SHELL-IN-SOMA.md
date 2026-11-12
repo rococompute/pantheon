@@ -163,6 +163,7 @@ What a `Sandbox` interpreter of each operation still lacks:
 | `IoTimer ms event` | a timer list checked each select turn | a millisecond clock and sleep (Soma's "a millisecond clock") |
 | `IoQueue event` | the event queue the next turn drains | nothing: a queue in the program's loop |
 | `IoSendAll fields`, `IoSendPeer index fields`, `IoPeerSend peer fields` | sign, frame and buffer on the peer's TCP link | links that stay open (Soma's "links that stay open") and RSA signing (Soma's "SHA-256 and RSA") |
+| `IoPeerExists who`, `IoNonceFlooded`, `IoIsDiverged repo` | read peer membership, nonce-flood flag, divergence flag; first result component is the boolean value | nothing: tables in program state |
 | `IoClock` | `Unix.gettimeofday`, returned as the second of `(true, now)` | a millisecond clock (Soma's "a millisecond clock"); Sandbox's time of day is not this clock |
 | `IoStore height txs`, `IoSetHeight height`, `IoWriteStatus text` | append the block to blocks.log, note the height (dropping old resends), write status.txt | storage (Soma's "storage": named files on the image) |
 | `IoSignVote slot vid fields` | note the vote and append it, synced, to signed.log | storage, with a synced append (Soma's "storage") |
@@ -172,7 +173,8 @@ What a `Sandbox` interpreter of each operation still lacks:
 | `IoCheck id repo head edits` | the CI job: a fresh clone, the edits, the CI command as a process; its result comes back as a `check_result` event | services (Soma's "services": a CI service asked over HTTP POST, with a timeout) and git (applying edits to a tree) |
 
 Not yet operations, still bindings of their own (the next parts of U-1):
-the node's tables (reads, which need operations with a result, as
+the remaining node table reads (peer membership, nonce-flood and divergence
+flags now use boolean operations; other reads need results, as
 `Sandbox.io`'s binds have; the clock is the first of those), the
 catch-up served table (`node_mark_served` carries a float, which has no
 wire form yet), the snapshot (Soma's "storage" still), the merge's git work (reset, probe,

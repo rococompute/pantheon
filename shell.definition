@@ -64,6 +64,8 @@ node_remember_block : string -> string -> list string -> bool.
     way the node logs, sets a timer, queues an event, sends on a peer link,
     does those writes, starts a CI check, or reads the clock. An effect returns (true, 0); "clock" returns (true, now),
     the same gettimeofday value the node used to read directly. *)
+(** Boolean reads peer_exists WHO, nonce_flooded and is_diverged REPO return
+    (value, 0): false is a table value, not an interpreter failure. *)
 node_io : string -> list string -> bool * float.
 (** Small I/O bindings; output tags and decisions live in Soma. *)
 node_draw : string -> string * (string * string).
@@ -75,7 +77,6 @@ forever : forall {A : Type}, (A -> A) -> A -> unit.
 node_current_height : string -> string.
 node_last_served : string -> string -> string -> option float.
 node_mark_served : string -> string -> string -> float -> bool.
-node_peer_exists : string -> string -> bool.
 (** Verify a peer line's signature; Soma asks only for lines that are
     neither this node's own nor an already-refused transaction. *)
 (** The item's cap as decimal text, and metadata reads. Soma scans each
@@ -99,7 +100,6 @@ node_held_store : string -> list (string * string * string * list string) -> boo
 node_local_time : float -> string.
 (** Signing, retry-table access and socket writes; Soma selects submissions. *)
 node_encode_tx : string -> string -> list string -> string.
-node_nonce_flooded : string -> bool.
 
 (** A model call's I/O; node.soma's perform_llm decides and assembles the
     prompt. The call count, bumped for this call, and the budget; holding a
@@ -211,7 +211,6 @@ node_queue_empty : string -> bool.
     short id, or none when git commit failed), and recording the version
     applied or a divergence. *)
 node_merge_applied : string -> string -> option string.
-node_merge_diverged : string -> string -> bool.
 node_merge_reset : string -> string -> bool.
 node_merge_probe : string -> string -> string -> string.
 node_merge_read : string -> string -> string -> option string.

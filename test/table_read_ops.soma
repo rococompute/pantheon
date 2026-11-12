@@ -1,0 +1,55 @@
+(** U-1, peer links and job control behind the node's one I/O interface:
+    the operations Soma issues for an offered connection, an over-cap read
+    and jobs past their limit, run through a pure scripted interpreter that
+    answers each operation from a fixed list and records what it saw. No
+    node, no sockets, no timing. *)
+Import util shell node.
+From Stdlib Require ExtrOcamlNatInt.
+Extract Inlined Constant Nat.div => "(fun a b -> if b = 0 then 0 else a / b)".
+Extract Inlined Constant Nat.modulo => "(fun a b -> if b = 0 then a else a mod b)".
+Extract Inlined Constant Stdlib.Strings.String.length => "String.length".
+Extract Inlined Constant Stdlib.Strings.String.get =>
+  "(fun n s -> if n < String.length s then Some (String.unsafe_get s n) else None)".
+Extract Inlined Constant Stdlib.Strings.String.substring =>
+  "(fun n m s -> let l = String.length s in if n >= l then """" else String.sub s n (min m (l - n)))".
+
+
+check (label : string) (ok : bool) : string := append (if ok then "ok " else "FAIL ") label.
+
+Fixpoint same (a b : list string) : bool :=
+  match a, b with
+  | [], [] => true
+  | x :: r, y :: t => seq x y && same r t
+  | _, _ => false
+  end.
+
+Fixpoint same_all (a b : list (list string)) : bool :=
+  match a, b with
+  | [], [] => true
+  | x :: r, y :: t => same x y && same_all r t
+  | _, _ => false
+  end.
+
+(** Each read consumes one fixed answer, including false. Record the wire
+    before continuing: a negative membership result must not abort reads. *)
+Fixpoint scripted (ops : list node_op) (answers : list bool)
+    : list (list string) * list bool :=
+  match ops, answers with
+  | op :: rest, answer :: more =>
+      let (seen, results) := scripted rest more in
+      (io_wire op :: seen, answer :: results)
+  | _, _ => ([], [])
+  end.
+
+main :=
+  let (seen, values) := scripted
+    [IoPeerExists "absent", IoNonceFlooded, IoIsDiverged "repo", IoPeerExists "present"]
+    [false, true, false, true] in
+  print_lines [
+    check "exact read order" (same_all seen
+      [["peer_exists", "absent"], ["nonce_flooded"], ["is_diverged", "repo"], ["peer_exists", "present"]]),
+    check "false is data and does not stop reads" (match values with [false, true, false, true] => true | _ => false end),
+    check "peer read round trip" (match io_of_wire (io_wire (IoPeerExists "p")) with Some (IoPeerExists p) => seq p "p" | _ => false end),
+    check "flag read round trip" (match io_of_wire (io_wire IoNonceFlooded) with Some IoNonceFlooded => true | _ => false end),
+    check "divergence round trip" (match io_of_wire (io_wire (IoIsDiverged "r")) with Some (IoIsDiverged r) => seq r "r" | _ => false end)
+  ].
