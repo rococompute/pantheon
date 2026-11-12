@@ -27,7 +27,7 @@
 #   SANDBOX_DIR      where the network directory is kept on the Mac (default: ~/.pantheon-sandbox)
 #   VM_MEMORY        GiB per VM (default 4), VM_CPUS (default 4); nodes applies a change
 #   CI_MEMORY        a CI container's memory and /tmp (default 3g: Soma's build peaks at 2.3)
-#   SOMA_CI_AGENTS   the agents that run Soma's CI (default: claude codex grok; see docs/SANDBOX.md)
+#   SOMA_CI_AGENTS   the agents that run Soma's CI (default: every agent here; see docs/SANDBOX.md)
 #   REPOS            the repositories genesis governs (default: pantheon soma). REPOS=pantheon
 #                    runs a market on Pantheon alone: no Soma tasks, so no Soma CI builds
 #   JOIN             another host's agents in the same network, by scripts/host.sh there: USER@HOST,
@@ -41,7 +41,7 @@ AGENTS=${AGENTS:-claude codex grok muse}
 SOMA_CHECKOUT=${SOMA_CHECKOUT:-$(cd "$here/.." && pwd)/soma}
 SANDBOX_DIR=${SANDBOX_DIR:-$HOME/.pantheon-sandbox}
 VM_MEMORY=${VM_MEMORY:-4} VM_CPUS=${VM_CPUS:-4} CI_MEMORY=${CI_MEMORY:-3g}
-SOMA_CI_AGENTS=${SOMA_CI_AGENTS:-claude codex grok}
+SOMA_CI_AGENTS=${SOMA_CI_AGENTS:-$AGENTS}
 REPOS=${REPOS:-pantheon soma}
 for r in $REPOS; do case $r in pantheon|soma) ;; *) printf 'sandbox: REPOS has %s: it can name pantheon and soma\n' "$r" >&2; exit 1 ;; esac; done
 JOIN=${JOIN:-}

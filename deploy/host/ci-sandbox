@@ -17,7 +17,9 @@
 # CI_LOCK (default ~/pantheon/.ci-lock). Four nodes' builds at once could take
 # more memory than a small host has.
 #
-# SOMA_DIR is Soma's checkout (default ~/pantheon/soma). Needs bwrap, flock, a user
+# SOMA_DIR is Soma's checkout (default ~/pantheon/soma). CI_PANTHEON, if
+# set, is a Pantheon checkout a check reads at /pantheon (read-only): Soma's
+# CI builds it with the bid's Soma (scripts/host.sh soma_ci_cmd). Needs bwrap, flock, a user
 # systemd with the memory controller (cgroup v2), and unprivileged user
 # namespaces.
 set -eu
@@ -32,6 +34,8 @@ soma=${SOMA_DIR:-$HOME/pantheon/soma}
 # switch, read-only: CI_OPAMROOT and CI_SWITCH name them
 opam=${CI_OPAMROOT:-$HOME/.opam}
 switch=${CI_SWITCH:-$HOME/.cache/soma/ocaml}
+# --ro-bind-try: no CI_PANTHEON, no /pantheon
+pantheon=${CI_PANTHEON:-/nonexistent/pantheon}
 for p in "$soma/_build/install/default/bin/soma" "$opam" "$switch"; do
   [ -e "$p" ] || { echo "ci-sandbox: no $p: build Soma and Pantheon on this host first (scripts/setup-node.sh)"; exit 3; }
 done
@@ -49,7 +53,7 @@ flock 9
 # cgroup's oom_kill count before that, to tell a kill for memory from a failure
 exec systemd-run --user --scope --quiet --collect -p "MemoryMax=$mem" -p MemorySwapMax=0 -p TasksMax=512 -- \
   sh -c '
-    soma=$1 switch=$2 work=$3 cmd=$4 opam=$5
+    soma=$1 switch=$2 work=$3 cmd=$4 opam=$5 pantheon=$6
     # only the /etc files a build reads, not the host /etc and the secrets it may
     # hold (docs/SECURITY-REVIEW-2.md P-12): names, the loader, the time zone,
     # and Debian'\''s alternatives (/usr/bin/awk is a link through them)
@@ -67,7 +71,7 @@ exec systemd-run --user --scope --quiet --collect -p "MemoryMax=$mem" -p MemoryS
       --proc /proc --dev /dev --tmpfs /tmp \
       --ro-bind "$soma" "$soma" --ro-bind "$opam" "$opam" --ro-bind "$switch" "$switch" \
       --tmpfs "$opam/log" \
-      --ro-bind "$work" /work \
+      --ro-bind "$work" /work --ro-bind-try "$pantheon" /pantheon \
       --clearenv --setenv HOME /tmp --setenv XDG_CACHE_HOME /tmp/cache --setenv OPAMROOT "$opam" \
       --setenv SOMA_OCAML_SWITCH "$switch" --setenv PATH "$soma/_build/install/default/bin:/usr/bin:/bin" \
       --setenv LANG C.UTF-8 --chdir /tmp \
@@ -75,4 +79,4 @@ exec systemd-run --user --scope --quiet --collect -p "MemoryMax=$mem" -p MemoryS
 ) 2>&1" 9>&-
     r=$?
     if [ $r -ne 0 ] && grep -qs "oom_kill [1-9]" "$cg/memory.events"; then exit 137; fi
-    exit $r' ci-sandbox "$soma" "$switch" "$work" "$cmd" "$opam"
+    exit $r' ci-sandbox "$soma" "$switch" "$work" "$cmd" "$opam" "$pantheon"

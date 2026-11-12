@@ -54,6 +54,7 @@
 #   EXCLUDE       repositories outside this host's agents' scope, e.g. "soma" on a host with no room for
 #                 its build: keygen puts them in each part's "exclude", so genesis has the market leave
 #                 those repositories' tasks to other agents (no bids, picks or checks here; default: none)
+#   CI_MEMORY     a check's memory (default 3g where Soma is in scope, its build's peak is 2.3 GB; else 1536m)
 # or from PANTHEON_HOST/host.env (lines like CODEX_ENV=soma), read first.
 set -eu
 here=$(cd "$(dirname "$0")/.." && pwd)
@@ -69,8 +70,9 @@ kind() { printf '%s' "${1%%-*}"; }
 VM_AGENTS=${VM_AGENTS:-$(for a in $AGENTS; do [ "$(kind "$a")" != muse ] || printf '%s ' "$a"; done)}
 LISTEN=${LISTEN:-127.0.0.1} BASE_PORT=${BASE_PORT:-26711}
 BIN=$here/main.exe SOMA=${SOMA_DIR:-$P/soma}
-CI_MEMORY=${CI_MEMORY:-1536m}
 EXCLUDE=${EXCLUDE:-}
+# a check's memory, no swap: Soma's build peaks at 2.3 GB, Pantheon's CI well under 1.5
+case " $EXCLUDE " in *" soma "*) CI_MEMORY=${CI_MEMORY:-1536m} ;; *) CI_MEMORY=${CI_MEMORY:-3g} ;; esac
 CI_CMD=$(python3 "$here/deploy/ci-command.py" "$here" "${PANTHEON_CI:-$(cat "$here/deploy/ci-pantheon")}")
 PORT=${INBOX_PORT:-8787}
 # a Lima VM (plain, user-mode network) reaches the host's localhost here
@@ -96,6 +98,23 @@ soma_commit() { git -C "$SOMA" rev-parse HEAD 2>/dev/null || echo unknown; }
 # makes one that does), and whether this host's agents have it in scope
 governs_soma() { jq -e '.repos[] | select(.name == "soma")' "$NET/${AGENTS%% *}/genesis.json" >/dev/null 2>&1; }
 excludes_soma() { case " $EXCLUDE " in *" soma "*) true ;; *) false ;; esac; }
+# Soma's CI on this host, for nodes whose scope has Soma (no "soma" in
+# EXCLUDE): Soma's build at -j 2 (2.3 GB at its peak: CI_MEMORY 3g), the
+# test-suite/misc/soma_*.sh tests the bid adds or changes (by git's hash
+# against SOMA_DIR's commit, the market's Soma at genesis), then this host's
+# Pantheon built with the bid's Soma, so a change that breaks Soma's biggest
+# user fails here. ci-sandbox binds this checkout read-only at /pantheon
+# (CI_PANTHEON). The deploy/sandbox/soma-ci of a VM, with the host's paths.
+soma_ci_cmd() {
+  b=$(git -C "$SOMA" ls-tree -r HEAD test-suite/misc 2>/dev/null \
+      | awk -F '\t' '$2 ~ /^test-suite\/misc\/soma_[^\/]*\.sh$/ { split($1, m, " "); printf "%s:%s ", $2, m[3] }')
+  [ -n "$b" ] || die "no test-suite/misc/soma_*.sh in $SOMA: Soma's CI couldn't tell which tests a bid changes (SOMA_DIR names Soma's checkout)"
+  printf "SOMA_MISC_BASELINE='%s'\n%s\n" "$b" 'eval "$(opam env --switch=soma-build --set-switch)" && make dunestrap >/dev/null && dune build -j 2 soma-runtime.install soma-core.install && BIN=/tmp/w/_build/install/default/bin sh /pantheon/scripts/soma-misc-tests --changed "${SOMA_MISC_BASELINE:-}" && echo "downstream: building this host'"'"'s Pantheon with this Soma" && mkdir /tmp/downstream && cp -R /pantheon/. /tmp/downstream && rm -rf /tmp/downstream/.git /tmp/downstream/.soma-cache /tmp/downstream/main.exe && cd /tmp/downstream && timeout 120 /tmp/w/_build/install/default/bin/soma build main.soma'
+}
+# what a node's command line adds for Soma: its CI, where Soma is in scope
+soma_ci_flag() { if governs_soma && ! excludes_soma; then c=$(soma_ci_cmd) || return 1; printf -- '--ci-repo soma %s' "$(q "$c")"; fi; }
+# a check of a checkout: Soma's CI for a Soma checkout, Pantheon's otherwise
+ci_for_checkout() { if [ -f "$1/GRADUAL.md" ] && [ ! -f "$1/main.soma" ]; then soma_ci_cmd; else printf '%s' "$CI_CMD"; fi; }
 soma_scope() {
   if governs_soma && excludes_soma; then
     printf '%s' "This network governs Soma too, but Soma is outside this host's scope (EXCLUDE in host.env, so each agent's genesis part excludes it): this host has no room to build it, so the market doesn't ask its agents to bid on Soma's tasks, and its leaders leave Soma's bids to leaders on the other host, whose nodes build Soma. {{SOMA_DIR}} is for reading. A Soma bug or gap you find while working on Pantheon goes in {{SOMA_NOTES}}: what you tried, what happened, and the smallest example; those become Soma's tasks."
@@ -343,13 +362,15 @@ ROOT
     printf 'install -d -o pantheon -m 0700 "$R/var/lib/pantheon/net/%s"\n' "$a"
   done
   printf 'cat > "$stage/pantheon-node@.service" <<EOF\n'
-  cat <<'UNIT'
+  case $here in *[!A-Za-z0-9_./-]*) die "$here: a checkout path with only letters, digits and _./- goes in the node unit (CI_PANTHEON)" ;; esac
+  sed "s|@HERE@|$here|" <<'UNIT'
 [Unit]
 Description=Pantheon node %i
 [Service]
 User=pantheon
 WorkingDirectory=/var/lib/pantheon/net/%i
 Environment=SOMA_DIR=/var/lib/pantheon/soma
+Environment=CI_PANTHEON=@HERE@
 Environment=XDG_RUNTIME_DIR=/run/user/$uid
 Environment=CI_LOCK=/var/lib/pantheon/.ci-lock
 ExecStart=/var/lib/pantheon/net/%i/run.sh
@@ -369,8 +390,9 @@ UNIT
     printf '[Unit]\nDescription=Pantheon inbox server\n[Service]\nUser=pantheon\nExecStart=/usr/bin/python3 %s/scripts/inbox-http.py serve /var/lib/pantheon/inbox.json\nRestart=on-failure\nRestartSec=5\n[Install]\nWantedBy=multi-user.target\nEOF\n' "$here"
     printf 'install -o root -g root -m 0644 "$stage/pantheon-inbox.service" "$R/etc/systemd/system/pantheon-inbox.service"\n'
   fi
+  soma_flag=$(soma_ci_flag) || exit 1
   for a in $AGENTS; do
-    exec_line="exec $(q "$BIN") node $(q "/var/lib/pantheon/net/$a") --backend $(q "cmd:/var/lib/pantheon/net/$a/backend.sh") --goal /var/lib/pantheon/goal.txt --listen $(q "$LISTEN") --ci-repo pantheon $(q "$CI_CMD") --ci-sandbox $(q "$here/deploy/host/ci-sandbox") --ci-memory $(q "$CI_MEMORY")"
+    exec_line="exec $(q "$BIN") node $(q "/var/lib/pantheon/net/$a") --backend $(q "cmd:/var/lib/pantheon/net/$a/backend.sh") --goal /var/lib/pantheon/goal.txt --listen $(q "$LISTEN") --ci-repo pantheon $(q "$CI_CMD") $soma_flag --ci-sandbox $(q "$here/deploy/host/ci-sandbox") --ci-memory $(q "$CI_MEMORY")"
     printf 'printf "%%s\\n" %s %s > "$stage/run-%s.sh"\n' "$(q '#!/bin/sh')" "$(q "$exec_line")" "$a"
     if in_vm_agents "$a"; then url="INBOX_URL=$(q "http://$VM_HOST:$PORT") "; else url=""; fi
     printf 'printf "%%s\\n" %s %s > "$stage/backend-%s.sh"\n' "$(q '#!/bin/sh')" "$(q "PANTHEON_INBOX=$(q "/var/lib/pantheon-inbox/$a") PANTHEON_INBOX_GROUP=$(q "inbox-$a") ${url}exec $(q "$here/scripts/bidder-inbox.sh")")" "$a"
@@ -506,7 +528,8 @@ ROOT
     printf 'PANTHEON_INSTRUCTIONS_END\n'
     # the inbox, and the check: pantheon's Soma, opam root and switch read-only, the host's lock
     inbox_line="PANTHEON_INBOX=$(q "$INBOXES/$a") PANTHEON_REMOTE=$(q "$REMOTE") PANTHEON_BRANCH=$(q "$BRANCH") PANTHEON_CHECK=$(q "$desk/pantheon-check") exec $(q "$here/scripts/pantheon-inbox") \"\$@\""
-    check_line="[ \$# -eq 1 ] && [ -d \"\$1\" ] || { echo 'usage: pantheon-check DIR' >&2; exit 2; }; XDG_RUNTIME_DIR=/run/user/\$(id -u) SOMA_DIR=$(q "$SVC/soma") CI_OPAMROOT=$(q "$SVC/.opam") CI_SWITCH=$(q "$SVC/.cache/soma/ocaml") CI_LOCK=$(q "$SVC/.ci-lock") exec $(q "$here/deploy/host/ci-sandbox") $(q "$CI_MEMORY") \"\$1\" $(q "$CI_CMD")"
+    if governs_soma && ! excludes_soma; then soma_check=$(soma_ci_cmd) || exit 1; else soma_check="echo 'pantheon-check: Soma is outside this host'\\''s scope (EXCLUDE): the other host'\\''s nodes check Soma'\\''s bids'; exit 1"; fi
+    check_line="[ \$# -eq 1 ] && [ -d \"\$1\" ] || { echo 'usage: pantheon-check DIR' >&2; exit 2; }; if [ -f \"\$1/GRADUAL.md\" ] && [ ! -f \"\$1/main.soma\" ]; then c=$(q "$soma_check"); else c=$(q "$CI_CMD"); fi; XDG_RUNTIME_DIR=/run/user/\$(id -u) SOMA_DIR=$(q "$SVC/soma") CI_OPAMROOT=$(q "$SVC/.opam") CI_SWITCH=$(q "$SVC/.cache/soma/ocaml") CI_LOCK=$(q "$SVC/.ci-lock") CI_PANTHEON=$(q "$here") exec $(q "$here/deploy/host/ci-sandbox") $(q "$CI_MEMORY") \"\$1\" \"\$c\""
     printf 'printf "%%s\\n" %s %s > "$stage/inbox-%s"\n' "$(q '#!/bin/sh')" "$(q "$inbox_line")" "$a"
     printf 'printf "%%s\\n" %s %s > "$stage/check-%s"\n' "$(q '#!/bin/sh')" "$(q "$check_line")" "$a"
     # the login shell a session starts in (sudo -iu): its desk, its wrappers first
@@ -639,6 +662,7 @@ cmd_start() {
   need_bin
   [ -d "$NET" ] || die "no network yet: scripts/host.sh network"
   cmd_permissions
+  soma_flag=$(soma_ci_flag) || exit 1
   for a in $AGENTS; do
     # the node strips PANTHEON_* from a backend's environment: the backend sets its own
     if in_vm_agents "$a"; then url="INBOX_URL=http://$VM_HOST:$PORT "; else url=""; fi
@@ -649,7 +673,7 @@ B
     cat > "$NET/$a/run.sh" <<R
 #!/bin/sh
 exec $BIN node $NET/$a --backend cmd:$NET/$a/backend.sh --goal $P/goal.txt --listen $LISTEN \\
-  --ci-repo pantheon $(q "$CI_CMD") --ci-sandbox $here/deploy/host/ci-sandbox --ci-memory $CI_MEMORY
+  --ci-repo pantheon $(q "$CI_CMD") $soma_flag --ci-sandbox $here/deploy/host/ci-sandbox --ci-memory $CI_MEMORY
 R
     chmod 755 "$NET/$a/backend.sh" "$NET/$a/run.sh"
     in_vm_agents "$a" || render_diplomat "$a"
@@ -660,6 +684,7 @@ R
 Description=Pantheon node %i
 [Service]
 Environment=SOMA_DIR=$SOMA
+Environment=CI_PANTHEON=$here
 ExecStart=$NET/%i/run.sh
 Restart=on-failure
 RestartSec=10
@@ -920,8 +945,9 @@ cmd_instructions() {
 }
 
 cmd_check() {
-  d=${1:-}; [ -d "$d" ] || die "usage: scripts/host.sh check DIR (a checkout of Pantheon)"
-  SOMA_DIR=$SOMA exec "$here/deploy/host/ci-sandbox" "$CI_MEMORY" "$d" "$CI_CMD"
+  d=${1:-}; [ -d "$d" ] || die "usage: scripts/host.sh check DIR (a checkout of Pantheon, or of Soma where Soma is in this host's scope)"
+  if [ -f "$d/GRADUAL.md" ] && [ ! -f "$d/main.soma" ] && excludes_soma; then die "$d is Soma's, and Soma is outside this host's scope (EXCLUDE): the other host's nodes check Soma's bids"; fi
+  SOMA_DIR=$SOMA CI_PANTHEON=$here exec "$here/deploy/host/ci-sandbox" "$CI_MEMORY" "$d" "$(ci_for_checkout "$d")"
 }
 
 cmd_stop() { systemctl --user stop pantheon-watchdog.service pantheon-mirror.service pantheon-inbox.service $(for a in $AGENTS; do printf 'pantheon-node@%s ' "$a"; done) 2>/dev/null; say "stopped"; }

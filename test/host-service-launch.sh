@@ -27,7 +27,7 @@ for agent in ('claude', 'codex', 'muse'):
     assert args[i + 1] == 'pantheon'
     assert 'CI command' in args[i + 2]
     assert args[i + 3] == '--ci-sandbox', args
-    assert args[-2:] == ['--ci-memory', '1536m']
+    assert args[-2:] == ['--ci-memory', '3g'], args  # Soma in scope: its build peaks at 2.3 GB
     assert args[args.index('--backend') + 1] == 'cmd:/var/lib/pantheon/net/' + agent + '/backend.sh'
     backend = shlex.split(stage.joinpath('backend-' + agent + '.sh').read_text().splitlines()[1])
     expected = ['PANTHEON_INBOX=/var/lib/pantheon-inbox/' + agent,

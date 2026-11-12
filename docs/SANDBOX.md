@@ -175,7 +175,7 @@ Sized for a 24 GB Mac running everything else you do on it:
 |---|---|---|
 | each VM | 4 GiB, 4 CPUs, plus 4 GiB of swap of its own (`VM_MEMORY`, `VM_CPUS`) | the worst moment is Soma's CI (2.3 GiB) beside the model's CLI and a `soma build` (about 1 GiB) |
 | a CI container | 3g, memory and `/tmp` together (`CI_MEMORY`) | a full Soma build at `-j 2` peaks at 2.3 GiB and takes 2.5 minutes |
-| Soma's CI | on claude, codex and grok (`SOMA_CI_AGENTS`); the others have Soma outside their scope (their genesis parts' `exclude`) | the market asks only agents that build Soma to bid on, lead or check Soma's tasks, and with `merge_approvals` 1 a Soma bid merges on such a leader's own check |
+| Soma's CI | on every agent (`SOMA_CI_AGENTS`, default all); one left out has Soma outside its scope (its genesis part's `exclude`) | the market asks only agents that build Soma to bid on, lead or check Soma's tasks, and with `merge_approvals` 1 a Soma bid merges on such a leader's own check |
 
 Pantheon's CI is light (seconds), so every node runs it. `nodes` applies a
 changed `VM_MEMORY` to existing VMs, restarting them. The VMs keep memory they
@@ -251,12 +251,15 @@ then `network` and `start` as usual. The Mac reaches the host with
 - **Start:** `start` writes the goal on the host and runs `host.sh start`
   there (nodes, inbox server, mirror). The diplomats then start from a herdr
   pane on the host: `AGENTS='claude-HOST ...' LISTEN=IP scripts/host.sh diplomats`.
-- **Soma:** the network governs Soma too (`REPOS`, default `pantheon soma`).
-  Soma's CI runs on this Mac's claude, codex and grok only. The host's agents
-  (`EXCLUDE=soma` in its `host.env`) and Muse here have Soma outside their
-  scope: their genesis parts exclude it (a host with 7 GiB has no room for a
-  2.3 GiB build beside four nodes). The market never makes them Soma bidders,
-  and a host leader leaves Soma's tasks to this Mac's leaders, without that
-  counting as a stall.
+- **Soma:** the network governs Soma too (`REPOS`, default `pantheon soma`),
+  and every node builds it: this Mac's agents (`SOMA_CI_AGENTS`, default all)
+  and the host's (no `soma` in its `EXCLUDE`). On a host, Soma's CI runs in
+  `deploy/host/ci-sandbox` like Pantheon's (`host.sh`'s `soma_ci_cmd`), one
+  check at a time on the whole host, and a diplomat's `pantheon-inbox check`
+  of a Soma checkout runs it too. A full Soma build at `-j 2` peaks at 2.3 GiB,
+  so the host's `CI_MEMORY` is `3g`, and a host with 7.5 GiB runs two agents
+  (the Mac mini: claude-zucc and codex-zucc). A host with less room sets
+  `EXCLUDE=soma`: its agents' genesis parts exclude Soma, the market never
+  makes them Soma bidders, and their leaders leave Soma's tasks to others.
 - **Merges:** `merge_approvals` is 1 (`examples/network/network.json`): a
   leader's merge lands on its own check and pick, without attestors.
