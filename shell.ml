@@ -785,6 +785,7 @@ type node_handle = { h_events : float -> string list list;
                      h_job_expire : string -> unit;
                      h_queue_empty : unit -> bool;
                      h_save : Obj.t -> unit; h_refuse : string -> unit; h_boot : string list list; h_snapshot : Obj.t option; h_replayed : string;
+                     h_remember_block : string -> string list -> bool;
                      h_timer : string -> string list -> unit; h_log : string -> unit;
                      h_push : string list -> unit; h_draw : string * (string * string);
                      h_block : string -> string list option;
@@ -898,6 +899,7 @@ let note_refused id raw = (lookup_handle id).h_refuse raw; true
 let boot_events id = (lookup_handle id).h_boot
 let boot_snapshot id = Option.map Obj.obj (lookup_handle id).h_snapshot
 let replay_count id = (lookup_handle id).h_replayed
+let node_remember_block id h txs = (lookup_handle id).h_remember_block h txs
 (* The node's operations (node.soma's node_op, U-1), one at a time in their
    wire form (node.soma's io_wire; this match is its io_of_wire): the only
    place the node logs, sets a timer, queues an event, sends on a peer
@@ -1312,13 +1314,7 @@ let node_open packed home flags =
   feed [ "agent"; "backend"; backend_kind ];
   List.iter feed !agent_events;
   let replayed = ref 0 in
-  List.iter (fun l ->
-      try
-        let j = Yojson.Safe.from_string l in
-        let h = to_int (member "h" j) and txs = json_strings (member "txs" j) in
-        if h = !replayed + 1 then (Hashtbl.replace blocks h txs; feed ("replay" :: string_of_int h :: txs); replayed := h)
-      with _ -> ())
-    (lines blocks_path);
+  List.iter (fun l -> feed ["block_log"; l]) (lines blocks_path);
   let boot_saved = if Sys.file_exists checkpoint_path then
       Some (Obj.repr (load_consensus checkpoint_path)) else None in
   if boot_saved = None && Hashtbl.length signed > 0 then
@@ -1546,6 +1542,7 @@ let node_open packed home flags =
       h_refuse = (fun raw -> if Hashtbl.length refused < 10000 then Hashtbl.replace refused raw ());
       h_boot = List.rev !boot_rev; h_snapshot = boot_saved;
       h_replayed = string_of_int !replayed;
+      h_remember_block = (fun hs txs -> match int_of_string_opt hs with None -> false | Some n -> Hashtbl.replace blocks n txs; replayed := n; true);
       h_conn_admit = (fun oid mode target ->
         match List.find_opt (fun (i, _, _) -> string_of_int i = oid) !pending_conns with
         | None -> ()

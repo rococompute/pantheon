@@ -1902,9 +1902,55 @@ Fixpoint perform_outputs (h : node_t) (outs : list (list string)) : bool :=
   | out :: rest => perform_output h out && perform_outputs h rest
   end.
 
+(** One blocks.log line, as the yojson binding's tokens. The height has to
+    be the next one ([expect], an int), and every transaction a string;
+    anything else is skipped, as a line that failed to parse was. *)
+Fixpoint json_strings_go (n : nat) (toks : list string) : option (list string) :=
+  match n, toks with
+  | 0, _ => Some []
+  | Succ j, "S" :: s :: rest =>
+      match json_strings_go j rest with Some r => Some (s :: r) | None => None end
+  | _, _ => None
+  end.
+
+json_string_list (toks : list string) : option (list string) :=
+  match toks with
+  | "L" :: n :: rest => json_strings_go (num n) rest
+  | _ => None
+  end.
+
+json_int (toks : list string) : option string :=
+  match toks with "I" :: s :: _ => Some s | _ => None end.
+
+block_log_replay (toks : option (list string)) (expect : string) : option (string * list string) :=
+  match toks with
+  | None => None
+  | Some t =>
+      let hv := match json_member "h" t with Some v => v | None => [] end in
+      match json_int hv with
+      | None => None
+      | Some h =>
+          if negb (seq h expect) then None else
+          match json_member "txs" t with
+          | None => None
+          | Some v =>
+              match json_string_list v with Some txs => Some (h, txs) | None => None end
+          end
+      end
+  end.
+
 Fixpoint run_boot (h : node_t) (st : node_state) (evs : list (list string)) : node_state :=
   match evs with
   | [] => st
+  | ("block_log" :: line :: _) :: rest =>
+      match block_log_replay (node_json_tokens line) (show (height (cons st))) with
+      | None => run_boot h st rest
+      | Some (bh, txs) =>
+          if node_remember_block h bh txs then
+            let (s, outs) := step st ("replay" :: bh :: txs) in
+            if perform_outputs h outs then run_boot h s rest else st
+          else run_boot h st rest
+      end
   | ev :: rest =>
       let (s, outs) := step st ev in
       if perform_outputs h outs then run_boot h s rest else st
