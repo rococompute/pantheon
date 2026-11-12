@@ -7,7 +7,8 @@
     (market.soma mark_edit), so it marks the whole line, only where a line
     begins with it, and only if one line does. A task that closes with its
     line still open is logged once, with why: a later leader, or a new
-    genesis, would draft it again. Run with test/plan-marks.sh. *)
+    genesis, would draft it again. A task whose mark merged is closed by
+    whoever leads. Run with test/plan-marks.sh. *)
 Import util shell market agent.
 
 say (cond : bool) (what : string) : list string :=
@@ -88,6 +89,21 @@ lines_agent : list string :=
   ++ say (existsb (fun l => has l "task 1 closes with no mark" && has l "no bid could finish it") (logs stuck))
          "a task no bid could finish closes, logged the same way".
 
-report : list string := lines_edit ++ lines_agent.
+(** task 1 marked by claude, the mark merged, and codex leading now: it
+    has no judgment of its own on the task (done_marks), yet closes it *)
+mark_merged_under_codex : obj :=
+  let '(m, _, _) := apply posted "claude" ["mark", "1", shown, "tree1"] in
+  let m := match bid_by m 1 with Some b => set_bid m (with_status b Merged "") | None => m end in
+  setf (setf m "pending" (None : option proposal)) "leader" "codex".
+
+picks (o : list (list string)) : nat :=
+  length (filter (fun x => match x with "llm" :: _ :: "pick" :: _ => true | _ => false end) o).
+
+lines_other_leader : list string :=
+  let (ac, oc) := lead (llm "codex") mark_merged_under_codex in
+  say (queued ac "close" && (length (logs oc) =? 0)) "a task whose mark merged is closed by whoever leads, with nothing logged"
+  ++ say (picks oc =? 0) "and no pick is asked for it".
+
+report : list string := lines_edit ++ lines_agent ++ lines_other_leader.
 
 main := print_lines report.

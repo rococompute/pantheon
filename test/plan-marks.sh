@@ -3,7 +3,8 @@
 # leader's prompt shows cut at 400 characters is named by its start, and the
 # mark marks the whole line, only where a line begins with it and only if one
 # does; a pick's cut plan_line loses its ...; a task closed with its line
-# still open is logged once, with why.
+# still open is logged once, with why; a task whose mark merged is closed by
+# whoever leads.
 #
 #   test/plan-marks.sh
 #
@@ -17,5 +18,5 @@ if ! soma run test/plan_marks.soma > "$T/out" 2> "$T/err"; then
 fi
 cat "$T/out"
 n=$(grep -c '^ok ' "$T/out")
-if grep -q '^FAIL' "$T/out" || [ "$n" -lt 16 ]; then echo "FAIL ($n of 16 ok)"; exit 1; fi
+if grep -q '^FAIL' "$T/out" || [ "$n" -lt 18 ]; then echo "FAIL ($n of 18 ok)"; exit 1; fi
 echo PASS
