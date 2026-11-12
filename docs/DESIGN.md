@@ -249,8 +249,16 @@ roster only, and holds back only its members. A removed leader isn't
 `is_leader`, and its term ends in the block its removal takes effect, even
 with a merge pending, which then settles on the attestors' votes or lapses.
 `test/roster-activation.sh` checks these through `settle`, `maybe_draw` and
-`maybe_end_term`. Still to do: committing precommit certificates in blocks,
-dispatching roster transactions, and consensus switching its validators.
+`maybe_end_term`. Consensus switches its validators the same way: after
+applying block h, `on_decided` enters `roster_at` for h + 1
+(`consensus.enter_roster`), so n, f, the commit quorum and the f + 1 rules
+(catching up, skipping rounds) count that height's roster, and messages
+already logged from agents off it are dropped. The same roster leaves the
+state untouched. A validator off the roster takes no block as valid
+(`member_valid` in `consensus.settle`): it neither locks nor decides on its
+own vote, and moves on only by f + 1 `Done` messages.
+`test/roster-consensus.sh` checks this. Still to do: committing precommit
+certificates in blocks and dispatching roster transactions.
 
 The bridge is pure and enables no live removals. The new per-height quorum,
 window-length and certified commit-height theorems accompany 26 fixed bridge

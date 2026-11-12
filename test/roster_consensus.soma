@@ -1,0 +1,75 @@
+(** M-3 part: consensus switches its validators at the height a roster
+    change takes effect (consensus.enter_roster, as node.soma's on_decided
+    calls it with market.roster_at for the next height), run as extracted
+    code on fixed inputs. No node, no timing. *)
+Import util shell consensus market.
+From Stdlib Require ExtrOcamlNatInt.
+
+check (label : string) (ok : bool) : string := append (if ok then "ok " else "FAIL ") label.
+
+seven : list string := ["a1", "a2", "a3", "a4", "a5", "a6", "a7"].
+six : list string := ["a1", "a2", "a3", "a4", "a5", "a6"].
+four : list string := ["a1", "a2", "a3", "a4"].
+three : list string := ["a1", "a2", "a3"].
+
+pc (who : string) (h : nat) (id : string) : msg :=
+  {| kd := Precommit; frm := who; mh := h; mr := 0; vr := 0; vid := id; value := [] |}.
+prop (who : string) (h : nat) (id : string) : msg :=
+  {| kd := Proposal; frm := who; mh := h; mr := 0; vr := 0; vid := id; value := ["tx"] |}.
+done_msg (who : string) (h : nat) (id : string) : msg :=
+  {| kd := Done; frm := who; mh := h; mr := 0; vr := 0; vid := id; value := ["tx"] |}.
+
+with_log (c : consensus_state) (l : list msg) : consensus_state := {| c with log := l |}.
+
+qw (c : consensus_state) (q w : nat) : bool := (consensus.quorum c =? q) && (weak c =? w).
+
+(** the roster consensus enters after deciding height h, as on_decided does *)
+next_roster (g : list string) (cs : list (string * bool * nat)) (h : nat) : list string :=
+  roster_at g cs (h + 1).
+entered (g : list string) (cs : list (string * bool * nat)) (h : nat) : consensus_state :=
+  enter_roster (new_consensus "a1" g (h + 1)) (next_roster g cs h).
+
+(** a7 leaves: committed at 10 with delay 1, effective at 12 *)
+leave7 : list (string * bool * nat) := [("a7", false, effective_height 10 1)].
+(** a4 leaves at 12 and rejoins at 20 *)
+cycle4 : list (string * bool * nat) := [("a4", false, 12), ("a4", true, 20)].
+
+(** height 12 on six, with a7's precommit logged before the switch *)
+logged7 : consensus_state :=
+  with_log (new_consensus "a1" seven 12) (map (fun a => pc a 12 "v") ["a2", "a3", "a7"]).
+
+(** height 5 on three agents; a proposal from its proposer (a3) and three
+    precommits for it, seen by a member (a1) and by the removed a4 *)
+decided_log : list msg := prop "a3" 5 "v" :: map (fun a => pc a 5 "v") three.
+member_c : consensus_state := with_log (new_consensus "a1" three 5) decided_log.
+outsider_c : consensus_state := with_log (new_consensus "a4" three 5) decided_log.
+settled (c : consensus_state) : consensus_state := fst (consensus.settle 64 c (fun _ => true) [] []).
+caught_up : consensus_state := with_log outsider_c (done_msg "a1" 5 "v" :: decided_log).
+
+main := print_lines [
+  check "a stable roster: entering the same roster leaves the state as it was"
+    (same_roster (nodes (entered seven [] 10)) seven && (length (log (enter_roster logged7 seven)) =? 3)
+     && qw (entered seven [] 10) 5 3),
+  check "7 to 6: decided 10 enters seven for 11, decided 11 enters six for 12"
+    ((length (nodes (entered seven leave7 10)) =? 7) && same_roster (nodes (entered seven leave7 11)) six),
+  check "7 to 6: consensus quorums 5/3 at 11, 5/2 at 12"
+    (qw (entered seven leave7 10) 5 3 && qw (entered seven leave7 11) 5 2),
+  check "7 to 6: the removed agent's logged precommit no longer counts"
+    ((senders logged7 Precommit 0 "v" =? 3) && (senders (enter_roster logged7 six) Precommit 0 "v" =? 2)
+     && (length (log (enter_roster logged7 six)) =? 2)),
+  check "7 to 6: a removed agent's later messages are refused"
+    ((length (log (fst (receive (enter_roster logged7 six) "a7" ["prevote", "12", "0", "0", "v"]))) =? 2)
+     && (length (log (fst (receive (enter_roster logged7 six) "a6" ["prevote", "12", "0", "0", "v"]))) =? 3)),
+  check "4 to 3: quorums 3/2 at 11, 3/1 at 12 to 19"
+    (qw (entered four cycle4 10) 3 2 && qw (entered four cycle4 11) 3 1 && qw (entered four cycle4 18) 3 1
+     && same_roster (nodes (entered four cycle4 11)) three),
+  check "rejoin: four again at 20, quorums 3/2, a4 counted"
+    (same_roster (nodes (entered four cycle4 19)) four && qw (entered four cycle4 19) 3 2
+     && member (enter_roster (new_consensus "a4" three 20) (next_roster four cycle4 19))),
+  check "a member decides on the roster's quorum"
+    (height (settled member_c) =? 6),
+  check "a removed agent doesn't decide on the same precommits"
+    (negb (member outsider_c) && (height (settled outsider_c) =? 5)),
+  check "a removed agent catches up on f + 1 Done messages of the roster"
+    (height (settled caught_up) =? 6)
+].

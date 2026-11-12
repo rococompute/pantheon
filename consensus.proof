@@ -692,3 +692,93 @@ Proof.
     [|discriminate H].
   inversion H; subst ns rs. exists cert. repeat split; assumption.
 Qed.
+
+(** M-3: consensus switching its validators by height. Entering the roster
+    the next height names sets n, f and every consensus quorum from it;
+    entering the same roster changes nothing, so a stable roster behaves
+    exactly as before. *)
+Lemma same_roster_refl : forall a : list string, same_roster a a = true.
+Proof.
+  intro a. induction a as [|x r IH]; cbn [same_roster]; [reflexivity|].
+  rewrite IH. unfold seq. rewrite Stdlib.Strings.String.eqb_refl. reflexivity.
+Qed.
+
+Lemma same_roster_eq : forall a b : list string, same_roster a b = true -> a = b.
+Proof.
+  intro a. induction a as [|x r IH]; intros [|y s] H; cbn [same_roster] in H;
+    try discriminate H; [reflexivity|].
+  apply andb_split in H. destruct H as [Hx Hr].
+  unfold seq in Hx. apply Stdlib.Strings.String.eqb_eq in Hx. subst y.
+  rewrite (IH s Hr). reflexivity.
+Qed.
+
+Theorem enter_same_roster : forall c : consensus_state, enter_roster c (nodes c) = c.
+Proof. intro c. unfold enter_roster. rewrite same_roster_refl. reflexivity. Qed.
+
+Theorem enter_roster_nodes : forall (c : consensus_state) (r : list string),
+  nodes (enter_roster c r) = r.
+Proof.
+  intros c r. unfold enter_roster.
+  destruct (same_roster (nodes c) r) eqn:E; [exact (same_roster_eq _ _ E) | reflexivity].
+Qed.
+
+Theorem enter_roster_keeps_the_height : forall (c : consensus_state) (r : list string),
+  height (enter_roster c r) = height c /\ round (enter_roster c r) = round c /\
+  step (enter_roster c r) = step c /\ me (enter_roster c r) = me c /\
+  lockr (enter_roster c r) = lockr c.
+Proof.
+  intros c r. unfold enter_roster.
+  destruct (same_roster (nodes c) r); repeat split; reflexivity.
+Qed.
+
+(** The quorums at a height are computed from that height's roster. *)
+Theorem entered_quorums_are_the_rosters : forall (c : consensus_state) (r : list string),
+  quorum (enter_roster c r) = length r - (length r - 1) / 3 /\
+  weak (enter_roster c r) = (length r - 1) / 3 + 1.
+Proof.
+  intros c r. unfold quorum, weak, faulty. rewrite enter_roster_nodes. split; reflexivity.
+Qed.
+
+(** Two quorums counted on the entered roster intersect in an honest one. *)
+Theorem entered_quorums_intersect : forall (c : consensus_state) (r : list string),
+  1 <= length r -> length r + weak (enter_roster c r) <= 2 * quorum (enter_roster c r).
+Proof.
+  intros c r Hr. pose proof (quorums_intersect_in_an_honest_node (enter_roster c r)) as H.
+  rewrite enter_roster_nodes in H. exact (H Hr).
+Qed.
+
+(** After entering, every logged sender that was a validator is one of the
+    new roster: a removed agent's earlier vote no longer counts. *)
+Theorem entered_log_is_on_the_roster : forall (c : consensus_state) (r : list string) (m : msg),
+  In m (log (enter_roster c r)) -> In (frm m) (nodes c) -> In (frm m) r.
+Proof.
+  intros c r m H Hn. unfold enter_roster in H.
+  destruct (same_roster (nodes c) r) eqn:E.
+  - rewrite <- (same_roster_eq _ _ E). exact Hn.
+  - simpl in H. apply filter_In in H. destruct H as [_ H]. apply mem_In. exact H.
+Qed.
+
+(** A validator off the roster neither locks nor decides on its own. *)
+Theorem non_member_does_not_decide : forall (c : consensus_state) (valid : list string -> bool),
+  member c = false -> r_decide c (member_valid c valid) = None.
+Proof.
+  intros c valid H. unfold r_decide. cbn zeta.
+  destruct (find _ (log c)) as [p|] eqn:Hf; [|reflexivity].
+  apply find_some_in in Hf. destruct Hf as [_ Hp]. cbn beta in Hp.
+  unfold member_valid in Hp. rewrite H in Hp.
+  rewrite Bool.andb_false_l, Bool.andb_false_r in Hp. discriminate Hp.
+Qed.
+
+Theorem non_member_does_not_lock : forall (c : consensus_state) (valid : list string -> bool),
+  member c = false -> r_lock c (member_valid c valid) = None.
+Proof.
+  intros c valid H. unfold r_lock. cbn zeta.
+  destruct (proposal c (round c)) as [p|]; [|reflexivity].
+  unfold member_valid. rewrite H.
+  rewrite Bool.andb_false_l, Bool.andb_false_r. reflexivity.
+Qed.
+
+(** A member is gated by nothing: the rules see the validity it was given. *)
+Theorem member_valid_of_member : forall (c : consensus_state) (valid : list string -> bool) (v : list string),
+  member c = true -> member_valid c valid v = valid v.
+Proof. intros c valid v H. unfold member_valid. rewrite H. reflexivity. Qed.
