@@ -906,3 +906,60 @@ Example inbox_tx_shapes :
   inbox_tx (Some ["L", "2", "S", "a"]) = None /\
   inbox_tx (Some ["S", "x"]) = None.
 Proof. repeat split; reflexivity. Qed.
+
+(** A job past its limit is stopped once. The same instant as the limit,
+    a time before it, and a clock behind the start are not. *)
+Example job_deadline_is_strict_and_once :
+  job_should_expire 10%float 0%float 10%float false = false /\
+  job_should_expire 11%float 0%float 10%float false = true /\
+  job_should_expire 11%float 0%float 10%float true = false /\
+  job_should_expire 9%float 0%float 10%float false = false /\
+  job_should_expire 0%float 5%float 10%float false = false.
+Proof. repeat split; reflexivity. Qed.
+
+Theorem marked_job_is_kept : forall now started limit,
+  job_should_expire now started limit true = false.
+Proof. reflexivity. Qed.
+
+(** Due timers are those at or before now, in the stored order; the rest
+    stay in that order too. *)
+Theorem timers_due_partitions : forall now l,
+  timers_due now l =
+    (filter (fun p => PrimFloat.leb (fst p) now) l,
+     filter (fun p => negb (PrimFloat.leb (fst p) now)) l).
+Proof.
+  intros now l. induction l as [|p r IH].
+  - reflexivity.
+  - simpl. rewrite IH. destruct (PrimFloat.leb (fst p) now) eqn:E; reflexivity.
+Qed.
+
+Example timer_edges_and_old_sort_order :
+  timers_due 10%float [] = ([], []) /\
+  timers_due 10%float [(10%float, ["now"]), (11%float, ["later"]), (9%float, ["early"])]
+    = ([(10%float, ["now"]), (9%float, ["early"])], [(11%float, ["later"])]) /\
+  timer_events (sort_timers [(10%float, ["timeout", "b"]), (10%float, ["timeout", "a"]),
+                             (10%float, ["timeout"]), (9%float, ["early"]),
+                             (10%float, ["timeout", "a"])])
+    = [["early"], ["timeout"], ["timeout", "a"], ["timeout", "a"], ["timeout", "b"]] /\
+  str_ord "a" "b" = OrdLt /\ str_ord "b" "a" = OrdGt /\ str_ord "aa" "aa" = OrdEq /\
+  str_ord "" "a" = OrdLt /\
+  strs_ord ["timeout"] ["timeout", "commit"] = OrdLt /\
+  strs_ord ["timeout", "a"] ["timeout", "b"] = OrdLt.
+Proof. repeat split; reflexivity. Qed.
+
+(** No wait while an event is already queued. An empty timer list waits
+    the old fifth of a second. A sooner timer waits that gap, and a
+    deadline already past does not wait. *)
+Example select_wait_cap_gap_and_queued :
+  select_wait 100%float false [(101%float, ["t"])] = 0%float /\
+  select_wait 100%float true [] = select_cap /\
+  select_wait 100%float true [(101%float, ["t"])] = select_cap /\
+  select_wait 100%float true [(PrimFloat.add 100%float 0.125%float, ["soon"])] = 0.125%float /\
+  select_wait 100%float true [(99%float, ["past"])] = 0%float /\
+  select_wait 100%float true [(PrimFloat.add 100%float 0.5%float, ["late"]),
+                              (PrimFloat.add 100%float 0.125%float, ["soon"])] = 0.125%float.
+Proof. repeat split; reflexivity. Qed.
+
+Theorem select_does_not_wait_on_a_queued_event : forall now timers,
+  select_wait now false timers = 0%float.
+Proof. reflexivity. Qed.

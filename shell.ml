@@ -756,7 +756,7 @@ let argv () = Array.to_list Sys.argv |> List.tl
 
 (* The Soma node loop's handle: node_open registers the closures its setup
    built, and the loop drives them by this name (docs/SHELL-IN-SOMA.md 2). *)
-type node_handle = { h_events : unit -> string list list;
+type node_handle = { h_events : float -> string list list;
                      h_job_complete : string -> string -> string list list;
                      h_job_buffer : string -> string list;
                      h_job_store_buffer : string -> string list -> unit;
@@ -776,6 +776,13 @@ type node_handle = { h_events : unit -> string list list;
                      h_conn_store_buffer : string -> string list -> unit;
                      h_conn_close : string -> unit;
                      h_line_limit : unit -> string;
+                     h_poll_prep : unit -> unit;
+                     h_turn_now : unit -> float;
+                     h_timers : unit -> (float * string list) list;
+                     h_set_timers : (float * string list) list -> unit;
+                     h_jobs : unit -> (string * (float * (float * bool))) list;
+                     h_job_expire : string -> unit;
+                     h_queue_empty : unit -> bool;
                      h_save : Obj.t -> unit; h_refuse : string -> unit; h_boot : string list list; h_snapshot : Obj.t option; h_replayed : string;
                      h_timer : string -> string list -> unit; h_log : string -> unit;
                      h_push : string list -> unit; h_draw : string * (string * string);
@@ -822,7 +829,14 @@ type node_handle = { h_events : unit -> string list list;
 let node_handles : (string, node_handle) Hashtbl.t = Hashtbl.create 4
 let node_counter = ref 0
 let lookup_handle id = try Hashtbl.find node_handles id with Not_found -> fail "unknown node handle %s" id
-let events id = (lookup_handle id).h_events ()
+let events id wait = (lookup_handle id).h_events wait
+let node_poll_prep id = (lookup_handle id).h_poll_prep (); true
+let node_turn_now id = (lookup_handle id).h_turn_now ()
+let node_timers id = (lookup_handle id).h_timers ()
+let node_set_timers id ts = (lookup_handle id).h_set_timers ts; true
+let node_jobs id = (lookup_handle id).h_jobs ()
+let node_job_expire id jid = (lookup_handle id).h_job_expire jid; true
+let node_queue_empty id = (lookup_handle id).h_queue_empty ()
 let node_job_complete id job result = (lookup_handle id).h_job_complete job result
 let node_job_buffer id jid = (lookup_handle id).h_job_buffer jid
 let node_job_store_buffer id jid chunks = (lookup_handle id).h_job_store_buffer jid chunks; true
@@ -1106,7 +1120,7 @@ let node_open packed home flags =
     | "all" -> let line = wire fields in List.iter (fun p -> send_to p line) peers
     | _ -> ()
   in
-  (* jobs the node stopped for running past their time limit *)
+  (* jobs Soma stopped for running past their time limit (job_should_expire) *)
   let overtime = Hashtbl.create 8 in
   (* jobs stopped for printing more than any reply can be. Soma's job_feed
      decides; node_job_flood marks the job and signals it once. The node
@@ -1345,8 +1359,19 @@ let node_open packed home flags =
   say "%s listening; peers %s; backend %s" me (String.concat ", " (List.map (fun p -> p.name) peers)) !backend;
   let last_rebroadcast = ref 0. and last_inbox = ref 0. in
   let close_peer p = (match p.out with Some fd -> (try Unix.close fd with _ -> ()) | None -> ()); p.out <- None; p.connecting <- false; Buffer.clear p.obuf in
-  let collect_events () =
+  (* One clock reading for dial, resend, the inbox, Soma's deadlines and the
+     select wait. [prep_turn] samples it; Soma reads it back; select consumes it. *)
+  let turn_now = ref 0. in
+  let have_turn_now = ref false in
+  let sample_turn () =
     let now = Unix.gettimeofday () in
+    turn_now := now;
+    have_turn_now := true;
+    now
+  in
+  let turn_clock () = if !have_turn_now then !turn_now else sample_turn () in
+  let prep_turn () =
+    let now = sample_turn () in
     (* connect to peers we have no link to *)
     List.iter (fun p ->
         if p.out = None && now >= p.next_try then begin
@@ -1381,17 +1406,21 @@ let node_open packed home flags =
               Sys.remove p
             end)
           (Sys.readdir d)
-    end;
-    (* timers due *)
-    let due, later = List.partition (fun (t, _) -> t <= now) !timers in
-    timers := later;
-    List.iter (fun (_, ev) -> push ev) (List.sort compare due);
-    (* model calls that ran too long *)
-    List.iter (fun j -> if now -. j.jstarted > j.jlimit && not (Hashtbl.mem overtime j.jpid) then begin
-        Hashtbl.replace overtime j.jpid j.jlimit; Hashtbl.replace cut j.jpid (); (try Unix.kill j.jpid Sys.sigkill with _ -> ()) end) !jobs;
-    (* events already queued (timers due now, what perform pushed) go to the
-       loop without waiting: the old loop drained them before select *)
-    let wait = if Queue.is_empty queue then List.fold_left (fun m (t, _) -> min m (t -. now)) 0.2 !timers |> max 0. else 0. in
+    end
+  in
+  (* Soma names the job. The limit stored here is the one the finish report uses. *)
+  let expire_job jid =
+    match List.find_opt (fun j -> j.jid = jid) !jobs with
+    | Some j when not (Hashtbl.mem overtime j.jpid) ->
+        Hashtbl.replace overtime j.jpid j.jlimit;
+        Hashtbl.replace cut j.jpid ();
+        (try Unix.kill j.jpid Sys.sigkill with _ -> ())
+    | _ -> ()
+  in
+  let collect_events wait =
+    (* Same reading as the deadlines: a peer's last activity, for eviction. *)
+    let now = if !have_turn_now then !turn_now else Unix.gettimeofday () in
+    have_turn_now := false;
     let reads = listener :: List.map (fun c -> c.fd) !conns @ List.map (fun j -> j.jfd) !jobs in
     let writes = List.filter_map (fun p -> match p.out with Some fd when p.connecting || Buffer.length p.obuf > 0 -> Some fd | _ -> None) peers in
     (* a failed select (a descriptor past FD_SETSIZE, EBADF) waits a moment
@@ -1565,7 +1594,13 @@ let node_open packed home flags =
         | Some x -> (try Unix.close x.fd with _ -> ()); conns := List.filter (fun y -> y != x) !conns
         | None -> ());
       h_line_limit = (fun () -> string_of_int max_line);
-      
+      h_poll_prep = prep_turn;
+      h_turn_now = turn_clock;
+      h_timers = (fun () -> !timers);
+      h_set_timers = (fun ts -> timers := ts);
+      h_jobs = (fun () -> List.map (fun j -> (j.jid, (j.jstarted, (j.jlimit, Hashtbl.mem overtime j.jpid)))) !jobs);
+      h_job_expire = expire_job;
+      h_queue_empty = (fun () -> Queue.is_empty queue);
       h_timer = (fun ms ev -> timers := (Unix.gettimeofday () +. float_of_string ms /. 1000., ev) :: !timers);
       h_log = (fun text -> say "%s" text); h_push = push;
       h_draw = (byz, (string_of_int chain_len, secret));

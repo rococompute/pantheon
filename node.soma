@@ -1649,10 +1649,124 @@ release_held (h : node_t) : list (list string) :=
   | ReleaseAll => if io_log h (release_all_text backend held) then node_release_all h else []
   end.
 
-(** Released requests come first among a turn's events, as they did. *)
+(** ---- Step 5: job deadlines and which timers fire ----
+    A job is stopped once the elapsed time is greater than its limit, and
+    not again after that. A timer fires when its deadline is at or before
+    the turn's clock. Due timers are ordered as the shell's sort was:
+    earliest deadline, then the event list byte by byte, and equal events
+    in the order the list stored them. The select waits at most a fifth of
+    a second, or until the next timer, and not at all when the queue
+    already has an event. The shell samples one clock reading, stores the
+    timers and signals the job Soma names. *)
+job_should_expire (now started limit : float) (marked : bool) : bool :=
+  negb marked && PrimFloat.ltb limit (PrimFloat.sub now started).
+
+Fixpoint expire_jobs (h : node_t) (now : float)
+    (jobs : list (string * (float * (float * bool)))) : bool :=
+  match jobs with
+  | [] => true
+  | (id, (started, (limit, marked))) :: r =>
+      (if job_should_expire now started limit marked then node_job_expire h id else true)
+      && expire_jobs h now r
+  end.
+
+(** Deadlines at or before [now], and the rest, each in list order. *)
+Fixpoint timers_due (now : float) (l : list (float * list string))
+    : list (float * list string) * list (float * list string) :=
+  match l with
+  | [] => ([], [])
+  | p :: r =>
+      let (d, later) := timers_due now r in
+      if PrimFloat.leb (fst p) now then (p :: d, later) else (d, p :: later)
+  end.
+
+Inductive ord := OrdLt | OrdEq | OrdGt.
+
+Fixpoint str_ord_go (fuel : nat) (a b : string) (i : nat) : ord :=
+  match fuel with
+  | 0 => OrdEq
+  | Succ f =>
+      match char_at a i, char_at b i with
+      | None, None => OrdEq
+      | None, Some _ => OrdLt
+      | Some _, None => OrdGt
+      | Some ca, Some cb =>
+          let na := nat_of_ascii ca in
+          let nb := nat_of_ascii cb in
+          if na <? nb then OrdLt
+          else if nb <? na then OrdGt
+          else str_ord_go f a b (Succ i)
+      end
+  end.
+
+str_ord (a b : string) : ord := str_ord_go (slen a + slen b + 1) a b 0.
+
+Fixpoint strs_ord (a b : list string) : ord :=
+  match a, b with
+  | [], [] => OrdEq
+  | [], _ => OrdLt
+  | _, [] => OrdGt
+  | x :: xs, y :: ys => match str_ord x y with OrdEq => strs_ord xs ys | c => c end
+  end.
+
+(** OCaml's polymorphic order on a (deadline, event) pair. *)
+timer_ord (a b : float * list string) : ord :=
+  if PrimFloat.ltb (fst a) (fst b) then OrdLt
+  else if PrimFloat.ltb (fst b) (fst a) then OrdGt
+  else strs_ord (snd a) (snd b).
+
+(** Stable: an equal pair stays in front of the one inserted later. *)
+Fixpoint insert_timer (x : float * list string) (l : list (float * list string))
+    : list (float * list string) :=
+  match l with
+  | [] => [x]
+  | y :: r => match timer_ord x y with OrdGt => y :: insert_timer x r | _ => x :: y :: r end
+  end.
+
+Fixpoint sort_timers (l : list (float * list string)) : list (float * list string) :=
+  match l with
+  | [] => []
+  | x :: r => insert_timer x (sort_timers r)
+  end.
+
+Fixpoint timer_events (l : list (float * list string)) : list (list string) :=
+  match l with [] => [] | (_, ev) :: r => ev :: timer_events r end.
+
+float_min (a b : float) : float := if PrimFloat.ltb a b then a else b.
+
+(** The old select cap, a fifth of a second. One divided by five is that
+    double, so the literal that is not a binary64 value stays out. *)
+select_cap : float := PrimFloat.div 1%float 5%float.
+
+Fixpoint next_gap (now acc : float) (timers : list (float * list string)) : float :=
+  match timers with
+  | [] => acc
+  | (t, _) :: r => next_gap now (float_min acc (PrimFloat.sub t now)) r
+  end.
+
+select_wait (now : float) (queue_empty : bool) (timers : list (float * list string)) : float :=
+  if queue_empty then
+    let gap := next_gap now select_cap timers in
+    if PrimFloat.ltb gap 0%float then 0%float else gap
+  else 0%float.
+
+(** Stop overdue jobs, keep the timers that have not fired, and queue the
+    due ones. Dial, resend and the inbox have already run, so their events
+    stay ahead of these, and both run before select. *)
+clock_arm (h : node_t) : bool :=
+  let now := node_turn_now h in
+  let (due, later) := timers_due now (node_timers h) in
+  expire_jobs h now (node_jobs h) &&
+  node_set_timers h later &&
+  push_all h (timer_events (sort_timers due)).
+
+(** Released requests come first. Then dial, resend and the inbox, then
+    deadlines and due timers, then one select. *)
 node_tick (h : node_t) (st : node_state) : node_state :=
   let st := run_events h st (release_held h) in
-  run_events h st (job_outputs h (events h)).
+  if node_poll_prep h && clock_arm h then
+    run_events h st (job_outputs h (events h (select_wait (node_turn_now h) (node_queue_empty h) (node_timers h))))
+  else st.
 
 (** Replay has no consensus snapshot effects, just as before: a restored
     snapshot is checked against the fully replayed height before start. *)

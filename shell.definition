@@ -43,7 +43,8 @@ cmd_up : string -> list string -> unit.
     helpers are passed once as util.soma's shell_helpers record, packed as a
     product (edit_once, contains, shell_safe_path) at the binding boundary. *)
 node_open : (((string -> string -> string -> option string) * (string -> string -> bool)) * (string -> bool)) -> string -> list string -> string.
-events : string -> list (list string).
+(** One select. Soma passes the wait in seconds (node.soma's select_wait). *)
+events : string -> float -> list (list string).
 save_snapshot : forall {C : Type}, string -> C -> bool.
 note_refused : string -> string -> bool.
 (** Startup is data, interpreted by Soma before entering the event loop. *)
@@ -172,6 +173,17 @@ node_conn_buffer : string -> string -> list string.
 node_conn_store_buffer : string -> string -> list string -> bool.
 node_conn_close : string -> string -> bool.
 node_line_limit : string -> string.
+(** Dial, resend and the inbox, then the turn's clock. Soma decides which
+    jobs are past their limit and which timers fire, replaces the timer
+    list with the ones still waiting, and chooses the select wait. The
+    shell only stores those facts, signals a job Soma names, and selects. *)
+node_poll_prep : string -> bool.
+node_turn_now : string -> float.
+node_timers : string -> list (float * list string).
+node_set_timers : string -> list (float * list string) -> bool.
+node_jobs : string -> list (string * (float * (float * bool))).
+node_job_expire : string -> string -> bool.
+node_queue_empty : string -> bool.
 
 (** A decided merge's I/O; node.soma's perform_merge decides. The version
     applied to a repository (none: this node doesn't have it), whether its
