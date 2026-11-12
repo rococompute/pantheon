@@ -55,7 +55,10 @@ Record nio_world := {
   w_verify : string -> string -> list string -> bool;
   (** a time as text, node_float_wire's way (Soma's floats have no
       printer yet) *)
-  w_float_text : PrimFloat.float -> string }.
+  w_float_text : PrimFloat.float -> string;
+  (** the boot events before blocks.log's (genesis, this node's name, the
+      backend, agent events): a unikernel's are its image's *)
+  w_boot : list (list string) }.
 
 (** The interpreter's state: the operations' tables and the peer links,
     in genesis order, by name. *)
@@ -179,6 +182,17 @@ nio_kernel_op (w : nio_world) (s : nio_kernel) (op : node_op)
                                             (t_timers (k_tables s)))), s)
   (* it runs no processes *)
   | IoJobs => ret (ans_data true [], s)
+  (* startup: the image's boot events, then blocks.log's text, as the
+     binary feeds them; signed.log's; refusing to start says why and
+     answers false (a unikernel can't exit with a status) *)
+  | IoBootEvents =>
+      blocks <- read_file "blocks.log" ;;
+      ret (ans_data true (nio_frame_lists (w_boot w ++
+             [["block_log_text", match blocks with Some b => b | None => "" end]])), s)
+  | IoSignedText =>
+      got <- read_file "signed.log" ;;
+      ret (ans_data true [match got with Some t => t | None => "" end], s)
+  | IoFail message => print message ;; ret (ans_flag false, s)
   | IoConnAdmit _ _ _ => ret (nio_ok, s)
   | IoConnClose _ => ret (nio_ok, s)
   | IoJobFlood _ => ret (nio_ok, s)

@@ -875,7 +875,8 @@ Proof.
     repo version tree bid task bidder spec | | id kind prompt ctx |
     id kind raw prompt ctx clean launch env | repo | | | | | repo | repo path |
     until reason backoff | backoff | | | probing requests | job result | id out tree ci | path | path |
-    raw | | raw | from sig fields | | | | stamp | path | path | | | timers | | | wait ];
+    raw | | raw | from sig fields | | | | stamp | path | path | | | timers | | | wait |
+    | | height txs | | slot vid fields | message ];
     try reflexivity.
   - change (match resend_parts (resend_fields fields ++ ("alternate" :: alternate)) with
     | Some (original, alt) => Some (IoRememberBroadcast height kind original alt)
@@ -1282,6 +1283,18 @@ Theorem inbox_poll_not_due : forall ans,
   inbox_poll_due (ans_float (ans IoTurnNow)) (ans_float (ans IoInboxState)) = false ->
   ntrace ans poll_inbox_prog = [IoInboxState, IoTurnNow].
 Proof. intros ans H. unfold poll_inbox_prog. cbn -[inbox_poll_due ans_float]. rewrite H. reflexivity. Qed.
+
+(** A fresh node (no signed.log, no snapshot, nothing to replay) reads
+    signed.log, then its boot events, then how many blocks it replayed:
+    no refusal, no replay log line before the start step. *)
+Example fresh_boot_reads : forall h,
+  firstn 3 (ntrace (fun op => match op with
+                              | IoSignedText => (true,(0%float,[""]))
+                              | IoReplayCount => (true,(0%float,["0"]))
+                              | _ => (true,(0%float,[]))
+                              end) (boot_prog h None)) =
+  [IoSignedText, IoBootEvents, IoReplayCount].
+Proof. intros h. reflexivity. Qed.
 
 Theorem remember_peer_is_served_operation : forall who first now,
   action_prog (RememberPeer who first now) =

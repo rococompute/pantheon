@@ -854,10 +854,7 @@ let node_float_of_digits s = float_of_string s
 let node_float_text f = Printf.sprintf "%.0f" f
 let node_float_wire f = Printf.sprintf "%.17g" f
 let save_snapshot id snap = (lookup_handle id).h_save (Obj.repr snap); true
-let boot_events id = (lookup_handle id).h_boot
 let boot_snapshot id = Option.map Obj.obj (lookup_handle id).h_snapshot
-let replay_count id = (lookup_handle id).h_replayed ()
-let node_remember_block id h txs = (lookup_handle id).h_remember_block h txs
 (* The node's operations (node.soma's node_op, U-1), one at a time in their
    wire form (node.soma's io_wire; this match is its io_of_wire): the only
    place the node logs, sets a timer, queues an event, sends on a peer
@@ -1000,6 +997,11 @@ let node_io_handle h op =
          [ id; Printf.sprintf "%.17g" started; Printf.sprintf "%.17g" limit; string_of_bool stopped ]) (h.h_jobs ()))))
   | [ "queue_empty" ] -> (h.h_queue_empty (), (0., []))
   | [ "events"; wait ] -> (true, (0., frame_lists (h.h_events (float_of_string wait))))
+  | [ "boot_events" ] -> (true, (0., frame_lists h.h_boot))
+  | [ "replay_count" ] -> (true, (0., [ h.h_replayed () ]))
+  | "remember_block" :: height :: txs -> (h.h_remember_block height txs, (0., []))
+  | [ "signed_text" ] -> (true, (0., [ h.h_signed_text ]))
+  | "signed_restore" :: slot :: vid :: fields -> h.h_signed_restore slot vid fields; (true, (0., []))
   | _ -> fail "unknown node operation %s" (String.concat " " op)
 (* Path-only operations need no node: a test runs them with no handle. *)
 let node_io id op =
@@ -1008,6 +1010,7 @@ let node_io id op =
   | [ "discard_file"; path ] -> (try Sys.remove path with _ -> ()); (true, (0., []))
   | [ "dir_entries"; path ] -> (true, (0., fs_dir_entries path))
   | [ "remove_file"; path ] -> Sys.remove path; (true, (0., []))
+  | [ "fail"; message ] -> fail "%s" message
   | _ -> node_io_handle (lookup_handle id) op
 (* Reads/writes and authenticated socket sends; catch-up policy is Soma.
    The clock is the "clock" arm of node_io. *)
@@ -1015,10 +1018,7 @@ let node_limit_info id = (lookup_handle id).h_limit_info ()
 (* signed.log's bytes, raw, and noting one vote Soma read from them (without
    appending it again); Soma's log_lines splits them and signed_log_entry
    parses each line *)
-let node_signed_text id = (lookup_handle id).h_signed_text
-let node_signed_restore id slot vid fields = (lookup_handle id).h_signed_restore slot vid fields; true
 (* a startup Soma refuses: the message on stderr, exit 1, as `fail` *)
-let node_fail msg : bool = fail "%s" msg
 (* Node metadata for peer lines. Soma gates the parse, reads the members
    from node_json_tokens' tokens (node.soma's node_line_parts), and decides
    whether to verify and which event the fields carry. *)

@@ -18,7 +18,8 @@ world : nio_world :=
      w_ci := fun _ => ret (true, (PrimFloat.zero, []));
      w_identity := "claude";
      w_verify := fun _ _ _ => false;
-     w_float_text := fun _ => "0" |}.
+     w_float_text := fun _ => "0";
+     w_boot := [["me", "claude"]] |}.
 
 (** A decided block as node.soma's outputs make it: logged, stored, the
     height set, the status written, a timer armed; the block and the peer

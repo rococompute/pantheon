@@ -194,9 +194,16 @@ jobs and due timers, one select (`IoEvents`) and what its events become
 connection admission, CI results, the inbox's transactions, each step's
 effects carried by `carry_all_prog`). The consensus snapshot is the one
 effect still a binding (a Soma value, not text: Soma's "storage" item), so
-the tick takes the node's handle for that alone. Startup (replay, the
-signed log, the snapshot read back) is the last part still run over
-bindings.
+the tick takes the node's handle for that alone. Startup is a program
+too (`boot_prog`): signed.log read back (`restore_signed_prog`; refusing
+to start, `IoFail`, when it has votes and there is no snapshot), the boot
+events expanded (`boot_expand_prog`) and replayed (`run_boot_prog`, each
+block remembered for catch-up with `IoRememberBlock`), the replay logged
+and the start step carried (`start_node_prog`; `fresh_boot_reads`). So
+`run_node` is setup (`node_open`), the snapshot read back, then
+`run_shell` of the boot program and `forever` of the tick: every effect
+the node has is a node operation but the snapshot's save and read, and
+`node_open`'s setup.
 The resend write uses tagged `field`/value pairs followed by `alternate`
 and the untouched second list. Values may themselves contain either tag.
 Resend reads and the native table remain unchanged.
@@ -215,7 +222,8 @@ exclusions (`w_exclusions`), the checkouts' heads (`w_heads`), the model
 backend (`w_backend`), a time of day (`w_local_time`) and a merge's git
 work (`w_git`), a model call's and its outcome's (`w_llm`) and CI's
 start (`w_ci`), this node's name and a peer line's signature
-(`w_identity`, `w_verify`) and a time as text (`w_float_text`). Decided blocks and signed votes are kept in
+(`w_identity`, `w_verify`) a time as text (`w_float_text`) and the image's boot events (`w_boot`).
+Decided blocks and signed votes are kept in
 memory beside their files, as the binary keeps them (`nio_store_op`).
 Each operation:
 
@@ -252,11 +260,13 @@ Each operation:
 | `IoInboxState`, `IoInboxStamp`, `IoDirEntries`, `IoRemoveFile` | the inbox's last poll and directory; note a poll; list a directory; remove a file | an empty inbox (Sandbox's named files can't be listed or removed) |
 | `IoTurnNow`, `IoTimers`, `IoSetTimers`, `IoJobs`, `IoQueueEmpty` | the turn's clock, the timer list read and replaced, the running jobs, the queue | the monotonic clock; the tables' timers (as text by `w_float_text`); no jobs; the tables' queue |
 | `IoEvents wait` | one select, waiting at most `wait` seconds | the queue, drained |
+| `IoBootEvents`, `IoReplayCount`, `IoRememberBlock h txs` | genesis, this node, the backend, applied versions and blocks.log's text; the replayed count; a replayed block kept for catch-up | `w_boot` then blocks.log's named file; the stores' blocks |
+| `IoSignedText`, `IoSignedRestore slot vid fields`, `IoFail message` | signed.log's bytes; a vote read back; refusing to start (stderr, exit 1) | signed.log's named file; the stores' signed table; printed, answered false |
 | `IoConnAdmit`, `IoConnClose`, `IoJobFlood`, `IoJobExpire` | admit, refuse or close a socket; kill a job's process | nothing to do: a unikernel's links are its listen handlers', and it runs no processes |
 
 Not yet operations, still bindings of their own (the next parts of U-1):
-startup (replay, the signed log, the snapshot read back), saving the
-snapshot (Soma's "storage" still), the listener and
+the snapshot (saved and read back: a Soma value, Soma's "storage"),
+`node_open`'s setup (Soma's "storage" still), the listener and
 accepted connections (links), SHA-256 and RSA (Soma's item), and git,
 model and CI jobs (Soma's "services": `fetch` with a timeout and HTTP POST).
 

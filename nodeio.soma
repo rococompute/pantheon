@@ -149,7 +149,19 @@ Inductive node_op :=
 | IoSetTimers (timers : list (list string))
 | IoJobs
 | IoQueueEmpty
-| IoEvents (wait : string).
+| IoEvents (wait : string)
+(** startup (U-1): the boot events (genesis, blocks.log's text, the goal,
+    the backend; framed), how many blocks were replayed, a replayed block
+    remembered for catch-up without appending it again (whether it was),
+    signed.log's text ("" when there is none), a vote read back from it
+    noted without appending it again, and refusing to start (the message
+    on stderr, exit 1: the binary never answers) *)
+| IoBootEvents
+| IoReplayCount
+| IoRememberBlock (height : string) (txs : list string)
+| IoSignedText
+| IoSignedRestore (slot vid : string) (fields : list string)
+| IoFail (message : string).
 
 (** Two arbitrary lists on one wire: tagged field/value pairs, then the
     alternate-list marker. A marker occurring as a value is never a tag.
@@ -269,6 +281,12 @@ io_wire (op : node_op) : list string :=
   | IoJobs => ["jobs"]
   | IoQueueEmpty => ["queue_empty"]
   | IoEvents wait => ["events", wait]
+  | IoBootEvents => ["boot_events"]
+  | IoReplayCount => ["replay_count"]
+  | IoRememberBlock height txs => "remember_block" :: height :: txs
+  | IoSignedText => ["signed_text"]
+  | IoSignedRestore slot vid fields => "signed_restore" :: slot :: vid :: fields
+  | IoFail message => ["fail", message]
   end.
 
 io_of_wire (w : list string) : option node_op :=
@@ -370,6 +388,12 @@ io_of_wire (w : list string) : option node_op :=
   | ["jobs"] => Some IoJobs
   | ["queue_empty"] => Some IoQueueEmpty
   | ["events", wait] => Some (IoEvents wait)
+  | ["boot_events"] => Some IoBootEvents
+  | ["replay_count"] => Some IoReplayCount
+  | "remember_block" :: height :: txs => Some (IoRememberBlock height txs)
+  | ["signed_text"] => Some IoSignedText
+  | "signed_restore" :: slot :: vid :: fields => Some (IoSignedRestore slot vid fields)
+  | ["fail", message] => Some (IoFail message)
   | _ => None
   end.
 
@@ -663,6 +687,16 @@ nio_with_refused (t : nio_tables) (v : list string) : nio_tables :=
      t_diverged := t_diverged t; t_applied := t_applied t; t_mine := t_mine t; t_txs := t_txs t;
      t_height := t_height t; t_blocks := t_blocks t; t_signed := t_signed t; t_refused := v |}.
 
+(** a count in decimal, as the binary's [string_of_int] *)
+Fixpoint nio_count_digits (fuel n : nat) (acc : string) : string :=
+  match fuel with
+  | 0 => acc
+  | S f =>
+      let acc' := Stdlib.Strings.String.String (Ascii.ascii_of_nat (48 + Nat.modulo n 10)) acc in
+      if Nat.ltb n 10 then acc' else nio_count_digits f (Nat.div n 10) acc'
+  end.
+nio_count (n : nat) : string := nio_count_digits (S n) n Stdlib.Strings.String.EmptyString.
+
 Fixpoint nio_lookup {A : Type} (k : string) (l : list (string * A)) : option A :=
   match l with [] => None | (x, v) :: rest => if nio_eq x k then Some v else nio_lookup k rest end.
 
@@ -743,6 +777,11 @@ nio_store_op (now : PrimFloat.float) (t : nio_tables) (op : node_op) : option (n
       | Some v => Some (ans_data true (snd v), t)
       | None => Some (ans_data false [], t)
       end
+  | IoRememberBlock h txs =>
+      Some (ans_ok, nio_with_blocks t ((h, txs) :: List.filter (fun b => negb (nio_eq (fst b) h)) (t_blocks t)))
+  | IoSignedRestore slot vid fields =>
+      Some (ans_ok, nio_with_signed t ((slot, (vid, fields)) :: List.filter (fun v => negb (nio_eq (fst v) slot)) (t_signed t)))
+  | IoReplayCount => Some (ans_data true [nio_count (List.length (t_blocks t))], t)
   | IoRefuse raw => Some (ans_ok, nio_with_refused t (raw :: t_refused t))
   | IoSeenRefused raw => Some (ans_flag (List.existsb (nio_eq raw) (t_refused t)), t)
   | IoQueueEmpty => Some (ans_flag (match t_queue t with [] => true | _ => false end), t)

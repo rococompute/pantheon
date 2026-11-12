@@ -97,6 +97,13 @@ checks : list string := [
   check "stored timers replace the list"
     (match t_timers (stores (stores nio_empty [IoTimer "5" ["x"]]) [IoSetTimers [["1.5", "t", "1"]]]) with
      | [(d, ["t", "1"])] => near d 1.5%float | _ => false end),
+  check "a replayed block is remembered for catch-up and counted"
+    (match stored (stores nio_empty [IoRememberBlock "1" ["a"], IoRememberBlock "2" ["b"]]) (IoBlock "1"),
+           stored (stores nio_empty [IoRememberBlock "1" ["a"], IoRememberBlock "2" ["b"]]) IoReplayCount with
+     | (true, (_, ["a"])), (true, (_, ["2"])) => true | _, _ => false end),
+  check "a vote read back from signed.log is the slot's"
+    (match stored (stores nio_empty [IoSignedRestore "prevote/1/0" "v" ["prevote", "1"]]) (IoSignedVote "prevote/1/0") with
+     | (true, (_, ["v"])) => true | _ => false end),
   check "the stores hand the tables' operations on" (match stored t2 IoNonceFlooded with (false, (_, [])) => true | _ => false end)
 ].
 

@@ -44,13 +44,17 @@ node_open : (((string -> string -> string -> option string) * (string -> string 
 (** The consensus snapshot, a Soma value (not text: the one effect a node
     program can't carry as data yet; Soma's "storage" item). *)
 save_snapshot : forall {C : Type}, string -> C -> bool.
-(** Startup is data, interpreted by Soma before entering the event loop. *)
-boot_events : string -> list (list string).
+(** Startup is data, interpreted by Soma before entering the event loop
+    (node.soma's boot_prog), through node_io: "boot_events" (framed:
+    "field" VALUE... "alternate", per event), "replay_count",
+    "remember_block" H TXS... (a replayed block remembered for catch-up,
+    not appended again; Soma parsed the line and checked it is the next
+    height), "signed_text" (signed.log's bytes, "" when there is none),
+    "signed_restore" SLOT VID FIELDS... (a vote read back, not appended
+    again) and "fail" MESSAGE (refusing to start: the message on stderr,
+    exit 1; it needs no node). The snapshot read back is a Soma value, so
+    it stays a binding. *)
 boot_snapshot : forall {C : Type}, string -> option C.
-replay_count : string -> string.
-(** Remember one replayed block in the catch-up table, without appending it
-    to blocks.log again. Soma parsed the line and checked it is the next height. *)
-node_remember_block : string -> string -> list string -> bool.
 (** The node's operations (node.soma's node_op, U-1), carried out: one
     operation in its wire form (node.soma's io_wire): "log" TEXT, "timer"
     MS EVENT..., "push" EVENT..., "send_all" FIELDS..., "send_peer" INDEX
@@ -185,10 +189,3 @@ node_float_wire : float -> string.
     "" or what went wrong, "merge_commit" REPO V TREE BID TASK BIDDER SPEC
     [tree, short id] (not found when git commit failed). *)
 
-(** signed.log at startup: the file's bytes, raw ("" when there is none;
-    node.soma's log_lines splits them); noting one vote Soma read from them
-    (node.soma's signed_log_entry), not appended again; and refusing to
-    start (the message on stderr, exit 1). *)
-node_signed_text : string -> string.
-node_signed_restore : string -> string -> string -> list string -> bool.
-node_fail : string -> bool.
