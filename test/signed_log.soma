@@ -1,0 +1,78 @@
+(** signed.log's lines at startup become votes, cut lines or nothing, in
+    Soma (node.soma's signed_log_entry). Fixed lines and fixed tokens: no
+    node and no disk. *)
+Import util shell market agent node.
+From Stdlib Require ExtrOcamlNatInt.
+Extract Inlined Constant Nat.div => "(fun a b -> if b = 0 then 0 else a / b)".
+Extract Inlined Constant Nat.modulo => "(fun a b -> if b = 0 then a else a mod b)".
+Extract Inlined Constant Stdlib.Strings.String.length => "String.length".
+Extract Inlined Constant Stdlib.Strings.String.get =>
+  "(fun n s -> if n < String.length s then Some (String.unsafe_get s n) else None)".
+Extract Inlined Constant Stdlib.Strings.String.substring =>
+  "(fun n m s -> let l = String.length s in if n >= l then """" else String.sub s n (min m (l - n)))".
+
+check (label got expected : string) : string :=
+  append (if seq got expected then "ok " else "FAIL ") label.
+
+entry_text (e : signed_entry) : string :=
+  match e with
+  | SignedVote k v f => append "vote|" (append k (append "|" (append v (append "|"
+                          (Stdlib.Strings.String.concat "|" f)))))
+  | SignedCut k why => append "cut|" (append k (append "|" why))
+  | SignedSkip => "skip"
+  end.
+
+vid : string := "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855".
+
+(** what the yojson binding gives on these texts *)
+toks (s : string) : option (list string) :=
+  if seq s "[""prevote"",""1""]" then Some ["L", "2", "S", "prevote", "S", "1"]
+  else if seq s "[""a b"",""""]" then Some ["L", "2", "S", "a b", "S", ""]
+  else if seq s "[1]" then Some ["L", "1", "I", "1"]
+  else if seq s "{}" then Some ["A", "0"]
+  else if seq s "[]" then Some ["L", "0"]
+  else None.
+
+line (k v js : string) : string := append k (append " " (append v (append " " js))).
+
+checks : list string := [
+  check "a whole line is the vote"
+    (entry_text (signed_log_entry toks (line "prevote/1/0" vid "[""prevote"",""1""]")))
+    (append "vote|prevote/1/0|" (append vid "|prevote|1")),
+  check "an empty value id (a nil vote) is a vote"
+    (entry_text (signed_log_entry toks (line "prevote/1/0" "" "[""prevote"",""1""]")))
+    "vote|prevote/1/0||prevote|1",
+  check "spaces inside the vote's JSON stay in it"
+    (entry_text (signed_log_entry toks (line "precommit/4/1" vid "[""a b"",""""]")))
+    (append "vote|precommit/4/1|" (append vid "|a b|")),
+  check "an empty vote list is a vote"
+    (entry_text (signed_log_entry toks (line "prevote/5/0" vid "[]")))
+    (append "vote|prevote/5/0|" (append vid "|")),
+  check "a line cut inside the value id has no vote"
+    (entry_text (signed_log_entry toks "prevote/2/0 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca49599"))
+    "cut|prevote/2/0|no vote in it",
+  check "a value id neither empty nor 64 bytes is cut"
+    (entry_text (signed_log_entry toks (line "prevote/2/0" "abc" "[""prevote"",""1""]")))
+    "cut|prevote/2/0|its value id is cut",
+  check "a vote that is not JSON doesn't parse"
+    (entry_text (signed_log_entry toks (line "prevote/3/0" vid "[""prev")))
+    "cut|prevote/3/0|its vote doesn't parse",
+  check "a vote with an element that is not a string doesn't parse"
+    (entry_text (signed_log_entry toks (line "prevote/3/0" vid "[1]")))
+    "cut|prevote/3/0|its vote doesn't parse",
+  check "a vote that is not a list doesn't parse"
+    (entry_text (signed_log_entry toks (line "prevote/3/0" vid "{}")))
+    "cut|prevote/3/0|its vote doesn't parse",
+  check "a line with no space is passed over quietly"
+    (entry_text (signed_log_entry toks "nospace")) "skip",
+  check "the skip message is the old one"
+    (signed_cut_text "prevote/2/0" "no vote in it")
+    "signed.log: skipping prevote/2/0, a line cut short (no vote in it): that vote was never sent",
+  check "votes without a snapshot refuse to start; otherwise start"
+    (append (if signed_needs_snapshot true true then "refuse" else "start")
+      (append (if signed_needs_snapshot true false then " refuse" else " start")
+        (if signed_needs_snapshot false true then " refuse" else " start")))
+    "refuse start start"
+].
+
+main := print_lines checks.

@@ -209,5 +209,11 @@ node_merge_commit : string -> string -> string -> string -> string -> string -> 
 (** Vote table, resend memory and socket writes. Soma chooses the message. *)
 node_signed_vote : string -> string -> option string.
 node_signed_body : string -> string -> option (list string).
+(** signed.log at startup: its nonempty lines, raw; noting one vote Soma
+    read from them (node.soma's signed_log_entry), not appended again; and
+    refusing to start (the message on stderr, exit 1). *)
+node_signed_lines : string -> list string.
+node_signed_restore : string -> string -> string -> list string -> bool.
+node_fail : string -> bool.
 node_remember_broadcast : string -> string -> string -> list string -> list string -> bool.
 node_peer_count : string -> string.

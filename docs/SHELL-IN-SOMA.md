@@ -230,6 +230,19 @@ separate work; this status does not mark `.plan`.
 
 ## Done so far
 
+- Step 5, signed.log at startup: the shell only reads the file's
+  nonempty lines (`node_signed_lines`); Soma's pure `signed_log_entry`
+  makes each a vote (slot, value id, fields through the JSON token
+  binding), a line cut short (no vote after the slot, a value id neither
+  empty nor 64 bytes, a vote that isn't a JSON list of strings: logged
+  with the old text and skipped) or nothing (no space). `restore_signed`
+  notes each vote through `node_signed_restore` before replay, and
+  `signed_needs_snapshot` refuses to start, through `node_fail`, when
+  votes were read and there is no consensus.state, as before. The OCaml
+  parser is gone, and so are the shell's unused `job_how` and `exit_code`
+  (Soma's `ci_job_how`, `ci_exit_code`) and the dead `conn_buffer` branch.
+  `test/signed-log.sh` and `test/signed_log.proof` check fixed lines.
+
 - Step 5, peer buffer storage: a connection's retained read chunks now
   live in Soma's `node_state` (`pbufs`, through `peer_buffer`,
   `peer_remember` and `peer_forget`), not in the shell's connection

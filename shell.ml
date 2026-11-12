@@ -472,18 +472,8 @@ let ci_wrap ci =
   "( " ^ ci ^ "\n) 2>&1; r=$?; if [ $r -ne 0 ] && grep -qs 'oom_kill [1-9]' /sys/fs/cgroup/memory.events; then exit 137; fi; "
   ^ "case $r in 0|124|137) exit $r;; esac; exit " ^ string_of_int ci_bid_failed
 
-(* how a job ended, from the node's own "!process failed (HOW): " prefix;
-   None when the job never started (the node couldn't spawn it). What follows
-   the prefix is the job's output, and could say anything *)
-let job_how t =
-  let pre = "!process failed (" in
-  let lp = String.length pre in
-  if String.length t > lp && String.sub t 0 lp = pre then
-    match String.index_from_opt t lp ')' with Some i -> Some (String.sub t lp (i - lp)) | None -> Some ""
-  else None
-
-let exit_code how =
-  if String.length how > 5 && String.sub how 0 5 = "exit " then int_of_string_opt (String.sub how 5 (String.length how - 5)) else None
+(* how a job ended ("!process failed (HOW): ") and its exit code are read in
+   Soma (node.soma's ci_job_how and ci_exit_code), never here *)
 
 (* ---------- hash chains for the leader draw ---------- *)
 
@@ -808,6 +798,8 @@ type node_handle = { h_events : float -> string list list;
                      h_send_all : string list -> unit;
                      h_signed_vote : string -> string option;
                      h_signed_body : string -> string list option;
+                     h_signed_lines : string list;
+                     h_signed_restore : string -> string -> string list -> unit;
                      h_remember_vote : string -> string -> string list -> unit;
                      h_remember_broadcast : string -> string -> string list -> string list -> unit;
                      h_peer_count : unit -> string;
@@ -950,6 +942,12 @@ let node_encode_tx id nonce fields = (lookup_handle id).h_encode_tx nonce fields
 let node_nonce_flooded id = (lookup_handle id).h_nonce_flooded ()
 let node_signed_vote id slot = (lookup_handle id).h_signed_vote slot
 let node_signed_body id slot = (lookup_handle id).h_signed_body slot
+(* signed.log's nonempty lines, raw, and noting one vote Soma read from them
+   (without appending it again); Soma's signed_log_entry parses each line *)
+let node_signed_lines id = (lookup_handle id).h_signed_lines
+let node_signed_restore id slot vid fields = (lookup_handle id).h_signed_restore slot vid fields; true
+(* a startup Soma refuses: the message on stderr, exit 1, as `fail` *)
+let node_fail msg : bool = fail "%s" msg
 let node_remember_broadcast id height kind fields alt = (lookup_handle id).h_remember_broadcast height kind fields alt; true
 let node_peer_count id = (lookup_handle id).h_peer_count ()
 (* Raw Yojson member reads and node metadata. Soma gates the parse and
@@ -1045,26 +1043,10 @@ let node_open packed home flags =
   let finished_jobs : (string, job) Hashtbl.t = Hashtbl.create 8 in
   let signed_path = Filename.concat home "signed.log" in
   (* slot -> (value id, the whole vote): "SLOT VID [VOTE-AS-JSON]" per line *)
+  (* filled from signed.log's lines by Soma (node.soma's restore_signed,
+     through signed_log_entry) before replay: the shell only reads the lines *)
   let signed : (string, string * string list option) Hashtbl.t = Hashtbl.create 64 in
-  List.iter (fun l ->
-      match String.index_opt l ' ' with
-      | None -> ()
-      | Some i ->
-          let k = String.sub l 0 i and rest = String.sub l (i + 1) (String.length l - i - 1) in
-          (* A line cut short (a node stopped while writing it) is no vote: the
-             line is written before the vote is sent, so that vote never went
-             out. Taking it as signed, with nothing to send again, left a node
-             refusing to vote at that height, silent, and never caught up. *)
-          let cut why = say "signed.log: skipping %s, a line cut short (%s): that vote was never sent" k why in
-          (match String.index_opt rest ' ' with
-           | None -> cut "no vote in it"
-           | Some j ->
-               let v = String.sub rest 0 j and js = String.sub rest (j + 1) (String.length rest - j - 1) in
-               if v <> "" && String.length v <> 64 then cut "its value id is cut"
-               else match (try Some (json_strings (Yojson.Safe.from_string js)) with _ -> None) with
-                 | Some f -> Hashtbl.replace signed k (v, Some f)
-                 | None -> cut "its vote doesn't parse"))
-    (lines signed_path);
+  let signed_lines = lines signed_path in
   let blocks_path = Filename.concat home "blocks.log" in
   (* the governed repositories: a checkout each, at genesis or later *)
   let repos = List.map (fun r -> (to_string (member "name" r), to_string (member "url" r), to_string (member "commit" r), to_string (member "tree" r)))
@@ -1313,8 +1295,8 @@ let node_open packed home flags =
   List.iter (fun l -> feed ["block_log"; l]) (lines blocks_path);
   let boot_saved = if Sys.file_exists checkpoint_path then
       Some (Obj.repr (load_consensus checkpoint_path)) else None in
-  if boot_saved = None && Hashtbl.length signed > 0 then
-    fail "missing consensus.state with existing votes: start a new chain";
+  (* votes with no consensus.state: Soma refuses to start (node.soma's
+     signed_needs_snapshot), after it has read signed.log *)
   (* sockets *)
   let _, my_port = split_addr (addr_of_agent me) in
   let listener = Unix.socket ~cloexec:true PF_INET SOCK_STREAM 0 in
@@ -1604,6 +1586,8 @@ let node_open packed home flags =
       h_send_all = (fun fields -> let line = wire fields in List.iter (fun p -> send_to p line) peers);
       h_signed_vote = (fun slot -> Option.map fst (Hashtbl.find_opt signed slot));
       h_signed_body = (fun slot -> match Hashtbl.find_opt signed slot with Some (_, body) -> body | None -> None);
+      h_signed_lines = signed_lines;
+      h_signed_restore = (fun slot vid fields -> Hashtbl.replace signed slot (vid, Some fields));
       h_remember_vote = (fun slot vid fields ->
         Hashtbl.replace signed slot (vid, Some fields);
         append_line_synced signed_path (slot ^ " " ^ vid ^ " " ^ Yojson.Safe.to_string (strings_json fields)));
