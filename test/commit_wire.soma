@@ -1,0 +1,22 @@
+Import util shell consensus.
+wire_vote : signed_precommit := {| commit_signer := "a"; commit_signature := "sig with spaces";
+  commit_fields := ["precommit", "0008", "02", "00", "hash"] |}.
+wire_cert : commit_certificate := {| certificate_height := 8; certificate_round := 2;
+  certificate_votes := [wire_vote, wire_vote] |}.
+absent (fs : list string) : bool := match decode_commit_certificate fs with None => true | _ => false end.
+main := print_lines (map (fun (b : bool) => if b then "true" else "false") [
+  match encode_commit_certificate wire_cert with
+  | Some fs => match decode_commit_certificate fs with
+    | Some c => (certificate_height c =? 8) && (certificate_round c =? 2) &&
+        (length (certificate_votes c) =? 2) &&
+        forallb (fun v => seq (commit_signature v) "sig with spaces" &&
+          same_roster (commit_fields v) (commit_fields wire_vote)) (certificate_votes c)
+    | _ => false end | _ => false end,
+  absent ["commit-v2", "8", "2"],
+  absent ["commit-v1", "x", "2"],
+  absent ["commit-v1", "8", "-1"],
+  absent ["commit-v1", "8", "2", "a", "sig", "precommit", "8", "2", "0"],
+  absent ["commit-v1", "8", "2", "a", "sig", "precommit", "8", "2", "0", "hash", "junk"],
+  match encode_commit_votes [{| wire_vote with commit_fields := ["precommit"] |}] with None => true | _ => false end,
+  match decode_commit_votes 0 ["a", "sig", "precommit", "8", "2", "0", "hash"] with None => true | _ => false end
+]).

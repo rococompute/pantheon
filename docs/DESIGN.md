@@ -264,3 +264,17 @@ The bridge is pure and enables no live removals. The new per-height quorum,
 window-length and certified commit-height theorems accompany 26 fixed bridge
 checks and the 32 signed-witness checks. This extends the earlier validation
 prerequisite without adding another signature primitive.
+
+M-3's portable certificate field codec is `encode_commit_certificate` /
+`decode_commit_certificate` in consensus.soma. The `commit-v1` header carries
+height and round, followed by seven string fields per witness (signer,
+signature, and the five exact signed message fields). It preserves signed
+numeric spelling and signatures without splitting strings on whitespace.
+Malformed headers, numbers and incomplete witnesses fail decoding; encoding
+refuses witnesses with any other field count. The proved witness round trip
+preserves the whole witness, including signed bytes. This is structural
+transport only: decoding does not authenticate a certificate or establish
+agreement, and consumers must still call `verify_height_certificate`.
+`test/commit-wire.sh` checks exact deterministic results. Integrating these
+fields with block framing, signature retention, committed-chain lookups and
+roster dispatch remains pending; this codec enables no live removal.

@@ -782,3 +782,24 @@ Qed.
 Theorem member_valid_of_member : forall (c : consensus_state) (valid : list string -> bool) (v : list string),
   member c = true -> member_valid c valid v = valid v.
 Proof. intros c valid v H. unfold member_valid. rewrite H. reflexivity. Qed.
+
+(** The wire codec preserves every signed byte, even noncanonical numeric
+    spelling. Encoding refuses malformed field counts rather than truncating. *)
+Theorem commit_votes_wire_roundtrip : forall votes fields,
+  encode_commit_votes votes = Some fields -> forall fuel,
+  length votes <= fuel -> decode_commit_votes fuel fields = Some votes.
+Proof.
+  induction votes as [|v vs IH]; intros fields H fuel Hfuel.
+  - inversion H; subst fields. destruct fuel; reflexivity.
+  - destruct v as [a sg fs].
+    destruct fs as [|k [|h [|r [|vr [|id [|extra tail]]]]]];
+      cbn [encode_commit_votes commit_fields] in H; try discriminate H.
+    destruct (encode_commit_votes vs) as [rest|] eqn:E; [|discriminate H].
+    inversion H; subst fields. destruct fuel as [|fuel]; [cbn in Hfuel; lia|].
+    cbn [decode_commit_votes]. rewrite (IH rest eq_refl fuel) by (cbn in Hfuel; lia).
+    reflexivity.
+Qed.
+
+Theorem commit_wire_unknown_version_refused : forall h r rest,
+  decode_commit_certificate ("commit-v2" :: h :: r :: rest) = None.
+Proof. reflexivity. Qed.
