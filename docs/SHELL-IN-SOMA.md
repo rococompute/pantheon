@@ -230,6 +230,16 @@ separate work; this status does not mark `.plan`.
 
 ## Done so far
 
+- Step 5, part: a CI check's outcome is Soma's. When the CI run ends the
+  shell queues a `ci_done` fact (request, tree, memory budget, runner, raw
+  output); `ci_outcome` decides passed, whose a failure is (this node's
+  when the runner didn't start or exited with a code of its own, 1 to 127
+  other than the bid's 86 and timeout's 124; the bid's otherwise) and why
+  (the memory or time budget, an output cap, or the output's last 400
+  bytes on one line), from the node's own exit codes only, never what the
+  bid printed; the shell logs and queues `check_result` through
+  `node_check_result`, which still makes `why` plain text.
+
 - Step 5, part: job deadlines and which timers fire are Soma's.
   `job_should_expire` is the old strict test (elapsed greater than the
   limit, and not already stopped). `timers_due` keeps a deadline at or

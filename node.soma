@@ -1557,6 +1557,96 @@ inbox_tx (tokens : option (list string)) : option (list string) :=
   | _ => None
   end.
 
+(** ---- A CI check's outcome (step 5) ----
+    The shell hands back a CI run's raw output as a ci_done fact. Whether
+    it passed, whose a failure is, and why are decided here from the node's
+    own signals only: the "!process failed (HOW): " prefix and its exit
+    code, never what the bid printed (docs/SECURITY-REVIEW-2.md P-6). The
+    runner failing to start or exiting with a code of its own (1 to 127,
+    neither the bid's 86 nor timeout's 124) is this node's problem; a run
+    ended by a signal is the bid's. *)
+ci_job_how (t : string) : option string :=
+  let pre := "!process failed (" in
+  if (slen pre <? slen t) && starts pre t then
+    let rest := drop_str (slen pre) t in
+    match find_str ")" rest 0 with Some i => Some (take_str i rest) | None => Some "" end
+  else None.
+
+Fixpoint ci_digits (fuel : nat) (s : string) (i : nat) : bool :=
+  match fuel with
+  | 0 => true
+  | Succ f =>
+      match char_at s i with
+      | None => true
+      | Some c => let n := nat_of_ascii c in if (48 <=? n) && (n <=? 57) then ci_digits f s (Succ i) else false
+      end
+  end.
+
+ci_exit_code (how : string) : option nat :=
+  if (5 <? slen how) && starts "exit " how then
+    let d := drop_str 5 how in if ci_digits (slen d) d 0 then Some (num d) else None
+  else None.
+
+ci_node_problem (ok : bool) (how : option string) : bool :=
+  if ok then false
+  else match how with
+       | None => true
+       | Some h =>
+           match ci_exit_code h with
+           | Some c => (1 <=? c) && (c <? 128) && negb (c =? 86) && negb (c =? 124)
+           | None => false
+           end
+       end.
+
+ci_blank (c : ascii) : bool :=
+  let n := nat_of_ascii c in Nat.eqb n 32 || Nat.eqb n 9 || Nat.eqb n 10 || Nat.eqb n 12 || Nat.eqb n 13.
+
+Fixpoint ci_blank_from (fuel : nat) (s : string) (i : nat) : nat :=
+  match fuel with
+  | 0 => i
+  | Succ f => match char_at s i with Some c => if ci_blank c then ci_blank_from f s (Succ i) else i | None => i end
+  end.
+
+Fixpoint ci_blank_back (fuel : nat) (s : string) (j : nat) : nat :=
+  match fuel, j with
+  | Succ f, Succ k => match char_at s k with Some c => if ci_blank c then ci_blank_back f s k else j | None => j end
+  | _, _ => j
+  end.
+
+(** OCaml's String.trim: space, tab, newline, form feed, carriage return *)
+ci_trim (s : string) : string :=
+  let a := ci_blank_from (slen s) s 0 in
+  let b := ci_blank_back (slen s) s (slen s) in
+  if b <=? a then "" else substr s a (b - a).
+
+(** the end of what CI said, on one line, where its error is *)
+ci_tail (t : string) : string :=
+  let one := ci_trim (replace_all (replace_all t newline " ") (SCons (ascii_of_nat 13) SNil) " ") in
+  let n := slen one in
+  append "CI failed: " (if 400 <? n then append "..." (substr one (n - 400) 400) else one).
+
+(** passed, why, and the stage ("" passed, "node" this node's, "ci" the bid's) *)
+ci_outcome (t : string) (sandbox : bool) (memory : string) : bool * (string * string) :=
+  let ok := negb (starts "!" t) in
+  let how_opt := ci_job_how t in
+  let down := ci_node_problem ok how_opt in
+  let how := match how_opt with Some h => h | None => "" end in
+  let why :=
+    if ok then ""
+    else if down then append "node problem: " (append (if sandbox then "ci-sandbox: " else "docker: ") t)
+    else if contains "printed more than" how then append "CI " (append how ": a check has to print less than that")
+    else if seq how "exit 137" then append "CI went over its memory budget (" (append memory ", no swap): the build needs less memory than that to merge")
+    else if seq how "exit 124" then "CI went over its time budget: the build has to finish within the limit its CI command gives"
+    else ci_tail t in
+  (ok, (why, if ok then "" else if down then "node" else "ci")).
+
+perform_ci_done (h : node_t) (id tree memory runner t : string) : bool :=
+  let (ok, rest) := ci_outcome t (seq runner "sandbox") memory in
+  let (why, stage) := rest in
+  io_log h (append "CI for request " (append id (append ": " (if ok then "passed" else "failed")))) &&
+  (if ok then true else io_log h (append "CI for request " (append id (append " said: " (replace_all t newline " "))))) &&
+  node_check_result h id ok tree why stage.
+
 run_event (h : node_t) (st : node_state) (ev : list string) : node_state :=
   let ev := match ev with
             | ["peer_raw", raw] => peer_raw_event (node_line_item_cap tt) (node_identity h) raw
@@ -1585,6 +1675,8 @@ run_event (h : node_t) (st : node_state) (ev : list string) : node_state :=
       if buffer_over (num len) (num (node_line_limit h)) then
         if node_conn_close h cid then st else with_live st (live st)
       else st
+  | ["ci_done", id, tree, memory, runner, t] =>
+      if perform_ci_done h id tree memory runner t then st else with_live st (live st)
   | ["inbox_file", path, content] =>
       match inbox_tx (node_json_tokens content) with
       | Some fields =>
