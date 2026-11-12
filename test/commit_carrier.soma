@@ -1,0 +1,38 @@
+Import util shell consensus.
+body : list string := ["previous block"].
+roster (h : nat) : list string := if h <? 9 then ["a", "b", "c", "d"] else ["a", "b", "c"].
+seal (a : string) (fs : list string) : string := hash_list (a :: fs).
+vote (a : string) : signed_precommit :=
+  let fs := ["precommit", "0008", "02", "0", hash_list body] in
+  {| commit_signer := a; commit_signature := seal a fs; commit_fields := fs |}.
+cert : commit_certificate := {| certificate_height := 8; certificate_round := 2;
+  certificate_votes := map vote ["a", "b", "d"] |}.
+verify (a sg : string) (fs : list string) : bool := seq sg (seal a fs).
+txs : list string := ["transaction with spaces", "heartbeat-v1", "", "commit-v1"].
+carrier : list string := match frame_commit_block cert txs with Some b => b | None => [] end.
+blocks (h : nat) : option (list string) :=
+  if h =? 8 then Some body else if h =? 9 then Some carrier else None.
+missing (c : option commit_certificate) : bool := match c with None => true | _ => false end.
+bad_frame (b : list string) : bool := match unframe_commit_block b with None => true | _ => false end.
+main := print_lines (map (fun (b : bool) => if b then "true" else "false") [
+  match unframe_commit_block carrier with Some (c, ts) =>
+    (certificate_height c =? 8) && (certificate_round c =? 2) && same_roster ts txs &&
+    forallb (fun v => same_roster (commit_fields v) (commit_fields (vote (commit_signer v)))) (certificate_votes c)
+  | None => false end,
+  match chain_commit_at blocks 8 with Some c => certificate_height c =? 8 | None => false end,
+  missing (chain_commit_at blocks 0),
+  missing (chain_commit_at blocks 7),
+  missing (chain_commit_at blocks 9),
+  missing (chain_commit_at (fun _ => Some carrier) 7),
+  bad_frame ["heartbeat-v2", "3", "commit-v1", "8", "2"],
+  bad_frame ["heartbeat-v1", "x"],
+  bad_frame ["heartbeat-v1", "100", "commit-v1", "8", "2"],
+  bad_frame ["heartbeat-v1", "0", "commit-v1", "8", "2"],
+  bad_frame ["heartbeat-v1", "2", "commit-v1", "8", "2"],
+  match certified_commit_window verify roster blocks (chain_commit_at blocks) 8 1 with
+  | Some [names] => same_roster names ["a", "b", "d"] | _ => false end,
+  match certified_commit_window (fun _ _ _ => false) roster blocks (chain_commit_at blocks) 8 1 with
+  | None => true | _ => false end,
+  match certified_commit_window verify roster blocks (chain_commit_at blocks) 8 2 with
+  | None => true | _ => false end
+]).

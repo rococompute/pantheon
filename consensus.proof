@@ -803,3 +803,31 @@ Qed.
 Theorem commit_wire_unknown_version_refused : forall h r rest,
   decode_commit_certificate ("commit-v2" :: h :: r :: rest) = None.
 Proof. reflexivity. Qed.
+
+(** The chain adapter binds evidence to its agreed carrier height. It never
+    upgrades structural decoding to authentication; that remains the window's
+    existing verification obligation. *)
+Theorem chain_commit_has_next_height_carrier : forall block_at h cert,
+  chain_commit_at block_at h = Some cert ->
+  0 < h /\ certificate_height cert = h /\
+  exists block txs, block_at (S h) = Some block /\
+    unframe_commit_block block = Some (cert, txs).
+Proof.
+  intros block_at h cert H. unfold chain_commit_at in H.
+  destruct (h =? 0) eqn:Hz; [discriminate H|].
+  destruct (block_at (S h)) as [block|] eqn:Eb; [|discriminate H].
+  destruct (unframe_commit_block block) as [[c txs]|] eqn:Ec; [|discriminate H].
+  destruct (certificate_height c =? h) eqn:Eh; [|discriminate H].
+  inversion H; subst c. apply Nat.eqb_neq in Hz. apply Nat.eqb_eq in Eh.
+  split; [lia|]. split; [exact Eh|]. exists block, txs. split; [reflexivity|exact Ec].
+Qed.
+
+Theorem chain_commit_missing_carrier : forall block_at h,
+  block_at (S h) = None -> chain_commit_at block_at h = None.
+Proof.
+  intros block_at h H. unfold chain_commit_at.
+  destruct (h =? 0); [reflexivity|]. rewrite H. reflexivity.
+Qed.
+
+Theorem chain_commit_zero_refused : forall block_at, chain_commit_at block_at 0 = None.
+Proof. reflexivity. Qed.
