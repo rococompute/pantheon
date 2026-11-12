@@ -194,3 +194,224 @@ Fixpoint nresult {A : Type} (ans : node_op -> bool * PrimFloat.float) (p : nprog
   | NDone a => a
   | NStep op k => nresult ans (k (ans op))
   end.
+
+(** ---- What the operations write and keep (U-1) ----
+    Pure, so any interpreter uses the same bytes and the same tables: the
+    lines shell.ml appends to blocks.log and signed.log (Yojson's output,
+    byte for byte), and the tables it keeps in memory for the operations,
+    as one record. node_sandbox.soma interprets the operations with them;
+    shell.ml keeps its own copies today. *)
+
+(** Yojson.Safe.to_string of a string's characters: a quote, a backslash
+    and \b \f \n \r \t named, every other control character and DEL as
+    \u00XX (lowercase hex), the rest as they are. *)
+nio_char (n : nat) : Ascii.ascii := Ascii.ascii_of_nat n.
+
+nio_hex (n : nat) : Ascii.ascii := nio_char (if Nat.ltb n 10 then 48 + n else 87 + n).
+
+(** by character code: 34 is the quote, 92 the backslash *)
+nio_escape (c : Ascii.ascii) : list Ascii.ascii :=
+  let n := Ascii.nat_of_ascii c in
+  let bs := nio_char 92 in
+  if Nat.eqb n 34 then [bs, c] else
+  if Nat.eqb n 92 then [bs, bs] else
+  if Nat.eqb n 8 then [bs, nio_char 98] else
+  if Nat.eqb n 12 then [bs, nio_char 102] else
+  if Nat.eqb n 10 then [bs, nio_char 110] else
+  if Nat.eqb n 13 then [bs, nio_char 114] else
+  if Nat.eqb n 9 then [bs, nio_char 116] else
+  if Nat.ltb n 32 || Nat.eqb n 127 then
+    [bs, nio_char 117, nio_char 48, nio_char 48, nio_hex (Nat.div n 16), nio_hex (Nat.modulo n 16)]
+  else [c].
+
+nio_json_string (s : string) : string :=
+  Stdlib.Strings.String.string_of_list_ascii
+    (nio_char 34 :: List.flat_map nio_escape (Stdlib.Strings.String.list_ascii_of_string s) ++ [nio_char 34]).
+
+(** A list of strings as JSON, as Yojson writes it: no spaces. *)
+nio_json_strings (l : list string) : string :=
+  Stdlib.Strings.String.append "["
+    (Stdlib.Strings.String.append (Stdlib.Strings.String.concat "," (List.map nio_json_string l)) "]").
+
+(** blocks.log's line for a decided block, and signed.log's for a vote. *)
+nio_block_line (height : string) (txs : list string) : string :=
+  Stdlib.Strings.String.concat "" ["{""h"":", height, ",""txs"":", nio_json_strings txs, "}"].
+
+nio_vote_line (slot vid : string) (fields : list string) : string :=
+  Stdlib.Strings.String.concat " " [slot, vid, nio_json_strings fields].
+
+(** The tables an interpreter keeps for the operations: timers (when, in
+    the clock's seconds, and the event), events queued for the loop, the
+    catch-up served table, the nonce-flood mark, diverged repositories,
+    the versions applied, resend memory, the node's own transactions, and
+    the height. *)
+Record nio_tables := {
+  t_timers : list (PrimFloat.float * list string);
+  t_queue : list (list string);
+  t_served : list ((string * string) * PrimFloat.float);
+  t_flood : bool;
+  t_diverged : list (string * string);
+  t_applied : list (string * string);
+  t_mine : list (string * (string * (list string * list string)));
+  t_txs : list (PrimFloat.float * string);
+  t_height : string }.
+
+nio_empty : nio_tables :=
+  {| t_timers := []; t_queue := []; t_served := []; t_flood := false; t_diverged := [];
+     t_applied := []; t_mine := []; t_txs := []; t_height := "0" |}.
+
+nio_eq (a b : string) : bool := Stdlib.Strings.String.eqb a b.
+
+Fixpoint nio_find {A : Type} (eq : string * string -> bool) (l : list ((string * string) * A)) : option A :=
+  match l with
+  | [] => None
+  | (k, v) :: rest => if eq k then Some v else nio_find eq rest
+  end.
+
+nio_key_is (who first : string) (k : string * string) : bool :=
+  nio_eq (fst k) who && nio_eq (snd k) first.
+
+Fixpoint nio_has (k : string) (l : list (string * string)) : bool :=
+  match l with [] => false | (x, _) :: rest => nio_eq x k || nio_has k rest end.
+
+(** A small whole number as a float, by adding ones: digits and ten. *)
+Fixpoint nio_small (n : nat) : PrimFloat.float :=
+  match n with 0 => PrimFloat.zero | S k => PrimFloat.add (nio_small k) PrimFloat.one end.
+
+nio_ten : PrimFloat.float := nio_small 10.
+
+(** digits from the front: their value, how many, and what follows *)
+Fixpoint nio_digits (cs : list Ascii.ascii) (acc : PrimFloat.float) (count : nat)
+    : PrimFloat.float * nat * list Ascii.ascii :=
+  match cs with
+  | c :: rest =>
+      let n := Ascii.nat_of_ascii c in
+      if Nat.leb 48 n && Nat.leb n 57 then
+        nio_digits rest (PrimFloat.add (PrimFloat.mul acc nio_ten) (nio_small (n - 48))) (S count)
+      else (acc, count, cs)
+  | [] => (acc, count, cs)
+  end.
+
+Fixpoint nio_pow10 (k : nat) : PrimFloat.float :=
+  match k with 0 => PrimFloat.one | S j => PrimFloat.mul nio_ten (nio_pow10 j) end.
+
+Fixpoint nio_nat_digits (cs : list Ascii.ascii) (acc : nat) : nat * list Ascii.ascii :=
+  match cs with
+  | c :: rest =>
+      let n := Ascii.nat_of_ascii c in
+      if Nat.leb 48 n && Nat.leb n 57 then nio_nat_digits rest (acc * 10 + (n - 48)) else (acc, cs)
+  | [] => (acc, cs)
+  end.
+
+(** A decimal number as the clock's text has it: an optional minus,
+    digits, an optional fraction, an optional exponent (e, a sign, digits).
+    Within rounding; None if the text is anything else. *)
+nio_decimal (s : string) : option PrimFloat.float :=
+  let cs := Stdlib.Strings.String.list_ascii_of_string s in
+  let (neg, cs) := match cs with
+                   | c :: r => if Nat.eqb (Ascii.nat_of_ascii c) 45 then (true, r) else (false, cs)
+                   | [] => (false, cs) end in
+  match nio_digits cs PrimFloat.zero 0 with
+  | (whole, n, rest) =>
+      let (frac, rest) := match rest with
+        | c :: r => if Nat.eqb (Ascii.nat_of_ascii c) 46 then
+                      match nio_digits r PrimFloat.zero 0 with
+                      | (f, m, after) => (PrimFloat.div f (nio_pow10 m), after)
+                      end
+                    else (PrimFloat.zero, rest)
+        | [] => (PrimFloat.zero, rest) end in
+      let (exp, rest) := match rest with
+        | c :: r => if Nat.eqb (Ascii.nat_of_ascii c) 101 || Nat.eqb (Ascii.nat_of_ascii c) 69 then
+                      match r with
+                      | d :: r' => if Nat.eqb (Ascii.nat_of_ascii d) 45 then
+                                     let (k, after) := nio_nat_digits r' 0 in (PrimFloat.div PrimFloat.one (nio_pow10 k), after)
+                                   else if Nat.eqb (Ascii.nat_of_ascii d) 43 then
+                                     let (k, after) := nio_nat_digits r' 0 in (nio_pow10 k, after)
+                                   else let (k, after) := nio_nat_digits r 0 in (nio_pow10 k, after)
+                      | [] => (PrimFloat.one, rest)
+                      end
+                    else (PrimFloat.one, rest)
+        | [] => (PrimFloat.one, rest) end in
+      match n, rest with
+      | 0, _ => None
+      | _, [] => let v := PrimFloat.mul (PrimFloat.add whole frac) exp in
+                 Some (if neg then PrimFloat.opp v else v)
+      | _, _ :: _ => None
+      end
+  end.
+
+nio_num (s : string) : PrimFloat.float :=
+  match nio_decimal s with Some f => f | None => PrimFloat.zero end.
+
+nio_ok : bool * PrimFloat.float := (true, PrimFloat.zero).
+
+nio_with_timers (t : nio_tables) (v : list (PrimFloat.float * list string)) : nio_tables :=
+  {| t_timers := v; t_queue := t_queue t; t_served := t_served t; t_flood := t_flood t;
+     t_diverged := t_diverged t; t_applied := t_applied t; t_mine := t_mine t; t_txs := t_txs t;
+     t_height := t_height t |}.
+nio_with_queue (t : nio_tables) (v : list (list string)) : nio_tables :=
+  {| t_timers := t_timers t; t_queue := v; t_served := t_served t; t_flood := t_flood t;
+     t_diverged := t_diverged t; t_applied := t_applied t; t_mine := t_mine t; t_txs := t_txs t;
+     t_height := t_height t |}.
+nio_with_served (t : nio_tables) (v : list ((string * string) * PrimFloat.float)) : nio_tables :=
+  {| t_timers := t_timers t; t_queue := t_queue t; t_served := v; t_flood := t_flood t;
+     t_diverged := t_diverged t; t_applied := t_applied t; t_mine := t_mine t; t_txs := t_txs t;
+     t_height := t_height t |}.
+nio_with_flood (t : nio_tables) (v : bool) : nio_tables :=
+  {| t_timers := t_timers t; t_queue := t_queue t; t_served := t_served t; t_flood := v;
+     t_diverged := t_diverged t; t_applied := t_applied t; t_mine := t_mine t; t_txs := t_txs t;
+     t_height := t_height t |}.
+nio_with_diverged (t : nio_tables) (v : list (string * string)) : nio_tables :=
+  {| t_timers := t_timers t; t_queue := t_queue t; t_served := t_served t; t_flood := t_flood t;
+     t_diverged := v; t_applied := t_applied t; t_mine := t_mine t; t_txs := t_txs t;
+     t_height := t_height t |}.
+nio_with_applied (t : nio_tables) (v : list (string * string)) : nio_tables :=
+  {| t_timers := t_timers t; t_queue := t_queue t; t_served := t_served t; t_flood := t_flood t;
+     t_diverged := t_diverged t; t_applied := v; t_mine := t_mine t; t_txs := t_txs t;
+     t_height := t_height t |}.
+nio_with_mine (t : nio_tables) (v : list (string * (string * (list string * list string)))) : nio_tables :=
+  {| t_timers := t_timers t; t_queue := t_queue t; t_served := t_served t; t_flood := t_flood t;
+     t_diverged := t_diverged t; t_applied := t_applied t; t_mine := v; t_txs := t_txs t;
+     t_height := t_height t |}.
+nio_with_txs (t : nio_tables) (v : list (PrimFloat.float * string)) : nio_tables :=
+  {| t_timers := t_timers t; t_queue := t_queue t; t_served := t_served t; t_flood := t_flood t;
+     t_diverged := t_diverged t; t_applied := t_applied t; t_mine := t_mine t; t_txs := v;
+     t_height := t_height t |}.
+nio_with_height (t : nio_tables) (v : string) : nio_tables :=
+  {| t_timers := t_timers t; t_queue := t_queue t; t_served := t_served t; t_flood := t_flood t;
+     t_diverged := t_diverged t; t_applied := t_applied t; t_mine := t_mine t; t_txs := t_txs t;
+     t_height := v |}.
+
+(** What an operation does to the tables, at the clock's [now], as
+    shell.ml's handle does it: a timer is due [ms] milliseconds from now;
+    the height drops resend memory below it; the served table and the
+    applied versions keep one entry a key. [None]: the operation isn't a
+    table's (logging, the clock, storage, peer links, CI, jobs). *)
+nio_table_op (now : PrimFloat.float) (t : nio_tables) (op : node_op)
+    : option ((bool * PrimFloat.float) * nio_tables) :=
+  match op with
+  | IoTimer ms ev =>
+      Some (nio_ok, nio_with_timers t ((PrimFloat.add now (PrimFloat.div (nio_num ms) (nio_small 1000)), ev) :: t_timers t))
+  | IoQueue ev => Some (nio_ok, nio_with_queue t (t_queue t ++ [ev]))
+  | IoSetHeight h =>
+      let floor := nio_num h in
+      Some (nio_ok, nio_with_mine (nio_with_height t h)
+                      (List.filter (fun m => PrimFloat.leb floor (nio_num (fst m))) (t_mine t)))
+  | IoTrackTx raw => Some (nio_ok, nio_with_txs t ((now, raw) :: t_txs t))
+  | IoMarkNonceFlood => Some (nio_ok, nio_with_flood t true)
+  | IoNonceFlooded => Some ((t_flood t, PrimFloat.zero), t)
+  | IoMergeApplied r v =>
+      Some (nio_ok, nio_with_applied t ((r, v) :: List.filter (fun p => negb (nio_eq (fst p) r)) (t_applied t)))
+  | IoMergeDiverged r entry => Some (nio_ok, nio_with_diverged t ((r, entry) :: t_diverged t))
+  | IoIsDiverged r => Some ((nio_has r (t_diverged t), PrimFloat.zero), t)
+  | IoRememberBroadcast h kind fields alt => Some (nio_ok, nio_with_mine t ((h, (kind, (fields, alt))) :: t_mine t))
+  | IoServedAt who first =>
+      match nio_find (nio_key_is who first) (t_served t) with
+      | Some time => Some ((true, time), t)
+      | None => Some ((false, PrimFloat.zero), t)
+      end
+  | IoMarkServed who first stamp =>
+      Some (nio_ok, nio_with_served t (((who, first), nio_num stamp) ::
+              List.filter (fun e => negb (nio_key_is who first (fst e))) (t_served t)))
+  | _ => None
+  end.

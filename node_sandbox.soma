@@ -1,0 +1,111 @@
+(** A unikernel's interpreter of node programs (U-1; docs/SHELL-IN-SOMA.md,
+    "Two directions, and the unikernel"): nodeio.soma's operations carried
+    out with Sandbox, as node.soma's [run_shell] carries them out with
+    shell.ml for the binary. The same [nprog] values, the same file bytes
+    (blocks.log, signed.log, status.txt, as Sandbox's named files) and the
+    same tables (nodeio.soma's [nio_table_op]).
+
+    What Sandbox doesn't give yet is the program's to supply, in
+    [nio_world]: a message's bytes on a peer link (the binary signs it with
+    the node's RSA key; Sandbox has no RSA: Soma's "SHA-256 and RSA" item)
+    and starting a CI check (the binary starts a process; a unikernel asks
+    a CI service, which needs Soma's "services" item: an HTTP POST with a
+    timeout). Checked without booting by test/node-sandbox.sh
+    ([soma build --no-image]). *)
+Require Import Sandbox.
+From Stdlib Require Import NArith.BinNat PArith.BinPos.
+Import nodeio.
+
+Record nio_world := {
+  (** the line a peer link carries for a message's fields (the binary's
+      signed JSON line) *)
+  w_wire : list string -> string;
+  (** start the CI check of a bid's edits; its result comes back as an event *)
+  w_check : string -> string -> string -> list string -> io unit }.
+
+(** The interpreter's state: the operations' tables and the peer links,
+    in genesis order, by name. *)
+Record nio_kernel := { k_tables : nio_tables; k_peers : list (string * connection) }.
+
+nio_kernel_tables (s : nio_kernel) (t : nio_tables) : nio_kernel :=
+  {| k_tables := t; k_peers := k_peers s |}.
+
+(** Sandbox's clock is monotonic milliseconds as a binary number; the
+    node's is seconds as a float. *)
+Fixpoint nio_pos_float (p : positive) : PrimFloat.float :=
+  match p with
+  | xH => PrimFloat.one
+  | xO q => PrimFloat.add (nio_pos_float q) (nio_pos_float q)
+  | xI q => PrimFloat.add PrimFloat.one (PrimFloat.add (nio_pos_float q) (nio_pos_float q))
+  end.
+
+nio_seconds (ms : N) : PrimFloat.float :=
+  match ms with
+  | N0 => PrimFloat.zero
+  | Npos p => PrimFloat.div (nio_pos_float p) (nio_small 1000)
+  end.
+
+nio_newline : string := Stdlib.Strings.String.String (Ascii.ascii_of_nat 10) Stdlib.Strings.String.EmptyString.
+
+Fixpoint nio_send_each (cs : list connection) (line : string) : io unit :=
+  match cs with
+  | [] => ret tt
+  | c :: rest => _ <- send_line c line ;; nio_send_each rest line
+  end.
+
+Fixpoint nio_nth_peer (k : nat) (ps : list (string * connection)) : list connection :=
+  match ps, k with
+  | [], _ => []
+  | p :: _, 0 => [snd p]
+  | _ :: rest, S j => nio_nth_peer j rest
+  end.
+
+nio_index (s : string) : nat :=
+  fst (nio_nat_digits (Stdlib.Strings.String.list_ascii_of_string s) 0).
+
+(** One operation: the answer the binary's [node_io] gives, and the new
+    state. Logging prints; the clock is Sandbox's; storage appends or
+    writes the named file; peer sends go on the links; a CI check asks
+    [w_check]; connection and job control have nothing to do in a
+    unikernel (its links are its listen handlers', and it runs no
+    processes); the rest is the tables'. *)
+nio_kernel_op (w : nio_world) (s : nio_kernel) (op : node_op)
+    : io ((bool * PrimFloat.float) * nio_kernel) :=
+  match op with
+  | IoLog text => print text ;; ret (nio_ok, s)
+  | IoClock => ms <- monotonic_ms ;; ret ((true, nio_seconds ms), s)
+  | IoStore height txs =>
+      append_file "blocks.log" (Stdlib.Strings.String.append (nio_block_line height txs) nio_newline) ;;
+      ret (nio_ok, s)
+  | IoSignVote slot vid fields =>
+      append_file "signed.log" (Stdlib.Strings.String.append (nio_vote_line slot vid fields) nio_newline) ;;
+      ret (nio_ok, s)
+  | IoWriteStatus text => write_file "status.txt" text ;; ret (nio_ok, s)
+  | IoSendAll fields => nio_send_each (List.map snd (k_peers s)) (w_wire w fields) ;; ret (nio_ok, s)
+  | IoSendPeer index fields =>
+      nio_send_each (nio_nth_peer (nio_index index) (k_peers s)) (w_wire w fields) ;; ret (nio_ok, s)
+  | IoPeerSend who fields =>
+      nio_send_each (List.map snd (List.filter (fun p => nio_eq (fst p) who) (k_peers s))) (w_wire w fields) ;;
+      ret (nio_ok, s)
+  | IoPeerExists who =>
+      ret ((List.existsb (fun p => nio_eq (fst p) who) (k_peers s), PrimFloat.zero), s)
+  | IoCheck id repo head edits => w_check w id repo head edits ;; ret (nio_ok, s)
+  | IoConnAdmit _ _ _ => ret (nio_ok, s)
+  | IoConnClose _ => ret (nio_ok, s)
+  | IoJobFlood _ => ret (nio_ok, s)
+  | IoJobExpire _ => ret (nio_ok, s)
+  | _ =>
+      ms <- monotonic_ms ;;
+      match nio_table_op (nio_seconds ms) (k_tables s) op with
+      | Some (answer, t) => ret (answer, nio_kernel_tables s t)
+      | None => ret ((false, PrimFloat.zero), s)
+      end
+  end.
+
+(** A node program, run by the unikernel: each operation in order, each
+    answer handed to the rest, as [run_shell] does for the binary. *)
+Fixpoint run_kernel {A : Type} (w : nio_world) (p : nprog A) (s : nio_kernel) : io (A * nio_kernel) :=
+  match p with
+  | NDone a => ret (a, s)
+  | NStep op k => r <- nio_kernel_op w s op ;; run_kernel w (k (fst r)) (snd r)
+  end.

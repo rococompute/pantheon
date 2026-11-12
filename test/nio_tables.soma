@@ -1,0 +1,68 @@
+(** nodeio.soma's pure part, which any interpreter shares: the lines blocks.log and signed.log get (Yojson's bytes, from shell.ml's writers), the clock's decimal text read back, and what the table operations do. No node, no unikernel. *)
+Import util shell nodeio.
+From Stdlib Require ExtrOcamlNatInt.
+Extract Inlined Constant Nat.div => "(fun a b -> if b = 0 then 0 else a / b)".
+Extract Inlined Constant Nat.modulo => "(fun a b -> if b = 0 then a else a mod b)".
+
+Extract Inlined Constant Stdlib.Strings.String.length => "String.length".
+Extract Inlined Constant Stdlib.Strings.String.get =>
+  "(fun n s -> if n < String.length s then Some (String.unsafe_get s n) else None)".
+Extract Inlined Constant Stdlib.Strings.String.substring =>
+  "(fun n m s -> let l = String.length s in if n >= l then """" else String.sub s n (min m (l - n)))".
+
+check (label : string) (ok : bool) : string := append (if ok then "ok " else "FAIL ") label.
+
+float_eq (a b : float) : bool := negb (PrimFloat.ltb a b) && negb (PrimFloat.ltb b a).
+
+(** equal within rounding: a billionth *)
+near (a b : float) : bool := PrimFloat.ltb (PrimFloat.abs (PrimFloat.sub a b)) 0.000000001%float.
+
+dec (s : string) : option float := nio_decimal s.
+
+served (t : nio_tables) (who first : string) : bool * float :=
+  match nio_table_op 0%float t (IoServedAt who first) with Some (a, _) => a | None => (false, 9%float) end.
+
+after (now : float) (t : nio_tables) (ops : list node_op) : nio_tables :=
+  fold_left (fun t op => match nio_table_op now t op with Some (_, t') => t' | None => t end) ops t.
+
+t1 : nio_tables :=
+  after 100%float nio_empty
+    [IoTimer "350" ["timeout", "commit", "2", "0"], IoQueue ["a"], IoQueue ["b"],
+     IoRememberBroadcast "3" "all" ["prevote", "3"] ["prevote", "3"],
+     IoRememberBroadcast "5" "all" ["prevote", "5"] ["prevote", "5"],
+     IoSetHeight "4", IoMarkServed "codex" "7" "1794505802.25", IoMarkServed "codex" "7" "12.5",
+     IoMergeApplied "calc" "1", IoMergeApplied "calc" "2", IoMergeDiverged "soma" "3 bad", IoTrackTx "raw"].
+
+checks : list string := [
+  check "a block's line is Yojson's" (seq (nio_block_line "1" ["tx ""a""", "tx2"]) "{""h"":1,""txs"":[""tx \""a\"""",""tx2""]}"),
+  check "control characters and DEL as Yojson escapes them"
+    (seq (nio_json_strings ["a\b", append "tab" (SCons (Ascii.ascii_of_nat 9) "here"), append "nl" (SCons (Ascii.ascii_of_nat 10) "x"),
+                            SCons (Ascii.ascii_of_nat 1) (SCons (Ascii.ascii_of_nat 31) (SCons (Ascii.ascii_of_nat 127) "")),
+                            SCons (Ascii.ascii_of_nat 8) (SCons (Ascii.ascii_of_nat 12) (SCons (Ascii.ascii_of_nat 13) "")),
+                            SCons (Ascii.ascii_of_nat 195) (SCons (Ascii.ascii_of_nat 169) "")])
+         (append "[""a\\b"",""tab\there"",""nl\nx"",""\u0001\u001f\u007f"",""\b\f\r"","""
+          (SCons (Ascii.ascii_of_nat 195) (SCons (Ascii.ascii_of_nat 169) """]")))),
+  check "a vote's line is the slot, the value and the fields" (seq (nio_vote_line "prevote/1/0" "v" ["prevote", "1"]) "prevote/1/0 v [""prevote"",""1""]"),
+  check "no fields is an empty list" (seq (nio_json_strings []) "[]"),
+  check "the clock's text reads back" (match dec "1794505802.25" with Some f => float_eq f 1794505802.25%float | None => false end),
+  check "an exponent" (match dec "1.5e-3" with Some f => near f 0.0015%float | None => false end),
+  check "a negative whole number" (match dec "-42" with Some f => float_eq f (-42)%float | None => false end),
+  check "not a number" (match dec "12x", dec "", dec ".5" with None, None, None => true | _, _, _ => false end),
+  check "a timer is due its milliseconds after now"
+    (match t_timers t1 with [(due, ev)] => near due 100.35%float && (match ev with ["timeout", "commit", "2", "0"] => true | _ => false end) | _ => false end),
+  check "events queue in order" (match t_queue t1 with [["a"], ["b"]] => true | _ => false end),
+  check "the height drops resend memory below it" (seq (t_height t1) "4" && (match t_mine t1 with [(h, _)] => seq h "5" | _ => false end)),
+  check "the served table keeps the newest time a key" (match served t1 "codex" "7" with (true, f) => float_eq f 12.5%float | _ => false end),
+  check "a key never served is absent" (match served t1 "grok" "7" with (false, _) => true | _ => false end),
+  check "one applied version a repository" (match t_applied t1 with [("calc", "2")] => true | _ => false end),
+  check "a diverged repository reads back" (match nio_table_op 0%float t1 (IoIsDiverged "soma"), nio_table_op 0%float t1 (IoIsDiverged "calc") with
+     | Some ((true, _), _), Some ((false, _), _) => true | _, _ => false end),
+  check "the node's own transactions are stamped" (match t_txs t1 with [(stamp, "raw")] => float_eq stamp 100%float | _ => false end),
+  check "the flood mark reads back" (match nio_table_op 0%float (after 0%float nio_empty [IoMarkNonceFlood]) IoNonceFlooded with Some ((true, _), _) => true | _ => false end),
+  check "logging, the clock, storage and links aren't the tables'"
+    (match nio_table_op 0%float nio_empty (IoLog "x"), nio_table_op 0%float nio_empty IoClock,
+           nio_table_op 0%float nio_empty (IoStore "1" []), nio_table_op 0%float nio_empty (IoSendAll []) with
+     | None, None, None, None => true | _, _, _, _ => false end)
+].
+
+main := print_lines checks.

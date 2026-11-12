@@ -1,0 +1,25 @@
+(** A unikernel that runs a node program with node_sandbox.soma's
+    interpreter: what test/node-sandbox.sh checks with soma build
+    --no-image (the MirageOS project type-checks, no image is booted). *)
+Require Import Sandbox.
+Import nodeio node_sandbox.
+
+world : nio_world :=
+  {| w_wire := nio_json_strings;
+     w_check := fun id _ _ _ => print (Stdlib.Strings.String.append "check asked: " id) |}.
+
+(** A decided block as node.soma's outputs make it: logged, stored, the
+    height set, the status written, a timer armed; a flag read decides. *)
+demo : nprog bool :=
+  ndo (IoLog "decided 1") (fun _ =>
+  ndo (IoStore "1" ["tx ""a""", "tx2"]) (fun _ =>
+  ndo (IoSetHeight "2") (fun _ =>
+  ndo (IoWriteStatus "height 2") (fun _ =>
+  ndo (IoTimer "350" ["timeout", "commit", "2", "0"]) (fun _ =>
+  nand (nexec IoNonceFlooded) (fun _ => nexec (IoLog "flooded already"))))))).
+
+main : io unit :=
+  r <- run_kernel world demo {| k_tables := nio_empty; k_peers := [] |} ;;
+  stored <- read_file "blocks.log" ;;
+  print (match stored with Some s => s | None => "no block log" end) ;;
+  print (if fst r then "program ended true" else "program stopped at a false answer").

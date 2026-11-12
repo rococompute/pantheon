@@ -168,23 +168,33 @@ turned into an operation is one less thing a unikernel can't run.
 The resend write uses tagged `field`/value pairs followed by `alternate`
 and the untouched second list. Values may themselves contain either tag.
 Resend reads and the native table remain unchanged.
-What a `Sandbox` interpreter of each operation still lacks:
+`node_sandbox.soma` is that interpreter for a unikernel: `run_kernel`
+runs the same programs with `Sandbox.io` (Soma's links, millisecond clock
+and named-file storage), keeping the same file bytes and tables as the
+binary: `nodeio.soma`'s pure part has the lines blocks.log and signed.log
+get (Yojson's, byte for byte) and what each table operation does
+(`nio_table_op`), and `test/node-sandbox.sh` checks both (`soma run` on the
+pure part, `soma build --no-image` on a unikernel that runs a node
+program). What Sandbox doesn't give yet is the program's to supply, in
+`nio_world`: a message's bytes on a peer link (`w_wire`: the binary signs
+it with RSA) and starting a CI check (`w_check`). Each operation:
 
-| `node_op` | binary (shell.ml) | Sandbox lacks |
+| `node_op` | binary (shell.ml) | unikernel (node_sandbox.soma) |
 |---|---|---|
-| `IoLog text` | a line on stdout with the time | nothing: printing (the time with the clock below) |
-| `IoTimer ms event` | a timer list checked each select turn | a millisecond clock and sleep (Soma's "a millisecond clock") |
-| `IoQueue event` | the event queue the next turn drains | nothing: a queue in the program's loop |
-| `IoSendAll fields`, `IoSendPeer index fields`, `IoPeerSend peer fields` | sign, frame and buffer on the peer's TCP link | links that stay open (Soma's "links that stay open") and RSA signing (Soma's "SHA-256 and RSA") |
-| `IoPeerExists who`, `IoNonceFlooded`, `IoIsDiverged repo` | read peer membership, nonce-flood flag, divergence flag; first result component is the boolean value | nothing: tables in program state |
-| `IoServedAt who first`, `IoMarkServed who first timestamp` | read/replace the catch-up served table; `(present, timestamp)` result and lossless `%.17g` timestamp transport | nothing: state in the program, with the clock for timestamps |
-| `IoClock` | `Unix.gettimeofday`, returned as the second of `(true, now)` | a millisecond clock (Soma's "a millisecond clock"); Sandbox's time of day is not this clock |
-| `IoStore height txs`, `IoSetHeight height`, `IoWriteStatus text` | append the block to blocks.log, note the height (dropping old resends), write status.txt | storage (Soma's "storage": named files on the image) |
-| `IoSignVote slot vid fields` | note the vote and append it, synced, to signed.log | storage, with a synced append (Soma's "storage") |
-| `IoTrackTx raw`, `IoMarkNonceFlood` | the own-transaction retry table (stamped with the time), the flood flag | nothing: state in the program (the stamp with the clock above) |
-| `IoRememberBroadcast height kind fields alternate` | prepend both message variants to resend memory | nothing: state in the program; expiry on height changes stays unchanged |
-| `IoMergeApplied repo v`, `IoMergeDiverged repo entry` | the applied-version table, the divergence list | nothing: state in the program |
-| `IoCheck id repo head edits` | the CI job: a fresh clone, the edits, the CI command as a process; its result comes back as a `check_result` event | services (Soma's "services": a CI service asked over HTTP POST, with a timeout) and git (applying edits to a tree) |
+| `IoLog text` | a line on stdout with the time | `print` (without the time of day) |
+| `IoTimer ms event` | a timer list checked each select turn | the tables' timer list, due `ms` after the monotonic clock |
+| `IoQueue event` | the event queue the next turn drains | the tables' queue |
+| `IoSendAll fields`, `IoSendPeer index fields`, `IoPeerSend peer fields` | sign, frame and buffer on the peer's TCP link | `send_line` on the peer's link (Soma's links), the line from `w_wire`: RSA signing is Soma's "SHA-256 and RSA" item |
+| `IoPeerExists who`, `IoNonceFlooded`, `IoIsDiverged repo` | read peer membership, nonce-flood flag, divergence flag; first result component is the boolean value | the peer links' names; the tables |
+| `IoServedAt who first`, `IoMarkServed who first timestamp` | read/replace the catch-up served table; `(present, timestamp)` result and lossless `%.17g` timestamp transport | the tables' served table; the timestamp read back from its text within rounding (`nio_decimal`) |
+| `IoClock` | `Unix.gettimeofday`, returned as the second of `(true, now)` | `monotonic_ms`, in seconds: since boot, not the time of day, so a model's reset time (a wall-clock time) can't be compared with it yet |
+| `IoStore height txs`, `IoSetHeight height`, `IoWriteStatus text` | append the block to blocks.log, note the height (dropping old resends), write status.txt | `append_file "blocks.log"` with the binary's line; the tables' height and resend memory; `write_file "status.txt"` |
+| `IoSignVote slot vid fields` | note the vote and append it, synced, to signed.log | `append_file "signed.log"` with the binary's line (Sandbox's writes return after the device write) |
+| `IoTrackTx raw`, `IoMarkNonceFlood` | the own-transaction retry table (stamped with the time), the flood flag | the tables |
+| `IoRememberBroadcast height kind fields alternate` | prepend both message variants to resend memory | the tables' resend memory |
+| `IoMergeApplied repo v`, `IoMergeDiverged repo entry` | the applied-version table, the divergence list | the tables |
+| `IoCheck id repo head edits` | the CI job: a fresh clone, the edits, the CI command as a process; its result comes back as a `check_result` event | `w_check`: a CI service, which needs Soma's "services" item (HTTP POST with a timeout) |
+| `IoConnAdmit`, `IoConnClose`, `IoJobFlood`, `IoJobExpire` | admit, refuse or close a socket; kill a job's process | nothing to do: a unikernel's links are its listen handlers', and it runs no processes |
 
 Not yet operations, still bindings of their own (the next parts of U-1):
 the remaining node table reads (peer membership, nonce-flood and divergence
