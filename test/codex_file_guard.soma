@@ -1,0 +1,42 @@
+(** Pantheon: a private, Byzantine-fault-tolerant labor market where LLM
+    agents take turns as term leader. Soma selects commands and node.soma decides the market;
+    shell.ml supplies command implementations and I/O. *)
+Import util shell node.
+
+(** Numbers run as OCaml ints. The kernel and the proofs still see Peano
+    naturals: these only say how extracted code computes them. *)
+From Stdlib Require ExtrOcamlNatInt.
+Extract Inlined Constant Nat.div => "(fun a b -> if b = 0 then 0 else a / b)".
+Extract Inlined Constant Nat.modulo => "(fun a b -> if b = 0 then a else a mod b)".
+
+(** Strings run as OCaml's (ExtrOcamlNativeString), which leaves out the
+    operations that count in [nat]. With [nat] as OCaml ints they're
+    OCaml's own, each as total as its definition: offsets past the end give
+    [None] or an empty string. util.soma reads long text through them. *)
+Extract Inlined Constant Stdlib.Strings.String.length => "String.length".
+Extract Inlined Constant Stdlib.Strings.String.get =>
+  "(fun n s -> if n < String.length s then Some (String.unsafe_get s n) else None)".
+Extract Inlined Constant Stdlib.Strings.String.substring =>
+  "(fun n m s -> let l = String.length s in if n >= l then """" else String.sub s n (min m (l - n)))".
+
+
+check (label : string) (ok : bool) : string := append (if ok then "ok " else "FAIL ") label.
+file_path (key : string) : string :=
+  match env_value key (node_env_entries tt) with Some path => path | None => "" end.
+
+main := print_lines [
+  check "failure wins" (seq (codex_reply_of "!failed" (fun _ => Some "stale")) "!failed"),
+  check "failure without file" (seq (codex_reply_of "!spawn" (fun _ => None)) "!spawn"),
+  check "success file" (seq (codex_reply_of "diagnostics" (fun _ => Some "{}")) "{}"),
+  check "empty file" (seq (codex_reply_of "pending" (fun _ => Some "")) ""),
+  check "missing file" (seq (codex_reply_of "pending" (fun _ => None)) "!codex wrote no reply"),
+  check "embedded bang" (seq (codex_reply_of "log!" (fun _ => Some "reply")) "reply"),
+  check "empty stdout" (seq (codex_reply_of "" (fun _ => Some "reply")) "reply"),
+  check "file bytes" (seq (codex_reply_of "pending" (fun _ => Some "  {}
+")) "  {}
+"),
+  check "failed FIFO is never opened" (seq (codex_file_reply "!process failed (exit 1): failed" (file_path "CODEX_GUARD_FIFO")) "!process failed (exit 1): failed"),
+  check "real regular file" (seq (codex_file_reply "pending" (file_path "CODEX_GUARD_FILE")) "file bytes"),
+  check "real empty file" (seq (codex_file_reply "pending" (file_path "CODEX_GUARD_EMPTY")) ""),
+  check "real missing file" (seq (codex_file_reply "pending" (file_path "CODEX_GUARD_MISSING")) "!codex wrote no reply")
+].

@@ -230,6 +230,15 @@ separate work; this status does not mark `.plan`.
 
 ## Done so far
 
+- Step 5, Codex reply files: the callback queues only a process result and
+  reply path. Soma's `codex_file_reply` applies the process-failure guard
+  before opening the file through the existing `fs_read_text` binding,
+  then removes it after resolving the text. Failed jobs never open it;
+  successful empty files and missing-file errors retain their behavior.
+  One small cleanup binding returns the resolved text so extraction keeps
+  read-before-remove order. `test/codex-file-guard.sh` has fixed pure cases
+  and actual FIFO, regular, empty and missing files, with no running node.
+
 - Step 5, local inbox acquisition: Soma's `poll_inbox` decides the strict
   one-second interval and exact `.json` suffix, preserves directory order,
   maps read failures to empty text, and interprets a typed plan that queues
