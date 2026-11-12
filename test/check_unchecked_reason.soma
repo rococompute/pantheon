@@ -26,7 +26,7 @@ main := print_lines [
     ["check_result", "9", "ok", "error", "tree", "", "why",
      "this node doesn't check soma (outside its scope: its genesis part excludes it)", "stage", "node"]),
   check "raw fact is interpreted" (eq_strs
-    (hd [] (snd (job_output_events "unused" empty_node
-      ["check_unchecked_repo", "7", "soma", "false"])))
+    (hd [] (snd (run_shell "unused" (job_output_prog empty_node
+      ["check_unchecked_repo", "7", "soma", "false"]))))
     (check_unchecked_repo_event "7" "soma" false))
 ].

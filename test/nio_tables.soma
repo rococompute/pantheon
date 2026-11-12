@@ -84,6 +84,19 @@ checks : list string := [
   check "the diverged repositories, as pairs"
     (match nio_table_op 0%float t1 IoDivergences with Some (a, _) => (match ans_pairs a with [("soma", "3 bad")] => true | _ => false end) | None => false end),
   check "pairs on the wire read back" (match nio_pairs (nio_flat_pairs [("a", "1"), ("b", "2")]) with [("a", "1"), ("b", "2")] => true | _ => false end),
+  check "a refused transaction is seen again"
+    (match stored (stores nio_empty [IoRefuse "raw1"]) (IoSeenRefused "raw1"), stored nio_empty (IoSeenRefused "raw1") with
+     | (true, _), (false, _) => true | _, _ => false end),
+  check "a select drains the queue, framed"
+    (match nio_store_op 0%float (stores nio_empty [IoQueue ["a", "1"], IoQueue ["b"]]) (IoEvents "0.2") with
+     | Some (a, t) => (match nio_lists (ans_list a), t_queue t with [["a", "1"], ["b"]], [] => true | _, _ => false end)
+     | None => false end),
+  check "the queue is empty, then not"
+    (match stored nio_empty IoQueueEmpty, stored (stores nio_empty [IoQueue ["a"]]) IoQueueEmpty with
+     | (true, _), (false, _) => true | _, _ => false end),
+  check "stored timers replace the list"
+    (match t_timers (stores (stores nio_empty [IoTimer "5" ["x"]]) [IoSetTimers [["1.5", "t", "1"]]]) with
+     | [(d, ["t", "1"])] => near d 1.5%float | _ => false end),
   check "the stores hand the tables' operations on" (match stored t2 IoNonceFlooded with (false, (_, [])) => true | _ => false end)
 ].
 

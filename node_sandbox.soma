@@ -48,7 +48,14 @@ Record nio_world := {
       form): a model service, which needs Soma's "services" item *)
   w_llm : list string -> io nanswer;
   (** CI started for a tree ([IoCiLaunch]): a CI service *)
-  w_ci : list string -> io nanswer }.
+  w_ci : list string -> io nanswer;
+  (** this node's name, and a peer line's signature checked (RSA, as
+      [w_wire]) *)
+  w_identity : string;
+  w_verify : string -> string -> list string -> bool;
+  (** a time as text, node_float_wire's way (Soma's floats have no
+      printer yet) *)
+  w_float_text : PrimFloat.float -> string }.
 
 (** The interpreter's state: the operations' tables and the peer links,
     in genesis order, by name. *)
@@ -156,9 +163,22 @@ nio_kernel_op (w : nio_world) (s : nio_kernel) (op : node_op)
   | IoCiLaunch _ _ _ _ => a <- w_ci w (io_wire op) ;; ret (a, s)
   | IoReadText path => got <- read_file path ;;
       ret (match got with Some t => ans_data true [t] | None => ans_data false [] end, s)
-  (* Sandbox's named files can't be removed yet: a reply file is a model
-     service's, so there is none here to remove *)
-  | IoDiscardFile _ => ret (nio_ok, s)
+  (* Sandbox's named files can't be removed or listed yet: a reply file is
+     a model service's, and a unikernel has no inbox directory *)
+  | IoDiscardFile _ | IoRemoveFile _ | IoInboxStamp _ => ret (nio_ok, s)
+  | IoInboxState => ret ((true, (PrimFloat.zero, ["inbox"])), s)
+  | IoDirEntries _ => ret (ans_data true [], s)
+  | IoIdentity => ret (ans_data true [w_identity w], s)
+  | IoVerifyLine from sig fields => ret (ans_flag (w_verify w from sig fields), s)
+  | IoConns => ret (ans_data true (nio_frame_lists (List.map (fun p => [fst p, "0"]) (k_peers s))), s)
+  (* dialing and resending: a unikernel's links are its listen handlers' *)
+  | IoPollPrep => ret (nio_ok, s)
+  | IoTurnNow => ms <- monotonic_ms ;; ret (ans_time (nio_seconds ms), s)
+  | IoTimers =>
+      ret (ans_data true (nio_frame_lists (List.map (fun p => w_float_text w (fst p) :: snd p)
+                                            (t_timers (k_tables s)))), s)
+  (* it runs no processes *)
+  | IoJobs => ret (ans_data true [], s)
   | IoConnAdmit _ _ _ => ret (nio_ok, s)
   | IoConnClose _ => ret (nio_ok, s)
   | IoJobFlood _ => ret (nio_ok, s)

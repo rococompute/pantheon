@@ -874,7 +874,8 @@ Proof.
     repo | repo | repo path | repo path | repo path text | repo path |
     repo version tree bid task bidder spec | | id kind prompt ctx |
     id kind raw prompt ctx clean launch env | repo | | | | | repo | repo path |
-    until reason backoff | backoff | | | probing requests | job result | id out tree ci | path | path ];
+    until reason backoff | backoff | | | probing requests | job result | id out tree ci | path | path |
+    raw | | raw | from sig fields | | | | stamp | path | path | | | timers | | | wait ];
     try reflexivity.
   - change (match resend_parts (resend_fields fields ++ ("alternate" :: alternate)) with
     | Some (original, alt) => Some (IoRememberBroadcast height kind original alt)
@@ -895,6 +896,8 @@ Proof.
     rewrite !resend_parts_reads_fields. reflexivity.
   - change (Some (IoHeldStore probing (nio_lists (nio_frame_lists requests))) =
             Some (IoHeldStore probing requests)).
+    rewrite nio_lists_reads_frames. reflexivity.
+  - change (Some (IoSetTimers (nio_lists (nio_frame_lists timers))) = Some (IoSetTimers timers)).
     rewrite nio_lists_reads_frames. reflexivity.
 Qed.
 
@@ -1272,6 +1275,13 @@ Proof.
   intros ans. unfold release_prog, ans_list. cbn.
   destruct (snd (snd (ans IoLimitInfo))) as [|b [|n r]]; reflexivity.
 Qed.
+
+(** An inbox poll that isn't due reads the inbox's state and the turn's
+    clock and nothing else: no directory listing, no file. *)
+Theorem inbox_poll_not_due : forall ans,
+  inbox_poll_due (ans_float (ans IoTurnNow)) (ans_float (ans IoInboxState)) = false ->
+  ntrace ans poll_inbox_prog = [IoInboxState, IoTurnNow].
+Proof. intros ans H. unfold poll_inbox_prog. cbn -[inbox_poll_due ans_float]. rewrite H. reflexivity. Qed.
 
 Theorem remember_peer_is_served_operation : forall who first now,
   action_prog (RememberPeer who first now) =

@@ -123,7 +123,33 @@ Inductive node_op :=
 | IoJobComplete (job result : string)
 | IoCiLaunch (id out tree ci : string)
 | IoReadText (path : string)
-| IoDiscardFile (path : string).
+| IoDiscardFile (path : string)
+(** the event loop's own reads and writes (U-1): a refused transaction
+    noted, this node's name, whether a transaction was refused before, a
+    peer line's signature checked (from, signature, fields); the
+    connections ([conn, last read], framed); dialing and resending before
+    a turn; the inbox's last poll and directory (the time, then [dir]) and
+    its poll noted; a directory's names, removing a file (both need no
+    node); the turn's clock; the timers ([deadline, event...], framed;
+    deadlines in node_float_wire's text) and storing them; the jobs ([id,
+    started, limit, stopped], framed); whether the queue is empty; and one
+    select, waiting at most the seconds given (the events, framed) *)
+| IoRefuse (raw : string)
+| IoIdentity
+| IoSeenRefused (raw : string)
+| IoVerifyLine (from sig : string) (fields : list string)
+| IoConns
+| IoPollPrep
+| IoInboxState
+| IoInboxStamp (stamp : string)
+| IoDirEntries (path : string)
+| IoRemoveFile (path : string)
+| IoTurnNow
+| IoTimers
+| IoSetTimers (timers : list (list string))
+| IoJobs
+| IoQueueEmpty
+| IoEvents (wait : string).
 
 (** Two arbitrary lists on one wire: tagged field/value pairs, then the
     alternate-list marker. A marker occurring as a value is never a tag.
@@ -227,6 +253,22 @@ io_wire (op : node_op) : list string :=
   | IoCiLaunch id out tree ci => ["ci_launch", id, out, tree, ci]
   | IoReadText path => ["read_text", path]
   | IoDiscardFile path => ["discard_file", path]
+  | IoRefuse raw => ["refuse", raw]
+  | IoIdentity => ["identity"]
+  | IoSeenRefused raw => ["seen_refused", raw]
+  | IoVerifyLine from sig fields => "verify_line" :: from :: sig :: fields
+  | IoConns => ["conns"]
+  | IoPollPrep => ["poll_prep"]
+  | IoInboxState => ["inbox_state"]
+  | IoInboxStamp stamp => ["inbox_stamp", stamp]
+  | IoDirEntries path => ["dir_entries", path]
+  | IoRemoveFile path => ["remove_file", path]
+  | IoTurnNow => ["turn_now"]
+  | IoTimers => ["timers"]
+  | IoSetTimers timers => "set_timers" :: nio_frame_lists timers
+  | IoJobs => ["jobs"]
+  | IoQueueEmpty => ["queue_empty"]
+  | IoEvents wait => ["events", wait]
   end.
 
 io_of_wire (w : list string) : option node_op :=
@@ -312,6 +354,22 @@ io_of_wire (w : list string) : option node_op :=
   | ["ci_launch", id, out, tree, ci] => Some (IoCiLaunch id out tree ci)
   | ["read_text", path] => Some (IoReadText path)
   | ["discard_file", path] => Some (IoDiscardFile path)
+  | ["refuse", raw] => Some (IoRefuse raw)
+  | ["identity"] => Some IoIdentity
+  | ["seen_refused", raw] => Some (IoSeenRefused raw)
+  | "verify_line" :: from :: sig :: fields => Some (IoVerifyLine from sig fields)
+  | ["conns"] => Some IoConns
+  | ["poll_prep"] => Some IoPollPrep
+  | ["inbox_state"] => Some IoInboxState
+  | ["inbox_stamp", stamp] => Some (IoInboxStamp stamp)
+  | ["dir_entries", path] => Some (IoDirEntries path)
+  | ["remove_file", path] => Some (IoRemoveFile path)
+  | ["turn_now"] => Some IoTurnNow
+  | ["timers"] => Some IoTimers
+  | "set_timers" :: timers => Some (IoSetTimers (nio_lists timers))
+  | ["jobs"] => Some IoJobs
+  | ["queue_empty"] => Some IoQueueEmpty
+  | ["events", wait] => Some (IoEvents wait)
   | _ => None
   end.
 
@@ -471,11 +529,12 @@ Record nio_tables := {
   t_txs : list (PrimFloat.float * string);
   t_height : string;
   t_blocks : list (string * list string);
-  t_signed : list (string * (string * list string)) }.
+  t_signed : list (string * (string * list string));
+  t_refused : list string }.
 
 nio_empty : nio_tables :=
   {| t_timers := []; t_queue := []; t_served := []; t_flood := false; t_diverged := [];
-     t_applied := []; t_mine := []; t_txs := []; t_height := "0"; t_blocks := []; t_signed := [] |}.
+     t_applied := []; t_mine := []; t_txs := []; t_height := "0"; t_blocks := []; t_signed := []; t_refused := [] |}.
 
 nio_eq (a b : string) : bool := Stdlib.Strings.String.eqb a b.
 
@@ -565,39 +624,44 @@ nio_ok : nanswer := ans_ok.
 nio_with_timers (t : nio_tables) (v : list (PrimFloat.float * list string)) : nio_tables :=
   {| t_timers := v; t_queue := t_queue t; t_served := t_served t; t_flood := t_flood t;
      t_diverged := t_diverged t; t_applied := t_applied t; t_mine := t_mine t; t_txs := t_txs t;
-     t_height := t_height t; t_blocks := t_blocks t; t_signed := t_signed t |}.
+     t_height := t_height t; t_blocks := t_blocks t; t_signed := t_signed t; t_refused := t_refused t |}.
 nio_with_queue (t : nio_tables) (v : list (list string)) : nio_tables :=
   {| t_timers := t_timers t; t_queue := v; t_served := t_served t; t_flood := t_flood t;
      t_diverged := t_diverged t; t_applied := t_applied t; t_mine := t_mine t; t_txs := t_txs t;
-     t_height := t_height t; t_blocks := t_blocks t; t_signed := t_signed t |}.
+     t_height := t_height t; t_blocks := t_blocks t; t_signed := t_signed t; t_refused := t_refused t |}.
 nio_with_served (t : nio_tables) (v : list ((string * string) * PrimFloat.float)) : nio_tables :=
   {| t_timers := t_timers t; t_queue := t_queue t; t_served := v; t_flood := t_flood t;
      t_diverged := t_diverged t; t_applied := t_applied t; t_mine := t_mine t; t_txs := t_txs t;
-     t_height := t_height t; t_blocks := t_blocks t; t_signed := t_signed t |}.
+     t_height := t_height t; t_blocks := t_blocks t; t_signed := t_signed t; t_refused := t_refused t |}.
 nio_with_flood (t : nio_tables) (v : bool) : nio_tables :=
   {| t_timers := t_timers t; t_queue := t_queue t; t_served := t_served t; t_flood := v;
      t_diverged := t_diverged t; t_applied := t_applied t; t_mine := t_mine t; t_txs := t_txs t;
-     t_height := t_height t; t_blocks := t_blocks t; t_signed := t_signed t |}.
+     t_height := t_height t; t_blocks := t_blocks t; t_signed := t_signed t; t_refused := t_refused t |}.
 nio_with_diverged (t : nio_tables) (v : list (string * string)) : nio_tables :=
   {| t_timers := t_timers t; t_queue := t_queue t; t_served := t_served t; t_flood := t_flood t;
      t_diverged := v; t_applied := t_applied t; t_mine := t_mine t; t_txs := t_txs t;
-     t_height := t_height t; t_blocks := t_blocks t; t_signed := t_signed t |}.
+     t_height := t_height t; t_blocks := t_blocks t; t_signed := t_signed t; t_refused := t_refused t |}.
 nio_with_applied (t : nio_tables) (v : list (string * string)) : nio_tables :=
   {| t_timers := t_timers t; t_queue := t_queue t; t_served := t_served t; t_flood := t_flood t;
      t_diverged := t_diverged t; t_applied := v; t_mine := t_mine t; t_txs := t_txs t;
-     t_height := t_height t; t_blocks := t_blocks t; t_signed := t_signed t |}.
+     t_height := t_height t; t_blocks := t_blocks t; t_signed := t_signed t; t_refused := t_refused t |}.
 nio_with_mine (t : nio_tables) (v : list (string * (string * (list string * list string)))) : nio_tables :=
   {| t_timers := t_timers t; t_queue := t_queue t; t_served := t_served t; t_flood := t_flood t;
      t_diverged := t_diverged t; t_applied := t_applied t; t_mine := v; t_txs := t_txs t;
-     t_height := t_height t; t_blocks := t_blocks t; t_signed := t_signed t |}.
+     t_height := t_height t; t_blocks := t_blocks t; t_signed := t_signed t; t_refused := t_refused t |}.
 nio_with_txs (t : nio_tables) (v : list (PrimFloat.float * string)) : nio_tables :=
   {| t_timers := t_timers t; t_queue := t_queue t; t_served := t_served t; t_flood := t_flood t;
      t_diverged := t_diverged t; t_applied := t_applied t; t_mine := t_mine t; t_txs := v;
-     t_height := t_height t; t_blocks := t_blocks t; t_signed := t_signed t |}.
+     t_height := t_height t; t_blocks := t_blocks t; t_signed := t_signed t; t_refused := t_refused t |}.
 nio_with_height (t : nio_tables) (v : string) : nio_tables :=
   {| t_timers := t_timers t; t_queue := t_queue t; t_served := t_served t; t_flood := t_flood t;
      t_diverged := t_diverged t; t_applied := t_applied t; t_mine := t_mine t; t_txs := t_txs t;
-     t_height := v; t_blocks := t_blocks t; t_signed := t_signed t |}.
+     t_height := v; t_blocks := t_blocks t; t_signed := t_signed t; t_refused := t_refused t |}.
+
+nio_with_refused (t : nio_tables) (v : list string) : nio_tables :=
+  {| t_timers := t_timers t; t_queue := t_queue t; t_served := t_served t; t_flood := t_flood t;
+     t_diverged := t_diverged t; t_applied := t_applied t; t_mine := t_mine t; t_txs := t_txs t;
+     t_height := t_height t; t_blocks := t_blocks t; t_signed := t_signed t; t_refused := v |}.
 
 Fixpoint nio_lookup {A : Type} (k : string) (l : list (string * A)) : option A :=
   match l with [] => None | (x, v) :: rest => if nio_eq x k then Some v else nio_lookup k rest end.
@@ -645,16 +709,18 @@ nio_table_op (now : PrimFloat.float) (t : nio_tables) (op : node_op)
 nio_with_blocks (t : nio_tables) (v : list (string * list string)) : nio_tables :=
   {| t_timers := t_timers t; t_queue := t_queue t; t_served := t_served t; t_flood := t_flood t;
      t_diverged := t_diverged t; t_applied := t_applied t; t_mine := t_mine t; t_txs := t_txs t;
-     t_height := t_height t; t_blocks := v; t_signed := t_signed t |}.
+     t_height := t_height t; t_blocks := v; t_signed := t_signed t; t_refused := t_refused t |}.
 nio_with_signed (t : nio_tables) (v : list (string * (string * list string))) : nio_tables :=
   {| t_timers := t_timers t; t_queue := t_queue t; t_served := t_served t; t_flood := t_flood t;
      t_diverged := t_diverged t; t_applied := t_applied t; t_mine := t_mine t; t_txs := t_txs t;
-     t_height := t_height t; t_blocks := t_blocks t; t_signed := v |}.
+     t_height := t_height t; t_blocks := t_blocks t; t_signed := v; t_refused := t_refused t |}.
 
 (** The stores the binary keeps in memory beside its files: decided blocks
     by height (what catch-up and [IoBlock] read) and the vote signed at
     each slot (what [IoSignedVote] and [IoSignedBody] read), one entry a
-    key; and the height, read back. *)
+    key; the height, read back; the refused transactions; and the queue
+    a select drains ([IoEvents]: a unikernel's events are its queue's, as
+    its links' lines come through their listen handlers). *)
 nio_store_op (now : PrimFloat.float) (t : nio_tables) (op : node_op) : option (nanswer * nio_tables) :=
   match op with
   | IoStore h txs =>
@@ -677,5 +743,11 @@ nio_store_op (now : PrimFloat.float) (t : nio_tables) (op : node_op) : option (n
       | Some v => Some (ans_data true (snd v), t)
       | None => Some (ans_data false [], t)
       end
+  | IoRefuse raw => Some (ans_ok, nio_with_refused t (raw :: t_refused t))
+  | IoSeenRefused raw => Some (ans_flag (List.existsb (nio_eq raw) (t_refused t)), t)
+  | IoQueueEmpty => Some (ans_flag (match t_queue t with [] => true | _ => false end), t)
+  | IoEvents _ => Some (ans_data true (nio_frame_lists (t_queue t)), nio_with_queue t [])
+  | IoSetTimers ts =>
+      Some (ans_ok, nio_with_timers t (List.flat_map (fun l => match l with d :: ev => [(nio_num d, ev)] | [] => [] end) ts))
   | _ => nio_table_op now t op
   end.

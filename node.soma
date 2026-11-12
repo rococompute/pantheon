@@ -1351,36 +1351,39 @@ Fixpoint model_outputs_prog (evs : list (list string)) : nprog (list (list strin
 model_output_events (h : node_t) (ev : list string) : list (list string) :=
   run_shell h (model_output_prog ev).
 
-job_output_events (h : node_t) (st : node_state) (ev : list string) : node_state * list (list string) :=
+(** A finished job, as a node program: resumed with its outcome, and the
+    events its callback queued turned into what they become. *)
+job_output_prog (st : node_state) (ev : list string) : nprog (node_state * list (list string)) :=
   match ev with
   | ["job_finished", id, tag, value, timeout, flooded] =>
       let out := Stdlib.Strings.String.concat "" (job_buffer st id) in
       let st := job_forget st id in
       match job_wait_status (node_job_signal_codes tt) tag value with
-      | None => (st, [])
+      | None => NDone (st, [])
       | Some status =>
           let seconds := if seq timeout "" then None else Some timeout in
           let result := job_result status seconds (seq flooded "1")
                           (show (num (node_job_output_limit tt) / num "1048576")) out in
-          (st, run_shell h (nbind (nask (IoJobComplete id result)) (fun done =>
-                              model_outputs_prog (nio_lists (ans_list done)))))
+          nbind (nask (IoJobComplete id result)) (fun done =>
+          nbind (model_outputs_prog (nio_lists (ans_list done))) (fun evs => NDone (st, evs)))
       end
-  | ["check_unchecked", id, why] => (st, [check_unchecked_event id why])
+  | ["check_unchecked", id, why] => NDone (st, [check_unchecked_event id why])
   | ["check_unchecked_repo", id, repo, excluded] =>
-      (st, [check_unchecked_repo_event id repo (seq excluded "true")])
-  | _ => (st, model_output_events h ev)
+      NDone (st, [check_unchecked_repo_event id repo (seq excluded "true")])
+  | _ => nbind (model_output_prog ev) (fun evs => NDone (st, evs))
   end.
 
-Fixpoint job_outputs_go (h : node_t) (st : node_state) (evs acc : list (list string)) : node_state * list (list string) :=
+Fixpoint job_outputs_go_prog (st : node_state) (evs acc : list (list string))
+    : nprog (node_state * list (list string)) :=
   match evs with
-  | [] => (st, rev_onto acc [])
+  | [] => NDone (st, rev_onto acc [])
   | ev :: rest =>
-      let (st, out) := job_output_events h st ev in
-      job_outputs_go h st rest (rev_onto out acc)
+      nbind (job_output_prog st ev) (fun r =>
+      let (st, out) := r in job_outputs_go_prog st rest (rev_onto out acc))
   end.
 
-job_outputs (h : node_t) (st : node_state) (evs : list (list string)) : node_state * list (list string) :=
-  job_outputs_go h st evs [].
+job_outputs_prog (st : node_state) (evs : list (list string)) : nprog (node_state * list (list string)) :=
+  job_outputs_go_prog st evs [].
 
 Fixpoint push_all (h : node_t) (evs : list (list string)) : bool :=
   match evs with
@@ -1645,7 +1648,7 @@ status_prog (lines : list string) : nprog bool :=
     ([IoDraw], [IoBlock], [IoHeight], [IoPeerCount], the signed-vote
     table, the check exclusions, the status file's facts, a merge's
     checkout work, a model call's), and so is everything it does. *)
-output_prog (h : node_t) (out : list string) : nprog bool :=
+output_prog (out : list string) : nprog bool :=
   match plan_output out with
   | SetTimer ms ev => nexec (IoTimer ms ev)
   | WriteLog text => nexec (IoLog text)
@@ -1694,24 +1697,27 @@ output_prog (h : node_t) (out : list string) : nprog bool :=
   | LegacyOutput _ => NDone true
   end.
 
-perform_output (h : node_t) (out : list string) : bool := run_shell h (output_prog h out).
+perform_output (h : node_t) (out : list string) : bool := run_shell h (output_prog out).
 
 (** Effects return whether they were carried out, and the loop keeps the
     new state only when they were: a unit result would be a cast the
     extraction can erase, and with it the call. *)
-carry_effect (h : node_t) (snap : consensus_state) (eff : list string) : bool :=
+carry_effect_prog (h : node_t) (snap : consensus_state) (eff : list string) : nprog bool :=
   match eff with
-  | "perform" :: out => perform_output h out
-  | ["save_snapshot"] => save_snapshot h snap
-  | ["refuse", raw] => note_refused h raw
-  | _ => true
+  | "perform" :: out => output_prog out
+  | ["save_snapshot"] => NDone (save_snapshot h snap)
+  | ["refuse", raw] => nexec (IoRefuse raw)
+  | _ => NDone true
   end.
 
-Fixpoint carry_all (h : node_t) (snap : consensus_state) (effs : list (list string)) : bool :=
+Fixpoint carry_all_prog (h : node_t) (snap : consensus_state) (effs : list (list string)) : nprog bool :=
   match effs with
-  | [] => true
-  | e :: rest => carry_effect h snap e && carry_all h snap rest
+  | [] => NDone true
+  | e :: rest => nand (carry_effect_prog h snap e) (fun _ => carry_all_prog h snap rest)
   end.
+
+carry_all (h : node_t) (snap : consensus_state) (effs : list (list string)) : bool :=
+  run_shell h (carry_all_prog h snap effs).
 
 (** A model request held for a limit, handed back by the shell once the
     limit's wait is over: asked now, its prompt assembled again, with no
@@ -2084,78 +2090,101 @@ check_apply_stage (t : string) : string :=
       end
   end.
 
-perform_check_failed (h : node_t) (id t : string) : bool :=
-  io_log h (append "check of request " (append id (append " failed: " t))) &&
-  push_check_result h id false "" t (check_apply_stage t).
+check_failed_prog (id t : string) : nprog bool :=
+  nand (nexec (IoLog (append "check of request " (append id (append " failed: " t))))) (fun _ =>
+  nexec (IoQueue (check_result_event id false "" t (check_apply_stage t)))).
 
-perform_ci_done (h : node_t) (id tree memory runner t : string) : bool :=
+ci_done_prog (id tree memory runner t : string) : nprog bool :=
   let (ok, rest) := ci_outcome t (seq runner "sandbox") memory in
   let (why, stage) := rest in
-  io_log h (append "CI for request " (append id (append ": " (if ok then "passed" else "failed")))) &&
-  (if ok then true else io_log h (append "CI for request " (append id (append " said: " (replace_all t newline " "))))) &&
-  push_check_result h id ok tree why stage.
+  nand (nexec (IoLog (append "CI for request " (append id (append ": " (if ok then "passed" else "failed")))))) (fun _ =>
+  nand (if ok then NDone true
+        else nexec (IoLog (append "CI for request " (append id (append " said: " (replace_all t newline " ")))))) (fun _ =>
+  nexec (IoQueue (check_result_event id ok tree why stage)))).
 
-run_event (h : node_t) (st : node_state) (ev : list string) : node_state :=
-  let ev := match ev with
-            | ["peer_raw", raw] => peer_raw_event (node_line_item_cap tt) (node_identity h) raw
-                                    node_line_parts (node_seen_refused h)
-            | _ => ev
-            end in
+(** A peer line as the shell read it: its shape scanned, its members
+    read, and for a transaction whether it was refused before
+    ([IoSeenRefused], asked only then); this node's name ([IoIdentity])
+    says whether it's its own. *)
+peer_raw_prog (raw : string) : nprog (list string) :=
+  nbind (nask IoIdentity) (fun me =>
+  let shaped := peer_line_shape (node_line_item_cap tt) raw in
+  let parts := if shaped then node_line_parts raw else None in
+  nbind (match parts with
+         | Some (_, (_, ["tx", tx])) => nexec (IoSeenRefused tx)
+         | _ => NDone false
+         end) (fun seen =>
+  NDone (if shaped then peer_wire_fields (ans_one me) (fun _ => seen) parts else []))).
+
+(** a connection, a timer, a job on the wire *)
+conns_of (ls : list (list string)) : list (string * float) :=
+  flat_map (fun l => match l with [c, t] => [(c, node_float_of_digits t)] | _ => [] end) ls.
+
+(** The step an event takes, and its effects carried: the new state only
+    when they all were. *)
+step_prog (h : node_t) (st : node_state) (ev : list string) : nprog node_state :=
+  let (s, outs) := step st ev in
+  nbind (carry_all_prog h (cons s) (order_effects ev st s outs)) (fun ok => NDone (if ok then s else st)).
+
+kept (st : node_state) (ok : bool) : node_state := if ok then st else with_live st (live st).
+
+(** One event, as a node program. *)
+run_event_prog (h : node_t) (st : node_state) (ev : list string) : nprog node_state :=
+  nbind (match ev with ["peer_raw", raw] => peer_raw_prog raw | _ => NDone ev end) (fun ev =>
   match ev with
-  | [] => st
+  | [] => NDone st
   | "llm_release" :: id :: kind :: prompt :: ctx =>
-      if run_shell h (llm_call_prog id kind prompt ctx) then st else with_live st (live st)
+      nbind (llm_call_prog id kind prompt ctx) (fun ok => NDone (kept st ok))
   | "peer_line" :: self :: refused :: from :: sig :: fields =>
-      if line_dropped self refused then st
-      else if node_verify_line h from sig fields then
-        let (s, outs) := step st (line_event from fields) in
-        if carry_all h (cons s) (order_effects (line_event from fields) st s outs) then s else st
-      else st
+      if line_dropped self refused then NDone st
+      else nbind (nexec (IoVerifyLine from sig fields)) (fun ok =>
+           if ok then step_prog h st (line_event from fields) else NDone st)
   | "conn_offer" :: oid :: host :: hosts =>
       let d := conn_offer_decision host hosts in
-      let conns := match d with AdmitEvict => node_conns h | _ => [] end in
+      nbind (match d with
+             | AdmitEvict => nbind (nask IoConns) (fun a => NDone (conns_of (nio_lists (ans_list a))))
+             | _ => NDone []
+             end) (fun conns =>
       let (mode, target) := conn_admit_plan d conns in
-      if io_do h (IoConnAdmit oid mode target) then
-        (if seq mode "evict" then peer_forget st target else st)
-      else with_live st (live st)
-  | ["peer_closed", cid] => peer_forget st cid
-  | ["check_failed", id, t] =>
-      if perform_check_failed h id t then st else with_live st (live st)
+      nbind (nexec (IoConnAdmit oid mode target)) (fun ok =>
+      NDone (if ok then (if seq mode "evict" then peer_forget st target else st) else with_live st (live st))))
+  | ["peer_closed", cid] => NDone (peer_forget st cid)
+  | ["check_failed", id, t] => nbind (check_failed_prog id t) (fun ok => NDone (kept st ok))
   | ["ci_done", id, tree, memory, runner, t] =>
-      if perform_ci_done h id tree memory runner t then st else with_live st (live st)
+      nbind (ci_done_prog id tree memory runner t) (fun ok => NDone (kept st ok))
   | ["inbox_file", path, content] =>
       match inbox_tx (node_json_tokens content) with
-      | Some fields =>
-          let tx := "local_tx" :: fields in
-          let (s, outs) := step st tx in
-          if carry_all h (cons s) (order_effects tx st s outs) then s else st
-      | None => if io_log h (append "ignoring malformed " path) then st else with_live st (live st)
+      | Some fields => step_prog h st ("local_tx" :: fields)
+      | None => nbind (nexec (IoLog (append "ignoring malformed " path))) (fun ok => NDone (kept st ok))
       end
   | ["peer_bytes", cid, chunk] =>
-      let (kept, rest) := peer_read_events (peer_buffer st cid) chunk (peer_line_cap (tx_byte_cap tt)) in
+      let (kept_lines, rest) := peer_read_events (peer_buffer st cid) chunk (peer_line_cap (tx_byte_cap tt)) in
       let (evs, over) := rest in
-      let st := peer_remember st cid kept in
-      if push_all h evs then
-        if over then
-          if io_do h (IoConnClose cid) then peer_forget st cid else with_live st (live st)
-        else st
-      else with_live st (live st)
+      let st := peer_remember st cid kept_lines in
+      nbind (queue_prog evs) (fun queued =>
+      if queued then
+        if over then nbind (nexec (IoConnClose cid)) (fun ok => NDone (if ok then peer_forget st cid else with_live st (live st)))
+        else NDone st
+      else NDone (with_live st (live st)))
   | ["job_bytes", id, chunk] =>
-      let (kept, over) := job_feed (job_buffer st id) chunk
-                            (num (node_job_output_limit tt)) (num job_keep_text) in
-      let st := job_remember st id kept in
-      if over then if io_do h (IoJobFlood id) then st else with_live st (live st)
-      else st
-  | _ =>
-      let (s, outs) := step st ev in
-      if carry_all h (cons s) (order_effects ev st s outs) then s else st
+      let (kept_out, over) := job_feed (job_buffer st id) chunk
+                                (num (node_job_output_limit tt)) (num job_keep_text) in
+      let st := job_remember st id kept_out in
+      if over then nbind (nexec (IoJobFlood id)) (fun ok => NDone (kept st ok)) else NDone st
+  | _ => step_prog h st ev
+  end).
+
+Fixpoint run_events_prog (h : node_t) (st : node_state) (evs : list (list string)) : nprog node_state :=
+  match evs with
+  | [] => NDone st
+  | ev :: rest => nbind (run_event_prog h st ev) (fun st => run_events_prog h st rest)
   end.
 
-Fixpoint run_events (h : node_t) (st : node_state) (evs : list (list string)) : node_state :=
-  match evs with
-  | [] => st
-  | ev :: rest => run_events h (run_event h st ev) rest
-  end.
+run_event (h : node_t) (st : node_state) (ev : list string) : node_state :=
+  run_shell h (run_event_prog h st ev).
+
+run_events (h : node_t) (st : node_state) (evs : list (list string)) : node_state :=
+  run_shell h (run_events_prog h st evs).
 
 (** After a limit's wait, held model requests go back: one first while the
     backoff is up (only when it comes back without the limit, which resets
@@ -2268,8 +2297,16 @@ Fixpoint io_all (h : node_t) (ops : list node_op) : bool :=
   | op :: rest => io_do h op && io_all h rest
   end.
 
-expire_jobs (h : node_t) (now : float) (jobs : list (string * (float * (float * bool)))) : bool :=
-  io_all h (expire_ops now jobs).
+(** operations in order, stopping at the first not carried out *)
+Fixpoint ops_prog (ops : list node_op) : nprog bool :=
+  match ops with [] => NDone true | op :: rest => ndo op (fun _ => ops_prog rest) end.
+
+jobs_of (ls : list (list string)) : list (string * (float * (float * bool))) :=
+  flat_map (fun l => match l with
+                     | [id, started, limit, stopped] =>
+                         [(id, (node_float_of_digits started, (node_float_of_digits limit, seq stopped "true")))]
+                     | _ => []
+                     end) ls.
 
 (** Deadlines at or before [now], and the rest, each in list order. *)
 Fixpoint timers_due (now : float) (l : list (float * list string))
@@ -2370,46 +2407,75 @@ Inductive inbox_file_action :=
 inbox_file_plan (path : string) (read : option string) : list inbox_file_action :=
   [InboxQueue path (match read with Some text => text | None => "" end), InboxRemove path].
 
-Fixpoint perform_inbox_actions (h : node_t) (actions : list inbox_file_action) : bool :=
+Fixpoint inbox_actions_prog (actions : list inbox_file_action) : nprog bool :=
   match actions with
-  | [] => true
+  | [] => NDone true
   | InboxQueue path content :: rest =>
-      io_push h ["inbox_file", path, content] && perform_inbox_actions h rest
-  | InboxRemove path :: rest => fs_remove path && perform_inbox_actions h rest
+      ndo (IoQueue ["inbox_file", path, content]) (fun _ => inbox_actions_prog rest)
+  | InboxRemove path :: rest => ndo (IoRemoveFile path) (fun _ => inbox_actions_prog rest)
   end.
 
-Fixpoint read_inbox_paths (h : node_t) (paths : list string) : bool :=
+Fixpoint read_inbox_prog (paths : list string) : nprog bool :=
   match paths with
-  | [] => true
+  | [] => NDone true
   | path :: rest =>
-      perform_inbox_actions h (inbox_file_plan path (fs_read_text path)) && read_inbox_paths h rest
+      nbind (nask (IoReadText path)) (fun got =>
+      nand (inbox_actions_prog (inbox_file_plan path (ans_found_one got))) (fun _ => read_inbox_prog rest))
   end.
 
-poll_inbox (h : node_t) : bool :=
-  let (last, directory) := node_inbox_state h in
-  let now := node_turn_now h in
+poll_inbox_prog : nprog bool :=
+  nbind (nask IoInboxState) (fun inbox =>
+  let last := ans_float inbox in
+  let directory := ans_one inbox in
+  nbind (nask IoTurnNow) (fun turn =>
+  let now := ans_float turn in
   if inbox_poll_due now last then
-    node_inbox_stamp h now && read_inbox_paths h (inbox_paths directory (fs_dir_entries directory))
-  else true.
+    ndo (IoInboxStamp (node_float_wire now)) (fun _ =>
+    nbind (nask (IoDirEntries directory)) (fun names =>
+    read_inbox_prog (inbox_paths directory (ans_list names))))
+  else NDone true)).
+
+timers_of (ls : list (list string)) : list (float * list string) :=
+  flat_map (fun l => match l with d :: ev => [(node_float_of_digits d, ev)] | [] => [] end) ls.
+
+timer_wire (t : float * list string) : list string := node_float_wire (fst t) :: snd t.
 
 (** Stop overdue jobs, keep the timers that have not fired, and queue the
     due ones. Dial, resend and the inbox have already run, so their events
     stay ahead of these, and both run before select. *)
-clock_arm (h : node_t) : bool :=
-  let now := node_turn_now h in
-  let (due, later) := timers_due now (node_timers h) in
-  expire_jobs h now (node_jobs h) &&
-  node_set_timers h later &&
-  push_all h (timer_events (sort_timers due)).
+clock_arm_prog : nprog bool :=
+  nbind (nask IoTurnNow) (fun turn =>
+  let now := ans_float turn in
+  nbind (nask IoTimers) (fun timers =>
+  let (due, later) := timers_due now (timers_of (nio_lists (ans_list timers))) in
+  nbind (nask IoJobs) (fun jobs =>
+  nand (ops_prog (expire_ops now (jobs_of (nio_lists (ans_list jobs))))) (fun _ =>
+  ndo (IoSetTimers (map timer_wire later)) (fun _ =>
+  queue_prog (timer_events (sort_timers due))))))).
 
-(** Released requests come first. Then dial, resend and the inbox, then
-    deadlines and due timers, then one select. *)
-node_tick (h : node_t) (st : node_state) : node_state :=
-  let st := run_events h st (release_held h) in
-  if node_poll_prep h && poll_inbox h && clock_arm h then
-    let (st, evs) := job_outputs h st (events h (select_wait (node_turn_now h) (node_queue_empty h) (node_timers h))) in
-    run_events h st evs
-  else st.
+(** A turn of the event loop, as one node program: released requests
+    first; then dial, resend and the inbox, then deadlines and due timers,
+    then one select, and what its events become. The binary runs it with
+    [run_shell]; only the snapshot is still a binding, so it takes the
+    node's handle for that alone. *)
+node_tick_prog (h : node_t) (st : node_state) : nprog node_state :=
+  nbind release_prog (fun released =>
+  nbind (run_events_prog h st released) (fun st =>
+  nbind (nexec IoPollPrep) (fun prepped =>
+  if negb prepped then NDone st else
+  nbind poll_inbox_prog (fun polled =>
+  if negb polled then NDone st else
+  nbind clock_arm_prog (fun armed =>
+  if negb armed then NDone st else
+  nbind (nask IoTurnNow) (fun turn =>
+  nbind (nask IoQueueEmpty) (fun empty =>
+  nbind (nask IoTimers) (fun timers =>
+  let wait := select_wait (ans_float turn) (fst empty) (timers_of (nio_lists (ans_list timers))) in
+  nbind (nask (IoEvents (node_float_wire wait))) (fun got =>
+  nbind (job_outputs_prog st (nio_lists (ans_list got))) (fun r =>
+  let (st, evs) := r in run_events_prog h st evs)))))))))).
+
+node_tick (h : node_t) (st : node_state) : node_state := run_shell h (node_tick_prog h st).
 
 (** Replay has no consensus snapshot effects, just as before: a restored
     snapshot is checked against the fully replayed height before start. *)

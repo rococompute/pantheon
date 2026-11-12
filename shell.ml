@@ -812,18 +812,8 @@ type node_handle = { h_events : float -> string list list;
 let node_handles : (string, node_handle) Hashtbl.t = Hashtbl.create 4
 let node_counter = ref 0
 let lookup_handle id = try Hashtbl.find node_handles id with Not_found -> fail "unknown node handle %s" id
-let events id wait = (lookup_handle id).h_events wait
-let node_poll_prep id = (lookup_handle id).h_poll_prep (); true
-let node_inbox_state id = (lookup_handle id).h_inbox_state ()
-let node_inbox_stamp id now = (lookup_handle id).h_inbox_stamp now; true
 let fs_dir_entries path = if Sys.file_exists path then Array.to_list (Sys.readdir path) else []
 let fs_read_text path = try Some (read_file path) with _ -> None
-let fs_remove path = Sys.remove path; true
-let node_turn_now id = (lookup_handle id).h_turn_now ()
-let node_timers id = (lookup_handle id).h_timers ()
-let node_set_timers id ts = (lookup_handle id).h_set_timers ts; true
-let node_jobs id = (lookup_handle id).h_jobs ()
-let node_queue_empty id = (lookup_handle id).h_queue_empty ()
 let node_job_signal_codes () =
   List.map string_of_int [Sys.sigkill; Sys.sigterm; Sys.sigsegv; Sys.sigabrt; Sys.sigint]
 let node_plain_text s = plain_text s
@@ -864,7 +854,6 @@ let node_float_of_digits s = float_of_string s
 let node_float_text f = Printf.sprintf "%.0f" f
 let node_float_wire f = Printf.sprintf "%.17g" f
 let save_snapshot id snap = (lookup_handle id).h_save (Obj.repr snap); true
-let note_refused id raw = (lookup_handle id).h_refuse raw; true
 let boot_events id = (lookup_handle id).h_boot
 let boot_snapshot id = Option.map Obj.obj (lookup_handle id).h_snapshot
 let replay_count id = (lookup_handle id).h_replayed ()
@@ -992,14 +981,34 @@ let node_io_handle h op =
       h.h_held_store requests (probing = "true"); (true, (0., []))
   | [ "job_complete"; job; result ] -> (true, (0., frame_lists (h.h_job_complete job result)))
   | [ "ci_launch"; req; out; tree; ci ] -> (true, (0., frame_lists (h.h_ci_launch req out tree ci)))
+  | [ "refuse"; raw ] -> h.h_refuse raw; (true, (0., []))
+  | [ "identity" ] -> (true, (0., [ h.h_identity ]))
+  | [ "seen_refused"; raw ] -> (h.h_seen_refused raw, (0., []))
+  | "verify_line" :: from :: sg :: fields -> (h.h_verify_line from sg fields, (0., []))
+  | [ "conns" ] -> (true, (0., frame_lists (List.map (fun (c, t) -> [ c; Printf.sprintf "%.17g" t ]) (h.h_conns ()))))
+  | [ "poll_prep" ] -> h.h_poll_prep (); (true, (0., []))
+  | [ "inbox_state" ] -> let last, dir = h.h_inbox_state () in (true, (last, [ dir ]))
+  | [ "inbox_stamp"; stamp ] -> h.h_inbox_stamp (float_of_string stamp); (true, (0., []))
+  | [ "turn_now" ] -> (true, (h.h_turn_now (), []))
+  | [ "timers" ] ->
+      (true, (0., frame_lists (List.map (fun (d, ev) -> Printf.sprintf "%.17g" d :: ev) (h.h_timers ()))))
+  | "set_timers" :: parts ->
+      h.h_set_timers (List.filter_map (function d :: ev -> Some (float_of_string d, ev) | [] -> None) (unframe_lists parts));
+      (true, (0., []))
+  | [ "jobs" ] ->
+      (true, (0., frame_lists (List.map (fun (id, (started, (limit, stopped))) ->
+         [ id; Printf.sprintf "%.17g" started; Printf.sprintf "%.17g" limit; string_of_bool stopped ]) (h.h_jobs ()))))
+  | [ "queue_empty" ] -> (h.h_queue_empty (), (0., []))
+  | [ "events"; wait ] -> (true, (0., frame_lists (h.h_events (float_of_string wait))))
   | _ -> fail "unknown node operation %s" (String.concat " " op)
 (* Path-only operations need no node: a test runs them with no handle. *)
 let node_io id op =
   match op with
   | [ "read_text"; path ] -> (match fs_read_text path with Some c -> (true, (0., [ c ])) | None -> (false, (0., [])))
   | [ "discard_file"; path ] -> (try Sys.remove path with _ -> ()); (true, (0., []))
+  | [ "dir_entries"; path ] -> (true, (0., fs_dir_entries path))
+  | [ "remove_file"; path ] -> Sys.remove path; (true, (0., []))
   | _ -> node_io_handle (lookup_handle id) op
-let node_conns id = (lookup_handle id).h_conns ()
 (* Reads/writes and authenticated socket sends; catch-up policy is Soma.
    The clock is the "clock" arm of node_io. *)
 let node_limit_info id = (lookup_handle id).h_limit_info ()
@@ -1014,9 +1023,6 @@ let node_fail msg : bool = fail "%s" msg
    from node_json_tokens' tokens (node.soma's node_line_parts), and decides
    whether to verify and which event the fields carry. *)
 let node_line_item_cap () = string_of_int max_int
-let node_identity id = (lookup_handle id).h_identity
-let node_seen_refused id raw = (lookup_handle id).h_seen_refused raw
-let node_verify_line id from sg fields = (lookup_handle id).h_verify_line from sg fields
 (* a decided merge's I/O: node.soma's perform_merge decides *)
 let rec forever f s = forever f (f s)
 

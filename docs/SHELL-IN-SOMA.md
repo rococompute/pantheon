@@ -186,10 +186,17 @@ before the next one's (`model_outputs_prog`; the extracted `flat_map` this
 replaced ran them last first), and giving held requests back
 (`release_prog`; `release_reads_first`). Lists of events and of held
 requests cross the wire framed (`nio_frame_lists`, read back by
-`nio_lists`: `nio_lists_reads_frames`). The event loop's own reads (the
-snapshot, timers, jobs, the inbox, a peer line's signature) are still
-bindings: the next ones to turn into operations, each one less thing a
-unikernel can't run.
+`nio_lists`: `nio_lists_reads_frames`). A turn of the event loop is one
+program too (`node_tick_prog`, run by `run_shell` in `node_tick`): the
+released requests, dialing and resending, the inbox's poll, the overdue
+jobs and due timers, one select (`IoEvents`) and what its events become
+(`run_event_prog`: a peer line's identity, refusal and signature checks,
+connection admission, CI results, the inbox's transactions, each step's
+effects carried by `carry_all_prog`). The consensus snapshot is the one
+effect still a binding (a Soma value, not text: Soma's "storage" item), so
+the tick takes the node's handle for that alone. Startup (replay, the
+signed log, the snapshot read back) is the last part still run over
+bindings.
 The resend write uses tagged `field`/value pairs followed by `alternate`
 and the untouched second list. Values may themselves contain either tag.
 Resend reads and the native table remain unchanged.
@@ -207,7 +214,8 @@ it with RSA), starting a CI check (`w_check`), the epoch's draw
 exclusions (`w_exclusions`), the checkouts' heads (`w_heads`), the model
 backend (`w_backend`), a time of day (`w_local_time`) and a merge's git
 work (`w_git`), a model call's and its outcome's (`w_llm`) and CI's
-start (`w_ci`). Decided blocks and signed votes are kept in
+start (`w_ci`), this node's name and a peer line's signature
+(`w_identity`, `w_verify`) and a time as text (`w_float_text`). Decided blocks and signed votes are kept in
 memory beside their files, as the binary keeps them (`nio_store_op`).
 Each operation:
 
@@ -238,12 +246,17 @@ Each operation:
 | `IoLimitSet`, `IoLimitClear`, `IoReleaseState`, `IoHeldRequests`, `IoHeldStore`, `IoJobComplete` | the model limit's state and backoff; the held requests; a finished job resumed with its outcome (its callback's events) | `w_llm` |
 | `IoCiLaunch id out tree ci` | CI started for a tree (events an immediate failure queued) | `w_ci`, a CI service |
 | `IoReadText path`, `IoDiscardFile path` | a file read; removed if it's there (no node needed) | `read_file`; nothing yet (Sandbox's named files can't be removed) |
+| `IoRefuse raw`, `IoSeenRefused raw` | the refused-transaction set | the stores' refused list |
+| `IoIdentity`, `IoVerifyLine from sig fields` | this node's name; RSA verification of a peer line | `w_identity`; `w_verify` (Soma's "SHA-256 and RSA") |
+| `IoConns`, `IoPollPrep` | live connections and their last reads; sample the turn clock, dial and resend | the peer links (no activity times); nothing (links are listen handlers') |
+| `IoInboxState`, `IoInboxStamp`, `IoDirEntries`, `IoRemoveFile` | the inbox's last poll and directory; note a poll; list a directory; remove a file | an empty inbox (Sandbox's named files can't be listed or removed) |
+| `IoTurnNow`, `IoTimers`, `IoSetTimers`, `IoJobs`, `IoQueueEmpty` | the turn's clock, the timer list read and replaced, the running jobs, the queue | the monotonic clock; the tables' timers (as text by `w_float_text`); no jobs; the tables' queue |
+| `IoEvents wait` | one select, waiting at most `wait` seconds | the queue, drained |
 | `IoConnAdmit`, `IoConnClose`, `IoJobFlood`, `IoJobExpire` | admit, refuse or close a socket; kill a job's process | nothing to do: a unikernel's links are its listen handlers', and it runs no processes |
 
 Not yet operations, still bindings of their own (the next parts of U-1):
-the event loop's reads (timers, jobs, the queue, the inbox, the
-connections), a peer line's checks (identity, refused lines), the boot
-(replay, the signed log), the snapshot (Soma's "storage" still), the listener and
+startup (replay, the signed log, the snapshot read back), saving the
+snapshot (Soma's "storage" still), the listener and
 accepted connections (links), SHA-256 and RSA (Soma's item), and git,
 model and CI jobs (Soma's "services": `fetch` with a timeout and HTTP POST).
 
