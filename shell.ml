@@ -763,7 +763,7 @@ type node_handle = { h_events : unit -> string list list;
                      h_job_flood : string -> unit;
                      h_llm_budget : unit -> string * string;
                      h_llm_hold : string -> string -> string -> string list -> unit;
-                     h_llm_start : string -> string -> string -> string -> string list -> string list -> string list -> string list -> string option;
+                     h_llm_start : string -> string -> string -> string -> string list -> string list -> string list -> string list -> string list option;
                      h_tool_checkout : string -> (string * string) * bool;
                      h_limit_set : float -> string -> float -> unit;
                      h_limit_clear : float -> unit;
@@ -1158,16 +1158,15 @@ let node_open packed home flags =
      couldn't start *)
   let call_model id kind prompt0 prompt ctx clean launch env =
     let starting = ref true and immediate = ref None in
-    let reply text =
-      if !starting then immediate := Some text
-      else push ("llm_output" :: id :: kind :: prompt0 :: text :: ctx)
-    in
+    let deliver ev = if !starting then immediate := Some ev else push ev in
+    let reply text = deliver ("llm_output" :: id :: kind :: prompt0 :: text :: ctx) in
     (match launch with
      | prog :: limit_s :: "codex" :: args ->
          let out = Filename.temp_file "pantheon-codex" ".txt" in
          start_job ~limit:(float_of_string limit_s) prog
            (List.map (fun a -> if a = "@OUT@" then out else a) args) ~stdin_text:prompt ~env:(Array.of_list env)
-           ~on_done:(fun t -> if String.length t > 0 && t.[0] = '!' then reply t else reply (try read_file out with _ -> "!codex wrote no reply"))
+           ~on_done:(fun t -> deliver ("codex_output" :: id :: kind :: prompt0 :: t ::
+             (try "1" :: read_file out :: ctx with _ -> "0" :: ctx)))
            ~clean:(fun () -> try Sys.remove out with _ -> ())
      (* Soma's grok_request made the header text and the body (the prompt) *)
      | prog :: limit_s :: "grok" :: hdr_text :: args ->
@@ -1175,15 +1174,13 @@ let node_open packed home flags =
          write_file hdr hdr_text;
          start_job ~limit:(float_of_string limit_s) prog
            (List.map (fun a -> if a = "@HDR@" then "@" ^ hdr else a) args) ~stdin_text:prompt ~env:(Array.of_list env)
-           ~on_done:(fun t ->
-             try reply (Yojson.Safe.Util.(to_string (member "content" (member "message" (List.hd (to_list (member "choices" (Yojson.Safe.from_string t))))))))
-             with _ -> push [ "llm_error"; id; "grok: " ^ String.sub t 0 (min 300 (String.length t)) ])
+           ~on_done:reply (* Soma's model_reply_events takes the content out *)
            ~clean:(fun () -> try Sys.remove hdr with _ -> ())
      (* cmd: too, its limit, environment and paths to remove chosen by Soma's tool_job_of *)
      | prog :: limit_s :: _ :: args ->
          start_job ~limit:(float_of_string limit_s) prog args ~stdin_text:prompt ~env:(Array.of_list env) ~on_done:reply
            ~clean:(fun () -> List.iter remove_tree_later clean)
-     | _ -> push [ "llm_error"; id; "unknown backend " ^ !backend ]);
+     | _ -> ());
     starting := false;
     !immediate
   in
