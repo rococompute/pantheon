@@ -843,13 +843,10 @@ let node_self_exe () = self_exe
 let node_json_string s = Yojson.Safe.to_string (`String s)
 let node_env_entries () = Array.to_list (Unix.environment ())
 (* a model's output: node.soma's reply_fields decides what it becomes.
-   These bindings only report the cap, where the braces are, and yojson's
-   value as tokens. The slice, the guards and the key paths are Soma. *)
+   These bindings only report the cap and yojson's value as tokens. Where
+   the braces are (reply_open_at, reply_close_at), the slice, the guards
+   and the key paths are Soma. *)
 let node_job_output_limit () = string_of_int max_job_output
-let node_reply_open text =
-  match String.index_opt text '{' with Some i -> Some (string_of_int i) | None -> None
-let node_reply_close text =
-  match String.rindex_opt text '}' with Some i -> Some (string_of_int i) | None -> None
 (* "A" count key value...; "L" count value...; "S" text; "B" true/false;
    "U"; "I" digits (an int or an intlit); "F" printed with %.0f. *)
 let json_tokens j =

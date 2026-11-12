@@ -722,6 +722,17 @@ Example json_in_reply_slice_bounds_and_depth :
   json_in_reply "{{{{x}}}}" "100" (Some "0") (Some "8") = Some "{{{{x}}}}".
 Proof. repeat split; reflexivity. Qed.
 
+(** The braces are found in Soma: the first "{" and the last "}", by
+    byte offset, as OCaml's index_opt and rindex_opt found them. *)
+Example reply_brace_offsets :
+  reply_open_at " pre {""a"":1} {""b"":2} post" = Some "5" /\
+  reply_close_at " pre {""a"":1} {""b"":2} post" = Some "19" /\
+  reply_open_at "none" = None /\ reply_close_at "none" = None /\
+  reply_open_at "" = None /\ reply_close_at "" = None /\
+  reply_open_at "}{" = Some "1" /\ reply_close_at "}{" = Some "0" /\
+  reply_close_at "{}" = Some "1".
+Proof. repeat split; reflexivity. Qed.
+
 (** Flattened tokens: nested objects, list indices, scalars, empty and
     duplicate keys, in the old left-to-right order. *)
 Example flatten_reply_shapes :

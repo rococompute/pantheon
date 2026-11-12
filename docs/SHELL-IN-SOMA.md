@@ -230,6 +230,16 @@ separate work; this status does not mark `.plan`.
 
 ## Done so far
 
+- Step 5, a reply's braces: where a model reply's JSON object starts and
+  ends (the first `{` and the last `}`, by byte offset) is found in Soma by
+  `reply_open_at` and `reply_close_at`, one tail-recursive `char_at` scan
+  each way with no substring per step, still only after the output-cap
+  check. The `node_reply_open` and `node_reply_close` bindings are gone;
+  the shell only reports the cap and yojson's tokens. `node.proof` checks
+  the offsets, and `test/reply-braces.sh` checks them on fixed inputs
+  (none, only one brace, a close before the open, several objects, a
+  200 KB reply) and the fields they lead to.
+
 - Step 5, signed.log at startup: the shell only reads the file's
   nonempty lines (`node_signed_lines`); Soma's pure `signed_log_entry`
   makes each a vote (slot, value id, fields through the JSON token
