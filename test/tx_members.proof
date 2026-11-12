@@ -1,0 +1,10 @@
+Example transaction_members_fixed_tokens :
+  tx_parts_of ["A", "4", "agent", "S", "p", "nonce", "S", "1", "fields", "L", "1", "S", "x", "sig", "S", "s"] =
+    Some ("p", ("1", (["x"], "s"))) /\
+  tx_parts_of ["A", "0"] = None /\
+  tx_parts_of ["A", "5", "agent", "U", "agent", "S", "p", "nonce", "S", "1", "fields", "L", "0", "sig", "S", "s"] = None.
+Proof. repeat split; reflexivity. Qed.
+
+Theorem invalid_nonce_never_verifies : forall a n fs sg verify,
+  nonce_ok n = false -> tx_decision (Some (a, (n, (fs, sg)))) verify = [].
+Proof. intros a n fs sg verify H. unfold tx_decision. rewrite H. reflexivity. Qed.

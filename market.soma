@@ -35,7 +35,7 @@ From Stdlib Require Import Ascii.
     cap, not bounded JSON (depth 4), not a transaction's JSON, its nonce
     isn't 1 to 17 digits, or its signature doesn't verify against the
     genesis key of its agent. The same on every node, given one genesis.
-    The shell only reads the JSON's members and checks the signature. *)
+    The shell only tokenizes JSON and checks the signature. *)
 Fixpoint digits_only (fuel : nat) (s : string) (i : nat) : bool :=
   match fuel with
   | 0 => true
@@ -63,6 +63,59 @@ tx_decision (parts : option (string * (string * (list string * string))))
       let (fields, sg) := more in
       if nonce_ok nonce then (if verified agent nonce fields sg then agent :: nonce :: fields else []) else []
   end.
+
+(** Member lookup spends one shared token budget, including skipped nested
+    values. Four lookups are linear in the token count; no tail is recounted
+    before a skip. The first matching key wins, including a wrong kind. *)
+Fixpoint tx_member_go (fuel left : nat) (pending : list bool) (key : string)
+    (toks : list string) : option (list string) :=
+  match fuel with
+  | 0 => None
+  | Succ f =>
+      match pending, toks with
+      | true :: p, _ :: rest => tx_member_go f left p key rest
+      | false :: p, "A" :: ns :: rest =>
+          tx_member_go f left (flat_map (fun _ => [true, false]) (List.seq 0 (num ns)) ++ p) key rest
+      | false :: p, "L" :: ns :: rest =>
+          tx_member_go f left (map (fun _ => false) (List.seq 0 (num ns)) ++ p) key rest
+      | false :: p, "U" :: rest => tx_member_go f left p key rest
+      | false :: p, _ :: _ :: rest => tx_member_go f left p key rest
+      | [], k :: rest =>
+          match left with
+          | 0 => None
+          | Succ l => if seq k key then Some rest else tx_member_go f l [false] key rest
+          end
+      | _, _ => None
+      end
+  end.
+
+tx_member (key : string) (toks : list string) : option (list string) :=
+  match toks with
+  | "A" :: ns :: rest => tx_member_go (Succ (length rest)) (num ns) [] key rest
+  | _ => None
+  end.
+
+Fixpoint tx_strings (left : nat) (toks acc : list string) : option (list string) :=
+  match left, toks with
+  | 0, _ => Some (rev_onto acc [])
+  | Succ n, "S" :: v :: rest => tx_strings n rest (v :: acc)
+  | _, _ => None
+  end.
+
+tx_parts_of (toks : list string) : option (string * (string * (list string * string))) :=
+  match tx_member "agent" toks, tx_member "nonce" toks,
+        tx_member "fields" toks, tx_member "sig" toks with
+  | Some ("S" :: a :: _), Some ("S" :: n :: _),
+    Some ("L" :: count :: rest), Some ("S" :: sg :: _) =>
+      match tx_strings (num count) rest [] with
+      | Some fields => Some (a, (n, (fields, sg)))
+      | None => None
+      end
+  | _, _, _, _ => None
+  end.
+
+tx_parts (raw : string) : option (string * (string * (list string * string))) :=
+  match node_json_tokens raw with Some toks => tx_parts_of toks | None => None end.
 
 decode_tx (raw : string) : list string :=
   if tx_shape_ok (tx_byte_cap tt) (tx_item_cap tt) raw then tx_decision (tx_parts raw) tx_verify else [].
