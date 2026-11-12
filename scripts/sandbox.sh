@@ -57,6 +57,26 @@ vm() { printf 'pantheon-%s' "$1"; }
 # a governed repository's checkout on this Mac
 repo_src() { case $1 in pantheon) echo "$here" ;; soma) echo "$SOMA_CHECKOUT" ;; esac; }
 governs() { case " $REPOS " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
+# Pantheon's CI command, from a tree: deploy/ci-pantheon (in a tree from
+# before that file, the default its scripts/sandbox.sh wrote out), unless
+# PANTHEON_CI says otherwise
+ci_tests() {
+  if [ -f "$1/deploy/ci-pantheon" ]; then cat "$1/deploy/ci-pantheon"
+  else sed -n 's/.*"\${PANTHEON_CI:-\(.*\)}")$/\1/p' "$1/scripts/sandbox.sh" | head -n 1; fi
+}
+# The tree a VM's node was built from (~/pantheon/.commit, written by update),
+# extracted under $trees once per commit. CI judges bids against it: its
+# tests, assumptions, policy and test list, not this checkout's, which may be
+# ahead of the market's repository (a test changed here but not there fails
+# every Pantheon bid with "changed a test already there").
+built_tree() {
+  c=$(in_vm "$1" sudo cat /home/pantheon/pantheon/.commit 2>/dev/null || true)
+  [ -n "$c" ] || { echo "sandbox: $1: its node records no commit it was built from: scripts/sandbox.sh update" >&2; return 1; }
+  git -C "$here" cat-file -e "$c^{commit}" 2>/dev/null \
+    || { echo "sandbox: $1: its node was built from $c, which isn't in $here: git fetch it (or rebuild with scripts/sandbox.sh update)" >&2; return 1; }
+  [ -d "$trees/$c" ] || { mkdir -p "$trees/$c" && git -C "$here" archive --format=tar "$c" | tar -x -f - -C "$trees/$c"; } || return 1
+  echo "$trees/$c"
+}
 exists() { limactl list -q 2>/dev/null | grep -qx "$1"; }
 running() { [ "$(limactl list --format '{{.Status}}' "$1" 2>/dev/null)" = Running ]; }
 in_vm() { v=$1; shift; limactl shell --workdir / "$v" "$@"; }
@@ -365,6 +385,7 @@ cmd_start() {
     case $1 in --) shift; flags="$*"; break ;; *=*) overrides="$overrides $1" ;; *) die "start takes AGENT=BACKEND, then -- and node flags" ;; esac
     shift
   done
+  trees=$(mktemp -d) last_tree=""; trap 'rm -rf "$trees"' EXIT
   for a in $AGENTS; do
     v=$(vm "$a"); running "$v" || die "$v isn't running"
     b=$(default_backend "$a")
@@ -377,7 +398,10 @@ cmd_start() {
     printf '%s\n' "$CI_MEMORY" | put ci-memory
     # Pantheon's build within a cloud agent's default command time (2 minutes):
     # a change that makes it slower fails CI, as a broken one does
-    pantheon_ci=$(python3 "$here/deploy/ci-command.py" "$here" "${PANTHEON_CI:-timeout 120 soma build main.soma && timeout 120 test/edits.sh && sh test/ci-policy.sh && timeout 120 bash test/cli.sh && timeout 120 bash test/genesis.sh && timeout 120 bash test/double-bid.sh && timeout 120 bash test/parallel-tasks.sh && timeout 120 bash test/scopes.sh && timeout 120 bash test/plan-marks.sh && timeout 120 bash test/n-agents.sh && timeout 120 bash test/prompt-assembly.sh && timeout 120 sh test/soma-misc-runner.sh && timeout 120 sh test/host-quoting.sh}")
+    tree=$(built_tree "$v") || exit 1
+    [ "$tree" = "$last_tree" ] || say "$a: CI judges bids by the node's build, $(git -C "$here" log -1 --format='%h %s' "$(basename "$tree")")"
+    last_tree=$tree
+    pantheon_ci=$(python3 "$tree/deploy/ci-command.py" "$tree" "${PANTHEON_CI:-$(ci_tests "$tree")}")
     printf '%s\n' "$pantheon_ci" | put ci/pantheon
     # Soma's CI is a full build: on SOMA_CI_AGENTS only. The others have Soma
     # outside their scope (their parts' exclude, above), so the market

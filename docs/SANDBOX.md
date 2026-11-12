@@ -64,7 +64,13 @@ to see the change. The goal lines for Soma say so.
 
 Everything after `--` is more node flags. `GOAL_FILE` picks the goal lines
 (default `examples/dogfood/goal.txt`), and `PANTHEON_CI` and `SOMA_CI` each
-repository's CI command.
+repository's CI command. Pantheon's comes from the tree each VM's node was
+built from (`~/pantheon/.commit`, written by `update`), not from the checkout
+you run `start` in: its `deploy/ci-pantheon` (the test list, which
+`scripts/host.sh` reads too), its `deploy/ci-command.py`, and the tests and
+assumptions it pins. A checkout ahead of the market's repository, with a test
+changed on master, would otherwise fail every Pantheon bid with "changed a
+test already there" (`test/ci-baseline.sh`).
 
 What CI runs on a bid's merged tree, by default:
 

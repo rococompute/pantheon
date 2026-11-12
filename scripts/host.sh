@@ -71,7 +71,7 @@ LISTEN=${LISTEN:-127.0.0.1} BASE_PORT=${BASE_PORT:-26711}
 BIN=$here/main.exe SOMA=${SOMA_DIR:-$P/soma}
 CI_MEMORY=${CI_MEMORY:-1536m}
 EXCLUDE=${EXCLUDE:-}
-CI_CMD=$(python3 "$here/deploy/ci-command.py" "$here" "${PANTHEON_CI:-timeout 120 soma build main.soma && timeout 120 test/edits.sh && sh test/ci-policy.sh && timeout 120 bash test/cli.sh && timeout 120 bash test/genesis.sh && timeout 120 bash test/double-bid.sh && timeout 120 bash test/parallel-tasks.sh && timeout 120 bash test/scopes.sh && timeout 120 bash test/plan-marks.sh && timeout 120 bash test/n-agents.sh && timeout 120 bash test/prompt-assembly.sh && timeout 120 sh test/soma-misc-runner.sh && timeout 120 sh test/host-quoting.sh}")
+CI_CMD=$(python3 "$here/deploy/ci-command.py" "$here" "${PANTHEON_CI:-$(cat "$here/deploy/ci-pantheon")}")
 PORT=${INBOX_PORT:-8787}
 # a Lima VM (plain, user-mode network) reaches the host's localhost here
 VM_HOST=192.168.5.2
