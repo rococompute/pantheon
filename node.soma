@@ -1533,6 +1533,19 @@ job_feed (chunks : list string) (chunk : string) (limit keep : nat) : list strin
     ([tail], true)
   else (chunks ++ [chunk], false).
 
+(** One peer read's complete parsing plan. Complete lines are queued even
+    when the trailing partial exceeds the cap, before closing the socket. *)
+Record peer_feed_result := {
+  peer_lines : list string;
+  peer_kept : list string;
+  peer_over : bool
+}.
+
+peer_feed (chunks : list string) (chunk limit : string) : peer_feed_result :=
+  let (lines, kept) := feed_chunks chunks chunk in
+  {| peer_lines := lines; peer_kept := kept;
+     peer_over := buffer_over (chunks_len kept) (num limit) |}.
+
 Fixpoint queue_lines (h : node_t) (lines : list string) : bool :=
   match lines with
   | [] => true
@@ -1707,9 +1720,9 @@ run_event (h : node_t) (st : node_state) (ev : list string) : node_state :=
       | None => if io_log h (append "ignoring malformed " path) then st else with_live st (live st)
       end
   | ["peer_bytes", cid, chunk] =>
-      let (lines, kept) := feed_chunks (node_conn_buffer h cid) chunk in
-      if node_conn_store_buffer h cid kept && queue_lines h lines then
-        if buffer_over (chunks_len kept) (num (node_line_limit h)) then
+      let parsed := peer_feed (node_conn_buffer h cid) chunk (node_line_limit h) in
+      if node_conn_store_buffer h cid (peer_kept parsed) && queue_lines h (peer_lines parsed) then
+        if peer_over parsed then
           if node_conn_close h cid then st else with_live st (live st)
         else st
       else st
