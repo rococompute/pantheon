@@ -56,6 +56,7 @@
 #   EXCLUDE       repositories outside this host's agents' scope, e.g. "soma" on a host with no room for
 #                 its build: keygen puts them in each part's "exclude", so genesis has the market leave
 #                 those repositories' tasks to other agents (no bids, picks or checks here; default: none)
+#   MAX_LLM_CALLS each node's model calls before it stops calling (default 200, as on the laptop)
 #   CI_MEMORY     a check's memory (default 3g where Soma is in scope, its build's peak is 2.3 GB; else 1536m)
 # or from PANTHEON_HOST/host.env (lines like CODEX_ENV=soma), read first.
 set -eu
@@ -75,6 +76,10 @@ BIN=$here/main.exe SOMA=${SOMA_DIR:-$P/soma}
 EXCLUDE=${EXCLUDE:-}
 # a check's memory, no swap: Soma's build peaks at 2.3 GB, Pantheon's CI well under 1.5
 case " $EXCLUDE " in *" soma "*) CI_MEMORY=${CI_MEMORY:-1536m} ;; *) CI_MEMORY=${CI_MEMORY:-3g} ;; esac
+# each node's model calls before it stops calling (the node's --max-llm-calls),
+# as scripts/sandbox.sh gives the laptop's nodes
+MAX_LLM_CALLS=${MAX_LLM_CALLS:-200}
+case $MAX_LLM_CALLS in ''|*[!0-9]*) echo "host: MAX_LLM_CALLS is $MAX_LLM_CALLS: a whole number of model calls" >&2; exit 1 ;; esac
 CI_CMD=$(python3 "$here/deploy/ci-command.py" "$here" "${PANTHEON_CI:-$(cat "$here/deploy/ci-pantheon")}")
 PORT=${INBOX_PORT:-8787}
 # a Lima VM (plain, user-mode network) reaches the host's localhost here
@@ -459,7 +464,7 @@ UNIT
   fi
   soma_flag=$(soma_ci_flag) || exit 1
   for a in $AGENTS; do
-    exec_line="exec $(q "$BIN") node $(q "/var/lib/pantheon/net/$a") --backend $(q "cmd:/var/lib/pantheon/net/$a/backend.sh") --goal /var/lib/pantheon/goal.txt --listen $(q "$LISTEN") --ci-repo pantheon $(q "$CI_CMD") $soma_flag --ci-sandbox $(q "$here/deploy/host/ci-sandbox") --ci-memory $(q "$CI_MEMORY")"
+    exec_line="exec $(q "$BIN") node $(q "/var/lib/pantheon/net/$a") --backend $(q "cmd:/var/lib/pantheon/net/$a/backend.sh") --goal /var/lib/pantheon/goal.txt --listen $(q "$LISTEN") --max-llm-calls $(q "$MAX_LLM_CALLS") --ci-repo pantheon $(q "$CI_CMD") $soma_flag --ci-sandbox $(q "$here/deploy/host/ci-sandbox") --ci-memory $(q "$CI_MEMORY")"
     printf 'printf "%%s\\n" %s %s > "$stage/run-%s.sh"\n' "$(q '#!/bin/sh')" "$(q "$exec_line")" "$a"
     if in_vm_agents "$a"; then url="INBOX_URL=$(q "http://$VM_HOST:$PORT") "; else url=""; fi
     printf 'printf "%%s\\n" %s %s > "$stage/backend-%s.sh"\n' "$(q '#!/bin/sh')" "$(q "PANTHEON_INBOX=$(q "/var/lib/pantheon-inbox/$a") PANTHEON_INBOX_GROUP=$(q "inbox-$a") ${url}exec $(q "$here/scripts/bidder-inbox.sh")")" "$a"
@@ -740,7 +745,7 @@ PANTHEON_INBOX=$P/inbox/$a ${url}exec $here/scripts/bidder-inbox.sh
 B
     cat > "$NET/$a/run.sh" <<R
 #!/bin/sh
-exec $BIN node $NET/$a --backend cmd:$NET/$a/backend.sh --goal $P/goal.txt --listen $LISTEN \\
+exec $BIN node $NET/$a --backend cmd:$NET/$a/backend.sh --goal $P/goal.txt --listen $LISTEN --max-llm-calls $MAX_LLM_CALLS \\
   --ci-repo pantheon $(q "$CI_CMD") $soma_flag --ci-sandbox $here/deploy/host/ci-sandbox --ci-memory $CI_MEMORY
 R
     chmod 755 "$NET/$a/backend.sh" "$NET/$a/run.sh"
