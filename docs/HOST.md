@@ -93,7 +93,13 @@ already write `/var/lib/pantheon-inbox`. It also refuses, before any
 write, when a diplomat can't run what its session uses: `pantheon-inbox`,
 `ci-sandbox`, and pantheon's Soma, opam root and switch, checked as that
 user. And it refuses when a diplomat can read any node's `key.json`,
-`inbox.json` or pantheon's `.ssh`. Then each diplomat writes its own
+`inbox.json` or pantheon's `.ssh`. It also checks, as every session user,
+that no other configured agent's inbox or private home is readable or
+traversable, and that pantheon's `.ssh` cannot be traversed. Read and search
+permissions are checked separately: search access alone can expose a known
+private filename. These checks run before any write, including when sessions
+are provisioned again. A failure reports the account and private path to fix
+with `users` and a permission review. Then each diplomat writes its own
 files, which root pipes to it over runuser's stdin, so root writes
 nothing in a diplomat's home:
 
