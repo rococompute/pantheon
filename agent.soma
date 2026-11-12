@@ -353,6 +353,7 @@ lead (a m : obj) : obj * list (list string) :=
                        | Some b => seq b "0" || existsb (fun x => seq (show (bidn x)) b) (merged_on t)
                        | None => false
                        end in
+  let mark_merged_on t := existsb (fun b => seq (note b) mark_note && is_merged b) (for_task t) in
   (* a task judged done gets its plan line marked first, when it names one:
      the leader's mark, a bid of its own (market.soma). Lead runs only with
      no merge pending, so a mark already made has merged or failed. *)
@@ -364,8 +365,11 @@ lead (a m : obj) : obj * list (list string) :=
              let id := show (tid t) in
              let line := get_or "" id (plan_lines a) in
              let marked := existsb (fun b => seq (note b) mark_note) (for_task t) in
-             let mark_merged := existsb (fun b => seq (note b) mark_note && is_merged b) (for_task t) in
-             if stuck t || (judged_done t && (seq line "" || marked)) then
+             let mark_merged := mark_merged_on t in
+             (* a merged mark is a leader's judgment the attestors approved:
+                whoever leads now closes the task, not only the leader that
+                made it, whose own judgment (done_marks) no other node has *)
+             if stuck t || mark_merged || (judged_done t && (seq line "" || marked)) then
                let a := enqueue a ["close", id] in
                if mark_merged || negb (ask_once a (append "unmarked." id)) then (a, o)
                else (note_asked a (append "unmarked." id),
@@ -375,6 +379,8 @@ lead (a m : obj) : obj * list (list string) :=
              else (a, o)) (mine (open_tasks m)) (a, []) in
   (* review bids once the chosen workers have bid or the window has passed *)
   let st := fold_left (fun (st : obj * list (list string)) (t : task) =>
+      (* a task whose mark merged closes above: no pick for it *)
+      if mark_merged_on t then st else
       let cands := filter (fun b => (btask b =? tid t) && is_pending (bst b) && negb (seq (bidder b) (me a))) (bids m) in
       (* no bids waiting on a task that has merges: is it done? asked once a version *)
       if (length cands =? 0) then
