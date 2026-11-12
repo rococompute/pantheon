@@ -206,8 +206,9 @@ view or arbitrary transaction may populate the agreed heartbeat history.
 
 M-3 portable certificate validation is provided by
 `consensus.validate_commit_evidence`. Each witness carries a signer, signature
-and the exact signed peer-message fields. The verifier callback has
-`node_verify_line`'s interface (bound to the chain ID and genesis keys). Votes
+and the exact signed peer-message fields. The verifier callback checks a
+peer line's signature (nodeio's `nio_line_verify` with the signer's genesis
+key and the chain ID, Soma's RSA). Votes
 must be precommits for the actual previous block's hash, height and one round,
 from distinct members of **that previous height's roster**. A certificate needs
 that roster's quorum, cannot exceed its size, and yields canonical roster-order

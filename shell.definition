@@ -9,11 +9,13 @@ OCaml Library "yojson".
     shell.ml keeps its own, Cryptokit's, for what it hashes itself (the
     genesis, the leader draw's chains), which are the same function. *)
 
-(** A signed transaction's I/O; market.soma's decode_tx decides.
-    Whether the signature verifies against that agent's genesis key
-    (an unknown agent's doesn't); the transaction byte cap and the item cap
-    of its bounded scan, as decimal strings. *)
-tx_verify : string -> string -> list string -> string -> bool.
+(** A signed transaction's I/O; market.soma's decode_tx decides, and
+    checks the signature itself (nodeio's nio_tx_verify, Soma's RSA).
+    The agent's genesis key in nio_key_of_wire's form (the chain id, the
+    key's size in bytes, n and e as hex), none for an unknown agent; the
+    transaction byte cap and the item cap of its bounded scan, as decimal
+    strings. *)
+tx_key : string -> list string.
 tx_byte_cap : unit -> string.
 tx_item_cap : unit -> string.
 

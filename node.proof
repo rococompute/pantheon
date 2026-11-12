@@ -875,7 +875,7 @@ Proof.
     repo version tree bid task bidder spec | | id kind prompt ctx |
     id kind raw prompt ctx clean launch env | repo | | | | | repo | repo path |
     until reason backoff | backoff | | | probing requests | job result | id out tree ci | path | path |
-    raw | | raw | from sig fields | | | | stamp | path | path | | | timers | | | wait |
+    raw | | raw | who | | | | stamp | path | path | | | timers | | | wait |
     | | height txs | | slot vid fields | message ];
     try reflexivity.
   - change (match resend_parts (resend_fields fields ++ ("alternate" :: alternate)) with

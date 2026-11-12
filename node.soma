@@ -2137,8 +2137,8 @@ run_event_prog (h : node_t) (st : node_state) (ev : list string) : nprog node_st
       nbind (llm_call_prog id kind prompt ctx) (fun ok => NDone (kept st ok))
   | "peer_line" :: self :: refused :: from :: sig :: fields =>
       if line_dropped self refused then NDone st
-      else nbind (nexec (IoVerifyLine from sig fields)) (fun ok =>
-           if ok then step_prog h st (line_event from fields) else NDone st)
+      else nbind (nask (IoPeerKey from)) (fun key =>
+           if nio_line_verify (ans_list key) from sig fields then step_prog h st (line_event from fields) else NDone st)
   | "conn_offer" :: oid :: host :: hosts =>
       let d := conn_offer_decision host hosts in
       nbind (match d with

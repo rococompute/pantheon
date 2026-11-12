@@ -139,7 +139,7 @@ Inductive node_op :=
 | IoRefuse (raw : string)
 | IoIdentity
 | IoSeenRefused (raw : string)
-| IoVerifyLine (from sig : string) (fields : list string)
+| IoPeerKey (who : string)
 | IoConns
 | IoPollPrep
 | IoInboxState
@@ -270,7 +270,7 @@ io_wire (op : node_op) : list string :=
   | IoRefuse raw => ["refuse", raw]
   | IoIdentity => ["identity"]
   | IoSeenRefused raw => ["seen_refused", raw]
-  | IoVerifyLine from sig fields => "verify_line" :: from :: sig :: fields
+  | IoPeerKey who => ["peer_key", who]
   | IoConns => ["conns"]
   | IoPollPrep => ["poll_prep"]
   | IoInboxState => ["inbox_state"]
@@ -377,7 +377,7 @@ io_of_wire (w : list string) : option node_op :=
   | ["refuse", raw] => Some (IoRefuse raw)
   | ["identity"] => Some IoIdentity
   | ["seen_refused", raw] => Some (IoSeenRefused raw)
-  | "verify_line" :: from :: sig :: fields => Some (IoVerifyLine from sig fields)
+  | ["peer_key", who] => Some (IoPeerKey who)
   | ["conns"] => Some IoConns
   | ["poll_prep"] => Some IoPollPrep
   | ["inbox_state"] => Some IoInboxState
@@ -582,14 +582,6 @@ nio_encode_tx (chain agent : string) (k : nio_key) (nonce : string) (fields : li
 nio_wire_line (chain me : string) (k : nio_key) (fields : list string) : string :=
   Stdlib.Strings.String.concat "" ["{""from"":", nio_json_string me, ",""fields"":", nio_json_strings fields,
     ",""sig"":", nio_json_string (nio_sign k (nio_msg_bytes chain me fields)), "}"].
-
-(** a peer line's signature checked against the key of who sent it; an
-    unknown sender's doesn't check *)
-nio_verify_line (chain : string) (keys : list (string * nio_key)) (from sg : string) (fields : list string) : bool :=
-  match List.find (fun p => Stdlib.Strings.String.eqb (fst p) from) keys with
-  | Some p => nio_verify (snd p) (nio_msg_bytes chain from fields) sg
-  | None => false
-  end.
 
 (** The tables an interpreter keeps for the operations: timers (when, in
     the clock's seconds, and the event), events queued for the loop, the
@@ -843,4 +835,36 @@ nio_store_op (now : PrimFloat.float) (t : nio_tables) (op : node_op) : option (n
   | IoSetTimers ts =>
       Some (ans_ok, nio_with_timers t (List.flat_map (fun l => match l with d :: ev => [(nio_num d, ev)] | [] => [] end) ts))
   | _ => nio_table_op now t op
+  end.
+
+(** ---- keys, as the binary gives them ----
+    An agent's public key and the chain's id in [IoPeerKey]'s and
+    [tx_key]'s form: the chain id, the key's size in bytes (decimal), n and
+    e as hex. Anything else, an unknown agent's empty list included, is no
+    key, and no signature checks against it. *)
+nio_key_of_wire (l : list string) : option (string * nio_key) :=
+  match l with
+  | [chain, size, n, e] =>
+      match nio_nat_digits (Stdlib.Strings.String.list_ascii_of_string size) 0,
+            Crypto.bytes_of_hex n, Crypto.bytes_of_hex e with
+      | (bytes, []), Some nb, Some eb =>
+          Some (chain, {| nk_bytes := bytes; nk_n := nb; nk_e := eb; nk_p := []; nk_q := [];
+                          nk_dp := []; nk_dq := []; nk_qinv := [] |})
+      | _, _, _ => None
+      end
+  | _ => None
+  end.
+
+(** a transaction's signature checked against its agent's key *)
+nio_tx_verify (key : list string) (agent nonce : string) (fields : list string) (sg : string) : bool :=
+  match nio_key_of_wire key with
+  | Some (chain, k) => nio_verify k (nio_tx_bytes chain agent nonce fields) sg
+  | None => false
+  end.
+
+(** a peer line's signature checked against its sender's key *)
+nio_line_verify (key : list string) (from sg : string) (fields : list string) : bool :=
+  match nio_key_of_wire key with
+  | Some (chain, k) => nio_verify k (nio_msg_bytes chain from fields) sg
+  | None => false
   end.

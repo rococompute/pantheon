@@ -27,11 +27,8 @@ let emsa bits msg =
 
 let sign (key : Cryptokit.RSA.key) msg = hex (Cryptokit.RSA.sign_CRT key (emsa key.size msg))
 
-let verify (key : Cryptokit.RSA.key) msg sg =
-  try
-    let raw = unhex sg in
-    String.length raw = key.size / 8 && Cryptokit.RSA.unwrap_signature key raw = emsa key.size msg
-  with _ -> false
+(* signatures are checked by Soma (nodeio's nio_verify, Soma.Crypto),
+   with the keys key_wire gives *)
 
 let key_to_json (k : Cryptokit.RSA.key) ~priv =
   let f s = `String (hex s) in
@@ -62,13 +59,14 @@ let json_strings = function `List l -> List.map (function `String s -> s | _ -> 
 let tx_bytes agent nonce fields =
   String.concat "\x00" [ "tx"; !chain_id; agent; nonce; Yojson.Safe.to_string (strings_json fields) ]
 
-
-(* A signed transaction's signature I/O: market.soma reads JSON tokens
-   and decides the caps, bounded scan, members, nonce and verdict. *)
-let tx_verify agent nonce fields sg =
+(* An agent's genesis key, for Soma to check its signatures with (nodeio's
+   nio_key_of_wire): the chain id, the key's size in bytes, n and e as hex;
+   nothing for an agent the genesis doesn't have *)
+let key_wire agent =
   match Hashtbl.find_opt pubkeys agent with
-  | Some key -> (try verify key (tx_bytes agent nonce fields) sg with _ -> false)
-  | None -> false
+  | Some (k : Cryptokit.RSA.key) -> [ !chain_id; string_of_int (k.size / 8); hex k.n; hex k.e ]
+  | None -> []
+let tx_key agent = key_wire agent
 let tx_byte_cap () = string_of_int max_tx_bytes
 let tx_item_cap () = string_of_int max_int
 
@@ -490,7 +488,9 @@ let make_keys home name addr =
     fail "%s already has keys. They are this agent's identity: keep them. To start over, remove the directory first" home;
   mkdir_p home;
   Unix.chmod home 0o700;
-  let key = Cryptokit.RSA.new_key ~rng:(Lazy.force rng) 2048 and secret = random_hex 32 in
+  (* e = 65537, not Cryptokit's random 2048-bit default: Soma checks
+     signatures (Soma.Crypto), in about 1 ms with it against 90 *)
+  let key = Cryptokit.RSA.new_key ~rng:(Lazy.force rng) ~e:65537 2048 and secret = random_hex 32 in
   let priv f j = Yojson.Safe.to_file (Filename.concat home f) j; Unix.chmod (Filename.concat home f) 0o600 in
   priv "key.json" (`Assoc [ ("agent", `String name); ("key", key_to_json key ~priv:true) ]);
   priv "chain.json" (`Assoc [ ("secret", `String secret) ]);
@@ -798,7 +798,7 @@ type node_handle = { h_events : float -> string list list;
                      h_run_check : string -> string -> string -> string list -> unit;
                      h_identity : string;
                      h_seen_refused : string -> bool;
-                     h_verify_line : string -> string -> string list -> bool;
+                     h_peer_key : string -> string list;
                      h_merge_applied : string -> string option;
                      h_merge_diverged : string -> bool;
                      h_merge_reset : string -> unit;
@@ -981,7 +981,7 @@ let node_io_handle h op =
   | [ "refuse"; raw ] -> h.h_refuse raw; (true, (0., []))
   | [ "identity" ] -> (true, (0., [ h.h_identity ]))
   | [ "seen_refused"; raw ] -> (h.h_seen_refused raw, (0., []))
-  | "verify_line" :: from :: sg :: fields -> (h.h_verify_line from sg fields, (0., []))
+  | [ "peer_key"; who ] -> let k = h.h_peer_key who in (k <> [], (0., k))
   | [ "conns" ] -> (true, (0., frame_lists (List.map (fun (c, t) -> [ c; Printf.sprintf "%.17g" t ]) (h.h_conns ()))))
   | [ "poll_prep" ] -> h.h_poll_prep (); (true, (0., []))
   | [ "inbox_state" ] -> let last, dir = h.h_inbox_state () in (true, (last, [ dir ]))
@@ -1614,10 +1614,7 @@ let node_open packed home flags =
         | None -> ());
       h_identity = me;
       h_seen_refused = (fun raw -> Hashtbl.mem refused raw);
-      h_verify_line = (fun from sg fields ->
-        match Hashtbl.find_opt pubkeys from with
-        | Some k -> verify k (msg_bytes from fields) sg
-        | None -> false);
+      h_peer_key = key_wire;
       h_check_exclusions = (fun () -> (!no_check, my_excluded));
       h_run_check = run_check;
       h_merge_applied = (fun r -> Option.map string_of_int (Hashtbl.find_opt applied r));

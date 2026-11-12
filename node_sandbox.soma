@@ -20,7 +20,8 @@ Record nio_world := {
   (** the chain's id, this node's key and each agent's public key, from
       the genesis and the key file: a peer line and a transaction are
       signed and checked with Soma's RSA (nodeio's [nio_wire_line],
-      [nio_encode_tx], [nio_verify_line]), as the binary signs them *)
+      [nio_encode_tx], [nio_line_verify] with [IoPeerKey]'s key), as the
+      binary signs and checks them *)
   w_chain : string;
   w_key : nio_key;
   w_keys : list (string * nio_key);
@@ -172,7 +173,12 @@ nio_kernel_op (w : nio_world) (s : nio_kernel) (op : node_op)
   | IoInboxState => ret ((true, (PrimFloat.zero, ["inbox"])), s)
   | IoDirEntries _ => ret (ans_data true [], s)
   | IoIdentity => ret (ans_data true [w_identity w], s)
-  | IoVerifyLine from sig fields => ret (ans_flag (nio_verify_line (w_chain w) (w_keys w) from sig fields), s)
+  | IoPeerKey who =>
+      ret (match List.find (fun p => nio_eq (fst p) who) (w_keys w) with
+           | Some p => ans_data true [w_chain w, nio_show_nat (nk_bytes (snd p)),
+                                     Crypto.hex_of_bytes (nk_n (snd p)), Crypto.hex_of_bytes (nk_e (snd p))]
+           | None => ans_data false []
+           end, s)
   | IoConns => ret (ans_data true (nio_frame_lists (List.map (fun p => [fst p, "0"]) (k_peers s))), s)
   (* dialing and resending: a unikernel's links are its listen handlers' *)
   | IoPollPrep => ret (nio_ok, s)

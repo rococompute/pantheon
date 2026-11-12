@@ -216,7 +216,7 @@ get (Yojson's, byte for byte) and what each table operation does
 pure part, `soma build --no-image` on a unikernel that runs a node
 program). Signing and checking signatures are Soma's (Soma.Crypto's
 RSA and SHA-256): `nodeio.soma`'s `nio_encode_tx`, `nio_wire_line` and
-`nio_verify_line` make and check the binary's lines byte for byte, which
+`nio_line_verify` make and check the binary's lines byte for byte, which
 the test checks against lines shell.ml signed with a Cryptokit key, so the
 world gives only the chain's id and the keys (`w_chain`, `w_key`,
 `w_keys`). What Sandbox doesn't give yet is the program's to supply, in
@@ -258,7 +258,7 @@ Each operation:
 | `IoCiLaunch id out tree ci` | CI started for a tree (events an immediate failure queued) | `w_ci`, a CI service |
 | `IoReadText path`, `IoDiscardFile path` | a file read; removed if it's there (no node needed) | `read_file`; nothing yet (Sandbox's named files can't be removed) |
 | `IoRefuse raw`, `IoSeenRefused raw` | the refused-transaction set | the stores' refused list |
-| `IoIdentity`, `IoVerifyLine from sig fields` | this node's name; RSA verification of a peer line | `w_identity`; `nio_verify_line` with `w_keys` (Soma's RSA) |
+| `IoIdentity`, `IoPeerKey who` | this node's name; a genesis agent's key and the chain id (`key_wire`), which node.soma checks a peer line's signature with (`nio_line_verify`, Soma's RSA) | `w_identity`; the key from `w_keys` |
 | `IoConns`, `IoPollPrep` | live connections and their last reads; sample the turn clock, dial and resend | the peer links (no activity times); nothing (links are listen handlers') |
 | `IoInboxState`, `IoInboxStamp`, `IoDirEntries`, `IoRemoveFile` | the inbox's last poll and directory; note a poll; list a directory; remove a file | an empty inbox (Sandbox's named files can't be listed or removed) |
 | `IoTurnNow`, `IoTimers`, `IoSetTimers`, `IoJobs`, `IoQueueEmpty` | the turn's clock, the timer list read and replaced, the running jobs, the queue | the monotonic clock; the tables' timers (as text by `w_float_text`); no jobs; the tables' queue |
@@ -278,13 +278,18 @@ SHA-256 and RSA are Soma's (`Soma.Crypto`, Soma's item): `sha256` and
 them and a unikernel runs them. The binary extracts them to Cryptokit's
 (main.soma), the same function in C: Soma's extracted SHA-256 is about a
 tenth of its speed, which slowed e2e from 114 s to 130 s. The test checks
-the two agree on known answers. The
-unikernel signs and checks with Soma's RSA (above). The binary still signs
-and checks with Cryptokit (`tx_verify`, its peer lines, `encode_tx`):
-Cryptokit's keys have a random 2048-bit public exponent, so Soma's
-verification takes about 90 ms against Cryptokit's few. Keys with
-e = 65537 would take Soma's about 1 ms, which would let the binary's checks
-move too; that is a key format change, for a new genesis.
+the two agree on known answers.
+
+Every signature is checked by Soma, in the binary as in the unikernel:
+a transaction's in `decode_tx` (`nio_tx_verify`, with the agent's key from
+the pure binding `tx_key`) and a peer line's in node.soma
+(`nio_line_verify`, with the sender's key from `IoPeerKey`). The shell
+only hands over keys (`key_wire`: the chain id, the size in bytes, n and e
+as hex). Keys are made with e = 65537 (`make_keys`), which Soma checks in
+about 1.6 ms. A genesis made before has Cryptokit's random 2048-bit public
+exponents, which take about 90 ms each: such a network still works, slowly,
+and wants a new genesis. Signing stays Cryptokit's (`encode_tx`, `wire`):
+the unikernel signs with Soma's RSA, about 12 ms a signature.
 
 ## The first pieces, bottom-up (superseded by the section above)
 
@@ -710,8 +715,8 @@ separate work; this status does not mark `.plan`.
   as decimal strings), one the shell can't read as a transaction's JSON, one
   whose nonce isn't 1 to 17 digits (`nonce_ok`, before any signature is
   checked) and one whose signature doesn't verify (`tx_decision`). The shell
-  only reads the JSON's members (`tx_parts`) and checks the signature
-  (`tx_verify`). Left of step 5: the limits on lines and connections.
+  only reads the JSON's members (`tx_parts`); the signature is checked by
+  Soma since (`nio_tx_verify`, with `tx_key`'s key). Left of step 5: the limits on lines and connections.
 
 - Step 5, part: a model reply's JSON is decided in Soma. `json_in_reply`
   takes the job-output cap and the byte offsets of the first `{` and the

@@ -27,7 +27,7 @@
     be drawn. Withholding still lets the last agent to reveal choose between two
     seeds, so an agent that held back in one draw is barred from the next: a
     recent leader can't steer a draw now and be repaid with a term later. *)
-Import util shell consensus.
+Import util shell nodeio consensus.
 From Stdlib Require Import Ascii.
 
 (** ---- A signed transaction (step 5: decode_tx in Soma) ----
@@ -146,7 +146,8 @@ tx_parts (raw : string) : option (string * (string * (list string * string))) :=
   match node_json_tokens raw with Some toks => tx_parts_of toks | None => None end.
 
 decode_tx (raw : string) : list string :=
-  if tx_shape_ok (tx_byte_cap tt) (tx_item_cap tt) raw then tx_decision (tx_parts raw) tx_verify else [].
+  if tx_shape_ok (tx_byte_cap tt) (tx_item_cap tt) raw
+  then tx_decision (tx_parts raw) (fun agent => nio_tx_verify (tx_key agent) agent) else [].
 
 Inductive status := Pending | Merged | Cleared | Rejected | Withdrawn.
 Scheme Boolean Equality for status.
