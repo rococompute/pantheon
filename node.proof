@@ -849,6 +849,21 @@ Proof.
     rewrite IH. reflexivity.
 Qed.
 
+Lemma nio_lists_acc_frame : forall l rest cur,
+  nio_lists_acc (resend_fields l ++ ("alternate" :: rest)) cur = (List.rev cur ++ l) :: nio_lists_acc rest [].
+Proof.
+  induction l as [|v l IH]; intros rest cur.
+  - cbn. rewrite List.app_nil_r. reflexivity.
+  - cbn. rewrite IH. cbn. rewrite <- List.app_assoc. reflexivity.
+Qed.
+
+(** Lists of lists on one wire read back. *)
+Lemma nio_lists_reads_frames : forall ls, nio_lists (nio_frame_lists ls) = ls.
+Proof.
+  induction ls as [|l rest IH]; [reflexivity|]. unfold nio_lists in *. cbn [nio_frame_lists].
+  rewrite nio_lists_acc_frame, IH. reflexivity.
+Qed.
+
 Theorem io_wire_reads_back : forall op, io_of_wire (io_wire op) = Some op.
 Proof.
   intros op. destruct op as [text | ms event | event | fields | index fields |
@@ -858,7 +873,9 @@ Proof.
     | height | | | slot | slot | nonce fields | | | | | stamp |
     repo | repo | repo path | repo path | repo path text | repo path |
     repo version tree bid task bidder spec | | id kind prompt ctx |
-    id kind raw prompt ctx clean launch env | repo | | | | | repo | repo path ]; try reflexivity.
+    id kind raw prompt ctx clean launch env | repo | | | | | repo | repo path |
+    until reason backoff | backoff | | | probing requests | job result | id out tree ci | path | path ];
+    try reflexivity.
   - change (match resend_parts (resend_fields fields ++ ("alternate" :: alternate)) with
     | Some (original, alt) => Some (IoRememberBroadcast height kind original alt)
     | None => None end = Some (IoRememberBroadcast height kind fields alternate)).
@@ -876,6 +893,9 @@ Proof.
         end
     | None => None end = Some (IoLlmStart id kind raw prompt ctx clean launch env)).
     rewrite !resend_parts_reads_fields. reflexivity.
+  - change (Some (IoHeldStore probing (nio_lists (nio_frame_lists requests))) =
+            Some (IoHeldStore probing requests)).
+    rewrite nio_lists_reads_frames. reflexivity.
 Qed.
 
 Example io_wire_forms :
@@ -1222,12 +1242,12 @@ llm_answers (calls : string) (op : node_op) : nanswer :=
   end.
 
 Example llm_over_budget_trace :
-  ntrace (llm_answers "4") (llm_prog "h" "7" "ask" "p" []) =
+  ntrace (llm_answers "4") (llm_prog "7" "ask" "p" []) =
   [IoLlmBudget, IoClock, IoLimitInfo, IoQueue ["llm_error", "7", llm_budget_text "3"]].
 Proof. reflexivity. Qed.
 
 Example llm_asked_trace :
-  ntrace (llm_answers "1") (llm_prog "h" "7" "ask" "p" []) =
+  ntrace (llm_answers "1") (llm_prog "7" "ask" "p" []) =
   [IoLlmBudget, IoClock, IoLimitInfo, IoLog (llm_ask_text "claude" "ask" "7" "1" "3"),
    IoToken, IoLimitInfo, IoEnvEntries,
    IoLlmStart "7" "ask" "p" "p" [] [] (backend_launch "claude") ["A=1"]].
@@ -1242,6 +1262,15 @@ Proof.
   intros ans token r cap files. induction files as [|p rest IH]; intros budget; [reflexivity|].
   cbn [repo_read_prog repo_read_text]. rewrite nresult_nbind. cbn [nresult nask].
   rewrite nresult_nbind. rewrite IH. reflexivity.
+Qed.
+
+(** Giving held requests back reads the limit, the release state and
+    the clock before anything else, as the bindings were read. *)
+Theorem release_reads_first : forall ans,
+  firstn 3 (ntrace ans release_prog) = [IoLimitInfo, IoReleaseState, IoClock].
+Proof.
+  intros ans. unfold release_prog, ans_list. cbn.
+  destruct (snd (snd (ans IoLimitInfo))) as [|b [|n r]]; reflexivity.
 Qed.
 
 Theorem remember_peer_is_served_operation : forall who first now,

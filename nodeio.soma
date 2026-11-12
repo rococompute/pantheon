@@ -105,13 +105,49 @@ Inductive node_op :=
 | IoToken
 | IoRepoNames
 | IoLsFiles (repo : string)
-| IoHeadFile (repo path : string).
+| IoHeadFile (repo path : string)
+(** what a model's output becomes (U-1): noting a limit (until when and
+    the next backoff, in node_float_wire's text, and its reason; the probe
+    is over) or clearing it (the backoff after an answer); the backoff and
+    whether a release is probing (the backoff, then ["true"] or
+    ["false"]); the held requests, newest first, and storing them (each
+    [id, kind, prompt, ctx...], framed by [nio_frame_lists]); a finished
+    job resumed with its outcome, and CI started for a tree (the events
+    each queued, framed); a file's text (found or not) and removing a file
+    (no matter whether it's there) *)
+| IoLimitSet (until reason backoff : string)
+| IoLimitClear (backoff : string)
+| IoReleaseState
+| IoHeldRequests
+| IoHeldStore (probing : string) (requests : list (list string))
+| IoJobComplete (job result : string)
+| IoCiLaunch (id out tree ci : string)
+| IoReadText (path : string)
+| IoDiscardFile (path : string).
 
 (** Two arbitrary lists on one wire: tagged field/value pairs, then the
     alternate-list marker. A marker occurring as a value is never a tag.
     This avoids a bounded decimal count in the total round-trip property. *)
 Fixpoint resend_fields (fields : list string) : list string :=
   match fields with [] => [] | field :: rest => "field" :: field :: resend_fields rest end.
+
+(** Lists of lists on one wire: each list's values tagged "field", then
+    "alternate"; [nio_lists] reads them back (node.proof's
+    nio_lists_reads_frames). *)
+Fixpoint nio_frame_lists (ls : list (list string)) : list string :=
+  match ls with
+  | [] => []
+  | l :: rest => resend_fields l ++ ("alternate" :: nio_frame_lists rest)
+  end.
+
+Fixpoint nio_lists_acc (w cur : list string) : list (list string) :=
+  match w with
+  | "field" :: v :: rest => nio_lists_acc rest (v :: cur)
+  | "alternate" :: rest => List.rev cur :: nio_lists_acc rest []
+  | _ => []
+  end.
+
+nio_lists (w : list string) : list (list string) := nio_lists_acc w [].
 
 Fixpoint resend_parts (wire : list string) : option (list string * list string) :=
   match wire with
@@ -182,6 +218,15 @@ io_wire (op : node_op) : list string :=
   | IoRepoNames => ["repo_names"]
   | IoLsFiles repo => ["ls_files", repo]
   | IoHeadFile repo path => ["head_file", repo, path]
+  | IoLimitSet until reason backoff => ["limit_set", until, reason, backoff]
+  | IoLimitClear backoff => ["limit_clear", backoff]
+  | IoReleaseState => ["release_state"]
+  | IoHeldRequests => ["held_requests"]
+  | IoHeldStore probing requests => "held_store" :: probing :: nio_frame_lists requests
+  | IoJobComplete job result => ["job_complete", job, result]
+  | IoCiLaunch id out tree ci => ["ci_launch", id, out, tree, ci]
+  | IoReadText path => ["read_text", path]
+  | IoDiscardFile path => ["discard_file", path]
   end.
 
 io_of_wire (w : list string) : option node_op :=
@@ -258,6 +303,15 @@ io_of_wire (w : list string) : option node_op :=
   | ["repo_names"] => Some IoRepoNames
   | ["ls_files", repo] => Some (IoLsFiles repo)
   | ["head_file", repo, path] => Some (IoHeadFile repo path)
+  | ["limit_set", until, reason, backoff] => Some (IoLimitSet until reason backoff)
+  | ["limit_clear", backoff] => Some (IoLimitClear backoff)
+  | ["release_state"] => Some IoReleaseState
+  | ["held_requests"] => Some IoHeldRequests
+  | "held_store" :: probing :: requests => Some (IoHeldStore probing (nio_lists requests))
+  | ["job_complete", job, result] => Some (IoJobComplete job result)
+  | ["ci_launch", id, out, tree, ci] => Some (IoCiLaunch id out tree ci)
+  | ["read_text", path] => Some (IoReadText path)
+  | ["discard_file", path] => Some (IoDiscardFile path)
   | _ => None
   end.
 

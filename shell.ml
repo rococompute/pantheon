@@ -826,11 +826,8 @@ let node_jobs id = (lookup_handle id).h_jobs ()
 let node_queue_empty id = (lookup_handle id).h_queue_empty ()
 let node_job_signal_codes () =
   List.map string_of_int [Sys.sigkill; Sys.sigterm; Sys.sigsegv; Sys.sigabrt; Sys.sigint]
-let node_job_complete id job result = (lookup_handle id).h_job_complete job result
 let node_plain_text s = plain_text s
-let node_ci_launch id req out tree ci = (lookup_handle id).h_ci_launch req out tree ci
 (* a model call's I/O: node.soma's perform_llm decides and builds the prompt *)
-let node_reply_finish path text = (try Sys.remove path with _ -> ()); text
 let node_env_entries () = Array.to_list (Unix.environment ())
 (* a model's output: node.soma's reply_fields decides what it becomes.
    These bindings only report the cap and yojson's value as tokens. Where
@@ -864,8 +861,6 @@ let json_tokens j =
   List.rev !out
 let node_json_tokens raw = try Some (json_tokens (Yojson.Safe.from_string raw)) with _ -> None
 let node_float_of_digits s = float_of_string s
-let node_limit_set id until reason backoff = (lookup_handle id).h_limit_set until reason backoff; true
-let node_limit_clear id backoff = (lookup_handle id).h_limit_clear backoff; true
 let node_float_text f = Printf.sprintf "%.0f" f
 let node_float_wire f = Printf.sprintf "%.17g" f
 let save_snapshot id snap = (lookup_handle id).h_save (Obj.repr snap); true
@@ -882,8 +877,18 @@ let node_remember_block id h txs = (lookup_handle id).h_remember_block h txs
    a CI check, records a merge applied or diverged, or reads the clock. Effects return (true, (0., [])); "clock" returns
    (true, (Unix.gettimeofday (), [])): nodeio.soma's nanswer. A unikernel would interpret the same
    operations through Sandbox. *)
-let node_io id op =
-  let h = lookup_handle id in
+(* lists of lists on one wire (nodeio.soma's nio_frame_lists / nio_lists) *)
+let frame_lists ls = List.concat_map (fun l -> List.concat_map (fun v -> [ "field"; v ]) l @ [ "alternate" ]) ls
+let unframe_lists parts =
+  let rec go cur acc = function
+    | "field" :: v :: rest -> go (v :: cur) acc rest
+    | "alternate" :: rest -> go [] (List.rev cur :: acc) rest
+    | [] -> List.rev acc
+    | _ -> fail "malformed list frame"
+  in
+  go [] [] parts
+
+let node_io_handle h op =
   match op with
   | [ "log"; text ] -> h.h_log text; (true, (0., []))
   | "timer" :: ms :: ev -> h.h_timer ms ev; (true, (0., []))
@@ -975,14 +980,29 @@ let node_io id op =
   | [ "local_time"; stamp ] ->
       let tm = Unix.localtime (node_float_of_digits stamp) in
       (true, (0., [ Printf.sprintf "%02d:%02d" tm.Unix.tm_hour tm.Unix.tm_min ]))
+  | [ "limit_set"; until; reason; backoff ] ->
+      h.h_limit_set (float_of_string until) reason (float_of_string backoff); (true, (0., []))
+  | [ "limit_clear"; backoff ] -> h.h_limit_clear (float_of_string backoff); (true, (0., []))
+  | [ "release_state" ] -> let backoff, probing = h.h_release_state () in (true, (backoff, [ string_of_bool probing ]))
+  | [ "held_requests" ] ->
+      (true, (0., frame_lists (List.map (fun (((id, kind), prompt), ctx) -> id :: kind :: prompt :: ctx) (h.h_held_requests ()))))
+  | "held_store" :: probing :: parts ->
+      let requests = List.filter_map (function
+        | id :: kind :: prompt :: ctx -> Some (((id, kind), prompt), ctx) | _ -> None) (unframe_lists parts) in
+      h.h_held_store requests (probing = "true"); (true, (0., []))
+  | [ "job_complete"; job; result ] -> (true, (0., frame_lists (h.h_job_complete job result)))
+  | [ "ci_launch"; req; out; tree; ci ] -> (true, (0., frame_lists (h.h_ci_launch req out tree ci)))
   | _ -> fail "unknown node operation %s" (String.concat " " op)
+(* Path-only operations need no node: a test runs them with no handle. *)
+let node_io id op =
+  match op with
+  | [ "read_text"; path ] -> (match fs_read_text path with Some c -> (true, (0., [ c ])) | None -> (false, (0., [])))
+  | [ "discard_file"; path ] -> (try Sys.remove path with _ -> ()); (true, (0., []))
+  | _ -> node_io_handle (lookup_handle id) op
 let node_conns id = (lookup_handle id).h_conns ()
 (* Reads/writes and authenticated socket sends; catch-up policy is Soma.
    The clock is the "clock" arm of node_io. *)
 let node_limit_info id = (lookup_handle id).h_limit_info ()
-let node_release_state id = (lookup_handle id).h_release_state ()
-let node_held_requests id = (lookup_handle id).h_held_requests ()
-let node_held_store id requests probing = (lookup_handle id).h_held_store requests probing; true
 (* signed.log's bytes, raw, and noting one vote Soma read from them (without
    appending it again); Soma's log_lines splits them and signed_log_entry
    parses each line *)

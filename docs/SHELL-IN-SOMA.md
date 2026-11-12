@@ -178,10 +178,18 @@ environment, the prompt's parts (each repository's listing, each .plan,
 a task's files, read one at a time), a cmd: patch's tool checkout and
 the process's start (`llm_over_budget_trace`, `llm_asked_trace`); the
 prompt it assembles is `prompt_assemble`'s (`prompt_prog_assembles`,
-`repo_read_prog_reads`). Every output is now a node program. What a
-model's output becomes, a CI job's events and the event loop's own reads
-(the snapshot, timers, jobs) are still bindings: the next ones to turn
-into operations, each one less thing a unikernel can't run.
+`repo_read_prog_reads`). Every output is now a node program, and so is
+what a model's output becomes (`model_output_prog`: the limit noted or
+cleared, the request held, a codex reply file read and removed, a check's
+output and the CI it starts), a finished job's outputs, each one's effects
+before the next one's (`model_outputs_prog`; the extracted `flat_map` this
+replaced ran them last first), and giving held requests back
+(`release_prog`; `release_reads_first`). Lists of events and of held
+requests cross the wire framed (`nio_frame_lists`, read back by
+`nio_lists`: `nio_lists_reads_frames`). The event loop's own reads (the
+snapshot, timers, jobs, the inbox, a peer line's signature) are still
+bindings: the next ones to turn into operations, each one less thing a
+unikernel can't run.
 The resend write uses tagged `field`/value pairs followed by `alternate`
 and the untouched second list. Values may themselves contain either tag.
 Resend reads and the native table remain unchanged.
@@ -198,7 +206,8 @@ it with RSA), starting a CI check (`w_check`), the epoch's draw
 (`w_draw`), a transaction's signed line (`w_encode_tx`), the check
 exclusions (`w_exclusions`), the checkouts' heads (`w_heads`), the model
 backend (`w_backend`), a time of day (`w_local_time`) and a merge's git
-work (`w_git`) and a model call's (`w_llm`). Decided blocks and signed votes are kept in
+work (`w_git`), a model call's and its outcome's (`w_llm`) and CI's
+start (`w_ci`). Decided blocks and signed votes are kept in
 memory beside their files, as the binary keeps them (`nio_store_op`).
 Each operation:
 
@@ -226,12 +235,15 @@ Each operation:
 | `IoMergeReset`, `IoMergeProbe`, `IoMergeRead`, `IoMergeWrite`, `IoMergeRemove`, `IoMergeCommit` | git in the checkout: hard reset and clean, a path's kind, read, write keeping the mode, remove, commit with the merge's message (its tree and short id) | `w_git`, a git service (Soma's "services") |
 | `IoRepoNames`, `IoLsFiles repo`, `IoHeadFile repo path` | the governed repositories; `git ls-files`; `git show HEAD:path` (absent when it fails) | `w_git` |
 | `IoLlmBudget`, `IoLlmHold id kind prompt ctx`, `IoLlmStart ...`, `IoToolCheckout repo`, `IoSelfExe`, `IoEnvEntries`, `IoToken` | the call count (bumped) and budget; hold a request until the limit is over; start the model process (its output event at once when it couldn't start); a cmd: patch's checkout; the node's binary; the environment; a random fence token | `w_llm`, a model service (Soma's "services") |
+| `IoLimitSet`, `IoLimitClear`, `IoReleaseState`, `IoHeldRequests`, `IoHeldStore`, `IoJobComplete` | the model limit's state and backoff; the held requests; a finished job resumed with its outcome (its callback's events) | `w_llm` |
+| `IoCiLaunch id out tree ci` | CI started for a tree (events an immediate failure queued) | `w_ci`, a CI service |
+| `IoReadText path`, `IoDiscardFile path` | a file read; removed if it's there (no node needed) | `read_file`; nothing yet (Sandbox's named files can't be removed) |
 | `IoConnAdmit`, `IoConnClose`, `IoJobFlood`, `IoJobExpire` | admit, refuse or close a socket; kill a job's process | nothing to do: a unikernel's links are its listen handlers', and it runs no processes |
 
 Not yet operations, still bindings of their own (the next parts of U-1):
-what a model's output becomes (the limit's state, the reply file), a CI
-job's start and events, the event loop's reads (timers, jobs, the queue),
-the snapshot (Soma's "storage" still), the listener and
+the event loop's reads (timers, jobs, the queue, the inbox, the
+connections), a peer line's checks (identity, refused lines), the boot
+(replay, the signed log), the snapshot (Soma's "storage" still), the listener and
 accepted connections (links), SHA-256 and RSA (Soma's item), and git,
 model and CI jobs (Soma's "services": `fetch` with a timeout and HTTP POST).
 

@@ -1054,20 +1054,28 @@ reply_fields (text : string) : option (list string) :=
 (** The outcome carried out: a limit is noted (its wait, reason and doubled
     backoff, the log line) and the raw request held; otherwise the backoff
     goes back to 15 minutes and the reply or error is the event. *)
-reply_events (h : node_t) (id kind prompt0 text : string) (ctx : list string) : list (list string) :=
+reply_prog (id kind prompt0 text : string) (ctx : list string) : nprog (list (list string)) :=
   match reply_outcome_of text reply_fields with
   | ReplyHold body =>
-      let now := io_now h in
-      let (backoff, _) := node_release_state h in
-      let (_, info) := node_limit_info h in
+      nbind (nask IoClock) (fun clock =>
+      let now := ans_float clock in
+      nbind (nask IoReleaseState) (fun release =>
+      let backoff := ans_float release in
+      nbind (nask IoLimitInfo) (fun limit =>
+      let backend := hd "" (ans_list limit) in
       let wait := limit_wait (reset_in node_float_of_digits now body) backoff in
       let reason := limit_reason_of body in
-      if node_limit_set h (PrimFloat.add now wait) reason (limit_next_backoff backoff)
-         && io_log h (limit_log_text (fst info) (node_float_text (PrimFloat.div wait 60%float)) reason)
-         && io_do h (IoLlmHold id kind prompt0 ctx)
-      then [] else [["llm_error", id, "the request couldn't be held"]]
-  | ReplyError why => if node_limit_clear h 900%float then [["llm_error", id, why]] else []
-  | ReplyFields kv => if node_limit_clear h 900%float then [("llm_reply" :: id :: kv)] else []
+      nbind (nand (nexec (IoLimitSet (node_float_wire (PrimFloat.add now wait)) reason
+                                     (node_float_wire (limit_next_backoff backoff)))) (fun _ =>
+             nand (nexec (IoLog (limit_log_text backend (node_float_text (PrimFloat.div wait 60%float)) reason)))
+                  (fun _ => nexec (IoLlmHold id kind prompt0 ctx)))) (fun held =>
+      NDone (if held then [] else [["llm_error", id, "the request couldn't be held"]])))))
+  | ReplyError why =>
+      nbind (nexec (IoLimitClear (node_float_wire 900%float))) (fun ok =>
+      NDone (if ok then [["llm_error", id, why]] else []))
+  | ReplyFields kv =>
+      nbind (nexec (IoLimitClear (node_float_wire 900%float))) (fun ok =>
+      NDone (if ok then [("llm_reply" :: id :: kv)] else []))
   end.
 
 (** ---- Grok's reply: the chat completion's choices.0.message.content ----
@@ -1153,13 +1161,14 @@ grok_reply_of (toks : option (list string)) (text : string) : option string * st
 (** A model's raw output: grok's is its content first (an error that
     isn't JSON content goes straight to llm_error, never a limit hold, as
     the shell did); every other backend's is the reply itself. *)
-model_reply_events (h : node_t) (id kind prompt0 text : string) (ctx : list string) : list (list string) :=
-  if seq (fst (snd (node_limit_info h))) "grok" then
+model_reply_prog (id kind prompt0 text : string) (ctx : list string) : nprog (list (list string)) :=
+  nbind (nask IoLimitInfo) (fun limit =>
+  if seq (hd "" (ans_list limit)) "grok" then
     match grok_reply_of (node_json_tokens text) text with
-    | (Some content, _) => reply_events h id kind prompt0 content ctx
-    | (None, why) => [["llm_error", id, why]]
+    | (Some content, _) => reply_prog id kind prompt0 content ctx
+    | (None, why) => NDone [["llm_error", id, why]]
     end
-  else reply_events h id kind prompt0 text ctx.
+  else reply_prog id kind prompt0 text ctx).
 
 (** The operating system's wait status, decoded without deciding its
     meaning. The shell supplies raw platform signal constants; Soma names them. *)
@@ -1217,8 +1226,11 @@ codex_reply_of (text : string) (read : unit -> option string) : string :=
 
 (** A failed process must never open its reply file. Resolve the text
     before removing the file; cleanup also runs when the read fails. *)
-codex_file_reply (text path : string) : string :=
-  node_reply_finish path (codex_reply_of text (fun _ => fs_read_text path)).
+codex_file_prog (text path : string) : nprog string :=
+  nbind (if starts "!" text then NDone None
+         else nbind (nask (IoReadText path)) (fun got => NDone (ans_found_one got))) (fun got =>
+  let reply := codex_reply_of text (fun _ => got) in
+  nbind (nexec (IoDiscardFile path)) (fun _ => NDone reply)).
 
 (** A check job's output, once the edits have been applied. An output that
     starts with "!" is the job failing; [check_apply_stage] still says whose
@@ -1290,36 +1302,54 @@ check_apply_tree (plan : check_apply_plan) (lie_hash : string) : string :=
 (** The shell queued the raw output. Log the fault, ask the shell to start
     CI, or return the event, in the old order. Events an immediate CI start
     failure queued come back with these, so they stay in this turn. *)
-check_apply_events (h : node_t) (id out ci raw : string) : list (list string) :=
-  let plan := check_apply_plan_of (fst (ans_draw (run_shell h (nask IoDraw)))) ci raw in
+check_apply_prog (id out ci raw : string) : nprog (list (list string)) :=
+  nbind (nask IoDraw) (fun draw =>
+  let plan := check_apply_plan_of (fst (ans_draw draw)) ci raw in
   let lying := match plan with CheckApplyTree _ true _ => true | _ => false end in
   let lie_hash := if lying then check_lie_tree id else "" in
-  let noted := if lying then io_log h "FAULT INJECTION: naming a wrong tree" else true in
+  nbind (if lying then nexec (IoLog "FAULT INJECTION: naming a wrong tree") else NDone true) (fun noted =>
   let evs := check_apply_choice lie_hash id raw plan in
   if noted then
     match plan with
     | CheckApplyTree true _ _ =>
-        evs ++ node_ci_launch h id out (check_apply_tree plan lie_hash) ci
-    | _ => evs
+        nbind (nask (IoCiLaunch id out (check_apply_tree plan lie_hash) ci)) (fun started =>
+        NDone (evs ++ nio_lists (ans_list started)))
+    | _ => NDone evs
     end
-  else [].
+  else NDone [])).
+
+check_apply_events (h : node_t) (id out ci raw : string) : list (list string) :=
+  run_shell h (check_apply_prog id out ci raw).
 
 (** Generated model replies are interpreted before the turn's events run,
     at the finished job's original queue position. Codex's file remains
     until Soma has applied the process-failure guard and resolved it.
     A check's raw output is decided here too, before those events run. *)
-model_output_events (h : node_t) (ev : list string) : list (list string) :=
+model_output_prog (ev : list string) : nprog (list (list string)) :=
   match ev with
-  | "llm_output" :: id :: kind :: prompt0 :: text :: ctx => model_reply_events h id kind prompt0 text ctx
+  | "llm_output" :: id :: kind :: prompt0 :: text :: ctx => model_reply_prog id kind prompt0 text ctx
   | "codex_file" :: id :: kind :: prompt0 :: text :: path :: ctx =>
-      model_reply_events h id kind prompt0 (codex_file_reply text path) ctx
+      nbind (codex_file_prog text path) (fun reply => model_reply_prog id kind prompt0 reply ctx)
   | "codex_output" :: id :: kind :: prompt0 :: text :: "1" :: out :: ctx =>
-      model_reply_events h id kind prompt0 (codex_reply_of text (fun _ => Some out)) ctx
+      model_reply_prog id kind prompt0 (codex_reply_of text (fun _ => Some out)) ctx
   | "codex_output" :: id :: kind :: prompt0 :: text :: "0" :: ctx =>
-      model_reply_events h id kind prompt0 (codex_reply_of text (fun _ => None)) ctx
-  | ["check_apply_out", id, out, ci, raw] => check_apply_events h id out ci raw
-  | _ => [ev]
+      model_reply_prog id kind prompt0 (codex_reply_of text (fun _ => None)) ctx
+  | ["check_apply_out", id, out, ci, raw] => check_apply_prog id out ci raw
+  | _ => NDone [ev]
   end.
+
+(** The events each output becomes, in order: one output's effects all
+    happen before the next one's. *)
+Fixpoint model_outputs_prog (evs : list (list string)) : nprog (list (list string)) :=
+  match evs with
+  | [] => NDone []
+  | ev :: rest =>
+      nbind (model_output_prog ev) (fun first =>
+      nbind (model_outputs_prog rest) (fun others => NDone (first ++ others)))
+  end.
+
+model_output_events (h : node_t) (ev : list string) : list (list string) :=
+  run_shell h (model_output_prog ev).
 
 job_output_events (h : node_t) (st : node_state) (ev : list string) : node_state * list (list string) :=
   match ev with
@@ -1332,7 +1362,8 @@ job_output_events (h : node_t) (st : node_state) (ev : list string) : node_state
           let seconds := if seq timeout "" then None else Some timeout in
           let result := job_result status seconds (seq flooded "1")
                           (show (num (node_job_output_limit tt) / num "1048576")) out in
-          (st, flat_map (model_output_events h) (node_job_complete h id result))
+          (st, run_shell h (nbind (nask (IoJobComplete id result)) (fun done =>
+                              model_outputs_prog (nio_lists (ans_list done)))))
       end
   | ["check_unchecked", id, why] => (st, [check_unchecked_event id why])
   | ["check_unchecked_repo", id, repo, excluded] =>
@@ -1529,11 +1560,11 @@ grok_launch (hdr : string) (launch : list string) : list string :=
 
 (** Starting the model process; when it couldn't start, its output is
     here at once, and what it becomes is queued. *)
-llm_begin_prog (h : node_t) (id kind prompt input : string) (ctx clean launch env : list string) : nprog bool :=
+llm_begin_prog (id kind prompt input : string) (ctx clean launch env : list string) : nprog bool :=
   nbind (nask (IoLlmStart id kind prompt input ctx clean launch env)) (fun started =>
   match ans_found started with
   | None => NDone true
-  | Some ev => queue_prog (model_output_events h ev)
+  | Some ev => nbind (model_output_prog ev) queue_prog
   end).
 
 (** a tool checkout's answer: its directories and whether it worked *)
@@ -1543,7 +1574,7 @@ tool_made (a : nanswer) : (string * string) * bool :=
 (** A model call, asked: a fence token, the backend, the environment, the
     prompt assembled, and for a cmd: patch its tool checkout, then the
     process started; each an operation, in the order the bindings were. *)
-llm_call_prog (h : node_t) (id kind prompt : string) (ctx : list string) : nprog bool :=
+llm_call_prog (id kind prompt : string) (ctx : list string) : nprog bool :=
   nbind (nask IoToken) (fun tok =>
   let token := ans_one tok in
   nbind (nask IoLimitInfo) (fun limit =>
@@ -1557,7 +1588,7 @@ llm_call_prog (h : node_t) (id kind prompt : string) (ctx : list string) : nprog
       if seq (launch_mode launch) "grok" then
         match grok_request nio_json_string all_env text with
         | None => nexec (IoQueue ["llm_error", id, "backend grok needs XAI_API_KEY"])
-        | Some (hdr, body) => llm_begin_prog h id kind prompt body ctx [] (grok_launch hdr launch) all_env
+        | Some (hdr, body) => llm_begin_prog id kind prompt body ctx [] (grok_launch hdr launch) all_env
         end
       else if seq (launch_mode launch) "cmd" then
         nbind (nask IoRepoNames) (fun names =>
@@ -1568,13 +1599,13 @@ llm_call_prog (h : node_t) (id kind prompt : string) (ctx : list string) : nprog
                end) (fun made =>
         nbind (nask IoSelfExe) (fun self =>
         let (l, rest) := tool_launch launch (model_env_entries all_env) (tool_job_of co made (ans_one self)) in
-        llm_begin_prog h id kind prompt text ctx (snd rest) l (fst rest))))
-      else llm_begin_prog h id kind prompt text ctx [] launch (model_env_entries all_env)))
+        llm_begin_prog id kind prompt text ctx (snd rest) l (fst rest))))
+      else llm_begin_prog id kind prompt text ctx [] launch (model_env_entries all_env)))
   end)).
 
 (** A model call (the "llm" output), as a node program: the budget (the
     count bumped for this call), the clock and the limit, then the gate. *)
-llm_prog (h : node_t) (id kind prompt : string) (ctx : list string) : nprog bool :=
+llm_prog (id kind prompt : string) (ctx : list string) : nprog bool :=
   nbind (nask IoLlmBudget) (fun b =>
   let (calls, max) := match ans_list b with [c, m] => (c, m) | _ => ("", "") end in
   nbind (nask IoClock) (fun clock =>
@@ -1589,7 +1620,7 @@ llm_prog (h : node_t) (id kind prompt : string) (ctx : list string) : nprog bool
                             (node_float_text (PrimFloat.div (PrimFloat.sub until now) 60%float)))))
            (fun _ => nexec (IoLlmHold id kind prompt ctx))
   | LlmAsk =>
-      nand (nexec (IoLog (llm_ask_text backend kind id calls max))) (fun _ => llm_call_prog h id kind prompt ctx)
+      nand (nexec (IoLog (llm_ask_text backend kind id calls max))) (fun _ => llm_call_prog id kind prompt ctx)
   end))).
 
 (** The status file, as a node program: its facts are operations, read
@@ -1659,7 +1690,7 @@ output_prog (h : node_t) (out : list string) : nprog bool :=
       let (denied, excluded) := ans_exclusions ex in
       nexec (check_request_op id r head edits denied excluded))
   | MergeRequest r v tree bid task bidder spec edits => merge_prog r v tree bid task bidder spec edits
-  | LlmRequest id kind prompt ctx => llm_prog h id kind prompt ctx
+  | LlmRequest id kind prompt ctx => llm_prog id kind prompt ctx
   | LegacyOutput _ => NDone true
   end.
 
@@ -2073,7 +2104,7 @@ run_event (h : node_t) (st : node_state) (ev : list string) : node_state :=
   match ev with
   | [] => st
   | "llm_release" :: id :: kind :: prompt :: ctx =>
-      if run_shell h (llm_call_prog h id kind prompt ctx) then st else with_live st (live st)
+      if run_shell h (llm_call_prog id kind prompt ctx) then st else with_live st (live st)
   | "peer_line" :: self :: refused :: from :: sig :: fields =>
       if line_dropped self refused then st
       else if node_verify_line h from sig fields then
@@ -2171,23 +2202,43 @@ held_batch_of (plan : release_plan) (probing : bool) (requests : list held_reque
   | ReleaseAll => {| held_remaining := []; held_probe := probing;
                     held_events := map held_request_event (rev_onto requests []) |}
   end.
-perform_held_batch (h : node_t) (plan : release_plan) (probing : bool) : list (list string) :=
-  let batch := held_batch_of plan probing (node_held_requests h) in
-  if node_held_store h (held_remaining batch) (held_probe batch) then held_events batch else [].
+(** a held request on the wire, and back *)
+held_request_wire (r : string * string * string * list string) : list string :=
+  match r with (id, kind, prompt, ctx) => id :: kind :: prompt :: ctx end.
+
+held_requests_of (ls : list (list string)) : list (string * string * string * list string) :=
+  flat_map (fun l => match l with id :: kind :: prompt :: ctx => [(id, kind, prompt, ctx)] | _ => [] end) ls.
+
+held_batch_prog (plan : release_plan) (probing : bool) : nprog (list (list string)) :=
+  nbind (nask IoHeldRequests) (fun held =>
+  let batch := held_batch_of plan probing (held_requests_of (nio_lists (ans_list held))) in
+  nbind (nexec (IoHeldStore (if held_probe batch then "true" else "false")
+                            (map held_request_wire (held_remaining batch)))) (fun stored =>
+  NDone (if stored then held_events batch else []))).
 
 (** The held requests this turn gives back, oldest first, as llm_release
-    events; the shell only keeps them and hands them over. *)
-release_held (h : node_t) : list (list string) :=
-  let (until, info) := node_limit_info h in
-  let (backend, detail) := info in
-  let (held, _) := detail in
-  let (backoff, probing) := node_release_state h in
-  let over := negb (PrimFloat.ltb (io_now h) until) in
+    events, as a node program: the limit, the release state, the clock,
+    then the plan's log line and the store. *)
+release_prog : nprog (list (list string)) :=
+  nbind (nask IoLimitInfo) (fun limit =>
+  let until := ans_float limit in
+  let (backend, held) := match ans_list limit with b :: n :: _ => (b, n) | [b] => (b, "") | [] => ("", "") end in
+  nbind (nask IoReleaseState) (fun release =>
+  let backoff := ans_float release in
+  let probing := seq (ans_one release) "true" in
+  nbind (nask IoClock) (fun clock =>
+  let over := negb (PrimFloat.ltb (ans_float clock) until) in
   match release_plan_of (num held) over probing (PrimFloat.ltb 900%float backoff) with
-  | ReleaseNone => []
-  | ReleaseOne => if io_log h (release_one_text backend held) then perform_held_batch h ReleaseOne probing else []
-  | ReleaseAll => if io_log h (release_all_text backend held) then perform_held_batch h ReleaseAll probing else []
-  end.
+  | ReleaseNone => NDone []
+  | ReleaseOne =>
+      nbind (nexec (IoLog (release_one_text backend held))) (fun ok =>
+      if ok then held_batch_prog ReleaseOne probing else NDone [])
+  | ReleaseAll =>
+      nbind (nexec (IoLog (release_all_text backend held))) (fun ok =>
+      if ok then held_batch_prog ReleaseAll probing else NDone [])
+  end))).
+
+release_held (h : node_t) : list (list string) := run_shell h release_prog.
 
 (** ---- Step 5: job deadlines and which timers fire ----
     A job is stopped once the elapsed time is greater than its limit, and

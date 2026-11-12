@@ -14,7 +14,8 @@ world : nio_world :=
      w_backend := "claude";
      w_local_time := fun _ => "00:00";
      w_git := fun _ => ret (true, (PrimFloat.zero, [""]));
-     w_llm := fun _ => ret (false, (PrimFloat.zero, [])) |}.
+     w_llm := fun _ => ret (false, (PrimFloat.zero, []));
+     w_ci := fun _ => ret (true, (PrimFloat.zero, [])) |}.
 
 (** A decided block as node.soma's outputs make it: logged, stored, the
     height set, the status written, a timer armed; the block and the peer

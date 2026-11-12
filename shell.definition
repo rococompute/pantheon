@@ -99,13 +99,19 @@ node_identity : string -> string.
 node_seen_refused : string -> string -> bool.
 node_verify_line : string -> string -> string -> list string -> bool.
 
-(** Status metadata and atomic file I/O; Soma assembles every status line. *)
-node_limit_info : string -> float * (string * (string * string)).
-(** Held model request facts: newest-first raw queue and probe metadata.
-    Soma chooses the next queue and probe flag and constructs release events. *)
-node_release_state : string -> float * bool.
-node_held_requests : string -> list (string * string * string * list string).
-node_held_store : string -> list (string * string * string * list string) -> bool -> bool.
+(** What a model's output becomes, and the held requests, are node_io
+    operations (nodeio.soma's IoLimitSet ... IoDiscardFile; node.soma's
+    reply_prog, release_prog and model_output_prog decide): "limit_set"
+    UNTIL REASON BACKOFF and "limit_clear" BACKOFF (node_float_wire's
+    text; the probe is over), "release_state" (the backoff, then
+    [true/false]: probing), "held_requests" (newest first) and
+    "held_store" PROBING REQUESTS (each ID KIND PROMPT CTX..., framed:
+    "field" VALUE... "alternate", per request), "job_complete" JOB RESULT
+    (a finished job resumed with Soma's outcome; its callback's events,
+    framed so), "ci_launch" REQ OUT TREE CI (CI started for a tree Soma
+    accepted; the events an immediate start failure queued, framed),
+    "read_text" PATH (found or not) and "discard_file" PATH (removed, if
+    it's there); the last two need no node. *)
 
 (** A model call's I/O is node_io operations (nodeio.soma's IoLlmBudget
     ... IoHeadFile; node.soma's llm_prog decides and assembles the
@@ -119,9 +125,6 @@ node_held_store : string -> list (string * string * string * list string) -> boo
     REPO [text], "head_file" REPO PATH [text] (not found: git show
     failed). None of these decides anything. The environment, for tests. *)
 node_env_entries : unit -> list string.
-(** Reply-file I/O only: Soma decides whether to read it. Returning the
-    resolved text from cleanup preserves read-before-remove under extraction. *)
-node_reply_finish : string -> string -> string.
 (** What a model's output becomes is decided in Soma (node.soma's
     reply_events and reply_fields). node_llm_start gives the raw output event at once
     when the process couldn't start (none: it runs, and its output comes
@@ -138,10 +141,6 @@ node_job_output_limit : unit -> string.
 (** Platform wait-status constants, in kill/term/segv/abrt/int order, as raw
     signed integers. Soma chooses names and the resulting failure text. *)
 node_job_signal_codes : unit -> list string.
-(** Resume a completed job with Soma's formatted outcome; invoke its stored
-    callback before cleanup and return the events that callback queued, in
-    order. Missing/already-completed identifiers return no events. *)
-node_job_complete : string -> string -> string -> list (list string).
 (** A job's buffered read chunks, in order. Soma's job_feed appends the
     chunk the shell just read and, past the output cap, keeps the tail;
     the shell stores that list and, when the feed says the job is over,
@@ -152,16 +151,8 @@ node_job_complete : string -> string -> string -> list (list string).
     here, so a large check output isn't turned into a list of characters;
     node.soma's check_result_event chooses the event. *)
 node_plain_text : string -> string.
-(** Start CI for a tree Soma accepted (node.soma's check_apply_events): the
-    request, the checkout, the tree and the CI command. The shell strips
-    .git, runs the sandbox or docker, and queues ci_done when that ends.
-    Events an immediate start failure queued are returned, in order, so
-    they stay in this turn; a run that started returns none. *)
-node_ci_launch : string -> string -> string -> string -> string -> list (list string).
 node_json_tokens : string -> option (list string).
 node_float_of_digits : string -> float.
-node_limit_set : string -> float -> string -> float -> bool.
-node_limit_clear : string -> float -> bool.
 node_float_text : float -> string.
 (** Lossless finite binary64 transport; display formatting stays above. *)
 node_float_wire : float -> string.

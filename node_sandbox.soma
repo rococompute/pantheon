@@ -46,7 +46,9 @@ Record nio_world := {
   w_git : list string -> io nanswer;
   (** a model call's work ([IoLlmBudget] ... [IoToken], in their wire
       form): a model service, which needs Soma's "services" item *)
-  w_llm : list string -> io nanswer }.
+  w_llm : list string -> io nanswer;
+  (** CI started for a tree ([IoCiLaunch]): a CI service *)
+  w_ci : list string -> io nanswer }.
 
 (** The interpreter's state: the operations' tables and the peer links,
     in genesis order, by name. *)
@@ -138,7 +140,8 @@ nio_kernel_op (w : nio_world) (s : nio_kernel) (op : node_op)
   | IoRepoNames | IoLsFiles _ | IoHeadFile _ _ =>
       a <- w_git w (io_wire op) ;; ret (a, s)
   | IoLlmBudget | IoLlmHold _ _ _ _ | IoLlmStart _ _ _ _ _ _ _ _ | IoToolCheckout _
-  | IoSelfExe | IoEnvEntries | IoToken =>
+  | IoSelfExe | IoEnvEntries | IoToken | IoLimitSet _ _ _ | IoLimitClear _ | IoReleaseState
+  | IoHeldRequests | IoHeldStore _ _ | IoJobComplete _ _ =>
       a <- w_llm w (io_wire op) ;; ret (a, s)
   | IoWriteStatus text => write_file "status.txt" text ;; ret (nio_ok, s)
   | IoSendAll fields => nio_send_each (List.map snd (k_peers s)) (w_wire w fields) ;; ret (nio_ok, s)
@@ -150,6 +153,12 @@ nio_kernel_op (w : nio_world) (s : nio_kernel) (op : node_op)
   | IoPeerExists who =>
       ret (ans_flag (List.existsb (fun p => nio_eq (fst p) who) (k_peers s)), s)
   | IoCheck id repo head edits => w_check w id repo head edits ;; ret (nio_ok, s)
+  | IoCiLaunch _ _ _ _ => a <- w_ci w (io_wire op) ;; ret (a, s)
+  | IoReadText path => got <- read_file path ;;
+      ret (match got with Some t => ans_data true [t] | None => ans_data false [] end, s)
+  (* Sandbox's named files can't be removed yet: a reply file is a model
+     service's, so there is none here to remove *)
+  | IoDiscardFile _ => ret (nio_ok, s)
   | IoConnAdmit _ _ _ => ret (nio_ok, s)
   | IoConnClose _ => ret (nio_ok, s)
   | IoJobFlood _ => ret (nio_ok, s)
