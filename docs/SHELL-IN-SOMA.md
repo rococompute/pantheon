@@ -161,10 +161,14 @@ programs (`action_prog`, `actions_prog`). `nodeio.proof` says what a
 program does whoever interprets it (`ntrace`, the operations carried out
 for given answers; `nand_trace`), and `node.proof`'s
 `single_actions_trace` that a list of one-operation actions does exactly
-those operations, in order. Reads that are still bindings of their own
-(signing, the draw, a stored block) sit in a program's continuations,
-after the operations before them, so they happen when they did; each one
-turned into an operation is one less thing a unikernel can't run.
+those operations, in order. Output handling is one program too (`output_prog`): the reads it needs
+(the draw, a stored block, the height, the peer count, the vote signed at
+a slot, a transaction's signed line, the check exclusions) are operations
+whose answers carry data (`nanswer`'s list), asked in the program's
+continuations after the operations before them, so they happen when they
+did. Reads that are still bindings of their own (the status facts, the
+merge's git work) are the next ones to turn into operations; each one is
+one less thing a unikernel can't run.
 The resend write uses tagged `field`/value pairs followed by `alternate`
 and the untouched second list. Values may themselves contain either tag.
 Resend reads and the native table remain unchanged.
@@ -177,7 +181,11 @@ get (Yojson's, byte for byte) and what each table operation does
 pure part, `soma build --no-image` on a unikernel that runs a node
 program). What Sandbox doesn't give yet is the program's to supply, in
 `nio_world`: a message's bytes on a peer link (`w_wire`: the binary signs
-it with RSA) and starting a CI check (`w_check`). Each operation:
+it with RSA), starting a CI check (`w_check`), the epoch's draw
+(`w_draw`), a transaction's signed line (`w_encode_tx`) and the check
+exclusions (`w_exclusions`). Decided blocks and signed votes are kept in
+memory beside their files, as the binary keeps them (`nio_store_op`).
+Each operation:
 
 | `node_op` | binary (shell.ml) | unikernel (node_sandbox.soma) |
 |---|---|---|
@@ -194,12 +202,14 @@ it with RSA) and starting a CI check (`w_check`). Each operation:
 | `IoRememberBroadcast height kind fields alternate` | prepend both message variants to resend memory | the tables' resend memory |
 | `IoMergeApplied repo v`, `IoMergeDiverged repo entry` | the applied-version table, the divergence list | the tables |
 | `IoCheck id repo head edits` | the CI job: a fresh clone, the edits, the CI command as a process; its result comes back as a `check_result` event | `w_check`: a CI service, which needs Soma's "services" item (HTTP POST with a timeout) |
+| `IoBlock height`, `IoHeight`, `IoSignedVote slot`, `IoSignedBody slot` | the decided-block and signed-vote tables beside blocks.log and signed.log, the height; absent is `false` | the stores (`nio_store_op`), filled by `IoStore` and `IoSignVote` |
+| `IoPeerCount` | the genesis peers, counted | the peer links, counted |
+| `IoDraw`, `IoEncodeTx nonce fields`, `IoCheckExclusions` | the epoch's draw (Byzantine flag, chain length, link secret); a transaction signed with the node's key; the fields this node won't check, `field`-tagged, then `alternate` and the excluded alternates | `w_draw`, `w_encode_tx` (RSA again), `w_exclusions` |
 | `IoConnAdmit`, `IoConnClose`, `IoJobFlood`, `IoJobExpire` | admit, refuse or close a socket; kill a job's process | nothing to do: a unikernel's links are its listen handlers', and it runs no processes |
 
 Not yet operations, still bindings of their own (the next parts of U-1):
-the remaining node table reads (peer membership, nonce-flood and divergence
-flags now use boolean operations; other reads need results, as
-`Sandbox.io`'s binds have; clock and served timestamps already have results),
+the status facts (checkout heads, divergences, limit information, local
+time),
 the snapshot (Soma's "storage" still), the merge's git work (reset, probe,
 read, write, remove, commit), the listener and
 accepted connections (links), SHA-256 and RSA (Soma's item), and git,

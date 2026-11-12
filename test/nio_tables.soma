@@ -25,6 +25,17 @@ served (t : nio_tables) (who first : string) : nanswer :=
 after (now : float) (t : nio_tables) (ops : list node_op) : nio_tables :=
   fold_left (fun t op => match nio_table_op now t op with Some (_, t') => t' | None => t end) ops t.
 
+stores (t : nio_tables) (ops : list node_op) : nio_tables :=
+  fold_left (fun t op => match nio_store_op 0%float t op with Some (_, t') => t' | None => t end) ops t.
+
+stored (t : nio_tables) (op : node_op) : nanswer :=
+  match nio_store_op 0%float t op with Some (a, _) => a | None => (false,(9%float,["not the stores'"])) end.
+
+t2 : nio_tables :=
+  stores nio_empty [IoStore "1" ["a"], IoStore "2" ["b", "c"], IoStore "1" ["a2"],
+                    IoSignVote "prevote/3/0" "v1" ["prevote", "3"], IoSignVote "prevote/3/0" "v2" ["prevote", "3", "x"],
+                    IoSetHeight "3"].
+
 t1 : nio_tables :=
   after 100%float nio_empty
     [IoTimer "350" ["timeout", "commit", "2", "0"], IoQueue ["a"], IoQueue ["b"],
@@ -62,7 +73,15 @@ checks : list string := [
   check "logging, the clock, storage and links aren't the tables'"
     (match nio_table_op 0%float nio_empty (IoLog "x"), nio_table_op 0%float nio_empty IoClock,
            nio_table_op 0%float nio_empty (IoStore "1" []), nio_table_op 0%float nio_empty (IoSendAll []) with
-     | None, None, None, None => true | _, _, _, _ => false end)
+     | None, None, None, None => true | _, _, _, _ => false end),
+  check "a stored block reads back, one a height"
+    (match stored t2 (IoBlock "1"), stored t2 (IoBlock "2"), stored t2 (IoBlock "9") with
+     | (true, (_, ["a2"])), (true, (_, ["b", "c"])), (false, (_, [])) => true | _, _, _ => false end),
+  check "the signed vote a slot, and its body"
+    (match stored t2 (IoSignedVote "prevote/3/0"), stored t2 (IoSignedBody "prevote/3/0"), stored t2 (IoSignedVote "prevote/4/0") with
+     | (true, (_, ["v2"])), (true, (_, ["prevote", "3", "x"])), (false, (_, [])) => true | _, _, _ => false end),
+  check "the height reads back" (match stored t2 IoHeight with (true, (_, ["3"])) => true | _ => false end),
+  check "the stores hand the tables' operations on" (match stored t2 IoNonceFlooded with (false, (_, [])) => true | _ => false end)
 ].
 
 main := print_lines checks.

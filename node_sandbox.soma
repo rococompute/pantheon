@@ -21,7 +21,16 @@ Record nio_world := {
       signed JSON line) *)
   w_wire : list string -> string;
   (** start the CI check of a bid's edits; its result comes back as an event *)
-  w_check : string -> string -> string -> list string -> io unit }.
+  w_check : string -> string -> string -> list string -> io unit;
+  (** this epoch's draw: the Byzantine flag, the chain's length and the
+      link secret, as the binary's [h_draw] *)
+  w_draw : list string;
+  (** a transaction's signed line, for its nonce and fields (the binary's
+      [encode_tx]: signing again) *)
+  w_encode_tx : string -> list string -> string;
+  (** the fields this node won't check and the excluded alternates, in
+      [IoCheckExclusions]'s wire form *)
+  w_exclusions : list string }.
 
 (** The interpreter's state: the operations' tables and the peer links,
     in genesis order, by name. *)
@@ -60,15 +69,35 @@ Fixpoint nio_nth_peer (k : nat) (ps : list (string * connection)) : list connect
   | _ :: rest, S j => nio_nth_peer j rest
   end.
 
+(** a count in decimal, as the binary's [string_of_int] *)
+Fixpoint nio_show_digits (fuel n : nat) (acc : string) : string :=
+  match fuel with
+  | 0 => acc
+  | S f =>
+      let acc' := Stdlib.Strings.String.String (Ascii.ascii_of_nat (48 + Nat.modulo n 10)) acc in
+      if Nat.ltb n 10 then acc' else nio_show_digits f (Nat.div n 10) acc'
+  end.
+nio_show_nat (n : nat) : string := nio_show_digits (S n) n Stdlib.Strings.String.EmptyString.
+
 nio_index (s : string) : nat :=
   fst (nio_nat_digits (Stdlib.Strings.String.list_ascii_of_string s) 0).
+
+(** An operation of the tables or the in-memory stores (decided blocks,
+    signed votes, the height), at Sandbox's clock. *)
+nio_kernel_stores (s : nio_kernel) (op : node_op) : io (nanswer * nio_kernel) :=
+  ms <- monotonic_ms ;;
+  match nio_store_op (nio_seconds ms) (k_tables s) op with
+  | Some (answer, t) => ret (answer, nio_kernel_tables s t)
+  | None => ret (ans_flag false, s)
+  end.
 
 (** One operation: the answer the binary's [node_io] gives, and the new
     state. Logging prints; the clock is Sandbox's; storage appends or
     writes the named file; peer sends go on the links; a CI check asks
     [w_check]; connection and job control have nothing to do in a
     unikernel (its links are its listen handlers', and it runs no
-    processes); the rest is the tables'. *)
+    processes); the draw, signing a transaction and the check exclusions
+    are [nio_world]'s; the rest is the tables' and the stores'. *)
 nio_kernel_op (w : nio_world) (s : nio_kernel) (op : node_op)
     : io (nanswer * nio_kernel) :=
   match op with
@@ -76,10 +105,14 @@ nio_kernel_op (w : nio_world) (s : nio_kernel) (op : node_op)
   | IoClock => ms <- monotonic_ms ;; ret (ans_time (nio_seconds ms), s)
   | IoStore height txs =>
       append_file "blocks.log" (Stdlib.Strings.String.append (nio_block_line height txs) nio_newline) ;;
-      ret (nio_ok, s)
+      nio_kernel_stores s op
   | IoSignVote slot vid fields =>
       append_file "signed.log" (Stdlib.Strings.String.append (nio_vote_line slot vid fields) nio_newline) ;;
-      ret (nio_ok, s)
+      nio_kernel_stores s op
+  | IoDraw => ret (ans_data true (w_draw w), s)
+  | IoPeerCount => ret (ans_data true [nio_show_nat (List.length (k_peers s))], s)
+  | IoEncodeTx nonce fields => ret (ans_data true [w_encode_tx w nonce fields], s)
+  | IoCheckExclusions => ret (ans_data true (w_exclusions w), s)
   | IoWriteStatus text => write_file "status.txt" text ;; ret (nio_ok, s)
   | IoSendAll fields => nio_send_each (List.map snd (k_peers s)) (w_wire w fields) ;; ret (nio_ok, s)
   | IoSendPeer index fields =>
@@ -94,12 +127,7 @@ nio_kernel_op (w : nio_world) (s : nio_kernel) (op : node_op)
   | IoConnClose _ => ret (nio_ok, s)
   | IoJobFlood _ => ret (nio_ok, s)
   | IoJobExpire _ => ret (nio_ok, s)
-  | _ =>
-      ms <- monotonic_ms ;;
-      match nio_table_op (nio_seconds ms) (k_tables s) op with
-      | Some (answer, t) => ret (answer, nio_kernel_tables s t)
-      | None => ret (ans_flag false, s)
-      end
+  | _ => nio_kernel_stores s op
   end.
 
 (** A node program, run by the unikernel: each operation in order, each

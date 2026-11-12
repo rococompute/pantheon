@@ -6,17 +6,26 @@ Import nodeio node_sandbox.
 
 world : nio_world :=
   {| w_wire := nio_json_strings;
-     w_check := fun id _ _ _ => print (Stdlib.Strings.String.append "check asked: " id) |}.
+     w_check := fun id _ _ _ => print (Stdlib.Strings.String.append "check asked: " id);
+     w_draw := ["false", "1", "secret"];
+     w_encode_tx := fun nonce fields => nio_json_strings (nonce :: fields);
+     w_exclusions := ["alternate"] |}.
 
 (** A decided block as node.soma's outputs make it: logged, stored, the
-    height set, the status written, a timer armed; a flag read decides. *)
+    height set, the status written, a timer armed; the block and the peer
+    count read back. *)
 demo : nprog bool :=
   ndo (IoLog "decided 1") (fun _ =>
   ndo (IoStore "1" ["tx ""a""", "tx2"]) (fun _ =>
   ndo (IoSetHeight "2") (fun _ =>
   ndo (IoWriteStatus "height 2") (fun _ =>
   ndo (IoTimer "350" ["timeout", "commit", "2", "0"]) (fun _ =>
-  nand (nexec IoNonceFlooded) (fun _ => nexec (IoLog "flooded already"))))))).
+  nbind (nask (IoBlock "1")) (fun block =>
+  nbind (nask IoPeerCount) (fun peers =>
+  nand (nexec (IoLog (match ans_found block with
+                      | Some (tx :: _) => Stdlib.Strings.String.append tx (ans_one peers)
+                      | _ => "no block" end)))
+       (fun _ => nexec (IoLog "read back"))))))))).
 
 main : io unit :=
   r <- run_kernel world demo {| k_tables := nio_empty; k_peers := [] |} ;;

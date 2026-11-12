@@ -827,7 +827,6 @@ let node_queue_empty id = (lookup_handle id).h_queue_empty ()
 let node_job_signal_codes () =
   List.map string_of_int [Sys.sigkill; Sys.sigterm; Sys.sigsegv; Sys.sigabrt; Sys.sigint]
 let node_job_complete id job result = (lookup_handle id).h_job_complete job result
-let node_check_exclusions id = (lookup_handle id).h_check_exclusions ()
 let node_plain_text s = plain_text s
 let node_ci_launch id req out tree ci = (lookup_handle id).h_ci_launch req out tree ci
 (* a model call's I/O: node.soma's perform_llm decides and builds the prompt *)
@@ -931,13 +930,23 @@ let node_io id op =
       (match h.h_last_served who first with Some time -> (true, (time, [])) | None -> (false, (0., [])))
   | [ "mark_served"; who; first; timestamp ] ->
       h.h_mark_served who first (node_float_of_digits timestamp); (true, (0., []))
+  | [ "draw" ] -> let byz, (limit, secret) = h.h_draw in (true, (0., [ byz; limit; secret ]))
+  | [ "block"; height ] ->
+      (match h.h_block height with Some txs -> (true, (0., txs)) | None -> (false, (0., [])))
+  | [ "height" ] -> (true, (0., [ h.h_current_height () ]))
+  | [ "peer_count" ] -> (true, (0., [ h.h_peer_count () ]))
+  | [ "signed_vote"; slot ] ->
+      (match h.h_signed_vote slot with Some vid -> (true, (0., [ vid ])) | None -> (false, (0., [])))
+  | [ "signed_body"; slot ] ->
+      (match h.h_signed_body slot with Some body -> (true, (0., body)) | None -> (false, (0., [])))
+  | "encode_tx" :: nonce :: fields -> (true, (0., [ h.h_encode_tx nonce fields ]))
+  | [ "check_exclusions" ] ->
+      let denied, excluded = h.h_check_exclusions () in
+      (true, (0., List.concat_map (fun d -> [ "field"; d ]) denied @ ("alternate" :: excluded)))
   | _ -> fail "unknown node operation %s" (String.concat " " op)
 let node_conns id = (lookup_handle id).h_conns ()
-let node_draw id = (lookup_handle id).h_draw
-let node_block id height = (lookup_handle id).h_block height
 (* Reads/writes and authenticated socket sends; catch-up policy is Soma.
    The clock is the "clock" arm of node_io. *)
-let node_current_height id = (lookup_handle id).h_current_height ()
 let node_checkout_heads id = (lookup_handle id).h_checkout_heads ()
 let node_divergences id = (lookup_handle id).h_divergences ()
 let node_limit_info id = (lookup_handle id).h_limit_info ()
@@ -946,9 +955,6 @@ let node_held_requests id = (lookup_handle id).h_held_requests ()
 let node_held_store id requests probing = (lookup_handle id).h_held_store requests probing; true
 let node_local_time until =
   let tm = Unix.localtime until in Printf.sprintf "%02d:%02d" tm.Unix.tm_hour tm.Unix.tm_min
-let node_encode_tx id nonce fields = (lookup_handle id).h_encode_tx nonce fields
-let node_signed_vote id slot = (lookup_handle id).h_signed_vote slot
-let node_signed_body id slot = (lookup_handle id).h_signed_body slot
 (* signed.log's bytes, raw, and noting one vote Soma read from them (without
    appending it again); Soma's log_lines splits them and signed_log_entry
    parses each line *)
@@ -956,7 +962,6 @@ let node_signed_text id = (lookup_handle id).h_signed_text
 let node_signed_restore id slot vid fields = (lookup_handle id).h_signed_restore slot vid fields; true
 (* a startup Soma refuses: the message on stderr, exit 1, as `fail` *)
 let node_fail msg : bool = fail "%s" msg
-let node_peer_count id = (lookup_handle id).h_peer_count ()
 (* Node metadata for peer lines. Soma gates the parse, reads the members
    from node_json_tokens' tokens (node.soma's node_line_parts), and decides
    whether to verify and which event the fields carry. *)

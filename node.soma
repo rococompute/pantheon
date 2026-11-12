@@ -504,41 +504,44 @@ broadcast_plan (byz : string) (peers : nat) (fields : list string)
       end
   end.
 
-(** An output action as a node program. Most are one operation
-    ([action_io]); a submission signs (a binding still), then tracks, logs,
-    queues and sends; a catch-up block is read (a binding still) and sent.
-    Each [ndo] goes on only when its operation was carried out, as the
-    [&&] chain this replaces did, and a binding read sits in the
-    continuation after the operations before it, so it happens when it did. *)
-action_prog (h : node_t) (action : output_action) : nprog bool :=
+(** An output action as a node program, with no binding of its own: most
+    are one operation ([action_io]); a submission is signed ([IoEncodeTx]),
+    then tracked, logged, queued and sent unless the node is silent; a
+    catch-up block is read ([IoBlock]) and sent. Each [ndo] goes on only
+    when its operation was carried out, as the [&&] chain this replaced did,
+    and each read is an operation in its place in that order. *)
+action_prog (action : output_action) : nprog bool :=
   match action with
   | PublishTransaction nonce fields message =>
-      let raw := node_encode_tx h nonce fields in
+      nbind (nask (IoEncodeTx nonce fields)) (fun signed =>
+      let raw := ans_one signed in
       ndo (IoTrackTx raw) (fun _ =>
       nand (match message with Some text => nexec (IoLog text) | None => NDone true end) (fun _ =>
       ndo (IoQueue ["tx", raw]) (fun _ =>
-      match submission_send (fst (node_draw h)) raw with
+      nbind (nask IoDraw) (fun draw =>
+      match submission_send (fst (ans_draw draw)) raw with
       | None => NDone true
       | Some fields => nexec (IoSendAll fields)
-      end)))
+      end)))))
   | ReadPeerBlock who k =>
-      match catchup_send who k (node_block h (show k)) with
+      nbind (nask (IoBlock (show k))) (fun block =>
+      match catchup_send who k (ans_found block) with
       | None => NDone true
       | Some (peer, fields) => nexec (IoPeerSend peer fields)
-      end
+      end)
   | _ => match action_io action with Some op => nexec op | None => NDone true end
   end.
 
 (** The actions in order, stopping at the first not carried out. Each is
     built when the ones before it have run. *)
-Fixpoint actions_prog (h : node_t) (actions : list output_action) : nprog bool :=
+Fixpoint actions_prog (actions : list output_action) : nprog bool :=
   match actions with
   | [] => NDone true
-  | action :: rest => nand (action_prog h action) (fun _ => actions_prog h rest)
+  | action :: rest => nand (action_prog action) (fun _ => actions_prog rest)
   end.
 
 carry_output_actions (h : node_t) (actions : list output_action) : bool :=
-  run_shell h (actions_prog h actions).
+  run_shell h (actions_prog actions).
 
 (** A decided merge: the same edits on this node's checkout, committed the
     same way on every node. A repository this node doesn't have is said, a
@@ -1272,7 +1275,7 @@ check_apply_tree (plan : check_apply_plan) (lie_hash : string) : string :=
     CI, or return the event, in the old order. Events an immediate CI start
     failure queued come back with these, so they stay in this turn. *)
 check_apply_events (h : node_t) (id out ci raw : string) : list (list string) :=
-  let plan := check_apply_plan_of (fst (node_draw h)) ci raw in
+  let plan := check_apply_plan_of (fst (ans_draw (run_shell h (nask IoDraw)))) ci raw in
   let lying := match plan with CheckApplyTree _ true _ => true | _ => false end in
   let lie_hash := if lying then check_lie_tree id else "" in
   let noted := if lying then io_log h "FAULT INJECTION: naming a wrong tree" else true in
@@ -1495,52 +1498,74 @@ perform_llm (h : node_t) (id kind prompt : string) (ctx : list string) : bool :=
   | LlmAsk => io_log h (llm_ask_text backend kind id calls max) && llm_call h id kind prompt ctx
   end.
 
-perform_output (h : node_t) (out : list string) : bool :=
+(** The status file: its facts are still bindings (the checkouts'
+    heads, the divergences, the limit), so it stays a function for now. *)
+perform_status (h : node_t) (lines : list string) : bool :=
+  let heads := node_checkout_heads h in
+  let bad := node_divergences h in
+  let now := io_now h in
+  let (until, info) := node_limit_info h in
+  let (backend, detail) := info in
+  let (held, reason) := detail in
+  let limited := status_limit_active now until in
+  let clock := if limited then node_local_time until else "" in
+  io_do h (IoWriteStatus (status_output lines heads bad limited backend clock held reason)).
+
+(** What an output does, as a node program: its reads are operations
+    ([IoDraw], [IoBlock], [IoHeight], [IoPeerCount], the signed-vote
+    table, the check exclusions), and so is everything it does. The
+    status file, a merge and a model call are still functions over
+    bindings: the program is just their result. *)
+output_prog (h : node_t) (out : list string) : nprog bool :=
   match plan_output out with
-  | SetTimer ms ev => io_do h (IoTimer ms ev)
-  | WriteLog text => io_do h (IoLog text)
+  | SetTimer ms ev => nexec (IoTimer ms ev)
+  | WriteLog text => nexec (IoLog text)
   | RevealLink term =>
-      let (byz, chain) := node_draw h in
+      nbind (nask IoDraw) (fun draw =>
+      let (byz, chain) := ans_draw draw in
       let (limit, secret) := chain in
-      carry_output_actions h (reveal_plan byz limit secret term)
+      actions_prog (reveal_plan byz limit secret term))
   | DecidedBlock height txs =>
-      carry_output_actions h (decided_plan height txs (node_block h height))
-  | SetHeight height => io_do h (IoSetHeight height)
+      nbind (nask (IoBlock height)) (fun block =>
+      actions_prog (decided_plan height txs (ans_found block)))
+  | SetHeight height => nexec (IoSetHeight height)
   | CatchupPeer who first =>
-      let now := io_now h in
-      let last := io_served_at h who first in
-      let (byz, _) := node_draw h in
-      carry_output_actions h (catchup_plan who first (node_current_height h)
-                               now last (io_read_bool h (IoPeerExists who)) (seq byz "silent"))
-  | WriteStatus lines =>
-      let heads := node_checkout_heads h in
-      let bad := node_divergences h in
-      let now := io_now h in
-      let (until, info) := node_limit_info h in
-      let (backend, detail) := info in
-      let (held, reason) := detail in
-      let limited := status_limit_active now until in
-      let clock := if limited then node_local_time until else "" in
-      io_do h (IoWriteStatus (status_output lines heads bad limited backend clock held reason))
+      nbind (nask IoClock) (fun clock =>
+      nbind (nask (IoServedAt who first)) (fun last =>
+      nbind (nask IoDraw) (fun draw =>
+      nbind (nask IoHeight) (fun current =>
+      nbind (nask (IoPeerExists who)) (fun has_peer =>
+      actions_prog (catchup_plan who first (ans_one current) (ans_float clock)
+                      (served_result last) (fst has_peer) (seq (fst (ans_draw draw)) "silent")))))))
+  | WriteStatus lines => NDone (perform_status h lines)
   | SubmitTransaction nonce fields =>
-      carry_output_actions h (submission_plan (fst (node_draw h)) (io_read_bool h IoNonceFlooded) nonce fields)
+      nbind (nask IoDraw) (fun draw =>
+      nbind (nask IoNonceFlooded) (fun flooded =>
+      actions_prog (submission_plan (fst (ans_draw draw)) (fst flooded) nonce fields)))
   | Broadcast fields =>
-      let (byz, _) := node_draw h in
-      let n := num (node_peer_count h) in
+      nbind (nask IoDraw) (fun draw =>
+      nbind (nask IoPeerCount) (fun count =>
+      let byz := fst (ans_draw draw) in
+      let n := num (ans_one count) in
       match broadcast_subject fields with
-      | None => carry_output_actions h (broadcast_plan byz n fields None None None)
+      | None => actions_prog (broadcast_plan byz n fields None None None)
       | Some (k, ht, r, vid) =>
           let slot := broadcast_key k ht r in
-          carry_output_actions h (broadcast_plan byz n fields (Some (k, ht, r, vid))
-            (node_signed_vote h slot) (node_signed_body h slot))
-      end
+          nbind (nask (IoSignedVote slot)) (fun vote =>
+          nbind (nask (IoSignedBody slot)) (fun body =>
+          actions_prog (broadcast_plan byz n fields (Some (k, ht, r, vid))
+                          (ans_found_one vote) (ans_found body))))
+      end))
   | CheckRequest id r head edits =>
-      let (denied, excluded) := node_check_exclusions h in
-      io_do h (check_request_op id r head edits denied excluded)
-  | MergeRequest r v tree bid task bidder spec edits => perform_merge h r v tree bid task bidder spec edits
-  | LlmRequest id kind prompt ctx => perform_llm h id kind prompt ctx
-  | LegacyOutput _ => true
+      nbind (nask IoCheckExclusions) (fun ex =>
+      let (denied, excluded) := ans_exclusions ex in
+      nexec (check_request_op id r head edits denied excluded))
+  | MergeRequest r v tree bid task bidder spec edits => NDone (perform_merge h r v tree bid task bidder spec edits)
+  | LlmRequest id kind prompt ctx => NDone (perform_llm h id kind prompt ctx)
+  | LegacyOutput _ => NDone true
   end.
+
+perform_output (h : node_t) (out : list string) : bool := run_shell h (output_prog h out).
 
 (** Effects return whether they were carried out, and the loop keeps the
     new state only when they were: a unit result would be a cast the

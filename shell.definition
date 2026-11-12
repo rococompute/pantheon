@@ -72,14 +72,19 @@ node_remember_block : string -> string -> list string -> bool.
 (** Boolean reads peer_exists WHO, nonce_flooded and is_diverged REPO return
     (value, 0): false is a table value, not an interpreter failure. *)
 node_io : string -> list string -> bool * (float * list string).
-(** Small I/O bindings; output tags and decisions live in Soma. *)
-node_draw : string -> string * (string * string).
-node_block : string -> string -> option (list string).
+(** The data reads are node_io operations too (nodeio.soma's IoDraw,
+    IoBlock, IoHeight, IoPeerCount, IoSignedVote, IoSignedBody,
+    IoEncodeTx, IoCheckExclusions): "draw" answers [byz, limit, secret],
+    "block" H the stored block's transactions (found or not), "height"
+    and "peer_count" one decimal, "signed_vote" SLOT the value id and
+    "signed_body" SLOT the message signed there (found or not),
+    "encode_tx" NONCE FIELDS the transaction signed with the node's key,
+    "check_exclusions" the --no-check names then the scope's, framed as
+    "field" NAME... "alternate" NAME... . *)
 forever : forall {A : Type}, (A -> A) -> A -> unit.
 
-(** Metadata and table reads. The clock is node_io's "clock" operation.
+(** Metadata reads. The clock and the height are node_io operations.
     Soma chooses whether and which catch-up blocks to send. *)
-node_current_height : string -> string.
 (** Verify a peer line's signature; Soma asks only for lines that are
     neither this node's own nor an already-refused transaction. *)
 (** The item's cap as decimal text, and metadata reads. Soma scans each
@@ -101,8 +106,6 @@ node_release_state : string -> float * bool.
 node_held_requests : string -> list (string * string * string * list string).
 node_held_store : string -> list (string * string * string * list string) -> bool -> bool.
 node_local_time : float -> string.
-(** Signing, retry-table access and socket writes; Soma selects submissions. *)
-node_encode_tx : string -> string -> list string -> string.
 
 (** A model call's I/O; node.soma's perform_llm decides and assembles the
     prompt. The call count, bumped for this call, and the budget; holding a
@@ -223,9 +226,6 @@ node_merge_write : string -> string -> string -> string -> string.
 node_merge_remove : string -> string -> string -> string.
 node_merge_commit : string -> string -> string -> string -> string -> string -> string -> string -> option (string * string).
 
-(** Vote table, resend memory and socket writes. Soma chooses the message. *)
-node_signed_vote : string -> string -> option string.
-node_signed_body : string -> string -> option (list string).
 (** signed.log at startup: the file's bytes, raw ("" when there is none;
     node.soma's log_lines splits them); noting one vote Soma read from them
     (node.soma's signed_log_entry), not appended again; and refusing to
@@ -233,8 +233,3 @@ node_signed_body : string -> string -> option (list string).
 node_signed_text : string -> string.
 node_signed_restore : string -> string -> string -> list string -> bool.
 node_fail : string -> bool.
-node_peer_count : string -> string.
-
-(** Raw --no-check names and genesis scope exclusions. Soma decides whether
-    to launch a check or queue an unchecked-repository fact. *)
-node_check_exclusions : string -> list string * list string.
