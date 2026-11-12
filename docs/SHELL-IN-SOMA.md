@@ -232,6 +232,17 @@ separate work; this status does not mark `.plan`.
 
 ## Done so far
 
+- U-1, peer links and job control: admitting, refusing or evicting an
+  offered connection (`IoConnAdmit`), closing one (`IoConnClose`), and
+  killing a job over its output cap (`IoJobFlood`) or past its limit
+  (`IoJobExpire`) are node operations interpreted by shell.ml's `node_io`;
+  the `node_conn_admit`, `node_conn_close`, `node_job_flood` and
+  `node_job_expire` bindings are gone. `expire_ops` gives the deadline
+  pass's exact operations. Sandbox has `listen`, `connect` and `close` for
+  links but no admission hold or eviction, and no processes, so it lacks
+  the job kills. `test/link-job-ops.sh` runs the operations through a pure
+  scripted interpreter.
+
 - Step 5, the line cap and admission's plan: the buffered-line byte cap
   is Soma's `peer_line_cap` (60 quoted transactions at `tx_byte_cap`,
   the old `max_line`); the `node_line_limit` binding and the shell's

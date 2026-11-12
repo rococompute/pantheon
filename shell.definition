@@ -150,7 +150,6 @@ node_job_complete : string -> string -> string -> list (list string).
     the shell stores that list and, when the feed says the job is over,
     signals the process once (node.soma job_feed). Reading the bytes stays
     here. *)
-node_job_flood : string -> string -> bool.
 (** A text's bytes with control characters (other than tab and newline)
     and DEL made spaces: what the market's plain_text accepts. A byte map
     here, so a large check output isn't turned into a list of characters;
@@ -181,12 +180,10 @@ node_float_text : float -> string.
     live connections and their last-activity times, and closing one.
     The line byte cap is Soma's too (node.soma peer_line_cap, from
     tx_byte_cap). The shell only accepts, reads and closes sockets. *)
-node_conn_admit : string -> string -> string -> string -> bool.
 node_conns : string -> list (string * float).
 (** A connection's buffered read chunks live in Soma's node state:
     the shell only reads the bytes, Soma splits them into lines
     (node.soma feed_chunks) and keeps what is left. *)
-node_conn_close : string -> string -> bool.
 (** Sample the turn clock, dial and resend. Soma polls the inbox, decides which
     jobs are past their limit and which timers fire, replaces the timer
     list with the ones still waiting, and chooses the select wait. The
@@ -204,7 +201,6 @@ node_turn_now : string -> float.
 node_timers : string -> list (float * list string).
 node_set_timers : string -> list (float * list string) -> bool.
 node_jobs : string -> list (string * (float * (float * bool))).
-node_job_expire : string -> string -> bool.
 node_queue_empty : string -> bool.
 
 (** A decided merge's I/O; node.soma's perform_merge decides. The version
