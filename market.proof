@@ -1087,3 +1087,22 @@ Qed.
 Theorem removed_agent_does_not_lead : forall (m : obj) (a : string),
   on_roster m a = false -> is_leader m a = false.
 Proof. intros m a H. unfold is_leader. rewrite H. apply Bool.andb_false_r. Qed.
+
+Theorem chain_admission_keeps_committing_roster : forall verify policy changes block_at h leader sender fields next,
+  commit_chain_roster_fields verify policy changes block_at h leader sender fields = Some next ->
+  roster_at (roster_genesis policy) next h = roster_at (roster_genesis policy) changes h.
+Proof.
+  intros verify policy changes block_at h leader sender fields next H.
+  unfold commit_chain_roster_fields in H.
+  eapply certified_admission_keeps_commit_height_roster. exact H.
+Qed.
+
+Theorem chain_admission_keeps_committing_quorums : forall verify policy changes block_at h leader sender fields next,
+  commit_chain_roster_fields verify policy changes block_at h leader sender fields = Some next ->
+  quorum_at (roster_genesis policy) next h = quorum_at (roster_genesis policy) changes h /\
+  reject_quorum_at (roster_genesis policy) next h = reject_quorum_at (roster_genesis policy) changes h.
+Proof.
+  intros verify policy changes block_at h leader sender fields next H.
+  unfold commit_chain_roster_fields in H.
+  eapply certified_admission_keeps_commit_height_quorums. exact H.
+Qed.

@@ -1,0 +1,131 @@
+(** Exact committed-chain fixtures. Every certificate signs the actual full
+    preceding block, including its certificate envelope. No local peer view. *)
+Import util shell consensus market.
+From Stdlib Require ExtrOcamlNatInt.
+check (label : string) (ok : bool) : string := append (if ok then "ok " else "FAIL ") label.
+g4 : list string := ["a", "b", "c", "d"].
+g7 : list string := ["a", "b", "c", "d", "e", "f", "g"].
+seal (a : string) (fs : list string) : string := hash_list ("chain" :: a :: fs).
+verify (a sg : string) (fs : list string) : bool := seq sg (seal a fs).
+vote (h : nat) (body : list string) (a : string) : signed_precommit :=
+  let fs := ["precommit", show h, "2", "0", hash_list body] in
+  {| commit_signer := a; commit_signature := seal a fs; commit_fields := fs |}.
+certificate (h : nat) (body names : list string) : commit_certificate :=
+  {| certificate_height := h; certificate_round := 2; certificate_votes := map (vote h body) names |}.
+framed (c : commit_certificate) (txs : list string) : list string :=
+  match frame_commit_block c txs with Some b => b | None => [] end.
+Fixpoint committed (h : nat) (names : list string) : list string :=
+  match h with
+  | 0 => ["genesis"]
+  | S prev => match prev with
+      | 0 => ["first block"]
+      | S _ => framed (certificate prev (committed prev names) names) ["tx", show h]
+      end
+  end.
+blocks (names : list string) (h : nat) : option (list string) :=
+  if (0 <? h) && (h <? 5) then Some (committed h names) else None.
+b4 : nat -> option (list string) := blocks ["a", "b", "c"].
+b7 : nat -> option (list string) := blocks ["a", "b", "c", "d", "e"].
+none_cert (c : option commit_certificate) : bool := match c with None => true | _ => false end.
+none_window (w : option (list (list string))) : bool := match w with None => true | _ => false end.
+none_change (c : option (list (string * bool * nat))) : bool := match c with None => true | _ => false end.
+change (c : option (list (string * bool * nat))) : list (string * bool * nat) := match c with Some cs => cs | None => [] end.
+policy (roster : list string) (minimum : nat) : roster_policy :=
+  {| roster_genesis := roster; roster_minimum := minimum; roster_delay := 1; roster_absent_blocks := 3 |}.
+p4 : roster_policy := policy g4 3.
+p7 : roster_policy := policy g7 6.
+request (p : roster_policy) (cs : list (string * bool * nat)) (bs : nat -> option (list string))
+    (h : nat) (sender : string) (fields : list string) : option (list (string * bool * nat)) :=
+  commit_chain_roster_fields verify p cs bs h "a" sender fields.
+leave4 := request p4 [] b4 5 "a" ["roster", "leave", "d"].
+leave7 := request p7 [] b7 5 "a" ["roster", "leave", "g"].
+join4 := request p4 (change leave4) (fun _ => None) 7 "d" ["roster", "join", "d"].
+window (bs : nat -> option (list string)) := certified_chain_window verify (fun _ => g4) bs 5 3.
+replace_block (h : nat) (replacement : list string) (k : nat) : option (list string) :=
+  if k =? h then Some replacement else b4 k.
+head_cert := certificate 3 (committed 3 ["a", "b", "c"]) ["a", "b", "c"].
+carrier := committed 4 ["a", "b", "c"].
+malicious (c : commit_certificate) := replace_block 4 (framed c ["tx", "4"]).
+check_frame (limit : nat) (block : list string) : bool :=
+  match bounded_commit_block limit block with None => true | _ => false end.
+old_roster (h : nat) : list string := if h <? 4 then g4 else ["a", "b", "c"].
+old_carrier := framed (certificate 3 (committed 3 ["a", "b", "c"]) ["a", "b", "d"]) [].
+exact (cs : option (list (string * bool * nat))) (a : string) (join : bool) (e : nat) : bool :=
+  match cs with Some [(x, j, h)] => seq a x && Bool.eqb join j && (h =? e) | _ => false end.
+
+main := print_lines [
+  check "full committed-chain window is exact and ordered"
+    (match window b4 with Some [a,b,c] => same_roster a ["a","b","c"] && same_roster b a && same_roster c a | _ => false end),
+  check "carrier comes from h+1"
+    (match prior_chain_commit_at (fun _ => g4) b4 5 3 with Some c => certificate_height c =? 3 | _ => false end),
+  check "candidate carrier excluded" (none_cert (prior_chain_commit_at (fun _ => g4) b4 4 3)),
+  check "future carrier excluded" (none_cert (prior_chain_commit_at (fun _ => g4) b4 3 3)),
+  check "height zero refused" (none_cert (prior_chain_commit_at (fun _ => g4) b4 5 0)),
+  check "missing carrier refused" (none_cert (prior_chain_commit_at (fun _ => g4) (fun _ => None) 5 3)),
+  check "wrong certificate height refused"
+    (none_cert (prior_chain_commit_at (fun _ => g4) (malicious {| head_cert with certificate_height := 2 |}) 5 3)),
+  check "too few committed carriers cannot satisfy absence threshold"
+    (none_change (request p4 [] b4 4 "a" ["roster","leave","d"])),
+  check "missing intermediate carrier fails whole window"
+    (none_window (window (fun h => if h =? 3 then None else b4 h))),
+  check "missing signed block fails whole window"
+    (none_window (window (fun h => if h =? 1 then None else b4 h))),
+  check "changed signed block fails verification"
+    (none_window (window (replace_block 3 ["different block"]))),
+  check "signature verifier still required"
+    (none_window (certified_chain_window (fun _ _ _ => false) (fun _ => g4) b4 5 3)),
+  check "bad signature refused"
+    (none_window (window (malicious {| head_cert with certificate_votes :=
+      map (fun v => {| v with commit_signature := "forged" |}) (certificate_votes head_cert) |}))),
+  check "duplicate signer refused"
+    (none_window (window (malicious (certificate 3 (committed 3 ["a","b","c"]) ["a","b","a"])))),
+  check "outsider signer refused"
+    (none_window (window (malicious (certificate 3 (committed 3 ["a","b","c"]) ["a","b","x"])))),
+  check "insufficient quorum refused"
+    (none_window (window (malicious (certificate 3 (committed 3 ["a","b","c"]) ["a","b"])))),
+  check "oversized witness section refused before authentication"
+    (none_cert (prior_chain_commit_at (fun _ => g4)
+      (malicious (certificate 3 (committed 3 ["a","b","c"]) ["a","b","c","d","a"])) 5 3)),
+  check "exact roster-sized certificate allowed structurally"
+    (negb (none_cert (prior_chain_commit_at (fun _ => g4)
+      (malicious (certificate 3 (committed 3 ["a","b","c"]) g4)) 5 3))),
+  check "bound uses certificate-height roster"
+    (negb (none_cert (prior_chain_commit_at (fun h => if h =? 3 then g4 else []) b4 5 3))),
+  check "empty height roster refuses witness section"
+    (none_cert (prior_chain_commit_at (fun _ => []) b4 5 3)),
+  check "old member signs on historical roster"
+    (match certified_chain_window verify old_roster (replace_block 4 old_carrier) 5 1 with
+     Some [names] => same_roster names ["a","b","d"] | _ => false end),
+  check "current roster cannot replace historical roster"
+    (none_window (certified_chain_window verify (fun _ => ["a","b","c"]) (replace_block 4 old_carrier) 5 1)),
+  check "transaction tail excluded from certificate size limit"
+    (match bounded_commit_block 3 (framed head_cert ["heartbeat-v1","commit-v1","", "many transaction bytes"]) with
+     Some (_,ts) => same_roster ts ["heartbeat-v1","commit-v1","", "many transaction bytes"] | _ => false end),
+  check "bad envelope version refused" (check_frame 4 ["heartbeat-v2","3","commit-v1","3","2"]),
+  check "nonnumeric size refused" (check_frame 4 ["heartbeat-v1","x"]),
+  check "declared section above cap refused" (check_frame 4 ["heartbeat-v1","32"]),
+  check "truncated bounded section refused" (check_frame 4 ["heartbeat-v1","31","commit-v1","3","2"]),
+  check "zero count window is empty"
+    (match certified_chain_window verify (fun _ => []) (fun _ => None) 0 0 with Some [] => true | _ => false end),
+  check "leave admitted with delayed height" (exact leave4 "d" false 7),
+  check "seven to six leave admitted" (exact leave7 "g" false 7),
+  check "commit-height roster unchanged"
+    ((length (roster_at g4 (change leave4) 5) =? 4) && (length (roster_at g7 (change leave7) 5) =? 7)),
+  check "four to three quorums before and after"
+    ((quorum_at g4 (change leave4) 6 =? 3) && (reject_quorum_at g4 (change leave4) 6 =? 2) &&
+     (quorum_at g4 (change leave4) 7 =? 3) && (reject_quorum_at g4 (change leave4) 7 =? 1)),
+  check "seven to six quorums before and after"
+    ((quorum_at g7 (change leave7) 6 =? 5) && (reject_quorum_at g7 (change leave7) 6 =? 3) &&
+     (quorum_at g7 (change leave7) 7 =? 5) && (reject_quorum_at g7 (change leave7) 7 =? 2)),
+  check "absent leader alone cannot bypass minimum"
+    (none_change (request (policy g4 4) [] b4 5 "a" ["roster","leave","d"])),
+  check "only leader can remove"
+    (none_change (request p4 [] b4 5 "b" ["roster","leave","d"])),
+  check "rejoin independent of missing certificates"
+    (match join4 with Some [("d", false, 7), ("d", true, 9)] => true | _ => false end),
+  check "rejoin activation and quorums"
+    ((length (roster_at g4 (change join4) 8) =? 3) && (length (roster_at g4 (change join4) 9) =? 4) &&
+     (reject_quorum_at g4 (change join4) 9 =? 2)),
+  check "another sender cannot rejoin removed member"
+    (none_change (request p4 (change leave4) (fun _ => None) 7 "a" ["roster","join","d"]))
+].

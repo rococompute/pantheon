@@ -296,3 +296,18 @@ This is a framing and lookup prerequisite, not a live format migration:
 block construction/validation, signature retention, persistence/replay and
 roster dispatch still need to adopt it together. Existing live blocks are
 unchanged and no removal path is enabled by the envelope alone.
+
+M-3's `prior_chain_commit_at` reuses the `heartbeat-v1` block envelope. At
+candidate height h it consults only carriers strictly before h, with each
+certificate's field count bounded by three header fields plus seven times
+the roster size at the certificate's own height. `certified_chain_window`
+authenticates those certificates against the full committed blocks they
+signed, using the existing verifier and historical rosters.
+`commit_chain_roster_fields` supplies that lookup to existing certified
+admission: the newest eligible certificate is h-2, joins require no history,
+and committing-height rosters and quorums remain unchanged. The caller must
+supply the unique committed block lookup, never a local peer cache. The
+adapter does not yet enable live framing, witness retention, automatic
+removal proposals or transaction dispatch. `test/chain-roster.sh` checks
+actual nested carriers, bounds, cutoff heights, authentication failures,
+delayed removal and rejoin; real-node adoption remains separate work.
