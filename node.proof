@@ -1126,7 +1126,7 @@ Proof.
 Qed.
 
 Theorem served_result_presence : forall now,
-  served_result (true, now) = Some now /\ served_result (false, now) = None.
+  served_result (true,(now,[])) = Some now /\ served_result (false,(now,[])) = None.
 Proof. intros; split; reflexivity. Qed.
 
 Theorem remember_peer_is_served_operation : forall h who first now,
@@ -1151,7 +1151,7 @@ Proof.
 Qed.
 
 Example honest_vote_trace :
-  ntrace (fun _ => (true, 0%float))
+  ntrace (fun _ => (true,(0%float,[])))
     (actions_prog "h" (broadcast_plan "" 2 ["prevote", "1", "0", "-1", "v", "nil"]
        (Some ("prevote", "1", "0", "v")) None None)) =
   [IoSignVote "prevote/1/0" "v" ["prevote", "1", "0", "-1", "v", "nil"],

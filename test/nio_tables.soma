@@ -19,8 +19,8 @@ near (a b : float) : bool := PrimFloat.ltb (PrimFloat.abs (PrimFloat.sub a b)) 0
 
 dec (s : string) : option float := nio_decimal s.
 
-served (t : nio_tables) (who first : string) : bool * float :=
-  match nio_table_op 0%float t (IoServedAt who first) with Some (a, _) => a | None => (false, 9%float) end.
+served (t : nio_tables) (who first : string) : nanswer :=
+  match nio_table_op 0%float t (IoServedAt who first) with Some (a, _) => a | None => (false,(9%float,[])) end.
 
 after (now : float) (t : nio_tables) (ops : list node_op) : nio_tables :=
   fold_left (fun t op => match nio_table_op now t op with Some (_, t') => t' | None => t end) ops t.
@@ -52,7 +52,7 @@ checks : list string := [
     (match t_timers t1 with [(due, ev)] => near due 100.35%float && (match ev with ["timeout", "commit", "2", "0"] => true | _ => false end) | _ => false end),
   check "events queue in order" (match t_queue t1 with [["a"], ["b"]] => true | _ => false end),
   check "the height drops resend memory below it" (seq (t_height t1) "4" && (match t_mine t1 with [(h, _)] => seq h "5" | _ => false end)),
-  check "the served table keeps the newest time a key" (match served t1 "codex" "7" with (true, f) => float_eq f 12.5%float | _ => false end),
+  check "the served table keeps the newest time a key" (match served t1 "codex" "7" with (true, (f, _)) => float_eq f 12.5%float | _ => false end),
   check "a key never served is absent" (match served t1 "grok" "7" with (false, _) => true | _ => false end),
   check "one applied version a repository" (match t_applied t1 with [("calc", "2")] => true | _ => false end),
   check "a diverged repository reads back" (match nio_table_op 0%float t1 (IoIsDiverged "soma"), nio_table_op 0%float t1 (IoIsDiverged "calc") with

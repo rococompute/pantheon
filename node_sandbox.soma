@@ -70,10 +70,10 @@ nio_index (s : string) : nat :=
     unikernel (its links are its listen handlers', and it runs no
     processes); the rest is the tables'. *)
 nio_kernel_op (w : nio_world) (s : nio_kernel) (op : node_op)
-    : io ((bool * PrimFloat.float) * nio_kernel) :=
+    : io (nanswer * nio_kernel) :=
   match op with
   | IoLog text => print text ;; ret (nio_ok, s)
-  | IoClock => ms <- monotonic_ms ;; ret ((true, nio_seconds ms), s)
+  | IoClock => ms <- monotonic_ms ;; ret (ans_time (nio_seconds ms), s)
   | IoStore height txs =>
       append_file "blocks.log" (Stdlib.Strings.String.append (nio_block_line height txs) nio_newline) ;;
       ret (nio_ok, s)
@@ -88,7 +88,7 @@ nio_kernel_op (w : nio_world) (s : nio_kernel) (op : node_op)
       nio_send_each (List.map snd (List.filter (fun p => nio_eq (fst p) who) (k_peers s))) (w_wire w fields) ;;
       ret (nio_ok, s)
   | IoPeerExists who =>
-      ret ((List.existsb (fun p => nio_eq (fst p) who) (k_peers s), PrimFloat.zero), s)
+      ret (ans_flag (List.existsb (fun p => nio_eq (fst p) who) (k_peers s)), s)
   | IoCheck id repo head edits => w_check w id repo head edits ;; ret (nio_ok, s)
   | IoConnAdmit _ _ _ => ret (nio_ok, s)
   | IoConnClose _ => ret (nio_ok, s)
@@ -98,7 +98,7 @@ nio_kernel_op (w : nio_world) (s : nio_kernel) (op : node_op)
       ms <- monotonic_ms ;;
       match nio_table_op (nio_seconds ms) (k_tables s) op with
       | Some (answer, t) => ret (answer, nio_kernel_tables s t)
-      | None => ret ((false, PrimFloat.zero), s)
+      | None => ret (ans_flag false, s)
       end
   end.
 

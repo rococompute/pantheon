@@ -138,13 +138,26 @@ io_of_wire (w : list string) : option node_op :=
     What the node does, as data, the way a Sandbox program is a value of
     [Sandbox.io]: [NDone a] has finished with [a]; [NStep op k] does [op],
     then goes on as [k] says, given the operation's answer. An answer is
-    what [node_io] gives: [(true, 0)] for an effect carried out, the
-    clock's [(true, now)], a table read's [(value, 0)]. Building a program
+    a [nanswer], what [node_io] gives. Building a program
     does nothing; an interpreter runs it, so the binary and a unikernel
     can run the same one. *)
+(** An operation's answer, the same shape for every operation so one
+    binding carries them all: whether it was carried out (or the boolean a
+    table read gives), a number (the clock's time, a served timestamp) and
+    data (what a read returns: a stored block's transactions, the height).
+    An effect's is [(true, (0, []))]. *)
+nanswer : Type := bool * (PrimFloat.float * list string).
+
+ans_ok : nanswer := (true, (PrimFloat.zero, [])).
+ans_flag (b : bool) : nanswer := (b, (PrimFloat.zero, [])).
+ans_time (t : PrimFloat.float) : nanswer := (true, (t, [])).
+ans_data (found : bool) (l : list string) : nanswer := (found, (PrimFloat.zero, l)).
+ans_float (a : nanswer) : PrimFloat.float := fst (snd a).
+ans_list (a : nanswer) : list string := snd (snd a).
+
 Inductive nprog (A : Type) : Type :=
 | NDone (a : A)
-| NStep (op : node_op) (k : bool * PrimFloat.float -> nprog A).
+| NStep (op : node_op) (k : nanswer -> nprog A).
 
 Arguments NDone {A} a.
 Arguments NStep {A} op k.
@@ -157,7 +170,7 @@ Fixpoint nbind {A B : Type} (p : nprog A) (f : A -> nprog B) : nprog B :=
   end.
 
 (** One operation; the result is its answer. *)
-nask (op : node_op) : nprog (bool * PrimFloat.float) := NStep op (fun r => NDone r).
+nask (op : node_op) : nprog nanswer := NStep op (fun r => NDone r).
 
 (** One operation; the result is whether it was carried out (an effect)
     or the boolean it read (a table read): the first of its answer. *)
@@ -182,14 +195,14 @@ Fixpoint nall (ps : list (unit -> nprog bool)) : nprog bool :=
 
 (** The operations a program does, in order, when [ans] answers each: what
     any interpreter that gives those answers carries out. *)
-Fixpoint ntrace {A : Type} (ans : node_op -> bool * PrimFloat.float) (p : nprog A) : list node_op :=
+Fixpoint ntrace {A : Type} (ans : node_op -> nanswer) (p : nprog A) : list node_op :=
   match p with
   | NDone _ => []
   | NStep op k => op :: ntrace ans (k (ans op))
   end.
 
 (** And what it ends with. *)
-Fixpoint nresult {A : Type} (ans : node_op -> bool * PrimFloat.float) (p : nprog A) : A :=
+Fixpoint nresult {A : Type} (ans : node_op -> nanswer) (p : nprog A) : A :=
   match p with
   | NDone a => a
   | NStep op k => nresult ans (k (ans op))
@@ -343,7 +356,7 @@ nio_decimal (s : string) : option PrimFloat.float :=
 nio_num (s : string) : PrimFloat.float :=
   match nio_decimal s with Some f => f | None => PrimFloat.zero end.
 
-nio_ok : bool * PrimFloat.float := (true, PrimFloat.zero).
+nio_ok : nanswer := ans_ok.
 
 nio_with_timers (t : nio_tables) (v : list (PrimFloat.float * list string)) : nio_tables :=
   {| t_timers := v; t_queue := t_queue t; t_served := t_served t; t_flood := t_flood t;
@@ -388,7 +401,7 @@ nio_with_height (t : nio_tables) (v : string) : nio_tables :=
     applied versions keep one entry a key. [None]: the operation isn't a
     table's (logging, the clock, storage, peer links, CI, jobs). *)
 nio_table_op (now : PrimFloat.float) (t : nio_tables) (op : node_op)
-    : option ((bool * PrimFloat.float) * nio_tables) :=
+    : option (nanswer * nio_tables) :=
   match op with
   | IoTimer ms ev =>
       Some (nio_ok, nio_with_timers t ((PrimFloat.add now (PrimFloat.div (nio_num ms) (nio_small 1000)), ev) :: t_timers t))
@@ -399,16 +412,16 @@ nio_table_op (now : PrimFloat.float) (t : nio_tables) (op : node_op)
                       (List.filter (fun m => PrimFloat.leb floor (nio_num (fst m))) (t_mine t)))
   | IoTrackTx raw => Some (nio_ok, nio_with_txs t ((now, raw) :: t_txs t))
   | IoMarkNonceFlood => Some (nio_ok, nio_with_flood t true)
-  | IoNonceFlooded => Some ((t_flood t, PrimFloat.zero), t)
+  | IoNonceFlooded => Some (ans_flag (t_flood t), t)
   | IoMergeApplied r v =>
       Some (nio_ok, nio_with_applied t ((r, v) :: List.filter (fun p => negb (nio_eq (fst p) r)) (t_applied t)))
   | IoMergeDiverged r entry => Some (nio_ok, nio_with_diverged t ((r, entry) :: t_diverged t))
-  | IoIsDiverged r => Some ((nio_has r (t_diverged t), PrimFloat.zero), t)
+  | IoIsDiverged r => Some (ans_flag (nio_has r (t_diverged t)), t)
   | IoRememberBroadcast h kind fields alt => Some (nio_ok, nio_with_mine t ((h, (kind, (fields, alt))) :: t_mine t))
   | IoServedAt who first =>
       match nio_find (nio_key_is who first) (t_served t) with
-      | Some time => Some ((true, time), t)
-      | None => Some ((false, PrimFloat.zero), t)
+      | Some time => Some (ans_time time, t)
+      | None => Some (ans_flag false, t)
       end
   | IoMarkServed who first stamp =>
       Some (nio_ok, nio_with_served t (((who, first), nio_num stamp) ::

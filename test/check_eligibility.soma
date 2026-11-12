@@ -1,5 +1,5 @@
 (** Deterministic check launch and refusal plans; no running node. *)
-Import util shell node.
+Import util shell nodeio node.
 From Stdlib Require ExtrOcamlNatInt.
 Extract Inlined Constant Nat.div => "(fun a b -> if b = 0 then 0 else a / b)".
 Extract Inlined Constant Nat.modulo => "(fun a b -> if b = 0 then a else a mod b)".

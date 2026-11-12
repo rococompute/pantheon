@@ -66,10 +66,12 @@ node_remember_block : string -> string -> list string -> bool.
     The tagged prefix frames two arbitrary lists without a count. The only
     way the node logs, sets a timer, queues an event, sends on a peer link,
     does those writes, starts a CI check, or reads the clock. An effect returns (true, 0); "clock" returns (true, now),
-    the same gettimeofday value the node used to read directly. *)
+    the same gettimeofday value the node used to read directly. The answer
+    is nodeio.soma's nanswer: (carried out or the boolean read, (a number,
+    data)); an effect's is (true, (0, [])). *)
 (** Boolean reads peer_exists WHO, nonce_flooded and is_diverged REPO return
     (value, 0): false is a table value, not an interpreter failure. *)
-node_io : string -> list string -> bool * float.
+node_io : string -> list string -> bool * (float * list string).
 (** Small I/O bindings; output tags and decisions live in Soma. *)
 node_draw : string -> string * (string * string).
 node_block : string -> string -> option (list string).

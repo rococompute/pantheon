@@ -1,5 +1,5 @@
 (** Fixed operation scripts: no sockets, node or clock. *)
-Import util shell node.
+Import util shell nodeio node.
 check (label : string) (ok : bool) : string := append (if ok then "ok " else "FAIL ") label.
 Fixpoint wires_eq (a b : list (list string)) : bool :=
   match a,b with

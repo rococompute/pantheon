@@ -890,31 +890,31 @@ let node_remember_block id h txs = (lookup_handle id).h_remember_block h txs
    place the node logs, sets a timer, queues an event, sends on a peer
    link, stores a block, sets the height, writes the status file, logs a
    signed vote, tracks its own transaction, marks the nonce flood, starts
-   a CI check, records a merge applied or diverged, or reads the clock. Effects return (true, 0.); "clock" returns
-   (true, Unix.gettimeofday ()). A unikernel would interpret the same
+   a CI check, records a merge applied or diverged, or reads the clock. Effects return (true, (0., [])); "clock" returns
+   (true, (Unix.gettimeofday (), [])): nodeio.soma's nanswer. A unikernel would interpret the same
    operations through Sandbox. *)
 let node_io id op =
   let h = lookup_handle id in
   match op with
-  | [ "log"; text ] -> h.h_log text; (true, 0.)
-  | "timer" :: ms :: ev -> h.h_timer ms ev; (true, 0.)
-  | "push" :: ev -> h.h_push ev; (true, 0.)
-  | "send_all" :: fields -> h.h_send_all fields; (true, 0.)
-  | "send_peer" :: index :: fields -> h.h_send_peer index fields; (true, 0.)
-  | "peer_send" :: who :: fields -> h.h_peer_send who fields; (true, 0.)
-  | "store" :: height :: txs -> h.h_store height txs; (true, 0.)
-  | [ "set_height"; height ] -> h.h_height height; (true, 0.)
-  | [ "write_status"; text ] -> h.h_write_status text; (true, 0.)
-  | "sign_vote" :: slot :: vid :: fields -> h.h_remember_vote slot vid fields; (true, 0.)
-  | [ "track_tx"; raw ] -> h.h_track_tx raw; (true, 0.)
-  | [ "mark_nonce_flood" ] -> h.h_mark_nonce_flood (); (true, 0.)
-  | "check" :: req :: r :: head :: edits -> h.h_run_check req r head edits; (true, 0.)
-  | [ "merge_applied"; r; v ] -> h.h_merge_set_applied r v; (true, 0.)
-  | [ "merge_diverged"; r; entry ] -> h.h_merge_note_diverged r entry; (true, 0.)
-  | [ "clock" ] -> (true, Unix.gettimeofday ())
-  | [ "peer_exists"; who ] -> (h.h_peer_exists who, 0.)
-  | [ "nonce_flooded" ] -> (h.h_nonce_flooded (), 0.)
-  | [ "is_diverged"; repo ] -> (h.h_merge_diverged repo, 0.)
+  | [ "log"; text ] -> h.h_log text; (true, (0., []))
+  | "timer" :: ms :: ev -> h.h_timer ms ev; (true, (0., []))
+  | "push" :: ev -> h.h_push ev; (true, (0., []))
+  | "send_all" :: fields -> h.h_send_all fields; (true, (0., []))
+  | "send_peer" :: index :: fields -> h.h_send_peer index fields; (true, (0., []))
+  | "peer_send" :: who :: fields -> h.h_peer_send who fields; (true, (0., []))
+  | "store" :: height :: txs -> h.h_store height txs; (true, (0., []))
+  | [ "set_height"; height ] -> h.h_height height; (true, (0., []))
+  | [ "write_status"; text ] -> h.h_write_status text; (true, (0., []))
+  | "sign_vote" :: slot :: vid :: fields -> h.h_remember_vote slot vid fields; (true, (0., []))
+  | [ "track_tx"; raw ] -> h.h_track_tx raw; (true, (0., []))
+  | [ "mark_nonce_flood" ] -> h.h_mark_nonce_flood (); (true, (0., []))
+  | "check" :: req :: r :: head :: edits -> h.h_run_check req r head edits; (true, (0., []))
+  | [ "merge_applied"; r; v ] -> h.h_merge_set_applied r v; (true, (0., []))
+  | [ "merge_diverged"; r; entry ] -> h.h_merge_note_diverged r entry; (true, (0., []))
+  | [ "clock" ] -> (true, (Unix.gettimeofday (), []))
+  | [ "peer_exists"; who ] -> (h.h_peer_exists who, (0., []))
+  | [ "nonce_flooded" ] -> (h.h_nonce_flooded (), (0., []))
+  | [ "is_diverged"; repo ] -> (h.h_merge_diverged repo, (0., []))
   | "remember_broadcast" :: height :: kind :: parts ->
       let rec unpack rev = function
         | "alternate" :: alternate -> (List.rev rev, alternate)
@@ -922,15 +922,15 @@ let node_io id op =
         | _ -> fail "malformed node resend record"
       in
       let fields, alternate = unpack [] parts in
-      h.h_remember_broadcast height kind fields alternate; (true, 0.)
-  | [ "conn_admit"; oid; mode; target ] -> h.h_conn_admit oid mode target; (true, 0.)
-  | [ "conn_close"; cid ] -> h.h_conn_close cid; (true, 0.)
-  | [ "job_flood"; jid ] -> h.h_job_flood jid; (true, 0.)
-  | [ "job_expire"; jid ] -> h.h_job_expire jid; (true, 0.)
+      h.h_remember_broadcast height kind fields alternate; (true, (0., []))
+  | [ "conn_admit"; oid; mode; target ] -> h.h_conn_admit oid mode target; (true, (0., []))
+  | [ "conn_close"; cid ] -> h.h_conn_close cid; (true, (0., []))
+  | [ "job_flood"; jid ] -> h.h_job_flood jid; (true, (0., []))
+  | [ "job_expire"; jid ] -> h.h_job_expire jid; (true, (0., []))
   | [ "served_at"; who; first ] ->
-      (match h.h_last_served who first with Some time -> (true, time) | None -> (false, 0.))
+      (match h.h_last_served who first with Some time -> (true, (time, [])) | None -> (false, (0., [])))
   | [ "mark_served"; who; first; timestamp ] ->
-      h.h_mark_served who first (node_float_of_digits timestamp); (true, 0.)
+      h.h_mark_served who first (node_float_of_digits timestamp); (true, (0., []))
   | _ -> fail "unknown node operation %s" (String.concat " " op)
 let node_conns id = (lookup_handle id).h_conns ()
 let node_draw id = (lookup_handle id).h_draw

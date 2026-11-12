@@ -43,13 +43,13 @@ Proof.
 Qed.
 
 Example nexec_is_one_operation : forall z,
-  ntrace (fun _ => (true, z)) (nexec (IoLog "hi")) = [IoLog "hi"] /\
-  nresult (fun _ => (true, z)) (nexec (IoLog "hi")) = true /\
-  nresult (fun _ => (false, z)) (nexec IoNonceFlooded) = false.
+  ntrace (fun _ => (true,(z,[]))) (nexec (IoLog "hi")) = [IoLog "hi"] /\
+  nresult (fun _ => (true,(z,[]))) (nexec (IoLog "hi")) = true /\
+  nresult (fun _ => (false,(z,[]))) (nexec IoNonceFlooded) = false.
 Proof. intro z. repeat split; reflexivity. Qed.
 
 (** An operation not carried out stops the rest: only the first is done. *)
 Example ndo_stops_when_refused : forall z,
-  ntrace (fun _ => (false, z))
+  ntrace (fun _ => (false,(z,[])))
     (ndo (IoLog "a") (fun _ => nexec (IoLog "b"))) = [IoLog "a"].
 Proof. reflexivity. Qed.

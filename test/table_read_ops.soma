@@ -3,7 +3,7 @@
     and jobs past their limit, run through a pure scripted interpreter that
     answers each operation from a fixed list and records what it saw. No
     node, no sockets, no timing. *)
-Import util shell node.
+Import util shell nodeio node.
 From Stdlib Require ExtrOcamlNatInt.
 Extract Inlined Constant Nat.div => "(fun a b -> if b = 0 then 0 else a / b)".
 Extract Inlined Constant Nat.modulo => "(fun a b -> if b = 0 then a else a mod b)".

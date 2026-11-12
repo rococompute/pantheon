@@ -307,12 +307,12 @@ io_read_bool (h : node_t) (op : node_op) : bool := run_shell h (nexec op).
 
 (** The clock, through the same interpreter. The second of the pair is the
     time; the first only says the read happened. *)
-io_now (h : node_t) : float := snd (run_shell h (nask IoClock)).
+io_now (h : node_t) : float := ans_float (run_shell h (nask IoClock)).
 
 (** A missing served record uses false as presence, not effect failure.
     The raw timestamp result is never passed through display formatting. *)
-served_result (answer : bool * float) : option float :=
-  if fst answer then Some (snd answer) else None.
+served_result (answer : nanswer) : option float :=
+  if fst answer then Some (ans_float answer) else None.
 io_served_at (h : node_t) (who first : string) : option float :=
   served_result (run_shell h (nask (IoServedAt who first))).
 
