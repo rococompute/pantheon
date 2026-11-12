@@ -2158,7 +2158,9 @@ run_node (home : string) (flags : list string) : unit :=
   let guarded := if signed_needs_snapshot missing found then node_fail signed_missing_text else true in
   if restored && guarded then
     let st := run_boot h empty_node (boot_events h) in
-    let n := replay_count h in
+    (* blocks.log is replayed in Soma (run_boot's block_log), so the count
+       is the height it reached; the shell's own count stays 0 since then *)
+    let n := show (height (cons st) - height (cons empty_node)) in
     let logged := if seq n "0" then true else io_log h (append "replayed " (append n " blocks from disk")) in
     let st := match snap with Some c => restore_cons st c | None => st end in
     if logged then forever (node_tick h) (start_node h st) else print_text ""
