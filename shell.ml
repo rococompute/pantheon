@@ -653,7 +653,7 @@ let max_conns_per_host = 16
 (* a line's longest: a proposal of max_block_txs transactions, quoted *)
 let max_line = 2 * max_tx_bytes * 60
 
-type job = { jid : string; jfd : Unix.file_descr; jpid : int; mutable jchunks : string list;
+type job = { jid : string; jfd : Unix.file_descr; jpid : int;
              jdone : string -> unit; jstarted : float; jlimit : float; jclean : unit -> unit }
 
 let split_addr s =
@@ -740,8 +740,6 @@ let argv () = Array.to_list Sys.argv |> List.tl
    built, and the loop drives them by this name (docs/SHELL-IN-SOMA.md 2). *)
 type node_handle = { h_events : float -> string list list;
                      h_job_complete : string -> string -> string list list;
-                     h_job_buffer : string -> string list;
-                     h_job_store_buffer : string -> string list -> unit;
                      h_job_flood : string -> unit;
                      h_check_result : string -> bool -> string -> string -> string -> unit;
                      h_llm_budget : unit -> string * string;
@@ -829,8 +827,6 @@ let node_jobs id = (lookup_handle id).h_jobs ()
 let node_job_expire id jid = (lookup_handle id).h_job_expire jid; true
 let node_queue_empty id = (lookup_handle id).h_queue_empty ()
 let node_job_complete id job result = (lookup_handle id).h_job_complete job result
-let node_job_buffer id jid = (lookup_handle id).h_job_buffer jid
-let node_job_store_buffer id jid chunks = (lookup_handle id).h_job_store_buffer jid chunks; true
 let node_job_flood id jid = (lookup_handle id).h_job_flood jid; true
 let node_check_result id req ok tree why stage = (lookup_handle id).h_check_result req ok tree why stage; true
 (* a model call's I/O: node.soma's perform_llm decides and builds the prompt *)
@@ -840,6 +836,7 @@ let node_llm_start id req kind raw prompt ctx clean launch env = (lookup_handle 
 let node_tool_checkout id r = (lookup_handle id).h_tool_checkout r
 let node_self_exe () = self_exe
 let node_json_string s = Yojson.Safe.to_string (`String s)
+let node_reply_finish path text = (try Sys.remove path with _ -> ()); text
 let node_env_entries () = Array.to_list (Unix.environment ())
 (* a model's output: node.soma's reply_fields decides what it becomes.
    These bindings only report the cap and yojson's value as tokens. Where
@@ -1116,7 +1113,7 @@ let node_open packed home flags =
       Unix.close w; Unix.close ifd; Unix.close devnull;
       let jid = string_of_int !job_counter in
       incr job_counter;
-      jobs := { jid; jfd = r; jpid = pid; jchunks = []; jdone = on_done; jstarted = Unix.gettimeofday (); jlimit = limit;
+      jobs := { jid; jfd = r; jpid = pid; jdone = on_done; jstarted = Unix.gettimeofday (); jlimit = limit;
                 jclean = (fun () -> (try Sys.remove inp with _ -> ()); (try remove_tree_later cwd with _ -> ()); clean ()) } :: !jobs
     end
   in
@@ -1147,9 +1144,8 @@ let node_open packed home flags =
          let out = Filename.temp_file "pantheon-codex" ".txt" in
          start_job ~limit:(float_of_string limit_s) prog
            (List.map (fun a -> if a = "@OUT@" then out else a) args) ~stdin_text:prompt ~env:(Array.of_list env)
-           ~on_done:(fun t -> deliver ("codex_output" :: id :: kind :: prompt0 :: t ::
-             (try "1" :: read_file out :: ctx with _ -> "0" :: ctx)))
-           ~clean:(fun () -> try Sys.remove out with _ -> ())
+           ~on_done:(fun t -> deliver ("codex_file" :: id :: kind :: prompt0 :: t :: out :: ctx))
+           ~clean:ignore
      (* Soma's grok_request made the header text and the body (the prompt) *)
      | prog :: limit_s :: "grok" :: hdr_text :: args ->
          let hdr = Filename.temp_file "pantheon-h" ".txt" in
@@ -1428,7 +1424,7 @@ let node_open packed home flags =
         let flood = if Hashtbl.mem flooded j.jpid then "1" else "0" in
         Hashtbl.remove overtime j.jpid; Hashtbl.remove flooded j.jpid;
         Hashtbl.replace finished_jobs j.jid j;
-        push [ "job_finished"; j.jid; tag; value; timeout; flood; String.concat "" j.jchunks ])
+        push [ "job_finished"; j.jid; tag; value; timeout; flood ])
       (List.rev !finished);
     List.iter (fun p ->
         match p.out with
@@ -1465,8 +1461,6 @@ let node_open packed home flags =
             let evs = ref [] in
             while not (Queue.is_empty queue) do evs := Queue.pop queue :: !evs done;
             List.rev !evs);
-      h_job_buffer = (fun jid -> match List.find_opt (fun j -> j.jid = jid) !jobs with Some j -> j.jchunks | None -> []);
-      h_job_store_buffer = (fun jid chunks -> match List.find_opt (fun j -> j.jid = jid) !jobs with Some j -> j.jchunks <- chunks | None -> ());
       h_check_result = push_check_result;
       h_job_flood = (fun jid ->
         match List.find_opt (fun j -> j.jid = jid) !jobs with

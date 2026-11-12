@@ -122,10 +122,13 @@ node_llm_start : string -> string -> string -> string -> string -> list string -
 node_tool_checkout : string -> string -> (string * string) * bool.
 node_self_exe : unit -> string.
 node_json_string : string -> string.
+(** Reply-file I/O only: Soma decides whether to read it. Returning the
+    resolved text from cleanup preserves read-before-remove under extraction. *)
+node_reply_finish : string -> string -> string.
 (** What a model's output becomes is decided in Soma (node.soma's
     reply_events and reply_fields). node_llm_start gives the raw output event at once
     when the process couldn't start (none: it runs, and its output comes
-    back as an llm_output or codex_output event). The job-output cap as a decimal string;
+    back as an llm_output or codex_file event). The job-output cap as a decimal string;
     the byte offset of the first "{" and of the last "}" (none when that
     byte is absent); a JSON value, parsed by yojson, as tokens ("A" count
     key value..., "L" count value..., "S" text, "B" true/false, "U", "I"
@@ -144,8 +147,6 @@ node_job_complete : string -> string -> string -> list (list string).
     the shell stores that list and, when the feed says the job is over,
     signals the process once (node.soma job_feed). Reading the bytes stays
     here. *)
-node_job_buffer : string -> string -> list string.
-node_job_store_buffer : string -> string -> list string -> bool.
 node_job_flood : string -> string -> bool.
 (** A CI check's result, decided in node.soma (ci_outcome): request id,
     passed, the tree, why (made plain text here) and the stage ("", "ci" or
