@@ -1,0 +1,73 @@
+(** Fixed operation scripts: no sockets, node or clock. *)
+Import util shell node.
+check (label : string) (ok : bool) : string := append (if ok then "ok " else "FAIL ") label.
+Fixpoint wires_eq (a b : list (list string)) : bool :=
+  match a,b with
+  | [],[] => true
+  | x::xs,y::ys => eq_strs x y && wires_eq xs ys
+  | _,_ => false
+  end.
+reads_as (wire : list string) (op : node_op) : bool :=
+  match io_of_wire wire with Some parsed => eq_strs (io_wire parsed) (io_wire op) | None => false end.
+refused (wire : list string) : bool := match io_of_wire wire with None => true | _ => false end.
+ops (actions : list output_action) : list node_op := flat_map (fun a => match action_io a with Some op => [op] | None => [] end) actions.
+(** A strict interpreter: an unexpected operation or exhausted script fails,
+    false stops before mutating memory or interpreting later effects. Like
+    the binary, remembering prepends, it does not replace earlier heights. *)
+Fixpoint scripted (program : list node_op) (answers : list (list string * bool))
+    (memory : list (list string)) : bool * (list (list string) * list (list string)) :=
+  match program,answers with
+  | [],[] => (true,([],memory))
+  | op::rest,(expected,ok)::more =>
+      let wire := io_wire op in
+      if negb (eq_strs wire expected) then (false,([],memory)) else
+      if negb ok then (false,([wire],memory)) else
+      let next := match op with
+        | IoRememberBroadcast h k fields alt => (h::k::resend_fields fields ++ ("alternate"::alt))::memory
+        | _ => memory end in
+      let (done,result) := scripted rest more next in
+      let (trace,kept) := result in (done,(wire::trace,kept))
+  | _,_ => (false,([],memory))
+  end.
+script_is (program : list node_op) (answers : list (list string * bool))
+    (success : bool) (trace memory : list (list string)) : bool :=
+  let (done,result) := scripted program answers [] in
+  let (seen,kept) := result in Bool.eqb done success && wires_eq seen trace && wires_eq kept memory.
+message : list string := ["prevote","3","1","0","vid","val"].
+alternate : list string := ["prevote","3","1","0","","val"].
+record : node_op := IoRememberBroadcast "3" "all" message message.
+record_wire : list string := ["remember_broadcast","3","all","field","prevote","field","3","field","1","field","0","field","vid","field","val","alternate"] ++ message.
+record_memory : list string := ["3","all","field","prevote","field","3","field","1","field","0","field","vid","field","val","alternate"] ++ message.
+normal : list node_op := ops (broadcast_deliver "" 2 message).
+normal_wires : list (list string) := [record_wire, "send_all"::message].
+checks : list string := [
+  check "explicit wire" (eq_strs (io_wire record) record_wire),
+  check "explicit parse" (reads_as record_wire record),
+  check "empty lists" (reads_as ["remember_broadcast","0","all","alternate"] (IoRememberBroadcast "0" "all" [] [])),
+  check "empty field" (reads_as ["remember_broadcast","1","all","field","","alternate"] (IoRememberBroadcast "1" "all" [""] [])),
+  check "tags are values" (reads_as (io_wire (IoRememberBroadcast "field" "alternate" ["field","alternate",newline,""] ["alternate","field",""])) (IoRememberBroadcast "field" "alternate" ["field","alternate",newline,""] ["alternate","field",""])),
+  check "missing header" (refused ["remember_broadcast","3"]),
+  check "missing separator" (refused ["remember_broadcast","3","all"]),
+  check "missing field value" (refused ["remember_broadcast","3","all","field"]),
+  check "separator used as value still needs separator" (refused ["remember_broadcast","3","all","field","alternate"]),
+  check "untagged prefix refused" (refused ["remember_broadcast","3","all","x","alternate"]),
+  check "records before sending" (wires_eq (map io_wire normal) normal_wires),
+  check "successful script" (script_is normal [(record_wire,true),("send_all"::message,true)] true normal_wires [record_memory]),
+  check "failed remember stops send" (script_is normal [(record_wire,false),("send_all"::message,true)] false [record_wire] []),
+  check "failed send retains remember" (script_is normal [(record_wire,true),("send_all"::message,false)] false normal_wires [record_memory]),
+  check "unexpected operation refused" (script_is normal [(["wrong"],true)] false [] []),
+  check "empty script refuses effects" (script_is normal [] false [] []),
+  check "extra answers refused" (script_is [] [(record_wire,true)] false [] []),
+  check "double vote variants" (wires_eq (map io_wire (ops (broadcast_deliver "double-vote" 2 message))) [io_wire (IoRememberBroadcast "3" "each" message alternate), io_wire (IoSendPeer "0" message), io_wire (IoSendPeer "1" alternate)]),
+  check "silent no resend" (wires_eq (map io_wire (ops (broadcast_deliver "silent" 2 message))) []),
+  check "short ping no resend" (wires_eq (map io_wire (ops (broadcast_deliver "" 2 ["ping"]))) [io_wire (IoSendAll ["ping"])]),
+  check "equivocation records both variants" (let fields := ["proposal","3","1","0","vid","val"] in
+    let alt := ["proposal","3","1","0",hash_list ["equivocation","3","1"],"equivocation","3","1"] in
+    wires_eq (map io_wire (ops (broadcast_deliver "equivocate" 2 fields)))
+      [io_wire (IoRememberBroadcast "3" "each" fields alt), io_wire (IoSendPeer "0" fields), io_wire (IoSendPeer "1" alt)]),
+  check "other heights prepend without dropping old entries" (let later := IoRememberBroadcast "4" "all" [] [] in
+    script_is [record,later] [(record_wire,true),(io_wire later,true)] true [record_wire,io_wire later]
+      [["4","all","alternate"],record_memory]),
+  check "same height keeps both entries" (script_is [record,record] [(record_wire,true),(record_wire,true)] true [record_wire,record_wire] [record_memory,record_memory])
+].
+main := print_lines checks.

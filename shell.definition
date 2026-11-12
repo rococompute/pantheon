@@ -58,7 +58,9 @@ node_remember_block : string -> string -> list string -> bool.
     FIELDS..., "peer_send" PEER FIELDS..., "store" HEIGHT TXS...,
     "set_height" H, "write_status" TEXT, "sign_vote" SLOT VID FIELDS...,
     "track_tx" RAW, "mark_nonce_flood", "check" ID REPO HEAD EDITS...,
-    "merge_applied" REPO V, "merge_diverged" REPO ENTRY, "clock". The only
+    "merge_applied" REPO V, "merge_diverged" REPO ENTRY, "clock",
+    "remember_broadcast" HEIGHT KIND ("field" VALUE)... "alternate" ALT... .
+    The tagged prefix frames two arbitrary lists without a count. The only
     way the node logs, sets a timer, queues an event, sends on a peer link,
     does those writes, starts a CI check, or reads the clock. An effect returns (true, 0); "clock" returns (true, now),
     the same gettimeofday value the node used to read directly. *)
@@ -148,7 +150,6 @@ node_job_complete : string -> string -> string -> list (list string).
     the shell stores that list and, when the feed says the job is over,
     signals the process once (node.soma job_feed). Reading the bytes stays
     here. *)
-node_job_flood : string -> string -> bool.
 (** A text's bytes with control characters (other than tab and newline)
     and DEL made spaces: what the market's plain_text accepts. A byte map
     here, so a large check output isn't turned into a list of characters;
@@ -179,12 +180,10 @@ node_float_text : float -> string.
     live connections and their last-activity times, and closing one.
     The line byte cap is Soma's too (node.soma peer_line_cap, from
     tx_byte_cap). The shell only accepts, reads and closes sockets. *)
-node_conn_admit : string -> string -> string -> string -> bool.
 node_conns : string -> list (string * float).
 (** A connection's buffered read chunks live in Soma's node state:
     the shell only reads the bytes, Soma splits them into lines
     (node.soma feed_chunks) and keeps what is left. *)
-node_conn_close : string -> string -> bool.
 (** Sample the turn clock, dial and resend. Soma polls the inbox, decides which
     jobs are past their limit and which timers fire, replaces the timer
     list with the ones still waiting, and chooses the select wait. The
@@ -202,7 +201,6 @@ node_turn_now : string -> float.
 node_timers : string -> list (float * list string).
 node_set_timers : string -> list (float * list string) -> bool.
 node_jobs : string -> list (string * (float * (float * bool))).
-node_job_expire : string -> string -> bool.
 node_queue_empty : string -> bool.
 
 (** A decided merge's I/O; node.soma's perform_merge decides. The version
@@ -231,7 +229,6 @@ node_signed_body : string -> string -> option (list string).
 node_signed_text : string -> string.
 node_signed_restore : string -> string -> string -> list string -> bool.
 node_fail : string -> bool.
-node_remember_broadcast : string -> string -> string -> list string -> list string -> bool.
 node_peer_count : string -> string.
 
 (** Raw --no-check names and genesis scope exclusions. Soma decides whether

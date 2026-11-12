@@ -823,12 +823,10 @@ let node_turn_now id = (lookup_handle id).h_turn_now ()
 let node_timers id = (lookup_handle id).h_timers ()
 let node_set_timers id ts = (lookup_handle id).h_set_timers ts; true
 let node_jobs id = (lookup_handle id).h_jobs ()
-let node_job_expire id jid = (lookup_handle id).h_job_expire jid; true
 let node_queue_empty id = (lookup_handle id).h_queue_empty ()
 let node_job_signal_codes () =
   List.map string_of_int [Sys.sigkill; Sys.sigterm; Sys.sigsegv; Sys.sigabrt; Sys.sigint]
 let node_job_complete id job result = (lookup_handle id).h_job_complete job result
-let node_job_flood id jid = (lookup_handle id).h_job_flood jid; true
 let node_check_exclusions id = (lookup_handle id).h_check_exclusions ()
 let node_plain_text s = plain_text s
 let node_ci_launch id req out tree ci = (lookup_handle id).h_ci_launch req out tree ci
@@ -913,10 +911,20 @@ let node_io id op =
   | [ "merge_applied"; r; v ] -> h.h_merge_set_applied r v; (true, 0.)
   | [ "merge_diverged"; r; entry ] -> h.h_merge_note_diverged r entry; (true, 0.)
   | [ "clock" ] -> (true, Unix.gettimeofday ())
+  | "remember_broadcast" :: height :: kind :: parts ->
+      let rec unpack rev = function
+        | "alternate" :: alternate -> (List.rev rev, alternate)
+        | "field" :: value :: rest -> unpack (value :: rev) rest
+        | _ -> fail "malformed node resend record"
+      in
+      let fields, alternate = unpack [] parts in
+      h.h_remember_broadcast height kind fields alternate; (true, 0.)
+  | [ "conn_admit"; oid; mode; target ] -> h.h_conn_admit oid mode target; (true, 0.)
+  | [ "conn_close"; cid ] -> h.h_conn_close cid; (true, 0.)
+  | [ "job_flood"; jid ] -> h.h_job_flood jid; (true, 0.)
+  | [ "job_expire"; jid ] -> h.h_job_expire jid; (true, 0.)
   | _ -> fail "unknown node operation %s" (String.concat " " op)
-let node_conn_admit id oid mode target = (lookup_handle id).h_conn_admit oid mode target; true
 let node_conns id = (lookup_handle id).h_conns ()
-let node_conn_close id cid = (lookup_handle id).h_conn_close cid; true
 let node_draw id = (lookup_handle id).h_draw
 let node_block id height = (lookup_handle id).h_block height
 (* Reads/writes and authenticated socket sends; catch-up policy is Soma.
@@ -944,7 +952,6 @@ let node_signed_text id = (lookup_handle id).h_signed_text
 let node_signed_restore id slot vid fields = (lookup_handle id).h_signed_restore slot vid fields; true
 (* a startup Soma refuses: the message on stderr, exit 1, as `fail` *)
 let node_fail msg : bool = fail "%s" msg
-let node_remember_broadcast id height kind fields alt = (lookup_handle id).h_remember_broadcast height kind fields alt; true
 let node_peer_count id = (lookup_handle id).h_peer_count ()
 (* Node metadata for peer lines. Soma gates the parse, reads the members
    from node_json_tokens' tokens (node.soma's node_line_parts), and decides
@@ -1090,7 +1097,7 @@ let node_open packed home flags =
   (* jobs Soma stopped for running past their time limit (job_should_expire) *)
   let overtime = Hashtbl.create 8 in
   (* jobs stopped for printing more than any reply can be. Soma's job_feed
-     decides; node_job_flood marks the job and signals it once. The node
+     decides; the IoJobFlood operation marks the job and signals it once. The node
      holds a job's output in memory, and a check that prints forever (a
      bid's test running `yes`) would otherwise take the node down with it *)
   let flooded = Hashtbl.create 8 in

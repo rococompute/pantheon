@@ -218,8 +218,29 @@ params (m : obj) : list (string * nat) := getf m "params".
     has it. Empty unless genesis says *)
 excluded (m : obj) : list (string * string) := getf m "excluded".
 excludes (m : obj) (a r : string) : bool := existsb (fun x => seq (fst x) a && seq (snd x) r) (excluded m).
-(** the agents whose scope has repository r: all of them unless genesis excludes some *)
-scope (m : obj) (r : string) : list string := filter (fun a => negb (excludes m a r)) (agents m).
+
+(** M-3: the roster by height. A change: the agent, true to join (false to
+    leave), its effective height. The roster in effect at a height is the
+    genesis roster with every committed change whose effective height has
+    been reached applied in commit order. *)
+apply_change (roster : list string) (a : string) (join : bool) : list string :=
+  if join then (if mem a roster then roster else roster ++ [a]) else remove_s a roster.
+
+roster_at (genesis : list string) (changes : list (string * bool * nat)) (h : nat) : list string :=
+  fold_left (fun r ch => match ch with (a, join, e) => if e <=? h then apply_change r a join else r end)
+    changes genesis.
+
+(** the committed roster changes, in commit order; [agents] stays the
+    genesis roster. Empty unless a roster transaction was committed, and
+    then every rule below counts exactly as with the genesis roster. *)
+roster_changes (m : obj) : list (string * bool * nat) := getf m "roster_changes".
+(** the roster in effect at the market's height: rotation, bidder choice,
+    scope, merge quorums and the draw count it *)
+roster_now (m : obj) : list string := roster_at (agents m) (roster_changes m) (mheight m).
+on_roster (m : obj) (a : string) : bool := mem a (roster_now m).
+
+(** the agents on the roster whose scope has repository r: all of them unless genesis excludes some *)
+scope (m : obj) (r : string) : list string := filter (fun a => negb (excludes m a r)) (roster_now m).
 in_scope (m : obj) (a : string) (t : task) : bool := negb (excludes m a (trepo t)).
 
 (** Parameters, set at genesis. Block counts. *)
@@ -255,7 +276,8 @@ new_market (agents : list string) : obj :=
    ("tasks", ([] : list task) : Any), ("bids", ([] : list bid) : Any), ("nbids", 0 : Any), ("pending", (None : option proposal) : Any),
    ("nonces", ([] : list (string * nat)) : Any), ("lastbid", ([] : list (string * nat)) : Any),
    ("counters", ([] : list (string * nat)) : Any), ("params", ([] : list (string * nat)) : Any),
-   ("excluded", ([] : list (string * string)) : Any)].
+   ("excluded", ([] : list (string * string)) : Any),
+   ("roster_changes", ([] : list (string * bool * nat)) : Any)].
 
 (** Rotate a task's two-worker window through the nonleaders whose scope
     has the task's repository. A worker is
@@ -310,7 +332,9 @@ mark_stale (b : bid) : bid :=
   {| bidn := bidn b; btask := btask b; bidder := bidder b; base := base b; edits := edits b; note := note b;
      bst := bst b; stale := true; why := why b; votes := votes b |}.
 
-is_leader (m : obj) (a : string) : bool := negb (seq (leader m) "") && seq (leader m) a.
+(** a leader removed from the roster leads no more: its term ends at the
+    end of the block (maybe_end_term) and it can't act in it *)
+is_leader (m : obj) (a : string) : bool := negb (seq (leader m) "") && seq (leader m) a && on_roster m a.
 
 pending_bid_id (m : obj) : nat := match pending m with Some p => pbid p | None => 0 end.
 
@@ -404,13 +428,7 @@ removal_due (absent_blocks : nat) (a : string) (precommits : list (list string))
 
 effective_height (committed delay : nat) : nat := committed + S delay.
 
-(** a change: the agent, true to join (false to leave), its effective height *)
-apply_change (roster : list string) (a : string) (join : bool) : list string :=
-  if join then (if mem a roster then roster else roster ++ [a]) else remove_s a roster.
-
-roster_at (genesis : list string) (changes : list (string * bool * nat)) (h : nat) : list string :=
-  fold_left (fun r ch => match ch with (a, join, e) => if e <=? h then apply_change r a join else r end)
-    changes genesis.
+(* apply_change and roster_at are above, beside scope, which reads them *)
 
 quorum_at (genesis : list string) (changes : list (string * bool * nat)) (h : nat) : nat :=
   quorum (length (roster_at genesis changes h)).
@@ -500,8 +518,10 @@ commit_certified_roster_fields (verify : string -> string -> list string -> bool
 
 (** the roster a merge's quorums count: the agents whose scope has the bid's
     repository (all of them unless genesis excludes some) *)
-merge_n (m : obj) (p : proposal) : nat :=
-  length (match bid_by m (pbid p) with Some b => scope m (bid_repo m b) | None => agents m end).
+merge_roster (m : obj) (p : proposal) : list string :=
+  match bid_by m (pbid p) with Some b => scope m (bid_repo m b) | None => roster_now m end.
+
+merge_n (m : obj) (p : proposal) : nat := length (merge_roster m p).
 
 merge_quorum (m : obj) (p : proposal) : nat :=
   match param m "merge_approvals" with 0 => quorum (merge_n m p) | k => k end.
@@ -509,13 +529,32 @@ merge_quorum (m : obj) (p : proposal) : nat :=
 approvals (p : proposal) (age fb : nat) : nat :=
   1 + length (filter snd (pvotes p)) + (if (0 <? fb) && (fb <=? age) then 1 else 0).
 
+(** M-3: a merge counts only the votes of agents on the roster at this
+    height whose scope has the repository: a vote cast before its voter was
+    removed no longer counts, yes or no. The leader's implicit approval and
+    the bidder's fallback count the same way. With the genesis roster this
+    is [approvals]: every attestor, the leader and the bidder are in scope
+    already (apply refuses the others). *)
+counted_votes (m : obj) (p : proposal) : list (string * bool) :=
+  filter (fun v => mem (fst v) (merge_roster m p)) (pvotes p).
+
+counted_approvals (m : obj) (p : proposal) : nat :=
+  let on := merge_roster m p in
+  let fb := param m "fallback_blocks" in
+  let bidder_on := match bid_by m (pbid p) with Some b => mem (bidder b) on | None => true end in
+  (if mem (pby p) on then 1 else 0) + length (filter snd (counted_votes m p)) +
+  (if (0 <? fb) && (fb <=? mheight m - pat p) && bidder_on then 1 else 0).
+
+counted_noes (m : obj) (p : proposal) : nat :=
+  length (filter (fun v => negb (snd v)) (counted_votes m p)).
+
 settle (m : obj) : obj * list (list string) :=
   match pending m with
   | None => (m, [])
   | Some p =>
-      let no := length (filter (fun v => negb (snd v)) (pvotes p)) in
+      let no := counted_noes m p in
       let age := mheight m - pat p in
-      let yes := approvals p age (param m "fallback_blocks") in
+      let yes := counted_approvals m p in
       if merge_quorum m p <=? yes then finalize m p
       else if rejected_at (merge_n m p) no then
         match bid_by m (pbid p) with
@@ -712,23 +751,26 @@ draw_pool (revealed held recent latest : list string) : list string :=
   | l => l
   end.
 
-revealed (m : obj) : list string := filter (fun a => existsb (fun r => seq (fst r) a) (reveals m)) (agents m).
+(** the agents on the roster at this height that revealed: a removed
+    agent's reveal is kept but neither counts nor seeds the draw *)
+revealed (m : obj) : list string := filter (fun a => existsb (fun r => seq (fst r) a) (reveals m)) (roster_now m).
 
 eligible (m : obj) : list string :=
   draw_pool (revealed m) (held_back m) (last_n 2 (history m)) (last_n 1 (history m)).
 
-(** The draw goes ahead at n - f reveals, n the genesis roster, once
-    reveal_window blocks have passed, and at once when all n are in
-    (draw_ready). The window gives a slow honest agent its few blocks to
-    reveal before it is counted as holding back and barred from the next
-    draw; up to f silent agents can't stop it. The seed hashes the reveals
-    in agent order, so no proposer can choose among them. *)
+(** The draw goes ahead at n - f reveals, n the roster at this height (the
+    genesis roster unless a roster change took effect), once reveal_window
+    blocks have passed, and at once when all n are in (draw_ready). The
+    window gives a slow honest agent its few blocks to reveal before it is
+    counted as holding back and barred from the next draw; up to f silent
+    agents can't stop it. The seed hashes the reveals in roster order, so no
+    proposer can choose among them. *)
 maybe_draw (m : obj) : obj :=
-  if awaiting m && draw_ready (length (agents m)) (length (reveals m)) (asince m + param m "reveal_window" <=? mheight m) then
+  if awaiting m && draw_ready (length (roster_now m)) (length (revealed m)) (asince m + param m "reveal_window" <=? mheight m) then
     let el := eligible m in
-    let seed := hash_list (map (fun a => get_or "" a (reveals m)) (agents m)) in
+    let seed := hash_list (map (fun a => get_or "" a (reveals m)) (roster_now m)) in
     let l := nth (hexnum seed 12 0 mod length el) el "" in
-    let held := filter (fun a => negb (mem a (revealed m))) (agents m) in
+    let held := filter (fun a => negb (mem a (revealed m))) (roster_now m) in
     let m := fold_left (fun m a => count m a "held_back") held (setf m "held_back" held) in
     let m := setf (setf (setf m "leader" l) "term" (term m + 1)) "history" (last_n 8 (history m ++ [l])) in
     let m := setf (setf (setf m "tstart" (mheight m)) "active" (mheight m)) "merges" 0 in
@@ -739,8 +781,16 @@ maybe_draw (m : obj) : obj :=
     done nothing for stall_blocks while bids wait or no task is open, both
     within its scope: bids on a repository outside it wait for a leader whose
     scope has it, and don't count against this one. A pending merge
-    finishes first. *)
+    finishes first, except under a leader the roster no longer has (M-3):
+    its term ends at once, and its pending merge, if any, still settles on
+    the attestors' votes (the removed leader's proposal no longer counts as
+    an approval) or lapses after attest_window; a new leader can't propose
+    another merge until it does. *)
+leader_removed (m : obj) : bool := negb (seq (leader m) "") && negb (on_roster m (leader m)).
+
 maybe_end_term (m : obj) : obj :=
+  if negb (awaiting m) && leader_removed m then
+    setf (setf (setf m "leader" "") "awaiting" true) "asince" (mheight m) else
   if awaiting m || negb (pending_bid_id m =? 0) then m else
   let idle := param m "stall_blocks" <=? mheight m - active m in
   let waiting := existsb (fun b => is_pending (bst b) && negb (excludes m (leader m) (bid_repo m b))) (bids m) in
