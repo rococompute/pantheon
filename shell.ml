@@ -878,6 +878,7 @@ let node_ls_files id r = (lookup_handle id).h_ls_files r
 let node_head_file id r p = (lookup_handle id).h_head_file r p
 let node_token () = random_hex 8
 let node_float_text f = Printf.sprintf "%.0f" f
+let node_float_wire f = Printf.sprintf "%.17g" f
 let save_snapshot id snap = (lookup_handle id).h_save (Obj.repr snap); true
 let note_refused id raw = (lookup_handle id).h_refuse raw; true
 let boot_events id = (lookup_handle id).h_boot
@@ -926,6 +927,10 @@ let node_io id op =
   | [ "conn_close"; cid ] -> h.h_conn_close cid; (true, 0.)
   | [ "job_flood"; jid ] -> h.h_job_flood jid; (true, 0.)
   | [ "job_expire"; jid ] -> h.h_job_expire jid; (true, 0.)
+  | [ "served_at"; who; first ] ->
+      (match h.h_last_served who first with Some time -> (true, time) | None -> (false, 0.))
+  | [ "mark_served"; who; first; timestamp ] ->
+      h.h_mark_served who first (node_float_of_digits timestamp); (true, 0.)
   | _ -> fail "unknown node operation %s" (String.concat " " op)
 let node_conns id = (lookup_handle id).h_conns ()
 let node_draw id = (lookup_handle id).h_draw
@@ -933,8 +938,6 @@ let node_block id height = (lookup_handle id).h_block height
 (* Reads/writes and authenticated socket sends; catch-up policy is Soma.
    The clock is the "clock" arm of node_io. *)
 let node_current_height id = (lookup_handle id).h_current_height ()
-let node_last_served id who h = (lookup_handle id).h_last_served who h
-let node_mark_served id who h now = (lookup_handle id).h_mark_served who h now; true
 let node_checkout_heads id = (lookup_handle id).h_checkout_heads ()
 let node_divergences id = (lookup_handle id).h_divergences ()
 let node_limit_info id = (lookup_handle id).h_limit_info ()

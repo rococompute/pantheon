@@ -60,6 +60,9 @@ node_remember_block : string -> string -> list string -> bool.
     "track_tx" RAW, "mark_nonce_flood", "check" ID REPO HEAD EDITS...,
     "merge_applied" REPO V, "merge_diverged" REPO ENTRY, "clock",
     "remember_broadcast" HEIGHT KIND ("field" VALUE)... "alternate" ALT... .
+    "served_at" WHO FIRST returns (present, exact timestamp), with (false,0)
+    for missing. "mark_served" WHO FIRST TIMESTAMP uses node_float_wire's
+    lossless decimal text and returns (true,0).
     The tagged prefix frames two arbitrary lists without a count. The only
     way the node logs, sets a timer, queues an event, sends on a peer link,
     does those writes, starts a CI check, or reads the clock. An effect returns (true, 0); "clock" returns (true, now),
@@ -75,8 +78,6 @@ forever : forall {A : Type}, (A -> A) -> A -> unit.
 (** Metadata and table reads. The clock is node_io's "clock" operation.
     Soma chooses whether and which catch-up blocks to send. *)
 node_current_height : string -> string.
-node_last_served : string -> string -> string -> option float.
-node_mark_served : string -> string -> string -> float -> bool.
 (** Verify a peer line's signature; Soma asks only for lines that are
     neither this node's own nor an already-refused transaction. *)
 (** The item's cap as decimal text, and metadata reads. Soma scans each
@@ -170,6 +171,8 @@ node_ls_files : string -> string -> string.
 node_head_file : string -> string -> string -> option string.
 node_token : unit -> string.
 node_float_text : float -> string.
+(** Lossless finite binary64 transport; display formatting stays above. *)
+node_float_wire : float -> string.
 
 (** Connection admission and the buffered-line cap are Soma's
     (node.soma admit_decision_of, buffer_over; the per-host and total

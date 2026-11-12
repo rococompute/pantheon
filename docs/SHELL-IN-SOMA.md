@@ -164,6 +164,7 @@ What a `Sandbox` interpreter of each operation still lacks:
 | `IoQueue event` | the event queue the next turn drains | nothing: a queue in the program's loop |
 | `IoSendAll fields`, `IoSendPeer index fields`, `IoPeerSend peer fields` | sign, frame and buffer on the peer's TCP link | links that stay open (Soma's "links that stay open") and RSA signing (Soma's "SHA-256 and RSA") |
 | `IoPeerExists who`, `IoNonceFlooded`, `IoIsDiverged repo` | read peer membership, nonce-flood flag, divergence flag; first result component is the boolean value | nothing: tables in program state |
+| `IoServedAt who first`, `IoMarkServed who first timestamp` | read/replace the catch-up served table; `(present, timestamp)` result and lossless `%.17g` timestamp transport | nothing: state in the program, with the clock for timestamps |
 | `IoClock` | `Unix.gettimeofday`, returned as the second of `(true, now)` | a millisecond clock (Soma's "a millisecond clock"); Sandbox's time of day is not this clock |
 | `IoStore height txs`, `IoSetHeight height`, `IoWriteStatus text` | append the block to blocks.log, note the height (dropping old resends), write status.txt | storage (Soma's "storage": named files on the image) |
 | `IoSignVote slot vid fields` | note the vote and append it, synced, to signed.log | storage, with a synced append (Soma's "storage") |
@@ -175,9 +176,8 @@ What a `Sandbox` interpreter of each operation still lacks:
 Not yet operations, still bindings of their own (the next parts of U-1):
 the remaining node table reads (peer membership, nonce-flood and divergence
 flags now use boolean operations; other reads need results, as
-`Sandbox.io`'s binds have; the clock is the first of those), the
-catch-up served table (`node_mark_served` carries a float, which has no
-wire form yet), the snapshot (Soma's "storage" still), the merge's git work (reset, probe,
+`Sandbox.io`'s binds have; clock and served timestamps already have results),
+the snapshot (Soma's "storage" still), the merge's git work (reset, probe,
 read, write, remove, commit), the listener and
 accepted connections (links), SHA-256 and RSA (Soma's item), and git,
 model and CI jobs (Soma's "services": `fetch` with a timeout and HTTP POST).
