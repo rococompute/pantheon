@@ -1,0 +1,49 @@
+(** A log file's bytes become its lines in Soma (node.soma's log_lines),
+    and blocks.log's bytes become block_log boot events (boot_expand).
+    Fixed texts, no node and no disk. *)
+Import util shell market agent node.
+From Stdlib Require Import Ascii.
+From Stdlib Require ExtrOcamlNatInt.
+Extract Inlined Constant Nat.div => "(fun a b -> if b = 0 then 0 else a / b)".
+Extract Inlined Constant Nat.modulo => "(fun a b -> if b = 0 then a else a mod b)".
+Extract Inlined Constant Stdlib.Strings.String.length => "String.length".
+Extract Inlined Constant Stdlib.Strings.String.get =>
+  "(fun n s -> if n < String.length s then Some (String.unsafe_get s n) else None)".
+Extract Inlined Constant Stdlib.Strings.String.substring =>
+  "(fun n m s -> let l = String.length s in if n >= l then """" else String.sub s n (min m (l - n)))".
+
+check (label got expected : string) : string :=
+  append (if seq got expected then "ok " else "FAIL ") label.
+
+joined (l : list string) : string := Stdlib.Strings.String.concat "|" l.
+
+nl : string := newline.
+
+evs_text (evs : list (list string)) : string := Stdlib.Strings.String.concat ";" (map joined evs).
+
+big : string := Stdlib.Strings.String.concat "" (repeat (append "{""h"":1}" nl) 20000).
+
+checks : list string := [
+  check "a missing file has no lines" (joined (log_lines "")) "",
+  check "two lines with a final newline"
+    (joined (log_lines (append "a" (append nl (append "b" nl))))) "a|b",
+  check "a last line without a newline is kept"
+    (joined (log_lines (append "a" (append nl "b")))) "a|b",
+  check "empty lines are dropped"
+    (joined (log_lines (append nl (append "a" (append nl (append nl (append "b" (append nl nl)))))))) "a|b",
+  check "only newlines is no line" (joined (log_lines (append nl nl))) "",
+  check "a line cut short (a crash mid-write) stays a line for the parser"
+    (joined (log_lines (append "x y" (append nl "x y [""pre")))) "x y|x y [""pre",
+  check "a carriage return is a byte of the line, as before"
+    (joined (log_lines (append "a" (SCons (ascii_of_nat 13) (append nl "b"))))) (append "a" (SCons (ascii_of_nat 13) "|b")),
+  check "blocks.log's bytes become block_log events in order, between their neighbors"
+    (evs_text (boot_expand "0" [["me", "a"],
+      ["block_log_text", append "{""h"":1}" (append nl (append nl (append "{""h"":2}" nl)))],
+      ["start"]]))
+    "me|a;block_log|{""h"":1};block_log|{""h"":2};start",
+  check "an empty blocks.log adds no event"
+    (evs_text (boot_expand "0" [["me", "a"], ["block_log_text", ""]])) "me|a",
+  check "a long log is split whole" (show (length (log_lines big))) "20000"
+].
+
+main := print_lines checks.

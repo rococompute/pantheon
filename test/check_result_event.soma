@@ -1,0 +1,35 @@
+(** The check_result event Soma chooses, through the real plain-text
+    binding: the old fields in the old order, control characters made
+    spaces (tab and newline kept), and a no-check refusal as this node's own.
+    No node, no disk. *)
+Import util shell node.
+From Stdlib Require ExtrOcamlNatInt.
+Extract Inlined Constant Nat.div => "(fun a b -> if b = 0 then 0 else a / b)".
+Extract Inlined Constant Nat.modulo => "(fun a b -> if b = 0 then a else a mod b)".
+Extract Inlined Constant Stdlib.Strings.String.length => "String.length".
+Extract Inlined Constant Stdlib.Strings.String.get =>
+  "(fun n s -> if n < String.length s then Some (String.unsafe_get s n) else None)".
+Extract Inlined Constant Stdlib.Strings.String.substring =>
+  "(fun n m s -> let l = String.length s in if n >= l then """" else String.sub s n (min m (l - n)))".
+From Stdlib Require Import Ascii.
+
+check (label : string) (ok : bool) : string := append (if ok then "ok " else "FAIL ") label.
+
+ch (n : nat) : string := Stdlib.Strings.String.String (ascii_of_nat n) Stdlib.Strings.String.EmptyString.
+
+main := print_lines [
+  check "a pass" (eq_strs (check_result_event "7" true "abc" "" "")
+    ["check_result", "7", "ok", "true", "tree", "abc", "why", "", "stage", ""]),
+  check "the bid's failure" (eq_strs (check_result_event "7" false "t" "bad" "ci")
+    ["check_result", "7", "ok", "false", "tree", "t", "why", "bad", "stage", "ci"]),
+  check "this node's failure" (eq_strs (check_result_event "7" false "" "no docker" "node")
+    ["check_result", "7", "ok", "error", "tree", "", "why", "no docker", "stage", "node"]),
+  check "control characters become spaces, tab and newline stay"
+    (seq (node_plain_text (append "a" (append (ch 0) (append (ch 27) (append (ch 9)
+           (append (ch 10) (append (ch 127) (append (ch 200) "b"))))))))
+         (append "a  " (append (ch 9) (append (ch 10) (append " " (append (ch 200) "b")))))),
+  check "a no-check refusal is this node's own"
+    (eq_strs (check_unchecked_event "9" "this node doesn't check soma (--no-check soma)")
+       ["check_result", "9", "ok", "error", "tree", "", "why",
+        "this node doesn't check soma (--no-check soma)", "stage", "node"])
+].

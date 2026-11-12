@@ -1019,3 +1019,60 @@ Example check_apply_stage_cases :
   check_apply_stage "!process failed (exit 0): x" = "node" /\
   check_apply_stage "!couldn't start the check" = "node".
 Proof. repeat split; reflexivity. Qed.
+
+(** A check's output: "!" is a failure even when this node lies about trees
+    or has CI; otherwise the tree is the trim, and CI emits nothing yet. *)
+Example check_apply_plan_cases :
+  check_apply_plan_of "bad-tree" "make test" "!process failed (exit 1): no" = CheckApplyFailed /\
+  check_apply_plan_of "" "" "!" = CheckApplyFailed /\
+  check_apply_plan_of "" "" " !x" = CheckApplyTree false false "!x" /\
+  check_apply_plan_of "" "" "  ab" = CheckApplyTree false false "ab" /\
+  check_apply_plan_of "" "make test" "ab" = CheckApplyTree true false "ab" /\
+  check_apply_plan_of "bad-tree" "" "ab" = CheckApplyTree false true "ab" /\
+  check_apply_plan_of "bad-sig" "" "ab" = CheckApplyTree false false "ab" /\
+  check_apply_plan_of "" " " "ab" = CheckApplyTree true false "ab" /\
+  check_apply_choice "HASH" "id" "!no" CheckApplyFailed = [["check_failed", "id", "!no"]] /\
+  check_apply_choice "HASH" "id" "ab" (CheckApplyTree false false "ab") =
+    [["check_result", "id", "ok", "true", "tree", "ab", "why", "", "stage", ""]] /\
+  check_apply_choice "HASH" "id" "ab" (CheckApplyTree false true "ab") =
+    [["check_result", "id", "ok", "true", "tree", "HASH", "why", "", "stage", ""]] /\
+  check_apply_choice "HASH" "id" "ab" (CheckApplyTree true true "ab") = [].
+Proof. repeat split; reflexivity. Qed.
+
+Example goal_events_cases :
+  goal_events "" = [] /\
+  goal_events "stay open" = [["agent", "goal", "stay open"]] /\
+  goal_events (append "a" (append newline (append newline (append "b" newline)))) =
+    [["agent", "goal", "a"], ["agent", "goal", "b"]].
+Proof. repeat split; reflexivity. Qed.
+
+Theorem check_apply_bang_is_failed : forall byz ci raw,
+  starts "!" raw = true ->
+  check_apply_plan_of byz ci raw = CheckApplyFailed.
+Proof. intros byz ci raw H. unfold check_apply_plan_of. rewrite H. reflexivity. Qed.
+
+Theorem check_apply_otherwise_trims : forall byz ci raw,
+  starts "!" raw = false ->
+  check_apply_plan_of byz ci raw =
+    CheckApplyTree (negb (seq ci "")) (seq byz "bad-tree") (ocaml_trim raw).
+Proof. intros byz ci raw H. unfold check_apply_plan_of. rewrite H. reflexivity. Qed.
+
+Theorem check_failure_ignores_the_lie : forall lie id raw ci,
+  starts "!" raw = true ->
+  check_apply_choice lie id raw (check_apply_plan_of "bad-tree" ci raw) =
+    [["check_failed", id, raw]].
+Proof.
+  intros lie id raw ci H.
+  unfold check_apply_choice, check_apply_plan_of.
+  rewrite H. reflexivity.
+Qed.
+
+(** --backend: scripted and a longer scripted: suffix, and scripted: alone
+    stays llm with no behavior. *)
+Example backend_flag_cases :
+  backend_kind_name "scripted" = "scripted" /\ backend_behavior_event "scripted" = [] /\
+  backend_kind_name "scripted:stay" = "scripted" /\
+  backend_behavior_event "scripted:stay" = [["agent", "behavior", "stay"]] /\
+  backend_kind_name "scripted:" = "llm" /\ backend_behavior_event "scripted:" = [] /\
+  backend_kind_name "llm" = "llm" /\ backend_behavior_event "scripted:a:b" = [["agent", "behavior", "a:b"]].
+Proof. repeat split; reflexivity. Qed.

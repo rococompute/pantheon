@@ -1,0 +1,7 @@
+(** Whose a failed check is, as the check_result event says it: the bid's
+    ("false") unless the stage is this node's own ("error"). *)
+Example check_ok_texts :
+  check_ok_text true "" = "true" /\ check_ok_text true "node" = "true" /\
+  check_ok_text false "node" = "error" /\ check_ok_text false "apply" = "false" /\
+  check_ok_text false "ci" = "false" /\ check_ok_text false "" = "false".
+Proof. repeat split; reflexivity. Qed.

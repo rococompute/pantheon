@@ -39,7 +39,7 @@ Nothing listens beyond localhost. The nodes talk on 127.0.0.1. Muse's VM (Lima o
 - **A worker is slow:** a patch request gets under 30 minutes, and a late bid is dropped. Diplomats are told to keep answering attestations while workers run.
 - **File permissions:** `network` and `start` restrict each node home to 0700 and its `key.json` to 0600. The inbox token configuration is created privately and restricted to 0600 by `start` and `vm`. For an existing stopped deployment, `scripts/host.sh permissions` applies these modes; `HOST_DRY=DIR scripts/host.sh permissions` writes the same operations to `DIR/permissions.sh` without changing the deployment. This is only the permissions step of P-1; ownership and process identities are still unchanged.
 
-- **Diplomats as the host's one user:** until `users`, `services` and `sessions` (below) have run, a diplomat could read the other nodes' keys. After them, each session runs as its own user.
+- **Diplomats as the host's one user:** until `users`, `services` and `sessions` (below) have run, a diplomat could read the other nodes' keys. After them, each session runs as its own user. `diplomats` skips agents without an isolated session entry; it never launches a CLI as the operator.
 
 The inbox backend also supports `PANTHEON_INBOX_GROUP` for deployments with
 separate users: set it in the node's backend wrapper to that agent's inbox
@@ -84,8 +84,30 @@ cannot reach - before any root write. Its files are built in a
 root-only stage; per-node scripts are piped to pantheon over stdin,
 never read out of that stage. It disables the operator's legacy user
 units before enabling the system ones, so no node runs twice.
+For an existing stopped network already placed under `/var/lib/pantheon`,
+`sudo scripts/host.sh node-state` transfers every configured node home and
+its contents (including logs, consensus state and Git metadata) to pantheon,
+and restricts each home to 0700. It checks all homes before any mutation,
+refusing missing homes, symlinked ancestors or descendants, and hardlinked
+files that could alias files outside the tree. Copy hardlinked files to
+independent files before migrating. Stop all writers during this operation;
+the preflight does not prevent concurrent filesystem changes.
+`HOST_DRY=DIR scripts/host.sh node-state` emits `DIR/node-state.sh` for
+rootless inspection. Repository relocation and the default startup migration
+are still separate remaining work.
+
+For an existing stopped network, `sudo scripts/host.sh credentials` transfers
+node `key.json` files and `inbox.json` under `/var/lib/pantheon` to pantheon
+and restricts them to 0600 before services are enabled. Changing the parent
+directory's owner alone leaves operator-created credentials behind. Missing
+files stay absent; symlinked paths or ancestors refuse all changes.
+`HOST_DRY=DIR scripts/host.sh credentials` emits `DIR/credentials.sh`, the
+same provisioning operations, for inspection without root.
 `HOST_DRY=DIR` previews the same script (`DIR/services.sh`). The node
-unit sets `CI_LOCK=/var/lib/pantheon/.ci-lock`, the host's one CI lock.
+unit sets `CI_LOCK=/var/lib/pantheon/.ci-lock`, the host's one CI lock. All three system
+service definitions set `UMask=0077` so newly created files are private
+to pantheon unless an operation explicitly shares them. The inbox backend
+sets its own group-sharing umask and modes for requests and worktrees.
 
 `sudo scripts/host.sh sessions` comes after both. It refuses to run
 before `services` has written the node unit, since the inbox server must
@@ -126,7 +148,9 @@ user finds its CLI, makes the tab's shell that user's login shell
 wrappers first), and starts the CLI there with approvals off and herdr's
 readiness wait, as before. The prompt points at the user's own
 `instructions.md`. No `PANTHEON_*` or `PATH` of the operator's reaches
-the session. Agents not in `sessions` keep the old path.
+the session. A local diplomat absent from `sessions` is skipped with a provisioning
+message, including on repeat launches. Other provisioned sessions can start.
+VM agents do not need a local session entry.
 `HOST_DRY=DIR` previews the script (`DIR/sessions.sh`). Its own read-only
 GitHub key for the clone is the operator's to add.
 
@@ -141,4 +165,6 @@ or their ancestors, including absent leaves below a symlinked directory. This
 also applies to the scripts emitted by `HOST_DRY=DIR`; inspect those scripts
 before deployment. Run setup with the network stopped and no concurrent
 changes to its directories: the preflight is not a filesystem race barrier.
-The same holds for `services` and `sessions`.
+The same holds for `services` and `sessions`: both check destination ancestors,
+including the system unit and sysctl directories, before privileged writes.
+`services` also checks the node account’s `.ssh` destination before installing it.

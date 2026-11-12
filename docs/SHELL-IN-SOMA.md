@@ -230,6 +230,77 @@ separate work; this status does not mark `.plan`.
 
 ## Done so far
 
+- Step 5, the --backend flag: the shell feeds the raw string. Soma's
+  `backend_kind_name` turns "scripted" and "scripted:" plus a suffix into
+  the scripted kind, and anything else, including "scripted:" alone, into
+  llm. `backend_behavior_event` keeps only a longer "scripted:" suffix,
+  after the other agent flags. `test/backend-flag.sh` checks those cases.
+
+- Step 5, connection counts: an accepted socket's `conn_offer` event
+  carries its host and the hosts of the connections held at that moment;
+  Soma's `conn_offer_counts` counts how many share the host and how many
+  there are, and `conn_offer_decision` hands those to `admit_decision_of`.
+  The shell no longer counts connections: it lists hosts, holds the
+  socket, and carries the mode out. The counts are taken at accept time,
+  as before. `test/conn-offer.sh` checks fixed host lists at and past
+  both caps, with no running node.
+
+- Step 5, a check's result event: `check_result_event` chooses the
+  `check_result` event's fields in Soma (ok "true", "error" for a failure
+  at this node's own stage "node", "false" for the bid's), and
+  `push_check_result` queues it through the node's queue operation. The
+  shell's `push_check_result` and the `node_check_result` binding are gone:
+  a repository this node doesn't check comes back as a raw
+  `check_unchecked` fact that Soma makes this node's own failure. Turning
+  control characters into spaces stays a byte map binding
+  (`node_plain_text`), so a large failed check's output never becomes a
+  list of characters. `test/check-result-event.sh` checks the fields and
+  the sanitizing through the binding.
+
+- Step 5, a check's output: the shell queues the raw output as
+  `check_apply_out` (request, checkout, CI command, text). Soma's
+  `check_apply_plan_of` keeps the old split: an output that starts with
+  `!` is `check_failed` (so `check_apply_stage` still says whose fault,
+  from the node's own signals), and anything else is the trimmed tree.
+  The bad-tree fault still logs and substitutes sha256("lie" ^ id)'s
+  first 40 hex characters. No CI command queues the success
+  `check_result` on this turn; a command asks `node_ci_launch`, which
+  only strips `.git`, runs the sandbox or docker, and queues `ci_done`.
+  The refusal for `--no-check` or an excluded repository still happens
+  before the check job starts. `test/check-apply.sh` checks fixed
+  outputs, including the lie hash against SHA-256.
+
+- Step 5, goal files at startup: the shell no longer splits a `--goal`
+  file. It feeds the bytes ("" when the file is missing) as one
+  `goal_text` boot event, and `goal_events` (through `log_lines`, the
+  same split as blocks.log) turns each nonempty line into an
+  `agent`/`goal` event in order, among the other boot events.
+  `test/goal-lines.sh` checks fixed texts. `.plan` is not marked.
+
+- Step 5, log lines at startup: the shell no longer splits blocks.log or
+  signed.log. It hands over each file's bytes ("" when it is missing):
+  blocks.log as one `block_log_text` boot event, which `boot_expand` turns
+  into the old `block_log` events at the same place, and signed.log through
+  `node_signed_text` (it replaces `node_signed_lines`). Soma's `log_lines`
+  splits them at each newline and drops empty lines, as the old
+  `String.split_on_char` and filter did, reading by offset (`split_lines`).
+  `test/log-lines.sh` checks fixed texts: a missing file, a final newline or
+  none, empty lines, a line cut short, a carriage return, the events' order,
+  and a 20000-line log.
+
+- Step 5, genesis.json at startup: the shell feeds the file's text as one
+  `genesis` boot event; Soma's `boot_expand` turns it, through the JSON
+  token binding and `genesis_events`, into the old boot events in the old
+  order (the roster, tips, block_ms, params in file order with repeats,
+  repositories, excludes), first key winning as Yojson's member did. The
+  walks share one fuel bound and skip each value once, so a wide genesis
+  costs linear work, with no cap on the number of agents, params or
+  excludes. What the old reads refused (a name, tip or param that isn't a
+  string, a block_ms that isn't an int, a non-string exclude, params
+  missing) stops the start through `node_fail`. `test/genesis-boot.sh`
+  runs real texts, including 12001 params and excludes;
+  `test/genesis_boot.proof` checks token streams.
+
 - Step 5, job buffer storage: output chunks now live in node_state's
   jbufs, through job_buffer, job_remember and job_forget. job_bytes uses
   that state with the existing job_feed cap plan; job_outputs threads the

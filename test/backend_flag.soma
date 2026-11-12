@@ -1,0 +1,16 @@
+Import util shell node.
+From Stdlib Require ExtrOcamlNatInt.
+check (label : string) (ok : bool) : string := append (if ok then "ok " else "FAIL ") label.
+no_behavior (raw : string) : bool :=
+  match backend_behavior_event raw with [] => true | _ => false end.
+behavior (raw want : string) : bool :=
+  match backend_behavior_event raw with [["agent", "behavior", got]] => seq got want | _ => false end.
+checks := [
+  check "scripted" (seq (backend_kind_name "scripted") "scripted" && no_behavior "scripted"),
+  check "suffix" (seq (backend_kind_name "scripted:stay") "scripted" && behavior "scripted:stay" "stay"),
+  check "colon only" (seq (backend_kind_name "scripted:") "llm" && no_behavior "scripted:"),
+  check "llm" (seq (backend_kind_name "llm") "llm" && no_behavior "llm"),
+  check "nested" (seq (backend_kind_name "scripted:a:b") "scripted" && behavior "scripted:a:b" "a:b"),
+  check "empty" (seq (backend_kind_name "") "llm" && no_behavior "")
+].
+main := print_lines checks.

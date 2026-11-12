@@ -13,6 +13,8 @@
 # elsewhere (keygen, join): then its nodes listen on LISTEN, its tailnet address.
 #
 #   scripts/host.sh users              provision isolated accounts and inbox groups (root; HOST_DRY=DIR to preview)
+#   scripts/host.sh node-state         transfer a stopped network's node homes and contents to pantheon (root; HOST_DRY=DIR to preview)
+#   scripts/host.sh credentials        transfer stopped node keys and inbox credentials to pantheon (root; HOST_DRY=DIR to preview)
 #   scripts/host.sh permissions        restrict existing node homes and secrets (HOST_DRY=DIR to preview)
 #   scripts/host.sh network            keys, the network and its genesis (once), for Pantheon at HEAD
 #   scripts/host.sh keygen             to join a network made elsewhere: this host's agents' keys, their
@@ -177,6 +179,68 @@ permissions_script() {
   printf '[ ! -f %s ] || chmod 0600 %s\n' "$k" "$k"
 }
 
+# Transfer credentials of a stopped network before enabling node services.
+# Separate from mode-only permissions so it cannot silently change ownership
+# in an existing operator deployment.
+cmd_credentials() {
+  valid_agent_names
+  if [ -n "${HOST_DRY:-}" ]; then
+    mkdir -p "$HOST_DRY"
+    credentials_script > "$HOST_DRY/credentials.sh"
+  else
+    [ "$(id -u)" = 0 ] || die "credentials requires root (or HOST_DRY=DIR to preview)"
+    credentials_script | sh -eu
+  fi
+}
+credentials_script() {
+  printf '#!/bin/sh\nset -eu\nR=${HOST_ROOT:-}\n'
+  path_guard
+  printf 'reject_links "$R/var/lib/pantheon/inbox.json"\n'
+  for a in $AGENTS; do
+    printf 'reject_links "$R"%s\n' "$(q "/var/lib/pantheon/net/$a/key.json")"
+  done
+  for secret in /var/lib/pantheon/inbox.json $(for a in $AGENTS; do printf '/var/lib/pantheon/net/%s/key.json ' "$a"; done); do
+    printf '[ ! -f "$R"%s ] || { chown pantheon "$R"%s; chmod 0600 "$R"%s; }\n' "$(q "$secret")" "$(q "$secret")" "$(q "$secret")"
+  done
+}
+
+# Ownership migration is explicit: never recursively adopt a live network.
+# Preflight every tree before changing any tree, including hidden entries.
+cmd_node_state() {
+  valid_agent_names
+  if [ -n "${HOST_DRY:-}" ]; then
+    mkdir -p "$HOST_DRY"
+    node_state_script > "$HOST_DRY/node-state.sh"
+  else
+    [ "$(id -u)" = 0 ] || die "node-state requires root (or HOST_DRY=DIR to preview)"
+    node_state_script | sh -eu
+  fi
+}
+node_state_script() {
+  printf '#!/bin/sh\nset -eu\nR=${HOST_ROOT:-}\n'
+  path_guard
+  for a in $AGENTS; do
+    printf 'reject_links "$R"%s\n' "$(q "/var/lib/pantheon/net/$a")"
+  done
+  cat <<'ROOT'
+# find includes every hidden entry and fails closed on unreadable trees.
+audit_tree() {
+  [ -d "$1" ] || { echo "host: missing node home $1" >&2; exit 1; }
+  links=$(find "$1" -type l -print) || exit 1
+  [ -z "$links" ] || { echo "host: symlink in node home $1" >&2; exit 1; }
+  aliases=$(find "$1" -type f -links +1 -print) || exit 1
+  [ -z "$aliases" ] || { echo "host: hardlinked file in node home $1; copy it before migration" >&2; exit 1; }
+}
+ROOT
+  for a in $AGENTS; do
+    printf 'audit_tree "$R"%s\n' "$(q "/var/lib/pantheon/net/$a")"
+  done
+  for a in $AGENTS; do
+    printf 'chown -R pantheon "$R"%s\n' "$(q "/var/lib/pantheon/net/$a")"
+    printf 'chmod 0700 "$R"%s\n' "$(q "/var/lib/pantheon/net/$a")"
+  done
+}
+
 # Provision identities independently of migrating a running deployment. These
 # accounts are deliberately not used by the legacy user services yet.
 valid_agent_names() {
@@ -328,17 +392,19 @@ cmd_services() {
 
 services_script() {
   printf '#!/bin/sh\nset -eu\nR=${HOST_ROOT:-}\n'
+  path_guard
   cat <<'ROOT'
-# Refuse symlinked or missing destinations before any root write: a
-# node-owned symlink must never be followed by root.
-refuse_link() { [ ! -L "$1" ] || { echo "host: refusing symlinked path $1" >&2; exit 1; }; }
+# Check ancestors as well as leaves before any root write.
+refuse_link() { reject_links "$1"; }
+refuse_link "$R/etc/systemd/system"
+refuse_link "$R/var/lib/pantheon/.ssh"
 refuse_link "$R/var/lib/pantheon"
 refuse_link "$R/var/lib/pantheon/inbox.json"
 refuse_link "$R/var/lib/pantheon/goal.txt"
 ROOT
   for a in $AGENTS; do
-    printf '[ -d "$R/var/lib/pantheon/net/%s" ] || { echo "host: no node home for %s under /var/lib/pantheon/net (make the network there first)" >&2; exit 1; }\n' "$a" "$a"
     printf 'refuse_link "$R/var/lib/pantheon/net/%s"\n' "$a"
+    printf '[ -d "$R/var/lib/pantheon/net/%s" ] || { echo "host: no node home for %s under /var/lib/pantheon/net (make the network there first)" >&2; exit 1; }\n' "$a" "$a"
     for f in key.json run.sh backend.sh; do
       printf 'refuse_link "$R/var/lib/pantheon/net/%s/%s"\n' "$a" "$f"
     done
@@ -368,6 +434,7 @@ ROOT
 Description=Pantheon node %i
 [Service]
 User=pantheon
+UMask=0077
 WorkingDirectory=/var/lib/pantheon/net/%i
 Environment=SOMA_DIR=/var/lib/pantheon/soma
 Environment=CI_PANTHEON=@HERE@
@@ -382,12 +449,12 @@ UNIT
   printf 'EOF\ninstall -o root -g root -m 0644 "$stage/pantheon-node@.service" "$R/etc/systemd/system/pantheon-node@.service"\n'
   if [ -n "$REMOTE" ]; then
     printf 'cat > "$stage/pantheon-mirror.service" <<EOF\n'
-    printf '[Unit]\nDescription=Pantheon mirror\n[Service]\nUser=pantheon\nEnvironment=PANTHEON_HOST=/var/lib/pantheon\nExecStart=%s/scripts/host.sh mirror-loop\nRestart=on-failure\nRestartSec=60\n[Install]\nWantedBy=multi-user.target\nEOF\n' "$here"
+    printf '[Unit]\nDescription=Pantheon mirror\n[Service]\nUser=pantheon\nUMask=0077\nEnvironment=PANTHEON_HOST=/var/lib/pantheon\nExecStart=%s/scripts/host.sh mirror-loop\nRestart=on-failure\nRestartSec=60\n[Install]\nWantedBy=multi-user.target\nEOF\n' "$here"
     printf 'install -o root -g root -m 0644 "$stage/pantheon-mirror.service" "$R/etc/systemd/system/pantheon-mirror.service"\n'
   fi
   if [ -n "$VM_AGENTS" ]; then
     printf 'cat > "$stage/pantheon-inbox.service" <<EOF\n'
-    printf '[Unit]\nDescription=Pantheon inbox server\n[Service]\nUser=pantheon\nExecStart=/usr/bin/python3 %s/scripts/inbox-http.py serve /var/lib/pantheon/inbox.json\nRestart=on-failure\nRestartSec=5\n[Install]\nWantedBy=multi-user.target\nEOF\n' "$here"
+    printf '[Unit]\nDescription=Pantheon inbox server\n[Service]\nUser=pantheon\nUMask=0077\nExecStart=/usr/bin/python3 %s/scripts/inbox-http.py serve /var/lib/pantheon/inbox.json\nRestart=on-failure\nRestartSec=5\n[Install]\nWantedBy=multi-user.target\nEOF\n' "$here"
     printf 'install -o root -g root -m 0644 "$stage/pantheon-inbox.service" "$R/etc/systemd/system/pantheon-inbox.service"\n'
   fi
   soma_flag=$(soma_ci_flag) || exit 1
@@ -460,8 +527,9 @@ cmd_sessions() {
 
 sessions_script() {
   printf '#!/bin/sh\nset -eu\nR=${HOST_ROOT:-}\n'
+  path_guard
   cat <<'ROOT'
-refuse_link() { [ ! -L "$1" ] || { echo "host: refusing symlinked path $1" >&2; exit 1; }; }
+refuse_link() { reject_links "$1"; }
 refuse() { echo "host: $*" >&2; exit 1; }
 ROOT
   for path in "$DIPS" "$INBOXES" "$SVC" "$SVC/.ci-lock" "$DIPS/sessions" /etc/sysctl.d/60-pantheon-tiocsti.conf; do
@@ -898,6 +966,13 @@ cmd_diplomats() {
       esac
       say "$a: in its VM, tab \"$a (vm)\""; continue
     fi
+    # An unprovisioned diplomat must never fall back to the operator,
+    # who may own node keys and push credentials. Other isolated sessions
+    # can still start while this account awaits provisioning.
+    if ! own_session "$a"; then
+      say "$a: no isolated session; run scripts/host.sh users, services and sessions before starting it"
+      continue
+    fi
     case $(kind "$a") in
       claude) kind=claude exe=claude args="--dangerously-skip-permissions" ;;
       codex)  kind=codex exe=codex args="--dangerously-bypass-approvals-and-sandbox" ;;
@@ -921,16 +996,7 @@ cmd_diplomats() {
       say "$a: started as $u in tab \"$a\""
       continue
     fi
-    command -v "$exe" >/dev/null || { say "$a: no $exe on this host: install it and log it in, then run this again"; continue; }
-    render_diplomat "$a"
-    p=$(herdr tab create --workspace "$ws" --label "$a" --cwd "$P/desk/$a" --no-focus \
-      --env "PANTHEON_INBOX=$P/inbox/$a" --env "PANTHEON_REMOTE=$REMOTE" --env "PANTHEON_BRANCH=$BRANCH" \
-      --env "PANTHEON_CHECK=$here/scripts/host.sh check" --env "PATH=$here/scripts:$PATH" | jq -r .result.root_pane.pane_id)
-    # shellcheck disable=SC2086
-    herdr agent start "$a" --kind "$kind" --pane "$p" --timeout 60000 -- $args >/dev/null \
-      || { say "$a: $exe didn't come up ready (logged in? herdr pane read $p)"; continue; }
-    herdr agent prompt "$a" "Read $P/diplomats/$a.md: it is your job, as $a's diplomat in a Pantheon network. Follow it now." >/dev/null
-    say "$a: started in tab \"$a\""
+    die "$a lost its isolated session configuration: run scripts/host.sh sessions before diplomats"
   done
   say "in this workspace ($ws): a tab per agent, and one for status"
 }
@@ -976,7 +1042,8 @@ cmd_logs() {
 
 c=${1:-}; [ $# -gt 0 ] && shift
 case $c in
-  users|services|sessions|permissions|network|keygen|join|start|vm|login|diplomats|watchdog|instructions|mirror|check|stop|status|logs) "cmd_$c" "$@" ;;
+  node-state) cmd_node_state "$@" ;;
+  users|services|sessions|permissions|credentials|network|keygen|join|start|vm|login|diplomats|watchdog|instructions|mirror|check|stop|status|logs) "cmd_$c" "$@" ;;
   mirror-loop) cmd_mirror_loop ;;
   watchdog-loop) cmd_watchdog_loop ;;
   *) awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "$0"; [ -z "$c" ] || exit 1 ;;

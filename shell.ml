@@ -123,7 +123,9 @@ let load_consensus path =
   Fun.protect ~finally:(fun () -> close_in ic) (fun () -> Marshal.from_channel ic)
 
 let read_json p = try Yojson.Safe.from_file p with _ -> fail "cannot read %s: is this a home made by `pantheon init`?" p
-let lines p = if Sys.file_exists p then String.split_on_char '\n' (read_file p) |> List.filter (( <> ) "") else []
+(* a file's bytes, or "" when there is none: Soma splits logs and goal files
+   (node.soma's log_lines) *)
+let file_text p = if Sys.file_exists p then read_file p else ""
 
 (* A .plan's open items are computed in Soma ([plan_open] in util.soma), and
    so are the prompts that quote them (node.soma's perform_llm). *)
@@ -741,7 +743,7 @@ let argv () = Array.to_list Sys.argv |> List.tl
 type node_handle = { h_events : float -> string list list;
                      h_job_complete : string -> string -> string list list;
                      h_job_flood : string -> unit;
-                     h_check_result : string -> bool -> string -> string -> string -> unit;
+                     h_ci_launch : string -> string -> string -> string -> string list list;
                      h_llm_budget : unit -> string * string;
                      h_llm_hold : string -> string -> string -> string list -> unit;
                      h_llm_start : string -> string -> string -> string -> string list -> string list -> string list -> string list -> string list option;
@@ -790,7 +792,7 @@ type node_handle = { h_events : float -> string list list;
                      h_send_all : string list -> unit;
                      h_signed_vote : string -> string option;
                      h_signed_body : string -> string list option;
-                     h_signed_lines : string list;
+                     h_signed_text : string;
                      h_signed_restore : string -> string -> string list -> unit;
                      h_remember_vote : string -> string -> string list -> unit;
                      h_remember_broadcast : string -> string -> string list -> string list -> unit;
@@ -828,7 +830,8 @@ let node_job_expire id jid = (lookup_handle id).h_job_expire jid; true
 let node_queue_empty id = (lookup_handle id).h_queue_empty ()
 let node_job_complete id job result = (lookup_handle id).h_job_complete job result
 let node_job_flood id jid = (lookup_handle id).h_job_flood jid; true
-let node_check_result id req ok tree why stage = (lookup_handle id).h_check_result req ok tree why stage; true
+let node_plain_text s = plain_text s
+let node_ci_launch id req out tree ci = (lookup_handle id).h_ci_launch req out tree ci
 (* a model call's I/O: node.soma's perform_llm decides and builds the prompt *)
 let node_llm_budget id = (lookup_handle id).h_llm_budget ()
 let node_llm_hold id req kind prompt ctx = (lookup_handle id).h_llm_hold req kind prompt ctx; true
@@ -935,9 +938,10 @@ let node_encode_tx id nonce fields = (lookup_handle id).h_encode_tx nonce fields
 let node_nonce_flooded id = (lookup_handle id).h_nonce_flooded ()
 let node_signed_vote id slot = (lookup_handle id).h_signed_vote slot
 let node_signed_body id slot = (lookup_handle id).h_signed_body slot
-(* signed.log's nonempty lines, raw, and noting one vote Soma read from them
-   (without appending it again); Soma's signed_log_entry parses each line *)
-let node_signed_lines id = (lookup_handle id).h_signed_lines
+(* signed.log's bytes, raw, and noting one vote Soma read from them (without
+   appending it again); Soma's log_lines splits them and signed_log_entry
+   parses each line *)
+let node_signed_text id = (lookup_handle id).h_signed_text
 let node_signed_restore id slot vid fields = (lookup_handle id).h_signed_restore slot vid fields; true
 (* a startup Soma refuses: the message on stderr, exit 1, as `fail` *)
 let node_fail msg : bool = fail "%s" msg
@@ -991,7 +995,7 @@ let node_open packed home flags =
   let rec go = function
     | "--backend" :: b :: r -> backend := b; go r
     | "--behavior" :: b :: r -> agent_events := !agent_events @ [ [ "agent"; "behavior"; b ] ]; go r
-    | "--goal" :: f :: r -> agent_events := !agent_events @ List.map (fun l -> [ "agent"; "goal"; l ]) (lines f); go r
+    | "--goal" :: f :: r -> agent_events := !agent_events @ [ [ "goal_text"; file_text f ] ]; go r
     | "--deny" :: p :: r -> agent_events := !agent_events @ [ [ "agent"; "deny"; p ] ]; go r
     | "--bid-window" :: n :: r -> agent_events := !agent_events @ [ [ "agent"; "bid_window"; n ] ]; go r
     | "--perspective" :: t :: r -> agent_events := !agent_events @ [ [ "agent"; "perspective"; t ] ]; go r
@@ -1012,9 +1016,8 @@ let node_open packed home flags =
     | [] -> ()
   in
   go flags;
-  let scripted = !backend = "scripted" || String.length !backend > 9 && String.sub !backend 0 9 = "scripted:" in
-  if scripted && String.length !backend > 9 then agent_events := !agent_events @ [ [ "agent"; "behavior"; String.sub !backend 9 (String.length !backend - 9) ] ];
-  let backend_kind = if scripted then "scripted" else "llm" in
+  (* Soma reads the raw --backend string (backend_kind_name, backend_behavior_event) *)
+  agent_events := !agent_events @ [ [ "backend_behavior_of"; !backend ] ];
   (* state *)
   let queue = Queue.create () in
   let push ev = Queue.add ev queue in
@@ -1032,7 +1035,7 @@ let node_open packed home flags =
   (* filled from signed.log's lines by Soma (node.soma's restore_signed,
      through signed_log_entry) before replay: the shell only reads the lines *)
   let signed : (string, string * string list option) Hashtbl.t = Hashtbl.create 64 in
-  let signed_lines = lines signed_path in
+  let signed_text = file_text signed_path in
   let blocks_path = Filename.concat home "blocks.log" in
   (* the governed repositories: a checkout each, at genesis or later *)
   let repos = List.map (fun r -> (to_string (member "name" r), to_string (member "url" r), to_string (member "commit" r), to_string (member "tree" r)))
@@ -1168,14 +1171,42 @@ let node_open packed home flags =
   let ci_busy = ref false and ci_waiting = Queue.create () in
   let ci_next () = match Queue.take_opt ci_waiting with Some f -> f () | None -> ci_busy := false in
   let with_ci f = if !ci_busy then Queue.add f ci_waiting else (ci_busy := true; f ()) in
+  (* CI for a tree Soma already accepted (node.soma's check_apply_events).
+     The checkout's .git goes: a --shared clone's objects live in this
+     node's own repository (through alternates), which isn't in CI's
+     sandbox, so git there saw a broken repository ("bad object HEAD") and
+     its errors led the reason of a rejection. The tree is already computed. *)
+  let launch_ci id out tree ci =
+    ignore (Sys.command ("rm -rf " ^ Filename.quote (Filename.concat out ".git")));
+    ignore (Sys.command ("chmod -R a+rX " ^ Filename.quote out));
+    let name = "pantheon-ci-" ^ random_hex 6 in
+    with_ci (fun () ->
+      let prog, args =
+        if !ci_sandbox <> "" then (!ci_sandbox, [ !ci_memory; out; ci_wrap ci ]) else
+        ("docker", [ "run"; "--rm"; "--name"; name; "--network=none"; "--read-only"; "--tmpfs"; "/tmp:exec,size=" ^ !ci_memory; "--cap-drop=ALL";
+          "--security-opt=no-new-privileges"; "--pids-limit=512"; "--memory=" ^ !ci_memory; "--memory-swap=" ^ !ci_memory;
+          "--user=65534:65534"; "-e"; "HOME=/tmp";
+          (* its errors too, as start_job keeps only stdout; and a build the
+             kernel killed for the container's memory (oom_kill in its cgroup)
+             ends as 137, the way docker ends the container itself *)
+          "-v"; out ^ ":/work:ro"; "-w"; "/work"; !ci_image; "sh"; "-c"; ci_wrap ci ]) in
+      start_job ~limit:3600. prog args
+        ~stdin_text:"" ~env:(Unix.environment ())
+        ~on_done:(fun t ->
+          (* what the check's outcome is (passed, the bid's failure or
+             this node's problem, and why) is node.soma's ci_outcome,
+             from the node's own signals only (docs/SECURITY-REVIEW-2.md P-6) *)
+          push [ "ci_done"; id; tree; !ci_memory; (if !ci_sandbox <> "" then "sandbox" else "docker"); t ];
+          ci_next ())
+        ~clean:(fun () -> if !ci_sandbox = "" then ignore (Sys.command ("docker rm -f " ^ name ^ " >/dev/null 2>&1")); remove_tree_later out));
+    let evs = ref [] in
+    while not (Queue.is_empty queue) do evs := Queue.pop queue :: !evs done;
+    List.rev !evs
+  in
   (* A check for an attestor: the bid's edits on the head, in a fresh clone,
      give a tree; then the repository's CI, if this node has one, runs on it in
      a container with no network, a read-only root and nobody's uid. *)
-  (* a check's result event; why is the bid's own output, so no control
-     character of it goes on to a rejection's reason *)
-  let push_check_result id ok tree why stage =
-    let why = plain_text why in
-    push [ "check_result"; id; "ok"; (if ok then "true" else if stage = "node" then "error" else "false"); "tree"; tree; "why"; why; "stage"; stage ] in
+  (* a check's result event is node.soma's check_result_event *)
   let run_check id r head edits =
     let out = Filename.temp_dir "pantheon-check" "" in
     let ef = Filename.temp_file "pantheon-edits" ".json" in
@@ -1191,45 +1222,13 @@ let node_open packed home flags =
     (* whose a failure is comes from stage alone, which the node decides from
        its own signals (exit codes, a job that never started), never from
        what the check or the bid's CI printed (docs/SECURITY-REVIEW-2.md P-6) *)
-    let result ok tree why stage = push_check_result id ok tree why stage in
-    if List.mem r !no_check || List.mem r my_excluded then (rm_out (); (try Sys.remove ef with _ -> ()); result false "" ("this node doesn't check " ^ r ^ (if List.mem r my_excluded then " (outside its scope: its genesis part excludes it)" else " (--no-check " ^ r ^ ")")) "node") else
+    (* a repository this node doesn't check: node.soma makes it a result
+       that is this node's own (check_unchecked) *)
+    if List.mem r !no_check || List.mem r my_excluded then (rm_out (); (try Sys.remove ef with _ -> ()); push [ "check_unchecked"; id; "this node doesn't check " ^ r ^ (if List.mem r my_excluded then " (outside its scope: its genesis part excludes it)" else " (--no-check " ^ r ^ ")") ]) else
     start_job self_exe [ "check"; rdir r; head; ef; out ] ~stdin_text:"" ~env:(Unix.environment ())
       ~on_done:(fun t ->
-        (* whose a failed apply is: node.soma's check_apply_stage decides *)
-        if String.length t > 0 && t.[0] = '!' then push [ "check_failed"; id; t ]
-        else
-          let tree = if byz = "bad-tree" then (say "FAULT INJECTION: naming a wrong tree"; sha256 ("lie" ^ id)) |> fun x -> String.sub x 0 40 else String.trim t in
-          if ci = "" then result true tree "" ""
-          else begin
-            (* CI gets the merged tree's files without the clone's .git: a
-               --shared clone's objects live in this node's own repository
-               (through alternates), which isn't in CI's sandbox, so git
-               there saw a broken repository ("bad object HEAD") and its
-               errors led the reason of a rejection (Soma's build runs git
-               for its revision). The tree is already computed *)
-            ignore (Sys.command ("rm -rf " ^ Filename.quote (Filename.concat out ".git")));
-            ignore (Sys.command ("chmod -R a+rX " ^ Filename.quote out));
-            let name = "pantheon-ci-" ^ random_hex 6 in
-            with_ci @@ fun () ->
-            let prog, args =
-              if !ci_sandbox <> "" then (!ci_sandbox, [ !ci_memory; out; ci_wrap ci ]) else
-              ("docker", [ "run"; "--rm"; "--name"; name; "--network=none"; "--read-only"; "--tmpfs"; "/tmp:exec,size=" ^ !ci_memory; "--cap-drop=ALL";
-                "--security-opt=no-new-privileges"; "--pids-limit=512"; "--memory=" ^ !ci_memory; "--memory-swap=" ^ !ci_memory;
-                "--user=65534:65534"; "-e"; "HOME=/tmp";
-                (* its errors too, as start_job keeps only stdout; and a build the
-                   kernel killed for the container's memory (oom_kill in its cgroup)
-                   ends as 137, the way docker ends the container itself *)
-                "-v"; out ^ ":/work:ro"; "-w"; "/work"; !ci_image; "sh"; "-c"; ci_wrap ci ]) in
-            start_job ~limit:3600. prog args
-              ~stdin_text:"" ~env:(Unix.environment ())
-              ~on_done:(fun t ->
-                (* what the check's outcome is (passed, the bid's failure or
-                   this node's problem, and why) is node.soma's ci_outcome,
-                   from the node's own signals only (docs/SECURITY-REVIEW-2.md P-6) *)
-                push [ "ci_done"; id; tree; !ci_memory; (if !ci_sandbox <> "" then "sandbox" else "docker"); t ];
-                ci_next ())
-              ~clean:(fun () -> if !ci_sandbox = "" then ignore (Sys.command ("docker rm -f " ^ name ^ " >/dev/null 2>&1")); rm_out ())
-          end)
+        (* a failure, the trimmed tree, or a CI run: node.soma's check_apply_events *)
+        push [ "check_apply_out"; id; out; ci; t ])
       ~clean:(fun () -> (try Sys.remove ef with _ -> ()); if ci = "" then rm_out ())
   in
   (* A decided merge's commit, the same on every node (fixed author and
@@ -1263,19 +1262,16 @@ let node_open packed home flags =
   let boot_rev = ref [] in
   let feed ev = boot_rev := ev :: !boot_rev in
   (* genesis, then what's on disk *)
-  feed ("agents" :: names);
-  List.iter (fun a -> feed [ "tip"; to_string (member "name" a); to_string (member "tip" a) ]) agents;
-  feed [ "param"; "block_ms"; string_of_int (to_int (member "block_ms" gen)) ];
-  List.iter (fun (k, v) -> feed [ "param"; k; to_string v ]) (to_assoc (member "params" gen));
-  List.iter (fun (n, _, _, tree) -> feed [ "repo"; n; tree ]) repos;
-  List.iter (fun a -> List.iter (fun r -> feed [ "exclude"; to_string (member "name" a); to_string r ])
-                        (match member "exclude" a with `List l -> l | _ -> [])) agents;
+  (* the roster, tips, block_ms, params, repositories and excludes are
+     node.soma's genesis_events, from the file's text *)
+  feed [ "genesis"; read_file (Filename.concat home "genesis.json") ];
   feed [ "me"; me ];
-  feed [ "agent"; "backend"; backend_kind ];
+  feed [ "backend_kind_of"; !backend ];
   List.iter feed !agent_events;
   List.iter (fun (n, body) -> feed ["applied_body"; n; body]) (List.rev !pending_applied);
   let replayed = ref 0 in
-  List.iter (fun l -> feed ["block_log"; l]) (lines blocks_path);
+  (* the file's bytes: node.soma's log_lines splits them into block_log lines *)
+  feed ["block_log_text"; file_text blocks_path];
   let boot_saved = if Sys.file_exists checkpoint_path then
       Some (Obj.repr (load_consensus checkpoint_path)) else None in
   (* votes with no consensus.state: Soma refuses to start (node.soma's
@@ -1360,9 +1356,9 @@ let node_open packed home flags =
               let oid = !conn_counter in
               incr conn_counter;
               pending_conns := (oid, c, host) :: !pending_conns;
-              push [ "conn_offer"; string_of_int oid;
-                     string_of_int (List.length (List.filter (fun x -> x.host = host) !conns));
-                     string_of_int (List.length !conns) ])
+              (* the hosts of the connections held now: Soma counts them
+                 (node.soma's conn_offer_counts) and decides *)
+              push ("conn_offer" :: string_of_int oid :: host :: List.map (fun x -> x.host) !conns))
       r;
     let buf = Bytes.create 65536 in
     conns := List.filter (fun c ->
@@ -1461,7 +1457,7 @@ let node_open packed home flags =
             let evs = ref [] in
             while not (Queue.is_empty queue) do evs := Queue.pop queue :: !evs done;
             List.rev !evs);
-      h_check_result = push_check_result;
+      h_ci_launch = launch_ci;
       h_job_flood = (fun jid ->
         match List.find_opt (fun j -> j.jid = jid) !jobs with
         | Some j when not (Hashtbl.mem flooded j.jpid) ->
@@ -1556,7 +1552,7 @@ let node_open packed home flags =
       h_send_all = (fun fields -> let line = wire fields in List.iter (fun p -> send_to p line) peers);
       h_signed_vote = (fun slot -> Option.map fst (Hashtbl.find_opt signed slot));
       h_signed_body = (fun slot -> match Hashtbl.find_opt signed slot with Some (_, body) -> body | None -> None);
-      h_signed_lines = signed_lines;
+      h_signed_text = signed_text;
       h_signed_restore = (fun slot vid fields -> Hashtbl.replace signed slot (vid, Some fields));
       h_remember_vote = (fun slot vid fields ->
         Hashtbl.replace signed slot (vid, Some fields);

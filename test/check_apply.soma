@@ -1,0 +1,75 @@
+(** What a check job's output becomes (node.soma's check_apply_plan_of and
+    check_apply_choice): a failure, a trimmed tree, a lie hash, or no event
+    because CI still has to run. Fixed strings, no node. *)
+Import util shell node.
+From Stdlib Require Import Ascii.
+From Stdlib Require ExtrOcamlNatInt.
+Extract Inlined Constant Nat.div => "(fun a b -> if b = 0 then 0 else a / b)".
+Extract Inlined Constant Nat.modulo => "(fun a b -> if b = 0 then a else a mod b)".
+Extract Inlined Constant Stdlib.Strings.String.length => "String.length".
+Extract Inlined Constant Stdlib.Strings.String.get =>
+  "(fun n s -> if n < String.length s then Some (String.unsafe_get s n) else None)".
+Extract Inlined Constant Stdlib.Strings.String.substring =>
+  "(fun n m s -> let l = String.length s in if n >= l then """" else String.sub s n (min m (l - n)))".
+
+check (label got expected : string) : string :=
+  append (if seq got expected then "ok " else "FAIL ") label.
+
+joined (l : list string) : string := Stdlib.Strings.String.concat "|" l.
+
+evs_text (evs : list (list string)) : string := Stdlib.Strings.String.concat ";" (map joined evs).
+
+plan_text (p : check_apply_plan) : string :=
+  match p with
+  | CheckApplyFailed => "failed"
+  | CheckApplyTree with_ci lie tree =>
+      append (if with_ci then "ci " else "ready ") (append (if lie then "lie " else "keep ") tree)
+  end.
+
+nl : string := newline.
+tab : string := SCons (ascii_of_nat 9) SNil.
+cr : string := SCons (ascii_of_nat 13) SNil.
+ff : string := SCons (ascii_of_nat 12) SNil.
+
+ready (id tree : string) : string :=
+  joined ["check_result", id, "ok", "true", "tree", tree, "why", "", "stage", ""].
+
+checks : list string := [
+  check "a bang is a failure even when lying and CI is set"
+    (plan_text (check_apply_plan_of "bad-tree" "make test" "!process failed (exit 1): no")) "failed",
+  check "a lone bang is a failure" (plan_text (check_apply_plan_of "" "" "!")) "failed",
+  check "a bang after a space is a tree, trim keeps it"
+    (plan_text (check_apply_plan_of "" "" " !x")) "ready keep !x",
+  check "trailing newline is trimmed" (plan_text (check_apply_plan_of "" "" (append "ab" nl))) "ready keep ab",
+  check "tab, form feed and return are trimmed" (
+    plan_text (check_apply_plan_of "" "" (append tab (append ff (append " tree " (append cr nl))))))
+    "ready keep tree",
+  check "only blanks trim to an empty tree"
+    (plan_text (check_apply_plan_of "" "" (append " " (append nl tab)))) "ready keep ",
+  check "an internal space stays" (plan_text (check_apply_plan_of "" "" (append "ab cd" nl))) "ready keep ab cd",
+  check "a CI command waits for the run" (plan_text (check_apply_plan_of "" "make test" "ab")) "ci keep ab",
+  check "a space is a CI command" (plan_text (check_apply_plan_of "" " " "ab")) "ci keep ab",
+  check "bad-tree marks the lie and keeps the trim in the plan"
+    (plan_text (check_apply_plan_of "bad-tree" "" (append "ab" nl))) "ready lie ab",
+  check "another fault does not lie" (plan_text (check_apply_plan_of "bad-sig" "" "ab")) "ready keep ab",
+  check "a failure stays the same fact" (
+    evs_text (check_apply_choice "HASH" "id" "!process failed (exit 1): no" CheckApplyFailed))
+    "check_failed|id|!process failed (exit 1): no",
+  check "no CI queues the success event" (
+    evs_text (check_apply_choice "HASH" "id" "ab" (CheckApplyTree false false "ab")))
+    (ready "id" "ab"),
+  check "the lie replaces the tree" (
+    evs_text (check_apply_choice "HASH" "id" "ab" (CheckApplyTree false true "ab")))
+    (ready "id" "HASH"),
+  check "CI queues nothing yet" (
+    evs_text (check_apply_choice "HASH" "id" "ab" (CheckApplyTree true false "ab"))) "",
+  check "a lie with CI queues nothing yet" (
+    evs_text (check_apply_choice "HASH" "id" "ab" (CheckApplyTree true true "kept"))) "",
+  check "the lie hash is 40 hex characters" (show (slen (check_lie_tree "req-9"))) "40",
+  check "the launched tree is the lie hash when lying" (
+    check_apply_tree (CheckApplyTree true true "kept") "HASH") "HASH",
+  check "the launched tree is the trim otherwise" (
+    check_apply_tree (CheckApplyTree true false "kept") "HASH") "kept"
+].
+
+main := print_lines (checks ++ [append "lie " (check_lie_tree "req-9")]).

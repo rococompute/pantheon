@@ -1220,9 +1220,84 @@ codex_reply_of (text : string) (read : unit -> option string) : string :=
 codex_file_reply (text path : string) : string :=
   node_reply_finish path (codex_reply_of text (fun _ => fs_read_text path)).
 
+(** A check job's output, once the edits have been applied. An output that
+    starts with "!" is the job failing; [check_apply_stage] still says whose
+    fault that is. Otherwise the tree is [ocaml_trim] of the output.
+    [with_ci] means this repository has a CI command, so the shell starts
+    that run and no success event is emitted yet. [lie] is the bad-tree
+    fault: the caller substitutes the lie hash and does not use [tree]. *)
+Inductive check_apply_plan :=
+| CheckApplyFailed
+| CheckApplyTree (with_ci : bool) (lie : bool) (tree : string).
+
+check_apply_plan_of (byz ci raw : string) : check_apply_plan :=
+  if starts "!" raw then CheckApplyFailed
+  else CheckApplyTree (negb (seq ci "")) (seq byz "bad-tree") (ocaml_trim raw).
+
+(** A check's result event, chosen here (step 5): ok is "true", "error"
+    when the failure is this node's own (stage "node": the agent abstains)
+    or "false" (the bid's). why is the bid's own output, so its control
+    characters become spaces (node_plain_text, the bytes the market's
+    plain_text accepts, docs/SECURITY-REVIEW-2.md P-17) before it can reach
+    a rejection's reason. *)
+check_ok_text (ok : bool) (stage : string) : string :=
+  if ok then "true" else if seq stage "node" then "error" else "false".
+
+check_result_event (id : string) (ok : bool) (tree why stage : string) : list string :=
+  ["check_result", id, "ok", check_ok_text ok stage, "tree", tree, "why", node_plain_text why, "stage", stage].
+
+(** A repository this node doesn't check (--no-check, or outside its
+    genesis scope): a failure that is this node's own, so it abstains. *)
+check_unchecked_event (id why : string) : list string := check_result_event id false "" why "node".
+
+push_check_result (h : node_t) (id : string) (ok : bool) (tree why stage : string) : bool :=
+  io_push h (check_result_event id ok tree why stage).
+
+(** The success event the shell's push_check_result used to queue, with an empty why. *)
+check_result_ready (id tree : string) : list string :=
+  ["check_result", id, "ok", "true", "tree", tree, "why", "", "stage", ""].
+
+(** Events this output becomes. CI adds none: the shell starts the run, and
+    [ci_done] comes back when it ends. [lie_hash] is used only when the plan
+    says to lie. *)
+check_apply_choice (lie_hash id raw : string) (plan : check_apply_plan) : list (list string) :=
+  match plan with
+  | CheckApplyFailed => [["check_failed", id, raw]]
+  | CheckApplyTree with_ci lie tree =>
+      if with_ci then [] else [check_result_ready id (if lie then lie_hash else tree)]
+  end.
+
+(** The first 40 hex characters of sha256("lie" ^ id), the old fault. *)
+check_lie_tree (id : string) : string := substr (sha256 (append "lie" id)) 0 40.
+
+check_apply_tree (plan : check_apply_plan) (lie_hash : string) : string :=
+  match plan with
+  | CheckApplyTree _ true _ => lie_hash
+  | CheckApplyTree _ _ tree => tree
+  | CheckApplyFailed => ""
+  end.
+
+(** The shell queued the raw output. Log the fault, ask the shell to start
+    CI, or return the event, in the old order. Events an immediate CI start
+    failure queued come back with these, so they stay in this turn. *)
+check_apply_events (h : node_t) (id out ci raw : string) : list (list string) :=
+  let plan := check_apply_plan_of (fst (node_draw h)) ci raw in
+  let lying := match plan with CheckApplyTree _ true _ => true | _ => false end in
+  let lie_hash := if lying then check_lie_tree id else "" in
+  let noted := if lying then io_log h "FAULT INJECTION: naming a wrong tree" else true in
+  let evs := check_apply_choice lie_hash id raw plan in
+  if noted then
+    match plan with
+    | CheckApplyTree true _ _ =>
+        evs ++ node_ci_launch h id out (check_apply_tree plan lie_hash) ci
+    | _ => evs
+    end
+  else [].
+
 (** Generated model replies are interpreted before the turn's events run,
     at the finished job's original queue position. Codex's file remains
-    until Soma has applied the process-failure guard and resolved it. *)
+    until Soma has applied the process-failure guard and resolved it.
+    A check's raw output is decided here too, before those events run. *)
 model_output_events (h : node_t) (ev : list string) : list (list string) :=
   match ev with
   | "llm_output" :: id :: kind :: prompt0 :: text :: ctx => model_reply_events h id kind prompt0 text ctx
@@ -1232,6 +1307,7 @@ model_output_events (h : node_t) (ev : list string) : list (list string) :=
       model_reply_events h id kind prompt0 (codex_reply_of text (fun _ => Some out)) ctx
   | "codex_output" :: id :: kind :: prompt0 :: text :: "0" :: ctx =>
       model_reply_events h id kind prompt0 (codex_reply_of text (fun _ => None)) ctx
+  | ["check_apply_out", id, out, ci, raw] => check_apply_events h id out ci raw
   | _ => [ev]
   end.
 
@@ -1248,6 +1324,7 @@ job_output_events (h : node_t) (st : node_state) (ev : list string) : node_state
                           (show (num (node_job_output_limit tt) / num "1048576")) out in
           (st, flat_map (model_output_events h) (node_job_complete h id result))
       end
+  | ["check_unchecked", id, why] => (st, [check_unchecked_event id why])
   | _ => (st, model_output_events h ev)
   end.
 
@@ -1638,6 +1715,17 @@ oldest_conn (l : list (string * float)) : string :=
 
 buffer_over (len limit : nat) : bool := limit <? len.
 
+(** An offered socket's counts, from the host it came from and the hosts
+    of the connections held when it was accepted (the shell lists them; it
+    no longer counts): how many share its host, and how many there are.
+    At most 64 connections are held, so these are small numbers. *)
+conn_offer_counts (host : string) (hosts : list string) : nat * nat :=
+  (length (filter (fun x => seq x host) hosts), length hosts).
+
+(** The event the offer becomes: what [admit_decision_of] decides on. *)
+conn_offer_decision (host : string) (hosts : list string) : admit_decision :=
+  let (same, total) := conn_offer_counts host hosts in admit_decision_of same total.
+
 
 (** ---- Step 5, bytes into lines, in Soma ----
     A connection's buffer is its read chunks, in order, never joined
@@ -1820,14 +1908,14 @@ check_apply_stage (t : string) : string :=
 
 perform_check_failed (h : node_t) (id t : string) : bool :=
   io_log h (append "check of request " (append id (append " failed: " t))) &&
-  node_check_result h id false "" t (check_apply_stage t).
+  push_check_result h id false "" t (check_apply_stage t).
 
 perform_ci_done (h : node_t) (id tree memory runner t : string) : bool :=
   let (ok, rest) := ci_outcome t (seq runner "sandbox") memory in
   let (why, stage) := rest in
   io_log h (append "CI for request " (append id (append ": " (if ok then "passed" else "failed")))) &&
   (if ok then true else io_log h (append "CI for request " (append id (append " said: " (replace_all t newline " "))))) &&
-  node_check_result h id ok tree why stage.
+  push_check_result h id ok tree why stage.
 
 run_event (h : node_t) (st : node_state) (ev : list string) : node_state :=
   let ev := match ev with
@@ -1845,8 +1933,8 @@ run_event (h : node_t) (st : node_state) (ev : list string) : node_state :=
         let (s, outs) := step st (line_event from fields) in
         if carry_all h (cons s) (order_effects (line_event from fields) st s outs) then s else st
       else st
-  | ["conn_offer", oid, same, total] =>
-      match admit_decision_of (num same) (num total) with
+  | "conn_offer" :: oid :: host :: hosts =>
+      match conn_offer_decision host hosts with
       | AdmitRefuse => if node_conn_admit h oid "refuse" "" then st else with_live st (live st)
       | AdmitNew => if node_conn_admit h oid "new" "" then st else with_live st (live st)
       | AdmitEvict =>
@@ -2214,23 +2302,197 @@ Fixpoint restore_signed (h : node_t) (lines : list string) (found : bool) : bool
       end
   end.
 
+(** A log file's lines (blocks.log, signed.log) and a --goal file: the bytes
+    split at each newline, empty lines dropped, as the shell's old [lines]
+    did with String.split_on_char. A missing file comes as "", which has
+    none. [split_lines] reads by offset, so a long log is one pass. *)
+log_lines (text : string) : list string := filter (fun l => negb (seq l "")) (split_lines text).
+
+(** One --goal file, in order. The shell feeds its bytes as one goal_text
+    boot event ("" when the file is missing). *)
+goal_events (text : string) : list (list string) :=
+  map (fun l => ["agent", "goal", l]) (log_lines text).
+
 (** Votes signed with no consensus.state to go with them: a node that
     started would forget its lock, so it doesn't start. *)
 signed_needs_snapshot (snapshot_missing votes_found : bool) : bool := snapshot_missing && votes_found.
 
 signed_missing_text : string := "missing consensus.state with existing votes: start a new chain".
 
+(** ---- genesis.json at startup (step 5) ----
+    The shell only reads the file; Soma turns its JSON tokens (the yojson
+    binding's) into the boot events, in the old order: the roster, each
+    agent's tip, block_ms, the params in file order (repeats included), the
+    repositories, then each agent's excludes. A member is its object's
+    first such key, as Yojson's member read it. Every walk shares one fuel
+    bound and skips each value once, so a wide genesis costs linear work,
+    and there is no cap on how many agents, params or excludes it holds.
+    What the old reads refused (a tip, name or param that isn't a string,
+    a block_ms that isn't an int, an exclude that isn't a string) gives
+    None, and the node refuses to start. *)
+Fixpoint genesis_pairs_go (fuel n : nat) (toks : list string) (acc : list (string * list string))
+    : option (list (string * list string)) :=
+  match n with
+  | 0 => Some (rev_onto acc [])
+  | Succ m =>
+      match toks with
+      | key :: rest =>
+          match json_skip fuel [false] rest with
+          | Some after => genesis_pairs_go fuel m after ((key, rest) :: acc)
+          | None => None
+          end
+      | [] => None
+      end
+  end.
+
+Fixpoint genesis_items_go (fuel n : nat) (toks : list string) (acc : list (list string))
+    : option (list (list string)) :=
+  match n with
+  | 0 => Some (rev_onto acc [])
+  | Succ m =>
+      match json_skip fuel [false] toks with
+      | Some after => genesis_items_go fuel m after (toks :: acc)
+      | None => None
+      end
+  end.
+
+(** an object's members, each with the tokens where its value starts *)
+genesis_pairs (fuel : nat) (toks : list string) : option (list (string * list string)) :=
+  match toks with
+  | "A" :: ns :: rest => genesis_pairs_go fuel (num ns) rest []
+  | _ => None
+  end.
+
+(** a list's elements, each as the tokens where it starts *)
+genesis_items (fuel : nat) (toks : list string) : option (list (list string)) :=
+  match toks with
+  | "L" :: ns :: rest => genesis_items_go fuel (num ns) rest []
+  | _ => None
+  end.
+
+Fixpoint genesis_member (k : string) (pairs : list (string * list string)) : option (list string) :=
+  match pairs with
+  | [] => None
+  | (key, v) :: rest => if seq key k then Some v else genesis_member k rest
+  end.
+
+genesis_text (v : option (list string)) : option string :=
+  match v with Some ("S" :: s :: _) => Some s | _ => None end.
+
+(** One agent: its name, its tip and its excludes (absent or not a list:
+    none, as before; a list must hold strings). *)
+genesis_agent (fuel : nat) (a : list string) : option (string * (string * list string)) :=
+  match genesis_pairs fuel a with
+  | None => None
+  | Some ps =>
+      match genesis_text (genesis_member "name" ps), genesis_text (genesis_member "tip" ps) with
+      | Some name, Some tip =>
+          match genesis_member "exclude" ps with
+          | Some (("L" :: _) as ex) =>
+              match peer_string_list ex with
+              | Some rs => Some (name, (tip, rs))
+              | None => None
+              end
+          | _ => Some (name, (tip, []))
+          end
+      | _, _ => None
+      end
+  end.
+
+Fixpoint genesis_all {A B : Type} (f : A -> option B) (l : list A) (acc : list B) : option (list B) :=
+  match l with
+  | [] => Some (rev_onto acc [])
+  | x :: r => match f x with Some y => genesis_all f r (y :: acc) | None => None end
+  end.
+
+genesis_param (kv : string * list string) : option (list string) :=
+  match genesis_text (Some (snd kv)) with
+  | Some v => Some ["param", fst kv, v]
+  | None => None
+  end.
+
+genesis_repo (fuel : nat) (r : list string) : option (list string) :=
+  match genesis_pairs fuel r with
+  | Some ps =>
+      match genesis_text (genesis_member "name" ps), genesis_text (genesis_member "tree" ps) with
+      | Some n, Some tree => Some ["repo", n, tree]
+      | _, _ => None
+      end
+  | None => None
+  end.
+
+genesis_events (tokens : option (list string)) : option (list (list string)) :=
+  match tokens with
+  | None => None
+  | Some t =>
+      let fuel := Succ (length t) in
+      match genesis_pairs fuel t with
+      | None => None
+      | Some top =>
+          let items (k : string) : option (list (list string)) :=
+                       match genesis_member k top with
+                         | Some v => genesis_items fuel v
+                         | None => None
+                         end in
+          match items "agents", genesis_member "block_ms" top,
+                (match genesis_member "params" top with Some v => genesis_pairs fuel v | None => None end),
+                items "repos" with
+          | Some agents, Some ("I" :: ms :: _), Some params, Some repos =>
+              match genesis_all (genesis_agent fuel) agents [],
+                    genesis_all genesis_param params [],
+                    genesis_all (genesis_repo fuel) repos [] with
+              | Some ags, Some pevs, Some revs =>
+                  Some ((("agents" :: map fst ags) ::
+                         map (fun a => ["tip", fst a, fst (snd a)]) ags) ++
+                        [["param", "block_ms", ms]] ++ pevs ++ revs ++
+                        flat_map (fun a => map (fun r => ["exclude", fst a, r]) (snd (snd a))) ags)
+              | _, _, _ => None
+              end
+          | _, _, _, _ => None
+          end
+      end
+  end.
+
+(** --backend. "scripted" and "scripted:" plus a suffix are the scripted
+    kind. Only a suffix longer than the nine-character prefix is a behavior,
+    and it is fed after the other agent flags, as before. "scripted:" alone
+    is not that prefix, so it stays the llm kind. *)
+scripted_backend (raw : string) : bool :=
+  seq raw "scripted" || ((9 <? slen raw) && starts "scripted:" raw).
+
+backend_kind_name (raw : string) : string :=
+  if scripted_backend raw then "scripted" else "llm".
+
+backend_behavior_event (raw : string) : list (list string) :=
+  if (9 <? slen raw) && starts "scripted:" raw then [["agent", "behavior", drop_str 9 raw]] else [].
+
+genesis_refused_text : string := "genesis.json is not a genesis this node can start from".
+
+(** The shell's ["genesis", raw] boot event becomes the events above. *)
+boot_expand (h : node_t) (evs : list (list string)) : list (list string) :=
+  flat_map (fun ev =>
+    match ev with
+    | ["genesis", raw] =>
+        match genesis_events (node_json_tokens raw) with
+        | Some gevs => gevs
+        | None => if node_fail genesis_refused_text then [] else [["genesis_refused"]]
+        end
+    | ["block_log_text", text] => map (fun l => ["block_log", l]) (log_lines text)
+    | ["goal_text", text] => goal_events text
+    | ["backend_kind_of", raw] => [["agent", "backend", backend_kind_name raw]]
+    | ["backend_behavior_of", raw] => backend_behavior_event raw
+    | _ => [ev]
+    end) evs.
+
 run_node (home : string) (flags : list string) : unit :=
   let h := node_open (pack_helpers node_helpers) home flags in
   let snap : option consensus_state := boot_snapshot h in
-  let (restored, found) := restore_signed h (node_signed_lines h) false in
+  let (restored, found) := restore_signed h (log_lines (node_signed_text h)) false in
   let missing := match snap with None => true | Some _ => false end in
   let guarded := if signed_needs_snapshot missing found then node_fail signed_missing_text else true in
   if restored && guarded then
-    let st := run_boot h empty_node (boot_events h) in
-    (* blocks.log is replayed in Soma (run_boot's block_log), so the count
-       is the height it reached; the shell's own count stays 0 since then *)
-    let n := show (height (cons st) - height (cons empty_node)) in
+    let st := run_boot h empty_node (boot_expand h (boot_events h)) in
+    let n := replay_count h in
     let logged := if seq n "0" then true else io_log h (append "replayed " (append n " blocks from disk")) in
     let st := match snap with Some c => restore_cons st c | None => st end in
     if logged then forever (node_tick h) (start_node h st) else print_text ""

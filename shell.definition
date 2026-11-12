@@ -148,10 +148,17 @@ node_job_complete : string -> string -> string -> list (list string).
     signals the process once (node.soma job_feed). Reading the bytes stays
     here. *)
 node_job_flood : string -> string -> bool.
-(** A CI check's result, decided in node.soma (ci_outcome): request id,
-    passed, the tree, why (made plain text here) and the stage ("", "ci" or
-    "node"), queued as the check_result event. *)
-node_check_result : string -> string -> bool -> string -> string -> string -> bool.
+(** A text's bytes with control characters (other than tab and newline)
+    and DEL made spaces: what the market's plain_text accepts. A byte map
+    here, so a large check output isn't turned into a list of characters;
+    node.soma's check_result_event chooses the event. *)
+node_plain_text : string -> string.
+(** Start CI for a tree Soma accepted (node.soma's check_apply_events): the
+    request, the checkout, the tree and the CI command. The shell strips
+    .git, runs the sandbox or docker, and queues ci_done when that ends.
+    Events an immediate start failure queued are returned, in order, so
+    they stay in this turn; a run that started returns none. *)
+node_ci_launch : string -> string -> string -> string -> string -> list (list string).
 node_json_tokens : string -> option (list string).
 node_float_of_digits : string -> float.
 node_limit_set : string -> float -> string -> float -> bool.
@@ -163,7 +170,9 @@ node_token : unit -> string.
 node_float_text : float -> string.
 
 (** Connection admission and the buffered-line cap are Soma's
-    (node.soma admit_decision_of, buffer_over): an offered socket the
+    (node.soma admit_decision_of, buffer_over; the per-host and total
+    counts are conn_offer_counts, over the hosts the shell lists in the
+    conn_offer event): an offered socket the
     shell is holding, admitted in the mode Soma names (closing the
     named connection when evicting), the live connections and their
     last-activity times, closing one, and the line byte cap as a
@@ -214,10 +223,11 @@ node_merge_commit : string -> string -> string -> string -> string -> string -> 
 (** Vote table, resend memory and socket writes. Soma chooses the message. *)
 node_signed_vote : string -> string -> option string.
 node_signed_body : string -> string -> option (list string).
-(** signed.log at startup: its nonempty lines, raw; noting one vote Soma
-    read from them (node.soma's signed_log_entry), not appended again; and
-    refusing to start (the message on stderr, exit 1). *)
-node_signed_lines : string -> list string.
+(** signed.log at startup: the file's bytes, raw ("" when there is none;
+    node.soma's log_lines splits them); noting one vote Soma read from them
+    (node.soma's signed_log_entry), not appended again; and refusing to
+    start (the message on stderr, exit 1). *)
+node_signed_text : string -> string.
 node_signed_restore : string -> string -> string -> list string -> bool.
 node_fail : string -> bool.
 node_remember_broadcast : string -> string -> string -> list string -> list string -> bool.
