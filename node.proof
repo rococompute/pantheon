@@ -987,3 +987,13 @@ Example ci_exit_codes_and_tail :
   ci_tail "  a
 b  " = "CI failed: a b".
 Proof. repeat split; reflexivity. Qed.
+
+(** A check that failed applying a bid: the bid's (exit 1, or a signal),
+    or this node's (couldn't run, or another exit code). *)
+Example check_apply_stage_cases :
+  check_apply_stage "!process failed (exit 1): the old text isn't in the file" = "apply" /\
+  check_apply_stage "!process failed (signal 9): x" = "apply" /\
+  check_apply_stage "!process failed (exit 2): x" = "node" /\
+  check_apply_stage "!process failed (exit 0): x" = "node" /\
+  check_apply_stage "!couldn't start the check" = "node".
+Proof. repeat split; reflexivity. Qed.

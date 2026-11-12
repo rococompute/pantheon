@@ -230,6 +230,12 @@ separate work; this status does not mark `.plan`.
 
 ## Done so far
 
+- Step 5, part: a check that fails before CI (applying the bid's edits)
+  goes to Soma as a `check_failed` fact; `check_apply_stage` makes it the
+  bid's (the check's own exit 1, or a signal) or this node's (it couldn't
+  run, or another exit code), from the node's own signals only, and
+  `perform_check_failed` logs and queues the result as before.
+
 - Step 5, part: a CI check's outcome is Soma's. When the CI run ends the
   shell queues a `ci_done` fact (request, tree, memory budget, runner, raw
   output); `ci_outcome` decides passed, whose a failure is (this node's
