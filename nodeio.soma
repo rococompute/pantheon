@@ -1,0 +1,196 @@
+(** The node's I/O as one interface (U-1; docs/SHELL-IN-SOMA.md, "Two
+    directions, and the unikernel"). Nothing here imports the shell: these
+    are values, which the binary interprets through shell.ml (node.soma's
+    [run_shell] over the [node_io] binding) and a unikernel can interpret
+    with Sandbox (node_sandbox.soma). *)
+From Corelib Require PrimFloat.
+
+(** ---- U-1: the node's I/O as one interface (docs/SHELL-IN-SOMA.md,
+    "Two directions, and the unikernel") ----
+    The node's effects are values of [node_op], as a Sandbox program's are
+    values of Sandbox.io: shell.ml interprets them for the binary through
+    one binding, [node_io], and Sandbox could interpret the same values for
+    a unikernel. So far: logging, a timer, queueing an event for the loop,
+    and sending on peer links (to every peer, to the peer at an index, to a
+    peer by name), and the storage writes: storing a decided block, setting
+    the height and writing the assembled status file, the signed-vote log,
+    the own-transaction retry table and nonce-flood mark, a CI check
+    request, and a merge's applied version or divergence. The clock is a read
+    of the same interface: interpreting it yields the time, the same
+    [Unix.gettimeofday] value as before. Table reads, git, model and CI
+    jobs are still bindings of their own: the next parts of U-1. An operation crosses the binding as its
+    wire form ([io_wire]), since a .definition takes no Soma inductive;
+    [io_of_wire] reads it back, and shell.ml's [node_io] does exactly that
+    match. An effect's result is [(true, 0)]; the clock's is [(true, now)]. *)
+Inductive node_op :=
+| IoLog (text : string)
+| IoTimer (ms : string) (event : list string)
+| IoQueue (event : list string)
+| IoSendAll (fields : list string)
+| IoSendPeer (index : string) (fields : list string)
+| IoPeerSend (who : string) (fields : list string)
+| IoStore (height : string) (txs : list string)
+| IoSetHeight (height : string)
+| IoWriteStatus (text : string)
+| IoSignVote (slot vid : string) (fields : list string)
+| IoTrackTx (raw : string)
+| IoMarkNonceFlood
+| IoCheck (id repo head : string) (edits : list string)
+| IoMergeApplied (repo version : string)
+| IoMergeDiverged (repo entry : string)
+| IoClock
+| IoRememberBroadcast (height kind : string) (fields alternate : list string)
+(** peer links and job control (U-1): admit, refuse or evict for an
+    offered connection, close a connection, kill a job whose output went
+    over its cap or that ran past its limit *)
+| IoConnAdmit (offer mode target : string)
+| IoConnClose (conn : string)
+| IoJobFlood (job : string)
+| IoJobExpire (job : string)
+| IoPeerExists (who : string)
+| IoNonceFlooded
+| IoIsDiverged (repo : string)
+| IoServedAt (who first : string)
+| IoMarkServed (who first timestamp : string).
+
+(** Two arbitrary lists on one wire: tagged field/value pairs, then the
+    alternate-list marker. A marker occurring as a value is never a tag.
+    This avoids a bounded decimal count in the total round-trip property. *)
+Fixpoint resend_fields (fields : list string) : list string :=
+  match fields with [] => [] | field :: rest => "field" :: field :: resend_fields rest end.
+
+Fixpoint resend_parts (wire : list string) : option (list string * list string) :=
+  match wire with
+  | "alternate" :: alternate => Some ([], alternate)
+  | "field" :: value :: rest =>
+      match resend_parts rest with Some (fields, alternate) => Some (value :: fields, alternate) | None => None end
+  | _ => None
+  end.
+
+io_wire (op : node_op) : list string :=
+  match op with
+  | IoLog text => ["log", text]
+  | IoTimer ms ev => "timer" :: ms :: ev
+  | IoQueue ev => "push" :: ev
+  | IoSendAll fields => "send_all" :: fields
+  | IoSendPeer index fields => "send_peer" :: index :: fields
+  | IoPeerSend who fields => "peer_send" :: who :: fields
+  | IoStore height txs => "store" :: height :: txs
+  | IoSetHeight height => ["set_height", height]
+  | IoWriteStatus text => ["write_status", text]
+  | IoSignVote slot vid fields => "sign_vote" :: slot :: vid :: fields
+  | IoTrackTx raw => ["track_tx", raw]
+  | IoMarkNonceFlood => ["mark_nonce_flood"]
+  | IoCheck id repo head edits => "check" :: id :: repo :: head :: edits
+  | IoMergeApplied repo version => ["merge_applied", repo, version]
+  | IoMergeDiverged repo entry => ["merge_diverged", repo, entry]
+  | IoClock => ["clock"]
+  | IoRememberBroadcast height kind fields alternate =>
+      ["remember_broadcast", height, kind] ++ resend_fields fields ++ ("alternate" :: alternate)
+  | IoConnAdmit offer mode target => ["conn_admit", offer, mode, target]
+  | IoConnClose conn => ["conn_close", conn]
+  | IoJobFlood job => ["job_flood", job]
+  | IoJobExpire job => ["job_expire", job]
+  | IoPeerExists who => ["peer_exists", who]
+  | IoNonceFlooded => ["nonce_flooded"]
+  | IoIsDiverged repo => ["is_diverged", repo]
+  | IoServedAt who first => ["served_at", who, first]
+  | IoMarkServed who first timestamp => ["mark_served", who, first, timestamp]
+  end.
+
+io_of_wire (w : list string) : option node_op :=
+  match w with
+  | ["log", text] => Some (IoLog text)
+  | "timer" :: ms :: ev => Some (IoTimer ms ev)
+  | "push" :: ev => Some (IoQueue ev)
+  | "send_all" :: fields => Some (IoSendAll fields)
+  | "send_peer" :: index :: fields => Some (IoSendPeer index fields)
+  | "peer_send" :: who :: fields => Some (IoPeerSend who fields)
+  | "store" :: height :: txs => Some (IoStore height txs)
+  | ["set_height", height] => Some (IoSetHeight height)
+  | ["write_status", text] => Some (IoWriteStatus text)
+  | "sign_vote" :: slot :: vid :: fields => Some (IoSignVote slot vid fields)
+  | ["track_tx", raw] => Some (IoTrackTx raw)
+  | ["mark_nonce_flood"] => Some IoMarkNonceFlood
+  | "check" :: id :: repo :: head :: edits => Some (IoCheck id repo head edits)
+  | ["merge_applied", repo, version] => Some (IoMergeApplied repo version)
+  | ["merge_diverged", repo, entry] => Some (IoMergeDiverged repo entry)
+  | ["clock"] => Some IoClock
+  | "remember_broadcast" :: height :: kind :: parts =>
+      match resend_parts parts with
+      | Some (fields, alternate) => Some (IoRememberBroadcast height kind fields alternate)
+      | None => None
+      end
+  | ["conn_admit", offer, mode, target] => Some (IoConnAdmit offer mode target)
+  | ["conn_close", conn] => Some (IoConnClose conn)
+  | ["job_flood", job] => Some (IoJobFlood job)
+  | ["job_expire", job] => Some (IoJobExpire job)
+  | ["peer_exists", who] => Some (IoPeerExists who)
+  | ["nonce_flooded"] => Some IoNonceFlooded
+  | ["is_diverged", repo] => Some (IoIsDiverged repo)
+  | ["served_at", who, first] => Some (IoServedAt who first)
+  | ["mark_served", who, first, timestamp] => Some (IoMarkServed who first timestamp)
+  | _ => None
+  end.
+
+
+(** ---- Node programs (U-1) ----
+    What the node does, as data, the way a Sandbox program is a value of
+    [Sandbox.io]: [NDone a] has finished with [a]; [NStep op k] does [op],
+    then goes on as [k] says, given the operation's answer. An answer is
+    what [node_io] gives: [(true, 0)] for an effect carried out, the
+    clock's [(true, now)], a table read's [(value, 0)]. Building a program
+    does nothing; an interpreter runs it, so the binary and a unikernel
+    can run the same one. *)
+Inductive nprog (A : Type) : Type :=
+| NDone (a : A)
+| NStep (op : node_op) (k : bool * PrimFloat.float -> nprog A).
+
+Arguments NDone {A} a.
+Arguments NStep {A} op k.
+
+(** [p], then [f] on its result *)
+Fixpoint nbind {A B : Type} (p : nprog A) (f : A -> nprog B) : nprog B :=
+  match p with
+  | NDone a => f a
+  | NStep op k => NStep op (fun r => nbind (k r) f)
+  end.
+
+(** One operation; the result is its answer. *)
+nask (op : node_op) : nprog (bool * PrimFloat.float) := NStep op (fun r => NDone r).
+
+(** One operation; the result is whether it was carried out (an effect)
+    or the boolean it read (a table read): the first of its answer. *)
+nexec (op : node_op) : nprog bool := NStep op (fun r => NDone (fst r)).
+
+(** [op], then [rest] when it was carried out: the program of
+    [io_do h op && rest]. [rest] is built only then, so a binding read
+    inside it happens after [op], as it did in the [&&] chain. *)
+ndo (op : node_op) (rest : unit -> nprog bool) : nprog bool :=
+  NStep op (fun r => if fst r then rest tt else NDone false).
+
+(** [p], then [q] when [p] gave true: [&&] on programs. *)
+nand (p : nprog bool) (q : unit -> nprog bool) : nprog bool :=
+  nbind p (fun b => if b then q tt else NDone false).
+
+(** Each program of the list in order, stopping at the first false. *)
+Fixpoint nall (ps : list (unit -> nprog bool)) : nprog bool :=
+  match ps with
+  | [] => NDone true
+  | p :: rest => nand (p tt) (fun _ => nall rest)
+  end.
+
+(** The operations a program does, in order, when [ans] answers each: what
+    any interpreter that gives those answers carries out. *)
+Fixpoint ntrace {A : Type} (ans : node_op -> bool * PrimFloat.float) (p : nprog A) : list node_op :=
+  match p with
+  | NDone _ => []
+  | NStep op k => op :: ntrace ans (k (ans op))
+  end.
+
+(** And what it ends with. *)
+Fixpoint nresult {A : Type} (ans : node_op -> bool * PrimFloat.float) (p : nprog A) : A :=
+  match p with
+  | NDone a => a
+  | NStep op k => nresult ans (k (ans op))
+  end.

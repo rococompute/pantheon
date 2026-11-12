@@ -923,10 +923,10 @@ Example votes_floods_and_checks_become_operations :
   output_io ["check", "9", "calc"] = None.
 Proof. repeat split; reflexivity. Qed.
 
-(** An action that is one operation is carried out as exactly that
-    operation, and so are the timer and log outputs. *)
+(** An action that is one operation is the program of exactly that
+    operation, and the timer and log outputs are carried out as theirs. *)
 Theorem single_actions_are_their_operation : forall h action op,
-  action_io action = Some op -> carry_output_action h action = io_do h op.
+  action_io action = Some op -> action_prog h action = nexec op.
 Proof.
   intros h action op H. destruct action; cbn in H; try discriminate H;
     injection H as <-; reflexivity.
@@ -1130,6 +1130,31 @@ Theorem served_result_presence : forall now,
 Proof. intros; split; reflexivity. Qed.
 
 Theorem remember_peer_is_served_operation : forall h who first now,
-  carry_output_action h (RememberPeer who first now) =
-    io_do h (IoMarkServed who first (node_float_wire now)).
+  action_prog h (RememberPeer who first now) =
+    nexec (IoMarkServed who first (node_float_wire now)).
+Proof. reflexivity. Qed.
+
+(** Output actions that are each one operation: when every operation is
+    carried out, their program does exactly those operations, in order,
+    whoever interprets it (the binary's [run_shell] or a unikernel's). *)
+Theorem single_actions_trace : forall h ans actions ops,
+  (forall op, fst (ans op) = true) ->
+  map action_io actions = map Some ops ->
+  ntrace ans (actions_prog h actions) = ops.
+Proof.
+  intros h ans actions. induction actions as [| a rest IH];
+    intros ops Hok Hmap; destruct ops as [| op ops]; cbn in Hmap; try discriminate Hmap.
+  - reflexivity.
+  - injection Hmap as Ha Hrest. cbn [actions_prog]. rewrite nand_trace.
+    rewrite (single_actions_are_their_operation h a op Ha). cbn.
+    rewrite Hok. rewrite (IH ops Hok Hrest). reflexivity.
+Qed.
+
+Example honest_vote_trace :
+  ntrace (fun _ => (true, 0%float))
+    (actions_prog "h" (broadcast_plan "" 2 ["prevote", "1", "0", "-1", "v", "nil"]
+       (Some ("prevote", "1", "0", "v")) None None)) =
+  [IoSignVote "prevote/1/0" "v" ["prevote", "1", "0", "-1", "v", "nil"],
+   IoRememberBroadcast "1" "all" ["prevote", "1", "0", "-1", "v", "nil"] ["prevote", "1", "0", "-1", "v", "nil"],
+   IoSendAll ["prevote", "1", "0", "-1", "v", "nil"]].
 Proof. reflexivity. Qed.

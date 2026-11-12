@@ -1,7 +1,7 @@
 (** A node: consensus, the market it orders blocks for, its agent, and a
     pool of transactions waiting for a block. [step] is everything the shell
     runs: it takes one event and gives back what to do. *)
-Import util shell consensus market agent.
+Import util shell nodeio consensus market agent.
 From Stdlib Require Import Ascii.
 
 Record node_state := { cons : consensus_state; mkt : obj; ag : obj; pool : list string; live : bool;
@@ -274,133 +274,9 @@ Inductive output_action :=
 | SendPeer (index : string) (fields : list string)
 | SendEveryone (fields : list string).
 
-(** ---- U-1: the node's I/O as one interface (docs/SHELL-IN-SOMA.md,
-    "Two directions, and the unikernel") ----
-    The node's effects are values of [node_op], as a Sandbox program's are
-    values of Sandbox.io: shell.ml interprets them for the binary through
-    one binding, [node_io], and Sandbox could interpret the same values for
-    a unikernel. So far: logging, a timer, queueing an event for the loop,
-    and sending on peer links (to every peer, to the peer at an index, to a
-    peer by name), and the storage writes: storing a decided block, setting
-    the height and writing the assembled status file, the signed-vote log,
-    the own-transaction retry table and nonce-flood mark, a CI check
-    request, and a merge's applied version or divergence. The clock is a read
-    of the same interface: interpreting it yields the time, the same
-    [Unix.gettimeofday] value as before. Table reads, git, model and CI
-    jobs are still bindings of their own: the next parts of U-1. An operation crosses the binding as its
-    wire form ([io_wire]), since a .definition takes no Soma inductive;
-    [io_of_wire] reads it back, and shell.ml's [node_io] does exactly that
-    match. An effect's result is [(true, 0)]; the clock's is [(true, now)]. *)
-Inductive node_op :=
-| IoLog (text : string)
-| IoTimer (ms : string) (event : list string)
-| IoQueue (event : list string)
-| IoSendAll (fields : list string)
-| IoSendPeer (index : string) (fields : list string)
-| IoPeerSend (who : string) (fields : list string)
-| IoStore (height : string) (txs : list string)
-| IoSetHeight (height : string)
-| IoWriteStatus (text : string)
-| IoSignVote (slot vid : string) (fields : list string)
-| IoTrackTx (raw : string)
-| IoMarkNonceFlood
-| IoCheck (id repo head : string) (edits : list string)
-| IoMergeApplied (repo version : string)
-| IoMergeDiverged (repo entry : string)
-| IoClock
-| IoRememberBroadcast (height kind : string) (fields alternate : list string)
-(** peer links and job control (U-1): admit, refuse or evict for an
-    offered connection, close a connection, kill a job whose output went
-    over its cap or that ran past its limit *)
-| IoConnAdmit (offer mode target : string)
-| IoConnClose (conn : string)
-| IoJobFlood (job : string)
-| IoJobExpire (job : string)
-| IoPeerExists (who : string)
-| IoNonceFlooded
-| IoIsDiverged (repo : string)
-| IoServedAt (who first : string)
-| IoMarkServed (who first timestamp : string).
-
-(** Two arbitrary lists on one wire: tagged field/value pairs, then the
-    alternate-list marker. A marker occurring as a value is never a tag.
-    This avoids a bounded decimal count in the total round-trip property. *)
-Fixpoint resend_fields (fields : list string) : list string :=
-  match fields with [] => [] | field :: rest => "field" :: field :: resend_fields rest end.
-
-Fixpoint resend_parts (wire : list string) : option (list string * list string) :=
-  match wire with
-  | "alternate" :: alternate => Some ([], alternate)
-  | "field" :: value :: rest =>
-      match resend_parts rest with Some (fields, alternate) => Some (value :: fields, alternate) | None => None end
-  | _ => None
-  end.
-
-io_wire (op : node_op) : list string :=
-  match op with
-  | IoLog text => ["log", text]
-  | IoTimer ms ev => "timer" :: ms :: ev
-  | IoQueue ev => "push" :: ev
-  | IoSendAll fields => "send_all" :: fields
-  | IoSendPeer index fields => "send_peer" :: index :: fields
-  | IoPeerSend who fields => "peer_send" :: who :: fields
-  | IoStore height txs => "store" :: height :: txs
-  | IoSetHeight height => ["set_height", height]
-  | IoWriteStatus text => ["write_status", text]
-  | IoSignVote slot vid fields => "sign_vote" :: slot :: vid :: fields
-  | IoTrackTx raw => ["track_tx", raw]
-  | IoMarkNonceFlood => ["mark_nonce_flood"]
-  | IoCheck id repo head edits => "check" :: id :: repo :: head :: edits
-  | IoMergeApplied repo version => ["merge_applied", repo, version]
-  | IoMergeDiverged repo entry => ["merge_diverged", repo, entry]
-  | IoClock => ["clock"]
-  | IoRememberBroadcast height kind fields alternate =>
-      ["remember_broadcast", height, kind] ++ resend_fields fields ++ ("alternate" :: alternate)
-  | IoConnAdmit offer mode target => ["conn_admit", offer, mode, target]
-  | IoConnClose conn => ["conn_close", conn]
-  | IoJobFlood job => ["job_flood", job]
-  | IoJobExpire job => ["job_expire", job]
-  | IoPeerExists who => ["peer_exists", who]
-  | IoNonceFlooded => ["nonce_flooded"]
-  | IoIsDiverged repo => ["is_diverged", repo]
-  | IoServedAt who first => ["served_at", who, first]
-  | IoMarkServed who first timestamp => ["mark_served", who, first, timestamp]
-  end.
-
-io_of_wire (w : list string) : option node_op :=
-  match w with
-  | ["log", text] => Some (IoLog text)
-  | "timer" :: ms :: ev => Some (IoTimer ms ev)
-  | "push" :: ev => Some (IoQueue ev)
-  | "send_all" :: fields => Some (IoSendAll fields)
-  | "send_peer" :: index :: fields => Some (IoSendPeer index fields)
-  | "peer_send" :: who :: fields => Some (IoPeerSend who fields)
-  | "store" :: height :: txs => Some (IoStore height txs)
-  | ["set_height", height] => Some (IoSetHeight height)
-  | ["write_status", text] => Some (IoWriteStatus text)
-  | "sign_vote" :: slot :: vid :: fields => Some (IoSignVote slot vid fields)
-  | ["track_tx", raw] => Some (IoTrackTx raw)
-  | ["mark_nonce_flood"] => Some IoMarkNonceFlood
-  | "check" :: id :: repo :: head :: edits => Some (IoCheck id repo head edits)
-  | ["merge_applied", repo, version] => Some (IoMergeApplied repo version)
-  | ["merge_diverged", repo, entry] => Some (IoMergeDiverged repo entry)
-  | ["clock"] => Some IoClock
-  | "remember_broadcast" :: height :: kind :: parts =>
-      match resend_parts parts with
-      | Some (fields, alternate) => Some (IoRememberBroadcast height kind fields alternate)
-      | None => None
-      end
-  | ["conn_admit", offer, mode, target] => Some (IoConnAdmit offer mode target)
-  | ["conn_close", conn] => Some (IoConnClose conn)
-  | ["job_flood", job] => Some (IoJobFlood job)
-  | ["job_expire", job] => Some (IoJobExpire job)
-  | ["peer_exists", who] => Some (IoPeerExists who)
-  | ["nonce_flooded"] => Some IoNonceFlooded
-  | ["is_diverged", repo] => Some (IoIsDiverged repo)
-  | ["served_at", who, first] => Some (IoServedAt who first)
-  | ["mark_served", who, first, timestamp] => Some (IoMarkServed who first timestamp)
-  | _ => None
-  end.
+(** The node's operations, [node_op], and its programs, [nprog], are
+    nodeio.soma's: an interface with no shell under it, so Sandbox can
+    interpret the same values (U-1). *)
 
 (** Eligibility is decided before any check process or temporary checkout
     is created. Preserve the queued fact and scope-over-flag precedence. *)
@@ -410,24 +286,35 @@ check_request_op (id repo head : string) (edits denied excluded : list string) :
     IoQueue ["check_unchecked_repo", id, repo, (if outside then "true" else "false")]
   else IoCheck id repo head edits.
 
+(** The binary's interpreter of a node program (nodeio.soma's [nprog]):
+    each operation through the one binding, [node_io], in its wire form, in
+    order, each answer handed to the rest of the program. A unikernel runs
+    the same programs with Sandbox's (node_sandbox.soma). Every operation
+    the node does goes through here. *)
+Fixpoint run_shell {A : Type} (h : node_t) (p : nprog A) : A :=
+  match p with
+  | NDone a => a
+  | NStep op k => run_shell h (k (node_io h (io_wire op)))
+  end.
+
 (** Effects use the first of the pair. The call's result is that bool, so
     the interpretation is not dropped. *)
-io_do (h : node_t) (op : node_op) : bool := fst (node_io h (io_wire op)).
+io_do (h : node_t) (op : node_op) : bool := run_shell h (nexec op).
 
 (** Boolean table results use the first component as data. In particular a
     false result must be passed to policy, rather than chained as an effect. *)
-io_read_bool (h : node_t) (op : node_op) : bool := fst (node_io h (io_wire op)).
+io_read_bool (h : node_t) (op : node_op) : bool := run_shell h (nexec op).
 
 (** The clock, through the same interpreter. The second of the pair is the
     time; the first only says the read happened. *)
-io_now (h : node_t) : float := snd (node_io h (io_wire IoClock)).
+io_now (h : node_t) : float := snd (run_shell h (nask IoClock)).
 
 (** A missing served record uses false as presence, not effect failure.
     The raw timestamp result is never passed through display formatting. *)
 served_result (answer : bool * float) : option float :=
   if fst answer then Some (snd answer) else None.
 io_served_at (h : node_t) (who first : string) : option float :=
-  served_result (node_io h (io_wire (IoServedAt who first))).
+  served_result (run_shell h (nask (IoServedAt who first))).
 
 io_log (h : node_t) (text : string) : bool := io_do h (IoLog text).
 
@@ -617,36 +504,41 @@ broadcast_plan (byz : string) (peers : nat) (fields : list string)
       end
   end.
 
-carry_output_action (h : node_t) (action : output_action) : bool :=
+(** An output action as a node program. Most are one operation
+    ([action_io]); a submission signs (a binding still), then tracks, logs,
+    queues and sends; a catch-up block is read (a binding still) and sent.
+    Each [ndo] goes on only when its operation was carried out, as the
+    [&&] chain this replaces did, and a binding read sits in the
+    continuation after the operations before it, so it happens when it did. *)
+action_prog (h : node_t) (action : output_action) : nprog bool :=
   match action with
-  | LogAction text => io_do h (IoLog text)
-  | QueueAction ev => io_do h (IoQueue ev)
-  | StoreAction height txs => io_do h (IoStore height txs)
-  | RememberPeer who first now => io_do h (IoMarkServed who first (node_float_wire now))
-  | MarkNonceFlood => io_do h IoMarkNonceFlood
   | PublishTransaction nonce fields message =>
       let raw := node_encode_tx h nonce fields in
-      io_do h (IoTrackTx raw) &&
-      (match message with Some text => io_do h (IoLog text) | None => true end) &&
-      io_do h (IoQueue ["tx", raw]) &&
-      (match submission_send (fst (node_draw h)) raw with
-       | None => true | Some fields => io_do h (IoSendAll fields) end)
-  | RememberVote slot vid fields => io_do h (IoSignVote slot vid fields)
-  | RememberBroadcast height kind fields alt => io_do h (IoRememberBroadcast height kind fields alt)
-  | SendPeer index fields => io_do h (IoSendPeer index fields)
-  | SendEveryone fields => io_do h (IoSendAll fields)
+      ndo (IoTrackTx raw) (fun _ =>
+      nand (match message with Some text => nexec (IoLog text) | None => NDone true end) (fun _ =>
+      ndo (IoQueue ["tx", raw]) (fun _ =>
+      match submission_send (fst (node_draw h)) raw with
+      | None => NDone true
+      | Some fields => nexec (IoSendAll fields)
+      end)))
   | ReadPeerBlock who k =>
       match catchup_send who k (node_block h (show k)) with
-      | None => true
-      | Some (peer, fields) => io_do h (IoPeerSend peer fields)
+      | None => NDone true
+      | Some (peer, fields) => nexec (IoPeerSend peer fields)
       end
+  | _ => match action_io action with Some op => nexec op | None => NDone true end
   end.
 
-Fixpoint carry_output_actions (h : node_t) (actions : list output_action) : bool :=
+(** The actions in order, stopping at the first not carried out. Each is
+    built when the ones before it have run. *)
+Fixpoint actions_prog (h : node_t) (actions : list output_action) : nprog bool :=
   match actions with
-  | [] => true
-  | action :: rest => carry_output_action h action && carry_output_actions h rest
+  | [] => NDone true
+  | action :: rest => nand (action_prog h action) (fun _ => actions_prog h rest)
   end.
+
+carry_output_actions (h : node_t) (actions : list output_action) : bool :=
+  run_shell h (actions_prog h actions).
 
 (** A decided merge: the same edits on this node's checkout, committed the
     same way on every node. A repository this node doesn't have is said, a

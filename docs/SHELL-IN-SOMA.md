@@ -149,9 +149,22 @@ which the binary runs as processes and the unikernel would ask services for
 over the network. Those are Soma's items, in Soma's own `.plan` (the market
 governs Soma too); the interface is Pantheon's (the `U-1` line in `.plan`).
 
-The interface so far is `node.soma`'s `node_op`, carried out by `io_do`
-through one binding, `node_io` (shell.ml interprets the operation's wire
-form, `io_wire`; `io_of_wire` reads it back, proved for every operation).
+The interface is `nodeio.soma`, a module with no shell under it: the
+operations, `node_op`, and programs of them, `nprog` (`NDone a`, or
+`NStep op k`: do `op`, then go on as `k` says on its answer), as a Sandbox
+program is a value of `Sandbox.io`. The binary runs a program with
+`node.soma`'s `run_shell`, through one binding, `node_io` (shell.ml
+interprets the operation's wire form, `io_wire`; `io_of_wire` reads it
+back, proved for every operation); `io_do`, the clock and the table reads
+are one-operation programs run that way, and the output actions are
+programs (`action_prog`, `actions_prog`). `nodeio.proof` says what a
+program does whoever interprets it (`ntrace`, the operations carried out
+for given answers; `nand_trace`), and `node.proof`'s
+`single_actions_trace` that a list of one-operation actions does exactly
+those operations, in order. Reads that are still bindings of their own
+(signing, the draw, a stored block) sit in a program's continuations,
+after the operations before them, so they happen when they did; each one
+turned into an operation is one less thing a unikernel can't run.
 The resend write uses tagged `field`/value pairs followed by `alternate`
 and the untouched second list. Values may themselves contain either tag.
 Resend reads and the native table remain unchanged.

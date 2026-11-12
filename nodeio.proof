@@ -1,0 +1,55 @@
+(** What a node program does, whatever interprets it: [ntrace] is the
+    operations an interpreter carries out when it gives those answers, and
+    [nresult] what the program ends with. *)
+
+Lemma ntrace_nbind : forall (A B : Type) ans (p : nprog A) (f : A -> nprog B),
+  ntrace ans (nbind p f) = ntrace ans p ++ ntrace ans (f (nresult ans p)).
+Proof.
+  intros A B ans p f. induction p as [a | op k IH]; cbn.
+  - reflexivity.
+  - rewrite IH. reflexivity.
+Qed.
+
+Lemma nresult_nbind : forall (A B : Type) ans (p : nprog A) (f : A -> nprog B),
+  nresult ans (nbind p f) = nresult ans (f (nresult ans p)).
+Proof.
+  intros A B ans p f. induction p as [a | op k IH]; cbn.
+  - reflexivity.
+  - apply IH.
+Qed.
+
+(** [nand p q]: [p]'s operations, then [q]'s only when [p] gave true. *)
+Theorem nand_trace : forall ans p q,
+  ntrace ans (nand p q) =
+    ntrace ans p ++ (if nresult ans p then ntrace ans (q tt) else []).
+Proof.
+  intros ans p q. unfold nand. rewrite ntrace_nbind.
+  destruct (nresult ans p); reflexivity.
+Qed.
+
+Theorem nand_result : forall ans p q,
+  nresult ans (nand p q) = (if nresult ans p then nresult ans (q tt) else false).
+Proof.
+  intros ans p q. unfold nand. rewrite nresult_nbind.
+  destruct (nresult ans p); reflexivity.
+Qed.
+
+(** [ndo op rest]: [op], then [rest] when [op] was carried out. *)
+Theorem ndo_trace : forall ans op rest,
+  ntrace ans (ndo op rest) =
+    op :: (if fst (ans op) then ntrace ans (rest tt) else []).
+Proof.
+  intros ans op rest. cbn. destruct (fst (ans op)); reflexivity.
+Qed.
+
+Example nexec_is_one_operation : forall z,
+  ntrace (fun _ => (true, z)) (nexec (IoLog "hi")) = [IoLog "hi"] /\
+  nresult (fun _ => (true, z)) (nexec (IoLog "hi")) = true /\
+  nresult (fun _ => (false, z)) (nexec IoNonceFlooded) = false.
+Proof. intro z. repeat split; reflexivity. Qed.
+
+(** An operation not carried out stops the rest: only the first is done. *)
+Example ndo_stops_when_refused : forall z,
+  ntrace (fun _ => (false, z))
+    (ndo (IoLog "a") (fun _ => nexec (IoLog "b"))) = [IoLog "a"].
+Proof. reflexivity. Qed.
