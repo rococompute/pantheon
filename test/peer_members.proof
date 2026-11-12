@@ -1,0 +1,18 @@
+(** A peer line's members on fixed token streams, in Soma's kernel. *)
+Example peer_line_parts_fixed_tokens :
+  peer_line_parts ["A", "3", "from", "S", "p", "sig", "S", "s", "fields", "L", "2", "S", "a", "S", "b"]
+    = Some ("p", ("s", ["a", "b"])) /\
+  peer_line_parts ["A", "3", "fields", "L", "0", "sig", "S", "s", "from", "S", "p"]
+    = Some ("p", ("s", [])) /\
+  peer_line_parts ["A", "4", "from", "S", "p", "from", "S", "q", "sig", "S", "s", "fields", "L", "0"]
+    = Some ("p", ("s", [])) /\
+  peer_line_parts ["A", "4", "x", "A", "1", "from", "S", "no", "from", "S", "p", "sig", "S", "s",
+                   "fields", "L", "0"] = Some ("p", ("s", [])) /\
+  peer_line_parts ["A", "4", "y", "L", "2", "U", "I", "3", "from", "S", "p", "sig", "S", "s",
+                   "fields", "L", "0"] = Some ("p", ("s", [])) /\
+  peer_line_parts ["A", "2", "from", "S", "p", "fields", "L", "0"] = None /\
+  peer_line_parts ["A", "3", "from", "U", "sig", "S", "s", "fields", "L", "0"] = None /\
+  peer_line_parts ["A", "3", "from", "S", "p", "sig", "S", "s", "fields", "L", "1", "I", "2"] = None /\
+  peer_line_parts ["L", "2", "S", "from", "S", "p"] = None /\
+  peer_line_parts [] = None.
+Proof. repeat split; reflexivity. Qed.
