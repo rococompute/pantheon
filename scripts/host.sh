@@ -370,9 +370,10 @@ UNIT
     printf 'install -o root -g root -m 0644 "$stage/pantheon-inbox.service" "$R/etc/systemd/system/pantheon-inbox.service"\n'
   fi
   for a in $AGENTS; do
-    exec_line="exec $BIN node /var/lib/pantheon/net/$a --backend cmd:/var/lib/pantheon/net/$a/backend.sh --goal /var/lib/pantheon/goal.txt --listen $LISTEN --ci-repo pantheon $CI_CMD --ci-sandbox $here/deploy/host/ci-sandbox --ci-memory $CI_MEMORY"
+    exec_line="exec $(q "$BIN") node $(q "/var/lib/pantheon/net/$a") --backend $(q "cmd:/var/lib/pantheon/net/$a/backend.sh") --goal /var/lib/pantheon/goal.txt --listen $(q "$LISTEN") --ci-repo pantheon $(q "$CI_CMD") --ci-sandbox $(q "$here/deploy/host/ci-sandbox") --ci-memory $(q "$CI_MEMORY")"
     printf 'printf "%%s\\n" %s %s > "$stage/run-%s.sh"\n' "$(q '#!/bin/sh')" "$(q "$exec_line")" "$a"
-    printf 'printf "%%s\\n" %s %s > "$stage/backend-%s.sh"\n' "$(q '#!/bin/sh')" "$(q "PANTHEON_INBOX=/var/lib/pantheon-inbox/$a PANTHEON_INBOX_GROUP=inbox-$a exec $here/scripts/bidder-inbox.sh")" "$a"
+    if in_vm_agents "$a"; then url="INBOX_URL=$(q "http://$VM_HOST:$PORT") "; else url=""; fi
+    printf 'printf "%%s\\n" %s %s > "$stage/backend-%s.sh"\n' "$(q '#!/bin/sh')" "$(q "PANTHEON_INBOX=$(q "/var/lib/pantheon-inbox/$a") PANTHEON_INBOX_GROUP=$(q "inbox-$a") ${url}exec $(q "$here/scripts/bidder-inbox.sh")")" "$a"
     printf 'runuser -u pantheon -- sh -c %s sh "$R/var/lib/pantheon/net/%s/run.sh" < "$stage/run-%s.sh"\n' "$(q 'cat > "$1" && chmod 0755 "$1"')" "$a" "$a"
     printf 'runuser -u pantheon -- sh -c %s sh "$R/var/lib/pantheon/net/%s/backend.sh" < "$stage/backend-%s.sh"\n' "$(q 'cat > "$1" && chmod 0755 "$1"')" "$a" "$a"
   done
