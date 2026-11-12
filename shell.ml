@@ -830,12 +830,6 @@ let node_job_complete id job result = (lookup_handle id).h_job_complete job resu
 let node_plain_text s = plain_text s
 let node_ci_launch id req out tree ci = (lookup_handle id).h_ci_launch req out tree ci
 (* a model call's I/O: node.soma's perform_llm decides and builds the prompt *)
-let node_llm_budget id = (lookup_handle id).h_llm_budget ()
-let node_llm_hold id req kind prompt ctx = (lookup_handle id).h_llm_hold req kind prompt ctx; true
-let node_llm_start id req kind raw prompt ctx clean launch env = (lookup_handle id).h_llm_start req kind raw prompt ctx clean launch env
-let node_tool_checkout id r = (lookup_handle id).h_tool_checkout r
-let node_self_exe () = self_exe
-let node_json_string s = Yojson.Safe.to_string (`String s)
 let node_reply_finish path text = (try Sys.remove path with _ -> ()); text
 let node_env_entries () = Array.to_list (Unix.environment ())
 (* a model's output: node.soma's reply_fields decides what it becomes.
@@ -872,10 +866,6 @@ let node_json_tokens raw = try Some (json_tokens (Yojson.Safe.from_string raw)) 
 let node_float_of_digits s = float_of_string s
 let node_limit_set id until reason backoff = (lookup_handle id).h_limit_set until reason backoff; true
 let node_limit_clear id backoff = (lookup_handle id).h_limit_clear backoff; true
-let node_repo_names id = (lookup_handle id).h_repo_names ()
-let node_ls_files id r = (lookup_handle id).h_ls_files r
-let node_head_file id r p = (lookup_handle id).h_head_file r p
-let node_token () = random_hex 8
 let node_float_text f = Printf.sprintf "%.0f" f
 let node_float_wire f = Printf.sprintf "%.17g" f
 let save_snapshot id snap = (lookup_handle id).h_save (Obj.repr snap); true
@@ -947,6 +937,29 @@ let node_io id op =
   | [ "divergences" ] -> (true, (0., List.concat_map (fun (r, v) -> [ r; v ]) (h.h_divergences ())))
   | [ "limit_info" ] ->
       let until, (backend, (held, reason)) = h.h_limit_info () in (true, (until, [ backend; held; reason ]))
+  | [ "llm_budget" ] -> let calls, max = h.h_llm_budget () in (true, (0., [ calls; max ]))
+  | "llm_hold" :: req :: kind :: prompt :: ctx -> h.h_llm_hold req kind prompt ctx; (true, (0., []))
+  | "llm_start" :: req :: kind :: raw :: prompt :: parts ->
+      let rec unpack rev = function
+        | "alternate" :: rest -> (List.rev rev, rest)
+        | "field" :: value :: rest -> unpack (value :: rev) rest
+        | _ -> fail "malformed llm_start operation"
+      in
+      let ctx, parts = unpack [] parts in
+      let clean, parts = unpack [] parts in
+      let launch, env = unpack [] parts in
+      (match h.h_llm_start req kind raw prompt ctx clean launch env with
+       | Some ev -> (true, (0., ev))
+       | None -> (false, (0., [])))
+  | [ "tool_checkout"; r ] ->
+      let (wt, gd), ok = h.h_tool_checkout r in (true, (0., [ wt; gd; string_of_bool ok ]))
+  | [ "self_exe" ] -> (true, (0., [ self_exe ]))
+  | [ "env_entries" ] -> (true, (0., Array.to_list (Unix.environment ())))
+  | [ "token" ] -> (true, (0., [ random_hex 8 ]))
+  | [ "repo_names" ] -> (true, (0., h.h_repo_names ()))
+  | [ "ls_files"; r ] -> (true, (0., [ h.h_ls_files r ]))
+  | [ "head_file"; r; p ] ->
+      (match h.h_head_file r p with Some c -> (true, (0., [ c ])) | None -> (false, (0., [])))
   | [ "applied_version"; r ] ->
       (match h.h_merge_applied r with Some v -> (true, (0., [ v ])) | None -> (false, (0., [])))
   | [ "merge_reset"; r ] -> h.h_merge_reset r; (true, (0., []))

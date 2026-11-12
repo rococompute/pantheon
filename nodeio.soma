@@ -87,7 +87,25 @@ Inductive node_op :=
 | IoMergeRead (repo path : string)
 | IoMergeWrite (repo path text : string)
 | IoMergeRemove (repo path : string)
-| IoMergeCommit (repo version tree bid task bidder spec : string).
+| IoMergeCommit (repo version tree bid task bidder spec : string)
+(** a model call's work (U-1): the call count, bumped for this call, and
+    the budget ([calls, max]); holding a raw request until the limit is
+    over (it comes back as an llm_release event); starting the model
+    process (found: the raw output event at once, as when it couldn't
+    start; not found: it runs); a cmd: patch's tool checkout ([worktree,
+    git directory, "true" or "false"]); the node's own binary; the
+    environment; a fresh fence token; the governed repositories; a
+    checkout's git ls-files; a file at a checkout's head (found or not) *)
+| IoLlmBudget
+| IoLlmHold (id kind prompt : string) (ctx : list string)
+| IoLlmStart (id kind raw prompt : string) (ctx clean launch env : list string)
+| IoToolCheckout (repo : string)
+| IoSelfExe
+| IoEnvEntries
+| IoToken
+| IoRepoNames
+| IoLsFiles (repo : string)
+| IoHeadFile (repo path : string).
 
 (** Two arbitrary lists on one wire: tagged field/value pairs, then the
     alternate-list marker. A marker occurring as a value is never a tag.
@@ -152,6 +170,18 @@ io_wire (op : node_op) : list string :=
   | IoMergeRemove repo path => ["merge_remove", repo, path]
   | IoMergeCommit repo version tree bid task bidder spec =>
       ["merge_commit", repo, version, tree, bid, task, bidder, spec]
+  | IoLlmBudget => ["llm_budget"]
+  | IoLlmHold id kind prompt ctx => "llm_hold" :: id :: kind :: prompt :: ctx
+  | IoLlmStart id kind raw prompt ctx clean launch env =>
+      ["llm_start", id, kind, raw, prompt] ++ resend_fields ctx ++ ("alternate" ::
+        resend_fields clean ++ ("alternate" :: resend_fields launch ++ ("alternate" :: env)))
+  | IoToolCheckout repo => ["tool_checkout", repo]
+  | IoSelfExe => ["self_exe"]
+  | IoEnvEntries => ["env_entries"]
+  | IoToken => ["token"]
+  | IoRepoNames => ["repo_names"]
+  | IoLsFiles repo => ["ls_files", repo]
+  | IoHeadFile repo path => ["head_file", repo, path]
   end.
 
 io_of_wire (w : list string) : option node_op :=
@@ -206,6 +236,28 @@ io_of_wire (w : list string) : option node_op :=
   | ["merge_remove", repo, path] => Some (IoMergeRemove repo path)
   | ["merge_commit", repo, version, tree, bid, task, bidder, spec] =>
       Some (IoMergeCommit repo version tree bid task bidder spec)
+  | ["llm_budget"] => Some IoLlmBudget
+  | "llm_hold" :: id :: kind :: prompt :: ctx => Some (IoLlmHold id kind prompt ctx)
+  | "llm_start" :: id :: kind :: raw :: prompt :: rest =>
+      match resend_parts rest with
+      | Some (ctx, rest) =>
+          match resend_parts rest with
+          | Some (clean, rest) =>
+              match resend_parts rest with
+              | Some (launch, env) => Some (IoLlmStart id kind raw prompt ctx clean launch env)
+              | None => None
+              end
+          | None => None
+          end
+      | None => None
+      end
+  | ["tool_checkout", repo] => Some (IoToolCheckout repo)
+  | ["self_exe"] => Some IoSelfExe
+  | ["env_entries"] => Some IoEnvEntries
+  | ["token"] => Some IoToken
+  | ["repo_names"] => Some IoRepoNames
+  | ["ls_files", repo] => Some (IoLsFiles repo)
+  | ["head_file", repo, path] => Some (IoHeadFile repo path)
   | _ => None
   end.
 

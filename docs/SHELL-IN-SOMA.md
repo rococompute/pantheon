@@ -172,9 +172,16 @@ on, its end as a time of day, read in the old order (`node.proof`'s
 `status_reads_in_order`). So is a decided merge (`merge_prog`): the
 gate's reads, the checkout's reset, each edit's look at its path, read,
 write or removal, and the commit are operations (`merge_trace`,
-`merge_wrong_tree_diverges`). Reads that are still bindings of their own
-(a model call's) are the next ones to turn into operations; each one is
-one less thing a unikernel can't run.
+`merge_wrong_tree_diverges`). And so is a model call (`llm_prog`): the
+budget, the clock and the limit for its gate, then a fence token, the
+environment, the prompt's parts (each repository's listing, each .plan,
+a task's files, read one at a time), a cmd: patch's tool checkout and
+the process's start (`llm_over_budget_trace`, `llm_asked_trace`); the
+prompt it assembles is `prompt_assemble`'s (`prompt_prog_assembles`,
+`repo_read_prog_reads`). Every output is now a node program. What a
+model's output becomes, a CI job's events and the event loop's own reads
+(the snapshot, timers, jobs) are still bindings: the next ones to turn
+into operations, each one less thing a unikernel can't run.
 The resend write uses tagged `field`/value pairs followed by `alternate`
 and the untouched second list. Values may themselves contain either tag.
 Resend reads and the native table remain unchanged.
@@ -191,7 +198,7 @@ it with RSA), starting a CI check (`w_check`), the epoch's draw
 (`w_draw`), a transaction's signed line (`w_encode_tx`), the check
 exclusions (`w_exclusions`), the checkouts' heads (`w_heads`), the model
 backend (`w_backend`), a time of day (`w_local_time`) and a merge's git
-work (`w_git`). Decided blocks and signed votes are kept in
+work (`w_git`) and a model call's (`w_llm`). Decided blocks and signed votes are kept in
 memory beside their files, as the binary keeps them (`nio_store_op`).
 Each operation:
 
@@ -217,10 +224,13 @@ Each operation:
 | `IoLimitInfo`, `IoLocalTime stamp` | the model limit (until, backend, held requests, reason); `Unix.localtime` as HH:MM | no limit, `w_backend` (the limit is the model calls', not operations yet); `w_local_time` |
 | `IoAppliedVersion repo` | the applied-version table (absent: a repository this node doesn't have) | the tables' applied versions |
 | `IoMergeReset`, `IoMergeProbe`, `IoMergeRead`, `IoMergeWrite`, `IoMergeRemove`, `IoMergeCommit` | git in the checkout: hard reset and clean, a path's kind, read, write keeping the mode, remove, commit with the merge's message (its tree and short id) | `w_git`, a git service (Soma's "services") |
+| `IoRepoNames`, `IoLsFiles repo`, `IoHeadFile repo path` | the governed repositories; `git ls-files`; `git show HEAD:path` (absent when it fails) | `w_git` |
+| `IoLlmBudget`, `IoLlmHold id kind prompt ctx`, `IoLlmStart ...`, `IoToolCheckout repo`, `IoSelfExe`, `IoEnvEntries`, `IoToken` | the call count (bumped) and budget; hold a request until the limit is over; start the model process (its output event at once when it couldn't start); a cmd: patch's checkout; the node's binary; the environment; a random fence token | `w_llm`, a model service (Soma's "services") |
 | `IoConnAdmit`, `IoConnClose`, `IoJobFlood`, `IoJobExpire` | admit, refuse or close a socket; kill a job's process | nothing to do: a unikernel's links are its listen handlers', and it runs no processes |
 
 Not yet operations, still bindings of their own (the next parts of U-1):
-a model call's facts (the limit, held requests, the call count),
+what a model's output becomes (the limit's state, the reply file), a CI
+job's start and events, the event loop's reads (timers, jobs, the queue),
 the snapshot (Soma's "storage" still), the listener and
 accepted connections (links), SHA-256 and RSA (Soma's item), and git,
 model and CI jobs (Soma's "services": `fetch` with a timeout and HTTP POST).

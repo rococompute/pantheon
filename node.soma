@@ -1064,7 +1064,7 @@ reply_events (h : node_t) (id kind prompt0 text : string) (ctx : list string) : 
       let reason := limit_reason_of body in
       if node_limit_set h (PrimFloat.add now wait) reason (limit_next_backoff backoff)
          && io_log h (limit_log_text (fst info) (node_float_text (PrimFloat.div wait 60%float)) reason)
-         && node_llm_hold h id kind prompt0 ctx
+         && io_do h (IoLlmHold id kind prompt0 ctx)
       then [] else [["llm_error", id, "the request couldn't be held"]]
   | ReplyError why => if node_limit_clear h 900%float then [["llm_error", id, why]] else []
   | ReplyFields kv => if node_limit_clear h 900%float then [("llm_reply" :: id :: kv)] else []
@@ -1357,18 +1357,74 @@ Fixpoint push_all (h : node_t) (evs : list (list string)) : bool :=
   | ev :: rest => io_push h ev && push_all h rest
   end.
 
-llm_repos_text (h : node_t) (token : string) : string :=
-  repos_text_of token (map (fun n => (n, node_ls_files h n)) (node_repo_names h)).
+(** A prompt's parts as node programs: each repository's listing
+    ([IoLsFiles]), each .plan at its head ([IoHeadFile]), and a task's
+    files, each read and cut before the next is read. *)
+Fixpoint llm_listings_prog (names : list string) : nprog (list (string * string)) :=
+  match names with
+  | [] => NDone []
+  | n :: rest =>
+      nbind (nask (IoLsFiles n)) (fun l =>
+      nbind (llm_listings_prog rest) (fun ls => NDone ((n, ans_one l) :: ls)))
+  end.
 
-llm_plan_text (h : node_t) (token : string) : string :=
-  plan_text_of token (map (fun n => (n, node_head_file h n ".plan")) (node_repo_names h)).
+Fixpoint llm_plans_prog (names : list string) : nprog (list (string * option string)) :=
+  match names with
+  | [] => NDone []
+  | n :: rest =>
+      nbind (nask (IoHeadFile n ".plan")) (fun c =>
+      nbind (llm_plans_prog rest) (fun ps => NDone ((n, ans_found_one c) :: ps)))
+  end.
 
-llm_repo_text (h : node_t) (token r : string) (paths : list string) : string :=
-  if mem r (node_repo_names h)
-  then append (shell_fence token (append "files in " r) (listing_text (node_ls_files h r) 300))
-         (repo_read_text token (64 * 1024) (200 * 1024)
-           (fun p => (p, node_head_file h r p)) (filter shell_safe_path paths))
-  else repo_text_of token r None [] 0 0.
+llm_repos_prog (token : string) : nprog string :=
+  nbind (nask IoRepoNames) (fun names =>
+  nbind (llm_listings_prog (ans_list names)) (fun ls => NDone (repos_text_of token ls))).
+
+llm_plan_prog (token : string) : nprog string :=
+  nbind (nask IoRepoNames) (fun names =>
+  nbind (llm_plans_prog (ans_list names)) (fun ps => NDone (plan_text_of token ps))).
+
+(** [repo_read_text], reading each file with [IoHeadFile]: a file is read
+    and cut before the next is asked for. *)
+Fixpoint repo_read_prog (token r : string) (cap budget : nat) (files : list string) : nprog string :=
+  match files with
+  | [] => NDone ""
+  | p :: rest =>
+      nbind (nask (IoHeadFile r p)) (fun got =>
+      let c := match ans_found_one got with Some t => t | None => "(no such file at the head)" end in
+      let lim := Nat.min budget cap in
+      let c := if lim <? slen c then append (substr c 0 lim) (append newline "(cut here: the file goes on)") else c in
+      nbind (repo_read_prog token r cap (budget - slen c) rest) (fun tail =>
+      NDone (append (shell_fence token (append "file " p) c) tail)))
+  end.
+
+llm_repo_prog (token r : string) (paths : list string) : nprog string :=
+  nbind (nask IoRepoNames) (fun names =>
+  if mem r (ans_list names) then
+    nbind (nask (IoLsFiles r)) (fun l =>
+    nbind (repo_read_prog token r (64 * 1024) (200 * 1024) (filter shell_safe_path paths)) (fun files =>
+    NDone (append (shell_fence token (append "files in " r) (listing_text (ans_one l) 300)) files)))
+  else NDone (repo_text_of token r None [] 0 0)).
+
+(** [prompt_assemble] as a node program: a part's program runs only when
+    its placeholder is there (node.proof's prompt_prog_assembles: the
+    same text). *)
+prompt_prog (token prompt : string) (ctx : list string) (repos plan : nprog string)
+    (repo : string -> list string -> nprog string) : nprog string :=
+  let p := replace_all prompt "{{F}}" token in
+  nbind (if contains "{{REPOS}}" p then nbind repos (fun t => NDone (replace_all p "{{REPOS}}" t)) else NDone p) (fun p =>
+  nbind (if contains "{{PLAN}}" p then nbind plan (fun t => NDone (replace_all p "{{PLAN}}" t)) else NDone p) (fun p =>
+  match ctx with
+  | r :: paths => if contains "{{REPO}}" p then nbind (repo r paths) (fun t => NDone (replace_all p "{{REPO}}" t)) else NDone p
+  | [] => NDone p
+  end)).
+
+(** events queued in order, stopping at the first not queued *)
+Fixpoint queue_prog (evs : list (list string)) : nprog bool :=
+  match evs with
+  | [] => NDone true
+  | ev :: rest => ndo (IoQueue ev) (fun _ => queue_prog rest)
+  end.
 
 (** Only patch requests for a governed repository receive a writable
     tool checkout. Other requests may read code through their tools but
@@ -1471,48 +1527,70 @@ grok_launch (hdr : string) (launch : list string) : list string :=
   | _ => launch
   end.
 
-llm_begin (h : node_t) (id kind prompt input : string) (ctx clean launch env : list string) : bool :=
-  match node_llm_start h id kind prompt input ctx clean launch env with
-  | None => true
-  (* the process couldn't start: its output is here at once *)
-  | Some ev => push_all h (model_output_events h ev)
-  end.
+(** Starting the model process; when it couldn't start, its output is
+    here at once, and what it becomes is queued. *)
+llm_begin_prog (h : node_t) (id kind prompt input : string) (ctx clean launch env : list string) : nprog bool :=
+  nbind (nask (IoLlmStart id kind prompt input ctx clean launch env)) (fun started =>
+  match ans_found started with
+  | None => NDone true
+  | Some ev => queue_prog (model_output_events h ev)
+  end).
 
-llm_call (h : node_t) (id kind prompt : string) (ctx : list string) : bool :=
-  let token := node_token tt in
-  let backend := fst (snd (node_limit_info h)) in
+(** a tool checkout's answer: its directories and whether it worked *)
+tool_made (a : nanswer) : (string * string) * bool :=
+  match ans_list a with [wt, gd, ok] => ((wt, gd), seq ok "true") | _ => (("", ""), false) end.
+
+(** A model call, asked: a fence token, the backend, the environment, the
+    prompt assembled, and for a cmd: patch its tool checkout, then the
+    process started; each an operation, in the order the bindings were. *)
+llm_call_prog (h : node_t) (id kind prompt : string) (ctx : list string) : nprog bool :=
+  nbind (nask IoToken) (fun tok =>
+  let token := ans_one tok in
+  nbind (nask IoLimitInfo) (fun limit =>
+  let backend := hd "" (ans_list limit) in
   match backend_launch backend with
-  | [] => io_push h ["llm_error", id, append "unknown backend " backend]
+  | [] => nexec (IoQueue ["llm_error", id, append "unknown backend " backend])
   | launch =>
-      let all_env := node_env_entries tt in
-      let text := prompt_assemble token prompt ctx (fun _ => llm_repos_text h token) (fun _ => llm_plan_text h token)
-                    (llm_repo_text h token) in
+      nbind (nask IoEnvEntries) (fun envs =>
+      let all_env := ans_list envs in
+      nbind (prompt_prog token prompt ctx (llm_repos_prog token) (llm_plan_prog token) (llm_repo_prog token)) (fun text =>
       if seq (launch_mode launch) "grok" then
-        match grok_request node_json_string all_env text with
-        | None => io_push h ["llm_error", id, "backend grok needs XAI_API_KEY"]
-        | Some (hdr, body) => llm_begin h id kind prompt body ctx [] (grok_launch hdr launch) all_env
+        match grok_request nio_json_string all_env text with
+        | None => nexec (IoQueue ["llm_error", id, "backend grok needs XAI_API_KEY"])
+        | Some (hdr, body) => llm_begin_prog h id kind prompt body ctx [] (grok_launch hdr launch) all_env
         end
       else if seq (launch_mode launch) "cmd" then
-        let co := llm_checkout kind ctx (node_repo_names h) in
-        let made := match co with Some r => Some (node_tool_checkout h r) | None => None end in
-        let (l, rest) := tool_launch launch (model_env_entries all_env) (tool_job_of co made (node_self_exe tt)) in
-        llm_begin h id kind prompt text ctx (snd rest) l (fst rest)
-      else llm_begin h id kind prompt text ctx [] launch (model_env_entries all_env)
-  end.
+        nbind (nask IoRepoNames) (fun names =>
+        let co := llm_checkout kind ctx (ans_list names) in
+        nbind (match co with
+               | Some r => nbind (nask (IoToolCheckout r)) (fun m => NDone (Some (tool_made m)))
+               | None => NDone None
+               end) (fun made =>
+        nbind (nask IoSelfExe) (fun self =>
+        let (l, rest) := tool_launch launch (model_env_entries all_env) (tool_job_of co made (ans_one self)) in
+        llm_begin_prog h id kind prompt text ctx (snd rest) l (fst rest))))
+      else llm_begin_prog h id kind prompt text ctx [] launch (model_env_entries all_env)))
+  end)).
 
-perform_llm (h : node_t) (id kind prompt : string) (ctx : list string) : bool :=
-  let (calls, max) := node_llm_budget h in
-  let now := io_now h in
-  let (until, info) := node_limit_info h in
-  let backend := fst info in
+(** A model call (the "llm" output), as a node program: the budget (the
+    count bumped for this call), the clock and the limit, then the gate. *)
+llm_prog (h : node_t) (id kind prompt : string) (ctx : list string) : nprog bool :=
+  nbind (nask IoLlmBudget) (fun b =>
+  let (calls, max) := match ans_list b with [c, m] => (c, m) | _ => ("", "") end in
+  nbind (nask IoClock) (fun clock =>
+  let now := ans_float clock in
+  nbind (nask IoLimitInfo) (fun limit =>
+  let until := ans_float limit in
+  let backend := hd "" (ans_list limit) in
   match llm_gate_of calls max now until with
-  | LlmOverBudget => io_push h ["llm_error", id, llm_budget_text max]
+  | LlmOverBudget => nexec (IoQueue ["llm_error", id, llm_budget_text max])
   | LlmHeld =>
-      io_log h (llm_hold_text id kind backend
-                    (node_float_text (PrimFloat.div (PrimFloat.sub until now) 60%float))) &&
-      node_llm_hold h id kind prompt ctx
-  | LlmAsk => io_log h (llm_ask_text backend kind id calls max) && llm_call h id kind prompt ctx
-  end.
+      nand (nexec (IoLog (llm_hold_text id kind backend
+                            (node_float_text (PrimFloat.div (PrimFloat.sub until now) 60%float)))))
+           (fun _ => nexec (IoLlmHold id kind prompt ctx))
+  | LlmAsk =>
+      nand (nexec (IoLog (llm_ask_text backend kind id calls max))) (fun _ => llm_call_prog h id kind prompt ctx)
+  end))).
 
 (** The status file, as a node program: its facts are operations, read
     in the order the bindings were (the checkouts' heads, the divergences,
@@ -1535,8 +1613,7 @@ status_prog (lines : list string) : nprog bool :=
 (** What an output does, as a node program: its reads are operations
     ([IoDraw], [IoBlock], [IoHeight], [IoPeerCount], the signed-vote
     table, the check exclusions, the status file's facts, a merge's
-    checkout work), and so is everything it does. A model call is still a
-    function over bindings: the program is just its result. *)
+    checkout work, a model call's), and so is everything it does. *)
 output_prog (h : node_t) (out : list string) : nprog bool :=
   match plan_output out with
   | SetTimer ms ev => nexec (IoTimer ms ev)
@@ -1582,7 +1659,7 @@ output_prog (h : node_t) (out : list string) : nprog bool :=
       let (denied, excluded) := ans_exclusions ex in
       nexec (check_request_op id r head edits denied excluded))
   | MergeRequest r v tree bid task bidder spec edits => merge_prog r v tree bid task bidder spec edits
-  | LlmRequest id kind prompt ctx => NDone (perform_llm h id kind prompt ctx)
+  | LlmRequest id kind prompt ctx => llm_prog h id kind prompt ctx
   | LegacyOutput _ => NDone true
   end.
 
@@ -1996,7 +2073,7 @@ run_event (h : node_t) (st : node_state) (ev : list string) : node_state :=
   match ev with
   | [] => st
   | "llm_release" :: id :: kind :: prompt :: ctx =>
-      if llm_call h id kind prompt ctx then st else with_live st (live st)
+      if run_shell h (llm_call_prog h id kind prompt ctx) then st else with_live st (live st)
   | "peer_line" :: self :: refused :: from :: sig :: fields =>
       if line_dropped self refused then st
       else if node_verify_line h from sig fields then

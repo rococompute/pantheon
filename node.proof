@@ -857,11 +857,25 @@ Proof.
     offer mode target | conn | job | job | who | | repo | who first | who first timestamp |
     | height | | | slot | slot | nonce fields | | | | | stamp |
     repo | repo | repo path | repo path | repo path text | repo path |
-    repo version tree bid task bidder spec ]; try reflexivity.
-  change (match resend_parts (resend_fields fields ++ ("alternate" :: alternate)) with
+    repo version tree bid task bidder spec | | id kind prompt ctx |
+    id kind raw prompt ctx clean launch env | repo | | | | | repo | repo path ]; try reflexivity.
+  - change (match resend_parts (resend_fields fields ++ ("alternate" :: alternate)) with
     | Some (original, alt) => Some (IoRememberBroadcast height kind original alt)
     | None => None end = Some (IoRememberBroadcast height kind fields alternate)).
-  rewrite resend_parts_reads_fields. reflexivity.
+    rewrite resend_parts_reads_fields. reflexivity.
+  - change (match resend_parts (resend_fields ctx ++ ("alternate" ::
+            resend_fields clean ++ ("alternate" :: resend_fields launch ++ ("alternate" :: env)))) with
+    | Some (ctx, rest) =>
+        match resend_parts rest with
+        | Some (clean, rest) =>
+            match resend_parts rest with
+            | Some (launch, env) => Some (IoLlmStart id kind raw prompt ctx clean launch env)
+            | None => None
+            end
+        | None => None
+        end
+    | None => None end = Some (IoLlmStart id kind raw prompt ctx clean launch env)).
+    rewrite !resend_parts_reads_fields. reflexivity.
 Qed.
 
 Example io_wire_forms :
@@ -1174,6 +1188,61 @@ Example merge_wrong_tree_diverges :
    IoLog (merge_diverged_text "calc" "1" "got tree t2, attested t1"),
    IoMergeDiverged "calc" "1: got tree t2, attested t1"].
 Proof. reflexivity. Qed.
+
+(** The prompt a model call's program assembles is [prompt_assemble]'s,
+    for the texts its parts' programs end with: the placeholders, their
+    order and when each part is read are the same. *)
+Theorem prompt_prog_assembles : forall ans token prompt ctx repos plan repo,
+  nresult ans (prompt_prog token prompt ctx repos plan repo) =
+  prompt_assemble token prompt ctx (fun _ => nresult ans repos) (fun _ => nresult ans plan)
+    (fun r ps => nresult ans (repo r ps)).
+Proof.
+  intros ans token prompt ctx repos plan repo. unfold prompt_prog, prompt_assemble. cbv beta zeta.
+  assert (part : forall (q tag : string) (part : nprog string),
+    nresult ans (if contains tag q then nbind part (fun t => NDone (replace_all q tag t)) else NDone q) =
+    (if contains tag q then replace_all q tag (nresult ans part) else q)).
+  { intros q tag part. destruct (contains tag q); [rewrite nresult_nbind|]; reflexivity. }
+  rewrite nresult_nbind, part, nresult_nbind, part.
+  destruct ctx as [|r paths]; [reflexivity|]. apply part.
+Qed.
+
+(** A model call over its budget reads the budget, the clock and the
+    limit, and queues the error; one asked of claude logs, takes a fence
+    token, reads the backend and the environment, and starts the process
+    on the prompt (here one with no placeholders, so no files are read). *)
+llm_answers (calls : string) (op : node_op) : nanswer :=
+  match op with
+  | IoLlmBudget => (true,(0%float,[calls, "3"]))
+  | IoClock => (true,(5%float,[]))
+  | IoLimitInfo => (true,(0%float,["claude", "0", ""]))
+  | IoToken => (true,(0%float,["T"]))
+  | IoEnvEntries => (true,(0%float,["A=1", "PANTHEON_HOME=/x"]))
+  | IoLlmStart _ _ _ _ _ _ _ _ => (false,(0%float,[]))
+  | _ => (true,(0%float,[]))
+  end.
+
+Example llm_over_budget_trace :
+  ntrace (llm_answers "4") (llm_prog "h" "7" "ask" "p" []) =
+  [IoLlmBudget, IoClock, IoLimitInfo, IoQueue ["llm_error", "7", llm_budget_text "3"]].
+Proof. reflexivity. Qed.
+
+Example llm_asked_trace :
+  ntrace (llm_answers "1") (llm_prog "h" "7" "ask" "p" []) =
+  [IoLlmBudget, IoClock, IoLimitInfo, IoLog (llm_ask_text "claude" "ask" "7" "1" "3"),
+   IoToken, IoLimitInfo, IoEnvEntries,
+   IoLlmStart "7" "ask" "p" "p" [] [] (backend_launch "claude") ["A=1"]].
+Proof. reflexivity. Qed.
+
+(** A task's files, read by operations, are [repo_read_text]'s, reading
+    each with the answer to [IoHeadFile]. *)
+Theorem repo_read_prog_reads : forall ans token r cap files budget,
+  nresult ans (repo_read_prog token r cap budget files) =
+  repo_read_text token cap budget (fun p => (p, ans_found_one (ans (IoHeadFile r p)))) files.
+Proof.
+  intros ans token r cap files. induction files as [|p rest IH]; intros budget; [reflexivity|].
+  cbn [repo_read_prog repo_read_text]. rewrite nresult_nbind. cbn [nresult nask].
+  rewrite nresult_nbind. rewrite IH. reflexivity.
+Qed.
 
 Theorem remember_peer_is_served_operation : forall who first now,
   action_prog (RememberPeer who first now) =
