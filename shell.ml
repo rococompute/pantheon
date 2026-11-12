@@ -911,6 +911,9 @@ let node_io id op =
   | [ "merge_applied"; r; v ] -> h.h_merge_set_applied r v; (true, 0.)
   | [ "merge_diverged"; r; entry ] -> h.h_merge_note_diverged r entry; (true, 0.)
   | [ "clock" ] -> (true, Unix.gettimeofday ())
+  | [ "peer_exists"; who ] -> (h.h_peer_exists who, 0.)
+  | [ "nonce_flooded" ] -> (h.h_nonce_flooded (), 0.)
+  | [ "is_diverged"; repo ] -> (h.h_merge_diverged repo, 0.)
   | "remember_broadcast" :: height :: kind :: parts ->
       let rec unpack rev = function
         | "alternate" :: alternate -> (List.rev rev, alternate)
@@ -932,7 +935,6 @@ let node_block id height = (lookup_handle id).h_block height
 let node_current_height id = (lookup_handle id).h_current_height ()
 let node_last_served id who h = (lookup_handle id).h_last_served who h
 let node_mark_served id who h now = (lookup_handle id).h_mark_served who h now; true
-let node_peer_exists id who = (lookup_handle id).h_peer_exists who
 let node_checkout_heads id = (lookup_handle id).h_checkout_heads ()
 let node_divergences id = (lookup_handle id).h_divergences ()
 let node_limit_info id = (lookup_handle id).h_limit_info ()
@@ -942,7 +944,6 @@ let node_held_store id requests probing = (lookup_handle id).h_held_store reques
 let node_local_time until =
   let tm = Unix.localtime until in Printf.sprintf "%02d:%02d" tm.Unix.tm_hour tm.Unix.tm_min
 let node_encode_tx id nonce fields = (lookup_handle id).h_encode_tx nonce fields
-let node_nonce_flooded id = (lookup_handle id).h_nonce_flooded ()
 let node_signed_vote id slot = (lookup_handle id).h_signed_vote slot
 let node_signed_body id slot = (lookup_handle id).h_signed_body slot
 (* signed.log's bytes, raw, and noting one vote Soma read from them (without
@@ -962,7 +963,6 @@ let node_seen_refused id raw = (lookup_handle id).h_seen_refused raw
 let node_verify_line id from sg fields = (lookup_handle id).h_verify_line from sg fields
 (* a decided merge's I/O: node.soma's perform_merge decides *)
 let node_merge_applied id r = (lookup_handle id).h_merge_applied r
-let node_merge_diverged id r = (lookup_handle id).h_merge_diverged r
 let node_merge_reset id r = (lookup_handle id).h_merge_reset r; true
 let node_merge_probe id r p = (lookup_handle id).h_merge_probe r p
 let node_merge_read id r p = (lookup_handle id).h_merge_read r p

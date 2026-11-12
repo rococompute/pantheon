@@ -315,7 +315,10 @@ Inductive node_op :=
 | IoConnAdmit (offer mode target : string)
 | IoConnClose (conn : string)
 | IoJobFlood (job : string)
-| IoJobExpire (job : string).
+| IoJobExpire (job : string)
+| IoPeerExists (who : string)
+| IoNonceFlooded
+| IoIsDiverged (repo : string).
 
 (** Two arbitrary lists on one wire: tagged field/value pairs, then the
     alternate-list marker. A marker occurring as a value is never a tag.
@@ -355,6 +358,9 @@ io_wire (op : node_op) : list string :=
   | IoConnClose conn => ["conn_close", conn]
   | IoJobFlood job => ["job_flood", job]
   | IoJobExpire job => ["job_expire", job]
+  | IoPeerExists who => ["peer_exists", who]
+  | IoNonceFlooded => ["nonce_flooded"]
+  | IoIsDiverged repo => ["is_diverged", repo]
   end.
 
 io_of_wire (w : list string) : option node_op :=
@@ -384,6 +390,9 @@ io_of_wire (w : list string) : option node_op :=
   | ["conn_close", conn] => Some (IoConnClose conn)
   | ["job_flood", job] => Some (IoJobFlood job)
   | ["job_expire", job] => Some (IoJobExpire job)
+  | ["peer_exists", who] => Some (IoPeerExists who)
+  | ["nonce_flooded"] => Some IoNonceFlooded
+  | ["is_diverged", repo] => Some (IoIsDiverged repo)
   | _ => None
   end.
 
@@ -398,6 +407,10 @@ check_request_op (id repo head : string) (edits denied excluded : list string) :
 (** Effects use the first of the pair. The call's result is that bool, so
     the interpretation is not dropped. *)
 io_do (h : node_t) (op : node_op) : bool := fst (node_io h (io_wire op)).
+
+(** Boolean table results use the first component as data. In particular a
+    false result must be passed to policy, rather than chained as an effect. *)
+io_read_bool (h : node_t) (op : node_op) : bool := fst (node_io h (io_wire op)).
 
 (** The clock, through the same interpreter. The second of the pair is the
     time; the first only says the read happened. *)
@@ -713,7 +726,7 @@ merge_diverge (h : node_t) (r v why : string) : bool :=
   io_do h (IoMergeDiverged r (append (show (num v)) (append ": " why))).
 
 perform_merge (h : node_t) (r v tree bid task bidder spec : string) (edits : list string) : bool :=
-  match merge_gate_of (node_merge_applied h r) v (node_merge_diverged h r) with
+  match merge_gate_of (node_merge_applied h r) v (io_read_bool h (IoIsDiverged r)) with
   | MergeUnknown => io_log h (append "a merge for repository " (append r ", which this node doesn't have"))
   | MergeSkip => true
   | MergeApply =>
@@ -1592,7 +1605,7 @@ perform_output (h : node_t) (out : list string) : bool :=
       let last := node_last_served h who first in
       let (byz, _) := node_draw h in
       carry_output_actions h (catchup_plan who first (node_current_height h)
-                               now last (node_peer_exists h who) (seq byz "silent"))
+                               now last (io_read_bool h (IoPeerExists who)) (seq byz "silent"))
   | WriteStatus lines =>
       let heads := node_checkout_heads h in
       let bad := node_divergences h in
@@ -1604,7 +1617,7 @@ perform_output (h : node_t) (out : list string) : bool :=
       let clock := if limited then node_local_time until else "" in
       io_do h (IoWriteStatus (status_output lines heads bad limited backend clock held reason))
   | SubmitTransaction nonce fields =>
-      carry_output_actions h (submission_plan (fst (node_draw h)) (node_nonce_flooded h) nonce fields)
+      carry_output_actions h (submission_plan (fst (node_draw h)) (io_read_bool h IoNonceFlooded) nonce fields)
   | Broadcast fields =>
       let (byz, _) := node_draw h in
       let n := num (node_peer_count h) in
