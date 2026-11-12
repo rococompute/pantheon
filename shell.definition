@@ -5,11 +5,9 @@
 OCaml Library "cryptokit".
 OCaml Library "yojson".
 
-(** hex sha256 of a string *)
-sha256 : string -> string.
-
-(** hex sha256 of a list of strings, unambiguous about where each one ends *)
-hash_list : list string -> string.
+(** sha256 and hash_list are Soma's (util.soma, through Soma.Crypto);
+    shell.ml keeps its own, Cryptokit's, for what it hashes itself (the
+    genesis, the leader draw's chains), which are the same function. *)
 
 (** A signed transaction's I/O; market.soma's decode_tx decides.
     Whether the signature verifies against that agent's genesis key

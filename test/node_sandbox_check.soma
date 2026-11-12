@@ -5,10 +5,12 @@ Require Import Sandbox.
 Import nodeio node_sandbox.
 
 world : nio_world :=
-  {| w_wire := nio_json_strings;
+  {| w_chain := "pantheon-test";
+     w_key := {| nk_bytes := 0; nk_n := []; nk_e := []; nk_p := []; nk_q := [];
+                 nk_dp := []; nk_dq := []; nk_qinv := [] |};
+     w_keys := [];
      w_check := fun id _ _ _ => print (Stdlib.Strings.String.append "check asked: " id);
      w_draw := ["false", "1", "secret"];
-     w_encode_tx := fun nonce fields => nio_json_strings (nonce :: fields);
      w_exclusions := ["alternate"];
      w_heads := ["calc", "abc1234"];
      w_backend := "claude";
@@ -17,7 +19,6 @@ world : nio_world :=
      w_llm := fun _ => ret (false, (PrimFloat.zero, []));
      w_ci := fun _ => ret (true, (PrimFloat.zero, []));
      w_identity := "claude";
-     w_verify := fun _ _ _ => false;
      w_float_text := fun _ => "0";
      w_boot := [["me", "claude"]] |}.
 

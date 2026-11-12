@@ -214,15 +214,18 @@ binary: `nodeio.soma`'s pure part has the lines blocks.log and signed.log
 get (Yojson's, byte for byte) and what each table operation does
 (`nio_table_op`), and `test/node-sandbox.sh` checks both (`soma run` on the
 pure part, `soma build --no-image` on a unikernel that runs a node
-program). What Sandbox doesn't give yet is the program's to supply, in
-`nio_world`: a message's bytes on a peer link (`w_wire`: the binary signs
-it with RSA), starting a CI check (`w_check`), the epoch's draw
-(`w_draw`), a transaction's signed line (`w_encode_tx`), the check
+program). Signing and checking signatures are Soma's (Soma.Crypto's
+RSA and SHA-256): `nodeio.soma`'s `nio_encode_tx`, `nio_wire_line` and
+`nio_verify_line` make and check the binary's lines byte for byte, which
+the test checks against lines shell.ml signed with a Cryptokit key, so the
+world gives only the chain's id and the keys (`w_chain`, `w_key`,
+`w_keys`). What Sandbox doesn't give yet is the program's to supply, in
+`nio_world`: starting a CI check (`w_check`), the epoch's draw
+(`w_draw`), the check
 exclusions (`w_exclusions`), the checkouts' heads (`w_heads`), the model
 backend (`w_backend`), a time of day (`w_local_time`) and a merge's git
 work (`w_git`), a model call's and its outcome's (`w_llm`) and CI's
-start (`w_ci`), this node's name and a peer line's signature
-(`w_identity`, `w_verify`) a time as text (`w_float_text`) and the image's boot events (`w_boot`).
+start (`w_ci`), this node's name (`w_identity`), a time as text (`w_float_text`) and the image's boot events (`w_boot`).
 Decided blocks and signed votes are kept in
 memory beside their files, as the binary keeps them (`nio_store_op`).
 Each operation:
@@ -232,7 +235,7 @@ Each operation:
 | `IoLog text` | a line on stdout with the time | `print` (without the time of day) |
 | `IoTimer ms event` | a timer list checked each select turn | the tables' timer list, due `ms` after the monotonic clock |
 | `IoQueue event` | the event queue the next turn drains | the tables' queue |
-| `IoSendAll fields`, `IoSendPeer index fields`, `IoPeerSend peer fields` | sign, frame and buffer on the peer's TCP link | `send_line` on the peer's link (Soma's links), the line from `w_wire`: RSA signing is Soma's "SHA-256 and RSA" item |
+| `IoSendAll fields`, `IoSendPeer index fields`, `IoPeerSend peer fields` | sign, frame and buffer on the peer's TCP link | `send_line` on the peer's link (Soma's links), the binary's line signed with Soma's RSA (`nio_wire_line`) |
 | `IoPeerExists who`, `IoNonceFlooded`, `IoIsDiverged repo` | read peer membership, nonce-flood flag, divergence flag; first result component is the boolean value | the peer links' names; the tables |
 | `IoServedAt who first`, `IoMarkServed who first timestamp` | read/replace the catch-up served table; `(present, timestamp)` result and lossless `%.17g` timestamp transport | the tables' served table; the timestamp read back from its text within rounding (`nio_decimal`) |
 | `IoClock` | `Unix.gettimeofday`, returned as the second of `(true, now)` | `monotonic_ms`, in seconds: since boot, not the time of day, so a model's reset time (a wall-clock time) can't be compared with it yet |
@@ -244,7 +247,7 @@ Each operation:
 | `IoCheck id repo head edits` | the CI job: a fresh clone, the edits, the CI command as a process; its result comes back as a `check_result` event | `w_check`: a CI service, which needs Soma's "services" item (HTTP POST with a timeout) |
 | `IoBlock height`, `IoHeight`, `IoSignedVote slot`, `IoSignedBody slot` | the decided-block and signed-vote tables beside blocks.log and signed.log, the height; absent is `false` | the stores (`nio_store_op`), filled by `IoStore` and `IoSignVote` |
 | `IoPeerCount` | the genesis peers, counted | the peer links, counted |
-| `IoDraw`, `IoEncodeTx nonce fields`, `IoCheckExclusions` | the epoch's draw (Byzantine flag, chain length, link secret); a transaction signed with the node's key; the fields this node won't check, `field`-tagged, then `alternate` and the excluded alternates | `w_draw`, `w_encode_tx` (RSA again), `w_exclusions` |
+| `IoDraw`, `IoEncodeTx nonce fields`, `IoCheckExclusions` | the epoch's draw (Byzantine flag, chain length, link secret); a transaction signed with the node's key; the fields this node won't check, `field`-tagged, then `alternate` and the excluded alternates | `w_draw`, `nio_encode_tx` (Soma's RSA), `w_exclusions` |
 | `IoCheckoutHeads`, `IoDivergences` | `git rev-parse --short HEAD` in each checkout; the divergence list (pairs, flattened) | `w_heads`; the tables' divergences |
 | `IoLimitInfo`, `IoLocalTime stamp` | the model limit (until, backend, held requests, reason); `Unix.localtime` as HH:MM | no limit, `w_backend` (the limit is the model calls', not operations yet); `w_local_time` |
 | `IoAppliedVersion repo` | the applied-version table (absent: a repository this node doesn't have) | the tables' applied versions |
@@ -255,7 +258,7 @@ Each operation:
 | `IoCiLaunch id out tree ci` | CI started for a tree (events an immediate failure queued) | `w_ci`, a CI service |
 | `IoReadText path`, `IoDiscardFile path` | a file read; removed if it's there (no node needed) | `read_file`; nothing yet (Sandbox's named files can't be removed) |
 | `IoRefuse raw`, `IoSeenRefused raw` | the refused-transaction set | the stores' refused list |
-| `IoIdentity`, `IoVerifyLine from sig fields` | this node's name; RSA verification of a peer line | `w_identity`; `w_verify` (Soma's "SHA-256 and RSA") |
+| `IoIdentity`, `IoVerifyLine from sig fields` | this node's name; RSA verification of a peer line | `w_identity`; `nio_verify_line` with `w_keys` (Soma's RSA) |
 | `IoConns`, `IoPollPrep` | live connections and their last reads; sample the turn clock, dial and resend | the peer links (no activity times); nothing (links are listen handlers') |
 | `IoInboxState`, `IoInboxStamp`, `IoDirEntries`, `IoRemoveFile` | the inbox's last poll and directory; note a poll; list a directory; remove a file | an empty inbox (Sandbox's named files can't be listed or removed) |
 | `IoTurnNow`, `IoTimers`, `IoSetTimers`, `IoJobs`, `IoQueueEmpty` | the turn's clock, the timer list read and replaced, the running jobs, the queue | the monotonic clock; the tables' timers (as text by `w_float_text`); no jobs; the tables' queue |
@@ -267,8 +270,21 @@ Each operation:
 Not yet operations, still bindings of their own (the next parts of U-1):
 the snapshot (saved and read back: a Soma value, Soma's "storage"),
 `node_open`'s setup (Soma's "storage" still), the listener and
-accepted connections (links), SHA-256 and RSA (Soma's item), and git,
-model and CI jobs (Soma's "services": `fetch` with a timeout and HTTP POST).
+accepted connections (links), and git, model and CI jobs (Soma's
+"services": `fetch` with a timeout and HTTP POST).
+
+SHA-256 and RSA are Soma's (`Soma.Crypto`, Soma's item): `sha256` and
+`hash_list` are `util.soma`'s, no longer bindings, so the kernel computes
+them and a unikernel runs them. The binary extracts them to Cryptokit's
+(main.soma), the same function in C: Soma's extracted SHA-256 is about a
+tenth of its speed, which slowed e2e from 114 s to 130 s. The test checks
+the two agree on known answers. The
+unikernel signs and checks with Soma's RSA (above). The binary still signs
+and checks with Cryptokit (`tx_verify`, its peer lines, `encode_tx`):
+Cryptokit's keys have a random 2048-bit public exponent, so Soma's
+verification takes about 90 ms against Cryptokit's few. Keys with
+e = 65537 would take Soma's about 1 ms, which would let the binary's checks
+move too; that is a key format change, for a new genesis.
 
 ## The first pieces, bottom-up (superseded by the section above)
 

@@ -17,17 +17,18 @@ From Stdlib Require Import NArith.BinNat PArith.BinPos.
 Import nodeio.
 
 Record nio_world := {
-  (** the line a peer link carries for a message's fields (the binary's
-      signed JSON line) *)
-  w_wire : list string -> string;
+  (** the chain's id, this node's key and each agent's public key, from
+      the genesis and the key file: a peer line and a transaction are
+      signed and checked with Soma's RSA (nodeio's [nio_wire_line],
+      [nio_encode_tx], [nio_verify_line]), as the binary signs them *)
+  w_chain : string;
+  w_key : nio_key;
+  w_keys : list (string * nio_key);
   (** start the CI check of a bid's edits; its result comes back as an event *)
   w_check : string -> string -> string -> list string -> io unit;
   (** this epoch's draw: the Byzantine flag, the chain's length and the
       link secret, as the binary's [h_draw] *)
   w_draw : list string;
-  (** a transaction's signed line, for its nonce and fields (the binary's
-      [encode_tx]: signing again) *)
-  w_encode_tx : string -> list string -> string;
   (** the fields this node won't check and the excluded alternates, in
       [IoCheckExclusions]'s wire form *)
   w_exclusions : list string;
@@ -49,10 +50,8 @@ Record nio_world := {
   w_llm : list string -> io nanswer;
   (** CI started for a tree ([IoCiLaunch]): a CI service *)
   w_ci : list string -> io nanswer;
-  (** this node's name, and a peer line's signature checked (RSA, as
-      [w_wire]) *)
+  (** this node's name *)
   w_identity : string;
-  w_verify : string -> string -> list string -> bool;
   (** a time as text, node_float_wire's way (Soma's floats have no
       printer yet) *)
   w_float_text : PrimFloat.float -> string;
@@ -140,7 +139,8 @@ nio_kernel_op (w : nio_world) (s : nio_kernel) (op : node_op)
       nio_kernel_stores s op
   | IoDraw => ret (ans_data true (w_draw w), s)
   | IoPeerCount => ret (ans_data true [nio_show_nat (List.length (k_peers s))], s)
-  | IoEncodeTx nonce fields => ret (ans_data true [w_encode_tx w nonce fields], s)
+  | IoEncodeTx nonce fields =>
+      ret (ans_data true [nio_encode_tx (w_chain w) (w_identity w) (w_key w) nonce fields], s)
   | IoCheckExclusions => ret (ans_data true (w_exclusions w), s)
   | IoCheckoutHeads => ret (ans_data true (w_heads w), s)
   | IoLimitInfo => ret ((true, (PrimFloat.zero, [w_backend w, "0", ""])), s)
@@ -154,11 +154,11 @@ nio_kernel_op (w : nio_world) (s : nio_kernel) (op : node_op)
   | IoHeldRequests | IoHeldStore _ _ | IoJobComplete _ _ =>
       a <- w_llm w (io_wire op) ;; ret (a, s)
   | IoWriteStatus text => write_file "status.txt" text ;; ret (nio_ok, s)
-  | IoSendAll fields => nio_send_each (List.map snd (k_peers s)) (w_wire w fields) ;; ret (nio_ok, s)
+  | IoSendAll fields => nio_send_each (List.map snd (k_peers s)) (nio_wire_line (w_chain w) (w_identity w) (w_key w) fields) ;; ret (nio_ok, s)
   | IoSendPeer index fields =>
-      nio_send_each (nio_nth_peer (nio_index index) (k_peers s)) (w_wire w fields) ;; ret (nio_ok, s)
+      nio_send_each (nio_nth_peer (nio_index index) (k_peers s)) (nio_wire_line (w_chain w) (w_identity w) (w_key w) fields) ;; ret (nio_ok, s)
   | IoPeerSend who fields =>
-      nio_send_each (List.map snd (List.filter (fun p => nio_eq (fst p) who) (k_peers s))) (w_wire w fields) ;;
+      nio_send_each (List.map snd (List.filter (fun p => nio_eq (fst p) who) (k_peers s))) (nio_wire_line (w_chain w) (w_identity w) (w_key w) fields) ;;
       ret (nio_ok, s)
   | IoPeerExists who =>
       ret (ans_flag (List.existsb (fun p => nio_eq (fst p) who) (k_peers s)), s)
@@ -172,7 +172,7 @@ nio_kernel_op (w : nio_world) (s : nio_kernel) (op : node_op)
   | IoInboxState => ret ((true, (PrimFloat.zero, ["inbox"])), s)
   | IoDirEntries _ => ret (ans_data true [], s)
   | IoIdentity => ret (ans_data true [w_identity w], s)
-  | IoVerifyLine from sig fields => ret (ans_flag (w_verify w from sig fields), s)
+  | IoVerifyLine from sig fields => ret (ans_flag (nio_verify_line (w_chain w) (w_keys w) from sig fields), s)
   | IoConns => ret (ans_data true (nio_frame_lists (List.map (fun p => [fst p, "0"]) (k_peers s))), s)
   (* dialing and resending: a unikernel's links are its listen handlers' *)
   | IoPollPrep => ret (nio_ok, s)

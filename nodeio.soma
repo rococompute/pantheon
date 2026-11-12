@@ -4,6 +4,8 @@
     [run_shell] over the [node_io] binding) and a unikernel can interpret
     with Sandbox (node_sandbox.soma). *)
 From Corelib Require PrimFloat.
+From Corelib Require PrimInt63.
+Require Crypto.
 
 (** ---- U-1: the node's I/O as one interface (docs/SHELL-IN-SOMA.md,
     "Two directions, and the unikernel") ----
@@ -536,6 +538,58 @@ nio_block_line (height : string) (txs : list string) : string :=
 
 nio_vote_line (slot vid : string) (fields : list string) : string :=
   Stdlib.Strings.String.concat " " [slot, vid, nio_json_strings fields].
+
+(** ---- signatures ----
+    What the binary signs and the lines it sends, as shell.ml makes them
+    (tx_bytes, msg_bytes, encode_tx, wire), with Soma's RSA (Soma.Crypto:
+    PKCS #1 v1.5 of SHA-256, a signature as lowercase hex), so that an
+    interpreter without Cryptokit signs and checks the same bytes. A key's
+    numbers are big-endian bytes; [nk_bytes] is its size in bytes (the
+    key file's "size" over 8). A public key's private fields are empty. *)
+Record nio_key := {
+  nk_bytes : nat; nk_n : list PrimInt63.int; nk_e : list PrimInt63.int;
+  nk_p : list PrimInt63.int; nk_q : list PrimInt63.int; nk_dp : list PrimInt63.int;
+  nk_dq : list PrimInt63.int; nk_qinv : list PrimInt63.int }.
+
+nio_nul : string := Stdlib.Strings.String.String (nio_char 0) "".
+
+nio_tx_bytes (chain agent nonce : string) (fields : list string) : string :=
+  Stdlib.Strings.String.concat nio_nul ["tx", chain, agent, nonce, nio_json_strings fields].
+
+nio_msg_bytes (chain from : string) (fields : list string) : string :=
+  Stdlib.Strings.String.concat nio_nul ["msg", chain, from, nio_json_strings fields].
+
+nio_sign (k : nio_key) (msg : string) : string :=
+  Crypto.hex_of_bytes (Crypto.rsa_sign (nk_bytes k) (nk_p k) (nk_q k) (nk_dp k) (nk_dq k) (nk_qinv k) msg).
+
+(** whether [sg] is [k]'s signature of [msg]: hex that isn't isn't *)
+nio_verify (k : nio_key) (msg sg : string) : bool :=
+  match Crypto.bytes_of_hex sg with
+  | Some b => Crypto.rsa_verify (nk_bytes k) (nk_n k) (nk_e k) msg b
+  | None => false
+  end.
+
+(** a signed transaction's line, as [encode_tx]: its fields and the
+    signature of its bytes *)
+nio_encode_tx (chain agent : string) (k : nio_key) (nonce : string) (fields : list string) : string :=
+  Stdlib.Strings.String.concat "" ["{""agent"":", nio_json_string agent, ",""nonce"":", nio_json_string nonce,
+    ",""fields"":", nio_json_strings fields, ",""sig"":",
+    nio_json_string (nio_sign k (nio_tx_bytes chain agent nonce fields)), "}"].
+
+(** a peer link's line for a message, as [wire] (which ends it with a
+    newline, as Sandbox's [send_line] does): who, the fields and the
+    signature of its bytes *)
+nio_wire_line (chain me : string) (k : nio_key) (fields : list string) : string :=
+  Stdlib.Strings.String.concat "" ["{""from"":", nio_json_string me, ",""fields"":", nio_json_strings fields,
+    ",""sig"":", nio_json_string (nio_sign k (nio_msg_bytes chain me fields)), "}"].
+
+(** a peer line's signature checked against the key of who sent it; an
+    unknown sender's doesn't check *)
+nio_verify_line (chain : string) (keys : list (string * nio_key)) (from sg : string) (fields : list string) : bool :=
+  match List.find (fun p => Stdlib.Strings.String.eqb (fst p) from) keys with
+  | Some p => nio_verify (snd p) (nio_msg_bytes chain from fields) sg
+  | None => false
+  end.
 
 (** The tables an interpreter keeps for the operations: timers (when, in
     the clock's seconds, and the event), events queued for the loop, the

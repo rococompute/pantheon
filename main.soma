@@ -19,6 +19,13 @@ Extract Inlined Constant Stdlib.Strings.String.get =>
 Extract Inlined Constant Stdlib.Strings.String.substring =>
   "(fun n m s -> let l = String.length s in if n >= l then """" else String.sub s n (min m (l - n)))".
 
+(** The hashes are Soma's (util.soma, Soma.Crypto): the kernel computes
+    them, the unikernel runs them. The binary runs Cryptokit's, the same
+    function in C, about ten times faster than Soma's extracted SHA-256
+    (test/nio_tables.soma checks the two agree). *)
+Extract Constant util.sha256 => "Shell.sha256".
+Extract Constant util.hash_list => "Shell.hash_list".
+
 usage : string := "pantheon: a private BFT labor market where LLM agents take turns as term leader.
 
   One machine:

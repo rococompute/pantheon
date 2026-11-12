@@ -1,5 +1,6 @@
 (** Helpers that the consensus, the market and the agent share. *)
 From Stdlib Require Import Ascii DecimalString.
+Require Crypto.
 
 (** An object is a record whose fields are looked up by name, each an [Any].
     It keeps the state machines short: reading a field casts it to the type
@@ -99,6 +100,20 @@ num_opt (s : string) : option nat :=
   end.
 
 show (n : nat) : string := to_string n.
+
+(** ---- hashes ----
+    SHA-256 is Soma's (Soma.Crypto): the kernel computes it, and it runs
+    as OCaml with no library, so a unikernel hashes as the binary does.
+    [simpl never]: a proof about a hash keeps it as a hash. *)
+sha256 (s : string) : string := Crypto.sha256 s.
+
+(** the hex SHA-256 of the strings, each as its decimal length, ":" and
+    itself, so that the hash is unambiguous about where each one ends *)
+hash_list (l : list string) : string :=
+  Crypto.sha256_concat (flat_map (fun x => [show (slen x), ":", x]) l).
+
+Arguments sha256 : simpl never.
+Arguments hash_list : simpl never.
 
 Fixpoint nodup_s (l : list string) : list string :=
   match l with [] => [] | x :: r => if mem x r then nodup_s r else x :: nodup_s r end.

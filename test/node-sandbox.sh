@@ -12,7 +12,7 @@ trap 'rm -rf "$t"' EXIT HUP INT TERM
 if ! soma run test/nio_tables.soma > "$t/out" 2> "$t/err"; then cat "$t/err" "$t/out"; exit 1; fi
 cat "$t/out"
 if grep -q '^FAIL ' "$t/out"; then exit 1; fi
-[ "$(grep -c '^ok ' "$t/out")" -eq 30 ] || { echo "FAIL expected 30 checks"; exit 1; }
+[ "$(grep -c '^ok ' "$t/out")" -eq 36 ] || { echo "FAIL expected 36 checks"; exit 1; }
 if ! soma build --no-image test/node_sandbox_check.soma > "$t/build" 2>&1; then
   cat "$t/build"; echo "FAIL the unikernel interpreter doesn't build"; exit 1
 fi
