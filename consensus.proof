@@ -831,3 +831,77 @@ Qed.
 
 Theorem chain_commit_zero_refused : forall block_at, chain_commit_at block_at 0 = None.
 Proof. reflexivity. Qed.
+
+Theorem bounded_commit_block_uses_existing_frame : forall limit block cert txs,
+  bounded_commit_block limit block = Some (cert, txs) ->
+  unframe_commit_block block = Some (cert, txs).
+Proof.
+  intros limit block cert txs H. unfold bounded_commit_block in H.
+  destruct block as [|tag [|size rest]]; try discriminate H.
+  destruct (seq tag "heartbeat-v1"); [|discriminate H].
+  destruct (num_opt size) as [n|]; [|discriminate H].
+  destruct (n <=? 3 + 7 * limit); [exact H|discriminate H].
+Qed.
+
+Theorem prior_chain_certificate_has_earlier_carrier : forall roster_of block_at before h cert,
+  prior_chain_commit_at roster_of block_at before h = Some cert ->
+  0 < h /\ S h < before /\ certificate_height cert = h /\
+  exists block txs, block_at (S h) = Some block /\
+    bounded_commit_block (length (roster_of h)) block = Some (cert, txs).
+Proof.
+  intros roster_of block_at before h cert H. unfold prior_chain_commit_at in H.
+  destruct ((0 <? h) && (S h <? before)) eqn:G; [|discriminate H].
+  destruct (block_at (S h)) as [block|] eqn:B; [|discriminate H].
+  destruct (bounded_commit_block (length (roster_of h)) block) as [[parsed txs]|] eqn:D;
+    [|discriminate H].
+  destruct (certificate_height parsed =? h) eqn:E; [|discriminate H].
+  inversion H; subst parsed. apply Bool.andb_true_iff in G. destruct G as [A C].
+  apply Nat.ltb_lt in A. apply Nat.ltb_lt in C. apply Nat.eqb_eq in E.
+  split; [exact A|]. split; [exact C|]. split; [exact E|].
+  exists block, txs. split; first [assumption | reflexivity].
+Qed.
+
+Theorem prior_chain_excludes_candidate_and_future : forall roster_of block_at before h,
+  before <= S h -> prior_chain_commit_at roster_of block_at before h = None.
+Proof.
+  intros roster_of block_at before h H. unfold prior_chain_commit_at.
+  assert (E : (S h <? before) = false) by (apply Nat.ltb_ge; exact H).
+  rewrite E, Bool.andb_false_r. reflexivity.
+Qed.
+
+Theorem prior_chain_missing_carrier : forall roster_of block_at before h,
+  block_at (S h) = None -> prior_chain_commit_at roster_of block_at before h = None.
+Proof.
+  intros roster_of block_at before h H. unfold prior_chain_commit_at.
+  destruct ((0 <? h) && (S h <? before)); [rewrite H|]; reflexivity.
+Qed.
+
+Theorem certified_chain_window_exact_length : forall verify roster_of block_at before count records,
+  certified_chain_window verify roster_of block_at before count = Some records -> length records = count.
+Proof.
+  intros verify roster_of block_at before count records H.
+  unfold certified_chain_window in H. eapply certified_window_has_exact_length. exact H.
+Qed.
+
+Theorem certified_chain_head_has_historical_quorum : forall verify roster_of block_at before count names older,
+  certified_chain_window verify roster_of block_at before (S count) = Some (names :: older) ->
+  NoDup names /\
+  length (roster_of (before - 2)) - (length (roster_of (before - 2)) - 1) / 3 <= length names.
+Proof.
+  intros verify roster_of block_at before count names older H.
+  unfold certified_chain_window in H.
+  destruct (certified_window_head_has_a_certificate _ _ _ _ _ _ _ _ H)
+    as [cert [_ [V _]]].
+  exact (proj2 (certified_height_has_that_rosters_quorum _ _ _ _ _ _ V)).
+Qed.
+
+Theorem bounded_commit_block_declared_size : forall limit tag size rest cert txs,
+  bounded_commit_block limit (tag :: size :: rest) = Some (cert, txs) ->
+  exists n, num_opt size = Some n /\ n <= 3 + 7 * limit.
+Proof.
+  intros limit tag size rest cert txs H. unfold bounded_commit_block in H.
+  destruct (seq tag "heartbeat-v1"); [|discriminate H].
+  destruct (num_opt size) as [n|] eqn:E; [|discriminate H].
+  destruct (n <=? 3 + 7 * limit) eqn:C; [|discriminate H].
+  exists n. split; [reflexivity|apply Nat.leb_le; exact C].
+Qed.
