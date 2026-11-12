@@ -173,11 +173,9 @@ node_float_text : float -> string.
     decimal string. The shell only accepts, reads and closes sockets. *)
 node_conn_admit : string -> string -> string -> string -> bool.
 node_conns : string -> list (string * float).
-(** A connection's buffered read chunks, in order, and storing the
-    chunks Soma's feed_chunks says to keep: the shell only reads the
-    bytes, Soma splits them into lines (node.soma feed_chunks). *)
-node_conn_buffer : string -> string -> list string.
-node_conn_store_buffer : string -> string -> list string -> bool.
+(** A connection's buffered read chunks live in Soma's node state:
+    the shell only reads the bytes, Soma splits them into lines
+    (node.soma feed_chunks) and keeps what is left. *)
 node_conn_close : string -> string -> bool.
 node_line_limit : string -> string.
 (** Dial, resend and the inbox, then the turn's clock. Soma decides which

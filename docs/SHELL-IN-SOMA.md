@@ -230,6 +230,15 @@ separate work; this status does not mark `.plan`.
 
 ## Done so far
 
+- Step 5, peer buffer storage: a connection's retained read chunks now
+  live in Soma's `node_state` (`pbufs`, through `peer_buffer`,
+  `peer_remember` and `peer_forget`), not in the shell's connection
+  record. The `node_conn_buffer` and `node_conn_store_buffer` bindings
+  are gone; the shell only reads bytes and reports `peer_closed` when
+  it closes a descriptor, so Soma drops that connection's chunks.
+  Closing for the byte cap and evicting the quietest connection also
+  forget them in Soma.
+
 - Step 5, framing checks: `peer_feed` packages each read's complete lines,
   retained chunks and strict retained-byte cap verdict in a typed record.
   The live `peer_bytes` branch uses that same pure plan, storing the partial
