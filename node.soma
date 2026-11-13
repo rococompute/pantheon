@@ -1,7 +1,7 @@
 (** A node: consensus, the market it orders blocks for, its agent, and a
     pool of transactions waiting for a block. [step] is everything the shell
     runs: it takes one event and gives back what to do. *)
-Import util shell nodeio consensus market agent.
+Import util shell nodeio consensus market agent cli.
 From Stdlib Require Import Ascii.
 
 Record node_state := { cons : consensus_state; mkt : obj; ag : obj; pool : list string; live : bool;
@@ -178,7 +178,7 @@ step (n : node_state) (ev : list string) : node_state * list (list string) :=
     The loop holds the state and drives [step]; shell.ml only binds
     [node_open] (I/O setup), startup data, [events] (one select turn),
     smaller output bindings (every output case is decided in Soma),
-    [save_snapshot], [note_refused] and [forever]. An effect is a field list: ["perform"; output...],
+    the snapshot ([IoSnapshotSave]), [note_refused] and [forever]. An effect is a field list: ["perform"; output...],
     ["save_snapshot"] or ["refuse"; raw]. [order_effects] is pure: it takes
     the event, the state before and after [step], and the outputs, and puts
     decided outputs first, then the snapshot when consensus changed, then
@@ -210,6 +210,95 @@ cons_eq (a b : consensus_state) : bool :=
   && (consensus.round a =? consensus.round b) && (consensus.step a =? consensus.step b) && (consensus.lockr a =? consensus.lockr b)
   && eq_strs (consensus.lockv a) (consensus.lockv b) && (consensus.validr a =? consensus.validr b) && eq_strs (consensus.validv a) (consensus.validv b)
   && eq_msgs (consensus.log a) (consensus.log b) && eq_strs (consensus.once a) (consensus.once b) && (consensus.block_ms a =? consensus.block_ms b).
+
+(** ---- the consensus snapshot (U-1) ----
+    consensus.state's text, Soma's own, so the binary and a unikernel
+    save and read the same bytes through [IoSnapshotSave] and
+    [IoSnapshotLoad]: the state as frames of strings ([nio_frame_lists]),
+    each string written as its length in decimal, ":" and itself. A
+    header names the format. Reading it back is strict: the text must be
+    exactly what [snapshot_text] writes for the state it reads, or it is
+    malformed and the node refuses to start, since a node that signed
+    votes must not start without its lock. *)
+snapshot_header : string := "pantheon-consensus 1".
+
+kind_of_name (s : string) : option kind :=
+  if seq s "proposal" then Some Proposal else if seq s "prevote" then Some Prevote
+  else if seq s "precommit" then Some Precommit else if seq s "done" then Some Done else None.
+
+msg_frame (m : msg) : list string :=
+  kind_name (kd m) :: frm m :: show (mh m) :: show (mr m) :: show (vr m) :: vid m :: value m.
+
+snapshot_frames (c : consensus_state) : list (list string) :=
+  [[snapshot_header], [consensus.me c], consensus.nodes c,
+   [show (consensus.height c), show (consensus.round c), show (consensus.step c),
+    show (consensus.lockr c), show (consensus.validr c), show (consensus.block_ms c)],
+   consensus.lockv c, consensus.validv c, consensus.once c] ++ map msg_frame (consensus.log c).
+
+counted (l : list string) : string :=
+  Stdlib.Strings.String.concat "" (flat_map (fun x => [show (slen x), ":", x]) l).
+
+snapshot_text (c : consensus_state) : string := counted (nio_frame_lists (snapshot_frames c)).
+
+(** [counted]'s strings back, by offset; None unless they end exactly at
+    the end of the text *)
+Fixpoint uncount (fuel : nat) (t : string) (i : nat) (acc : list string) : option (list string) :=
+  match fuel with
+  | 0 => None
+  | S f =>
+      if slen t <=? i then (if i =? slen t then Some (rev acc) else None) else
+      match find_str ":" t i with
+      | None => None
+      | Some j =>
+          match num_opt (substr t i (j - i)) with
+          | Some n => if slen t <? j + 1 + n then None else uncount f t (j + 1 + n) (substr t (j + 1) n :: acc)
+          | None => None
+          end
+      end
+  end.
+
+msg_of_frame (l : list string) : option msg :=
+  match l with
+  | k :: f :: h :: r :: v :: id :: value =>
+      match kind_of_name k, num_opt h, num_opt r, num_opt v with
+      | Some kd, Some h, Some r, Some v => Some {| kd := kd; frm := f; mh := h; mr := r; vr := v; vid := id; value := value |}
+      | _, _, _, _ => None
+      end
+  | _ => None
+  end.
+
+Fixpoint msgs_of_frames (l : list (list string)) : option (list msg) :=
+  match l with
+  | [] => Some []
+  | x :: r => match msg_of_frame x, msgs_of_frames r with Some m, Some ms => Some (m :: ms) | _, _ => None end
+  end.
+
+snapshot_parse (t : string) : option consensus_state :=
+  match uncount (slen t + 1) t 0 [] with
+  | None => None
+  | Some w =>
+      match nio_lists w with
+      | [hdr] :: [who] :: nodes :: [h, r, st, lr, vr, bm] :: lockv :: validv :: once :: msgs =>
+          if negb (seq hdr snapshot_header) then None else
+          match num_opt h, num_opt r, num_opt st, num_opt lr, num_opt vr, num_opt bm, msgs_of_frames msgs with
+          | Some h, Some r, Some st, Some lr, Some vr, Some bm, Some log =>
+              Some {| consensus.me := who; consensus.nodes := nodes; consensus.height := h; consensus.round := r;
+                      consensus.step := st; consensus.lockr := lr; consensus.lockv := lockv; consensus.validr := vr;
+                      consensus.validv := validv; consensus.log := log; consensus.once := once; consensus.block_ms := bm |}
+          | _, _, _, _, _, _, _ => None
+          end
+      | _ => None
+      end
+  end.
+
+snapshot_of (t : string) : option consensus_state :=
+  match snapshot_parse t with
+  | Some c => if seq (snapshot_text c) t then Some c else None
+  | None => None
+  end.
+
+snapshot_malformed_text : string :=
+  "consensus.state is malformed or from an older Pantheon: a node that signed votes can't start without its lock. Restore it, or start a new chain".
 
 is_decided (o : list string) : bool :=
   match o with "decided" :: _ => true | _ => false end.
@@ -1705,7 +1794,7 @@ perform_output (h : node_t) (out : list string) : bool := run_shell h (output_pr
 carry_effect_prog (h : node_t) (snap : consensus_state) (eff : list string) : nprog bool :=
   match eff with
   | "perform" :: out => output_prog out
-  | ["save_snapshot"] => NDone (save_snapshot h snap)
+  | ["save_snapshot"] => nexec (IoSnapshotSave (snapshot_text snap))
   | ["refuse", raw] => nexec (IoRefuse raw)
   | _ => NDone true
   end.
@@ -2811,7 +2900,7 @@ boot_expand (h : node_t) (evs : list (list string)) : list (list string) :=
     when it has votes and there's no snapshot), the boot events expanded
     and replayed, the replay logged, the snapshot restored, and the start
     step carried. None: the node doesn't start. [snap] is the snapshot
-    read back, a Soma value (the one read still a binding). *)
+    read back ([boot_snapshot_prog]). *)
 boot_prog (h : node_t) (snap : option consensus_state) : nprog (option node_state) :=
   nbind (nask IoSignedText) (fun signed =>
   nbind (restore_signed_prog (log_lines (ans_one signed)) false) (fun r =>
@@ -2830,10 +2919,28 @@ boot_prog (h : node_t) (snap : option consensus_state) : nprog (option node_stat
   else NDone None))).
 
 
+(** the snapshot read back, then startup: no consensus.state is a node
+    that never voted; one Soma can't read refuses to start *)
+boot_snapshot_prog (h : node_t) : nprog (option node_state) :=
+  nbind (nask IoSnapshotLoad) (fun a =>
+  match ans_found_one a with
+  | None => boot_prog h None
+  | Some t =>
+      match snapshot_of t with
+      | Some c => boot_prog h (Some c)
+      | None => nbind (nexec (IoFail snapshot_malformed_text)) (fun _ => NDone None)
+      end
+  end).
+
+(** [pantheon node]: the setup (cli.soma's node_setup, run with no node),
+    the shell's runtime built from it, then startup and the loop *)
 run_node (home : string) (flags : list string) : unit :=
-  let h := node_open (pack_helpers node_helpers) home flags in
-  let snap : option consensus_state := boot_snapshot h in
-  match run_shell h (boot_prog h snap) with
-  | Some st => forever (node_tick h) st
+  match run_shell "" (node_setup home flags) with
+  | Some config =>
+      let h := node_open (pack_helpers node_helpers) (nio_frame_lists config) in
+      match run_shell h (boot_snapshot_prog h) with
+      | Some st => forever (node_tick h) st
+      | None => tt
+      end
   | None => tt
   end.

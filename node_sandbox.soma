@@ -205,6 +205,9 @@ nio_kernel_op (w : nio_world) (s : nio_kernel) (op : node_op)
   | IoWriteFile path text => write_file path text ;; ret (nio_ok, s)
   | IoFileExists path => got <- read_file path ;;
       ret (ans_flag (match got with Some _ => true | None => false end), s)
+  | IoSnapshotSave text => write_file "consensus.state" text ;; ret (nio_ok, s)
+  | IoSnapshotLoad => got <- read_file "consensus.state" ;;
+      ret (match got with Some t => ans_data true [t] | None => ans_data false [] end, s)
   | IoExit _ | IoChmod _ _ | IoMakeDirs _ | IoCwd | IoNewKey _ | IoRandomHex _ | IoGit _ _
   | IoClone _ _ _ | IoSpawnNode _ _ | IoAwaitNodes _ | IoCheckoutEdits _ | IoApplyEdits _ _
   | IoCheckTree _ _ _ _ => ret (ans_flag false, s)

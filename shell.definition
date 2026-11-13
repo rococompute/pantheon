@@ -30,15 +30,15 @@ print_text : string -> unit.
 cli_open : (((string -> string -> string -> option string) * (string -> string -> bool)) * (string -> bool)) -> string.
 
 (** The node loop is Soma (node.soma's run_node): the shell binds only the
-    handle's setup, one select turn, the small bindings of each output, the
-    snapshot, the refused set, startup data, and the endless repetition. The
-    handle is a string naming the shell's side of the node. Existing Soma
+    handle's runtime, built from what cli.soma's node_setup decided (framed:
+    the settings, the key, exclusions, CI, agents, repositories, then the
+    boot events), and the endless repetition; the rest is node_io
+    operations. The handle is a string naming the shell's side of the node. Existing Soma
     helpers are passed once as util.soma's shell_helpers record, packed as a
     product (edit_once, contains, shell_safe_path) at the binding boundary. *)
-node_open : (((string -> string -> string -> option string) * (string -> string -> bool)) * (string -> bool)) -> string -> list string -> string.
-(** The consensus snapshot, a Soma value (not text: the one effect a node
-    program can't carry as data yet; Soma's "storage" item). *)
-save_snapshot : forall {C : Type}, string -> C -> bool.
+node_open : (((string -> string -> string -> option string) * (string -> string -> bool)) * (string -> bool)) -> list string -> string.
+(** The consensus snapshot is node_io operations: "snapshot_save" TEXT and
+    "snapshot_load" (node.soma's snapshot_text and snapshot_of). *)
 (** Startup is data, interpreted by Soma before entering the event loop
     (node.soma's boot_prog), through node_io: "boot_events" (framed:
     "field" VALUE... "alternate", per event), "replay_count",
@@ -47,9 +47,7 @@ save_snapshot : forall {C : Type}, string -> C -> bool.
     height), "signed_text" (signed.log's bytes, "" when there is none),
     "signed_restore" SLOT VID FIELDS... (a vote read back, not appended
     again) and "fail" MESSAGE (refusing to start: the message on stderr,
-    exit 1; it needs no node). The snapshot read back is a Soma value, so
-    it stays a binding. *)
-boot_snapshot : forall {C : Type}, string -> option C.
+    exit 1; it needs no node). *)
 (** The node's operations (node.soma's node_op, U-1), carried out: one
     operation in its wire form (node.soma's io_wire): "log" TEXT, "timer"
     MS EVENT..., "push" EVENT..., "send_all" FIELDS..., "send_peer" INDEX

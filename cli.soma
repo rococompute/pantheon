@@ -15,29 +15,35 @@ join (sep : string) (l : list string) : string := Stdlib.Strings.String.concat s
 
 (** ---- running ---- *)
 
+(** What a program that was refused stops with (a unikernel's [IoFail]
+    comes back): nothing, or no result. *)
+Class Stops (A : Type) := stop : A.
+#[export] Instance stops_unit : Stops unit := tt.
+#[export] Instance stops_option {B : Type} : Stops (option B) := None.
+
 (** [op], then [rest], whatever it answered *)
-cli_do (op : node_op) (rest : unit -> nprog unit) : nprog unit := NStep op (fun _ => rest tt).
+cli_do {R : Type} (op : node_op) (rest : unit -> nprog R) : nprog R := NStep op (fun _ => rest tt).
 
 (** [op], then [rest] given its answer *)
-cli_ask (op : node_op) (rest : nanswer -> nprog unit) : nprog unit := NStep op rest.
+cli_ask {R : Type} (op : node_op) (rest : nanswer -> nprog R) : nprog R := NStep op rest.
 
 (** the message on stderr after "error: ", exit 1 (the binary never comes
     back; a unikernel prints it and stops) *)
-cli_fail (message : string) : nprog unit := NStep (IoFail message) (fun _ => NDone tt).
+cli_fail {R : Type} `{Stops R} (message : string) : nprog R := NStep (IoFail message) (fun _ => NDone stop).
 
-cli_say (text : string) (rest : unit -> nprog unit) : nprog unit := cli_do (IoSay text) rest.
+cli_say {R : Type} (text : string) (rest : unit -> nprog R) : nprog R := cli_do (IoSay text) rest.
 
-cli_exists (path : string) (rest : bool -> nprog unit) : nprog unit :=
+cli_exists {R : Type} (path : string) (rest : bool -> nprog R) : nprog R :=
   cli_ask (IoFileExists path) (fun a => rest (fst a)).
 
 (** each of [l] in order, each given what comes after it *)
-Fixpoint cli_each {A : Type} (l : list A) (f : A -> (unit -> nprog unit) -> nprog unit)
-  (k : unit -> nprog unit) : nprog unit :=
+Fixpoint cli_each {A R : Type} (l : list A) (f : A -> (unit -> nprog R) -> nprog R)
+  (k : unit -> nprog R) : nprog R :=
   match l with [] => k tt | x :: r => f x (fun _ => cli_each r f k) end.
 
 (** each of [l] in order, each giving a value; then [k] with them all *)
-Fixpoint cli_map {A B : Type} (l : list A) (f : A -> (B -> nprog unit) -> nprog unit)
-  (k : list B -> nprog unit) : nprog unit :=
+Fixpoint cli_map {A B R : Type} (l : list A) (f : A -> (B -> nprog R) -> nprog R)
+  (k : list B -> nprog R) : nprog R :=
   match l with [] => k [] | x :: r => f x (fun b => cli_map r f (fun bs => k (b :: bs))) end.
 
 (** ---- paths, as OCaml's Filename ---- *)
@@ -191,15 +197,15 @@ Fixpoint kv_insert (x : string * json) (l : list (string * json)) : list (string
 (** members by name, as a stable sort (List.sort) leaves them *)
 kv_sort (l : list (string * json)) : list (string * json) := fold_left (fun acc x => kv_insert x acc) l [].
 
-cli_read_text (p : string) (missing : string) (k : string -> nprog unit) : nprog unit :=
+cli_read_text {R : Type} `{Stops R} (p : string) (missing : string) (k : string -> nprog R) : nprog R :=
   cli_ask (IoReadText p) (fun a => match ans_found_one a with Some t => k t | None => cli_fail missing end).
 
 (** a home's JSON file: refusing it says what's wrong *)
-cli_read_json (p : string) (k : json -> nprog unit) : nprog unit :=
+cli_read_json {R : Type} `{Stops R} (p : string) (k : json -> nprog R) : nprog R :=
   let refused := cat ["cannot read ", p, ": is this a home made by `pantheon init`?"] in
   cli_read_text p refused (fun t => match json_of t with Some j => k j | None => cli_fail refused end).
 
-cli_str (j : json) (refused : string) (k : string -> nprog unit) : nprog unit :=
+cli_str {R : Type} `{Stops R} (j : json) (refused : string) (k : string -> nprog R) : nprog R :=
   match json_string j with Some s => k s | None => cli_fail refused end.
 
 (** ---- keys ---- *)
@@ -271,7 +277,7 @@ repo_url (net url : string) : string :=
 
 (** A checkout of a governed repository at its genesis commit, or a check
     that the one already there descends from it. [k] gets its directory. *)
-ensure_repo (home name url commit : string) (k : string -> nprog unit) : nprog unit :=
+ensure_repo {R : Type} `{Stops R} (home name url commit : string) (k : string -> nprog R) : nprog R :=
   let dir := path (path home "repos") name in
   cli_exists (path dir ".git") (fun has =>
   if negb has then
@@ -335,7 +341,7 @@ genesis_repo (home net : string) (r : json) (k : (string * json) -> nprog unit) 
       if negb (shell_safe_path name) || contains "/" name then cli_fail (append "bad repository name " name) else
       ensure_repo home name (repo_url net url) commit (fun dir =>
       cli_ask (IoGit dir ["rev-parse", append commit "^{tree}"]) (fun tree =>
-      k (name, JObj [("name", JStr name), ("url", JStr url), ("commit", JStr commit), ("tree", JStr (ans_one tree))])))
+      k (name, JObj [("name", JStr name), ("url", JStr url), ("commit", JStr commit), ("tree", JStr (trim (ans_one tree)))])))
   | _, _, _ => refused
   end.
 
@@ -491,7 +497,7 @@ cmd_init (args : list string) : nprog unit :=
     let '(n, p) := np in
     let p := abs p in
     cli_ask (IoGit p ["rev-parse", "HEAD"]) (fun commit =>
-    let commit := ans_one commit in
+    let commit := trim (ans_one commit) in
     if seq commit "" then cli_fail (append p " is not a git checkout with a commit")
     else k (JObj [("name", JStr n), ("url", JStr p), ("commit", JStr commit)]))) (fun repos =>
   cli_do (IoWriteFile (path net "network.json")
@@ -676,3 +682,179 @@ cli_prog (args : list string) : nprog unit :=
   | "up" :: dir :: rest => cmd_up dir rest
   | _ => cli_do (IoPrint usage) (fun _ => NDone tt)
   end.
+
+(** ---- the node's setup (pantheon node) ----
+    What [node_open] needed decided before it builds the node's runtime
+    (its tables, sockets and jobs, still the shell's): the home as an
+    absolute path, kept private; genesis.json, key.json and chain.json
+    read and checked; the node's flags; the governed repositories checked
+    out and checked against the genesis's trees; and which already carry
+    a merge. [node_setup] gives it all to [node_open] as frames: the
+    settings, this node's key, its excluded repositories, the repositories
+    it can't check, the per-repository CI commands, the agents, the
+    repositories, those still at genesis, then the boot events. *)
+
+(** the node's flags: settings by name, the agent's events, CI commands
+    by repository and repositories it can't check (both newest first, as
+    the shell kept them) *)
+Fixpoint node_flags (args : list string) (set : list (string * string)) (events : list (list string))
+  (ci_repo : list (string * string)) (no_check : list string)
+  : (list (string * string) * list (list string) * list (string * string) * list string) + string :=
+  match args with
+  | "--backend" :: b :: r => node_flags r (put "backend" b set) events ci_repo no_check
+  | "--behavior" :: b :: r => node_flags r set (events ++ [["agent", "behavior", b]]) ci_repo no_check
+  | "--goal" :: f :: r => node_flags r set (events ++ [["goal_file", f]]) ci_repo no_check
+  | "--deny" :: p :: r => node_flags r set (events ++ [["agent", "deny", p]]) ci_repo no_check
+  | "--bid-window" :: n :: r => node_flags r set (events ++ [["agent", "bid_window", n]]) ci_repo no_check
+  | "--perspective" :: t :: r => node_flags r set (events ++ [["agent", "perspective", t]]) ci_repo no_check
+  | "--ci" :: c :: r => node_flags r (put "ci" c set) events ci_repo no_check
+  | "--ci-repo" :: n :: c :: r => node_flags r set events ((n, c) :: ci_repo) no_check
+  (* a repository this node can't build (Soma's CI on a small host): its
+     checks end as this node's problem, so the agent abstains on that
+     repository's bids rather than say yes after only applying the edits *)
+  | "--no-check" :: n :: r => node_flags r set events ci_repo (n :: no_check)
+  | "--listen" :: h :: r => node_flags r (put "listen" h set) events ci_repo no_check
+  | "--ci-memory" :: m :: r => node_flags r (put "ci_memory" m set) events ci_repo no_check
+  | "--ci-image" :: i :: r => node_flags r (put "ci_image" i set) events ci_repo no_check
+  (* CI without Docker: PROGRAM MEMORY CHECKOUT CMD runs CMD on a copy of
+     the read-only CHECKOUT, with no network, within MEMORY
+     (deploy/host/ci-sandbox) *)
+  | "--ci-sandbox" :: p :: r => node_flags r (put "ci_sandbox" p set) events ci_repo no_check
+  | "--max-llm-calls" :: n :: r =>
+      match num_opt n with
+      | Some k => node_flags r (put "max_calls" (show k) set) events ci_repo no_check
+      | None => inr (append "--max-llm-calls wants a number, got " n)
+      end
+  | x :: _ => inr (append "unknown node flag " x)
+  | [] => inl (set, events, ci_repo, no_check)
+  end.
+
+node_flag_defaults : list (string * string) :=
+  [("backend", "scripted"), ("listen", "0.0.0.0"), ("ci", ""), ("ci_memory", "8g"), ("ci_image", "alpine:3.20"),
+   ("ci_sandbox", ""), ("max_calls", "100")].
+
+(** a --goal's file read in (nothing when it isn't there) *)
+goal_event {R : Type} (ev : list string) (k : list string -> nprog R) : nprog R :=
+  match ev with
+  | ["goal_file", f] => cli_ask (IoReadText f) (fun a => k ["goal_text", match ans_found_one a with Some t => t | None => "" end])
+  | _ => k ev
+  end.
+
+Fixpoint env_value (name : string) (entries : list string) : string :=
+  match entries with
+  | [] => ""
+  | e :: r => if starts (append name "=") e then substr e (S (slen name)) (slen e) else env_value name r
+  end.
+
+(** a genesis agent as the node needs it: name, addr, and its key's size, n and e *)
+genesis_agent (j : json) : option (list string) :=
+  let pk := json_member "pubkey" j in
+  match json_string (json_member "name" j), json_string (json_member "addr" j), json_member "size" pk with
+  | Some n, Some a, JNum size =>
+      Some [n, a, size, match json_string (json_member "n" pk) with Some x => x | None => "" end,
+            match json_string (json_member "e" pk) with Some x => x | None => "" end]
+  | _, _, _ => None
+  end.
+
+Fixpoint genesis_agents (l : list json) : option (list (list string)) :=
+  match l with
+  | [] => Some []
+  | j :: r => match genesis_agent j, genesis_agents r with Some a, Some rest => Some (a :: rest) | _, _ => None end
+  end.
+
+(** the repositories a genesis part excludes (none when it says nothing) *)
+part_excludes (me : string) (l : list json) : list string :=
+  flat_map (fun a => if match json_string (json_member "name" a) with Some n => seq n me | None => false end then
+                       match json_member "exclude" a with JList x => match json_strings x with Some s => s | None => [] end | _ => [] end
+                     else []) l.
+
+genesis_repo_fields (j : json) : option (list string) :=
+  match json_string (json_member "name" j), json_string (json_member "url" j),
+        json_string (json_member "commit" j), json_string (json_member "tree" j) with
+  | Some n, Some u, Some c, Some t => Some [n, u, c, t]
+  | _, _, _, _ => None
+  end.
+
+key_field (j : json) (k : string) : string := match json_string (json_member k j) with Some x => x | None => "" end.
+
+(** each governed repository checked out at its genesis commit with the
+    genesis's tree, and then either still at genesis or carrying a merge
+    (its last commit's message, for Pantheon-Version) *)
+node_repo (home : string) (r : list string) (k : (string * option string) -> nprog (option (list (list string))))
+  : nprog (option (list (list string))) :=
+  match r with
+  | [n, url, commit, tree] =>
+      ensure_repo home n (repo_url (path home "network") url) commit (fun dir =>
+      cli_ask (IoGit dir ["rev-parse", append commit "^{tree}"]) (fun t =>
+      if negb (seq (trim (ans_one t)) tree) then
+        cli_fail (cat ["genesis says repository ", n, "'s commit ", commit, " has tree ", tree, "; this clone disagrees"])
+      else
+      cli_ask (IoGit dir ["rev-parse", "HEAD"]) (fun headc =>
+      cli_ask (IoGit dir ["rev-parse", commit]) (fun genc =>
+      if seq (trim (ans_one headc)) (trim (ans_one genc)) then k (n, None) else
+      cli_ask (IoGit dir ["log", "-1", "--format=%B"]) (fun body => k (n, Some (ans_one body)))))))
+  | _ => cli_fail "genesis.json: a repository has a name, url, commit and tree"
+  end.
+
+node_setup (home : string) (flags : list string) : nprog (option (list (list string))) :=
+  (* jobs run from scratch directories: every path the node hands out is absolute *)
+  cli_ask IoCwd (fun cwd =>
+  let home := if is_relative home then path (ans_one cwd) home else home in
+  (* the home holds this agent's keys: nobody else reads it, models included *)
+  cli_do (IoChmod home "700") (fun _ =>
+  let gp := path home "genesis.json" in
+  let refused p := cat ["cannot read ", p, ": is this a home made by `pantheon init`?"] in
+  cli_read_text gp (refused gp) (fun gtext =>
+  match json_of gtext with None => cli_fail (refused gp) | Some gen =>
+  cli_read_json (path home "key.json") (fun keyf =>
+  match json_string (json_member "agent" keyf), json_member "key" keyf with
+  | Some me, JObj _ =>
+  let kj := json_member "key" keyf in
+  cli_read_json (path home "chain.json") (fun chain =>
+  match json_string (json_member "secret" chain), json_string (json_member "chain_id" gen), json_member "agents" gen with
+  | Some secret, Some chain_id, JList agents_j =>
+  match genesis_agents agents_j with None => cli_fail "genesis.json: each agent has a name, an addr and a pubkey with its size" | Some agents =>
+  if negb (List.existsb (fun a => match a with n :: _ => seq n me | [] => false end) agents) then
+    cli_fail (cat [me, " isn't one of genesis.json's agents: is this home's key.json from another network?"]) else
+  cli_ask IoEnvEntries (fun env =>
+  let byz := env_value "PANTHEON_BYZ" (ans_list env) in
+  let faulty k := if seq byz "" then k tt else cli_say (cat ["FAULT INJECTION: this node misbehaves on purpose (", byz, ")"]) k in
+  faulty (fun _ =>
+  match node_flags flags node_flag_defaults [] [] [] with
+  | inr e => cli_fail e
+  | inl (set, events, ci_repo, no_check) =>
+  let setting k := get_or "" k set in
+  (* Soma reads the raw --backend string (backend_kind_name, backend_behavior_event) *)
+  cli_map events goal_event (fun events =>
+  let events := events ++ [["backend_behavior_of", setting "backend"]] in
+  let repos := match json_member "repos" gen with JList l => l | _ => [] end in
+  match fold_right (fun r acc => match genesis_repo_fields r, acc with Some f, Some rest => Some (f :: rest) | _, _ => None end)
+                   (Some []) repos with
+  | None => cli_fail "genesis.json: a repository has a name, url, commit and tree"
+  | Some repos =>
+  cli_map repos (node_repo home) (fun states =>
+  NDone (Some (
+    [[home, me, secret, chain_id, byz, setting "backend", setting "listen", setting "ci", setting "ci_memory",
+      setting "ci_image", setting "ci_sandbox", setting "max_calls"],
+     [match json_member "size" kj with JNum s => s | _ => "0" end, key_field kj "n", key_field kj "e", key_field kj "d",
+      key_field kj "p", key_field kj "q", key_field kj "dp", key_field kj "dq", key_field kj "qinv"],
+     part_excludes me agents_j,
+     no_check,
+     flat_map (fun p => [fst p, snd p]) ci_repo,
+     List.concat agents,
+     flat_map (fun r => match r with n :: _ :: c :: _ => [n, c] | _ => [] end) repos,
+     flat_map (fun s => match s with (n, None) => [n] | _ => [] end) states]
+    (* the boot events: genesis (node.soma's genesis_events reads the
+       roster, tips, block_ms, params, repositories and excludes from its
+       text), this node, the backend, the flags' events, then the merges
+       the checkouts already carry *)
+    ++ [["genesis", gtext], ["me", me], ["backend_kind_of", setting "backend"]] ++ events
+    ++ flat_map (fun s => match s with (n, Some body) => [["applied_body", n, body]] | _ => [] end) states)))
+  end)
+  end))
+  end
+  | _, _, _ => cli_fail (refused (path home "chain.json"))
+  end)
+  | _, _ => cli_fail (refused (path home "key.json"))
+  end)
+  end))).

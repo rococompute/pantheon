@@ -36,11 +36,6 @@ let key_to_json (k : Cryptokit.RSA.key) ~priv =
   `Assoc ([ ("size", `Int k.size); ("n", f k.n); ("e", f k.e) ]
           @ if priv then [ ("d", f k.d); ("p", f k.p); ("q", f k.q); ("dp", f k.dp); ("dq", f k.dq); ("qinv", f k.qinv) ] else [])
 
-let key_of_json j : Cryptokit.RSA.key =
-  let open Yojson.Safe.Util in
-  let g k = match member k j with `String s -> unhex s | _ -> "" in
-  { size = to_int (member "size" j); n = g "n"; e = g "e"; d = g "d"; p = g "p"; q = g "q"; dp = g "dp"; dq = g "dq"; qinv = g "qinv" }
-
 let rng = lazy (Cryptokit.Random.device_rng "/dev/urandom")
 let random_hex n = hex (Cryptokit.Random.string (Lazy.force rng) n)
 
@@ -105,23 +100,19 @@ let append_line_synced p s =
       let n = Unix.write fd b 0 (Bytes.length b) in
       if n <> Bytes.length b then failwith "signed.log: short write";
       Unix.fsync fd)
-(* Atomic, synced consensus snapshots. A malformed snapshot aborts startup. *)
-let save_consensus path state =
+(* Atomic, synced writes: consensus.state's text (node.soma's snapshot_text)
+   is on disk, whole, before any vote it holds is sent. *)
+let write_file_synced path text =
   let tmp = path ^ ".tmp" in
   let oc = open_out_bin tmp in
   Fun.protect ~finally:(fun () -> close_out oc) (fun () ->
-      Marshal.to_channel oc state [];
+      output_string oc text;
       flush oc;
       Unix.fsync (Unix.descr_of_out_channel oc));
   Unix.rename tmp path;
   let fd = Unix.openfile (Filename.dirname path) [Unix.O_RDONLY] 0 in
   Fun.protect ~finally:(fun () -> Unix.close fd) (fun () -> Unix.fsync fd)
 
-let load_consensus path =
-  let ic = open_in_bin path in
-  Fun.protect ~finally:(fun () -> close_in ic) (fun () -> Marshal.from_channel ic)
-
-let read_json p = try Yojson.Safe.from_file p with _ -> fail "cannot read %s: is this a home made by `pantheon init`?" p
 (* a file's bytes, or "" when there is none: Soma splits logs and goal files
    (node.soma's log_lines) *)
 let file_text p = if Sys.file_exists p then read_file p else ""
@@ -471,25 +462,7 @@ let cli_open packed = cli_helpers_ref := Some (unpack_helpers packed); "cli"
 (* the draw's hash chain is this long (cli.soma's chain_len makes the tip) *)
 let chain_len = 100_000
 
-(* relative repository URLs are relative to the network directory (as
-   cli.soma's repo_url) *)
-let repo_url helpers net url =
-  if contains helpers url "://" || (url <> "" && url.[0] = '/') || (String.length url > 4 && String.sub url 0 4 = "git@") then url
-  else Filename.concat net url
-
 let repo_dir home name = Filename.concat (Filename.concat home "repos") name
-
-(* A checkout of a governed repository at its genesis commit, or a check that
-   the one already there descends from it (as cli.soma's ensure_repo). *)
-let ensure_repo home name url commit =
-  let dir = repo_dir home name in
-  if not (Sys.file_exists (Filename.concat dir ".git")) then begin
-    mkdir_p (Filename.dirname dir);
-    if not (clone url dir commit) then fail "couldn't clone %s from %s at %s: check the URL, and that this machine can fetch it" name url commit
-  end
-  else if not (git_ok dir [ "merge-base"; "--is-ancestor"; commit; "HEAD" ]) then
-    fail "%s holds a checkout of %s that doesn't descend from its genesis commit %s: move it aside and run again" dir name commit;
-  dir
 
 (* ---------- the node ---------- *)
 
@@ -550,7 +523,7 @@ type node_handle = { h_events : float -> string list list;
                      h_jobs : unit -> (string * (float * (float * bool))) list;
                      h_job_expire : string -> unit;
                      h_queue_empty : unit -> bool;
-                     h_save : Obj.t -> unit; h_refuse : string -> unit; h_boot : string list list; h_snapshot : Obj.t option; h_replayed : unit -> string;
+                     h_save : string -> unit; h_refuse : string -> unit; h_boot : string list list; h_snapshot : unit -> string option; h_replayed : unit -> string;
                      h_remember_block : string -> string list -> bool;
                      h_timer : string -> string list -> unit; h_log : string -> unit;
                      h_push : string list -> unit; h_draw : string * (string * string);
@@ -641,8 +614,6 @@ let node_json_tokens raw = try Some (json_tokens (Yojson.Safe.from_string raw)) 
 let node_float_of_digits s = float_of_string s
 let node_float_text f = Printf.sprintf "%.0f" f
 let node_float_wire f = Printf.sprintf "%.17g" f
-let save_snapshot id snap = (lookup_handle id).h_save (Obj.repr snap); true
-let boot_snapshot id = Option.map Obj.obj (lookup_handle id).h_snapshot
 (* The node's operations (node.soma's node_op, U-1), one at a time in their
    wire form (node.soma's io_wire; this match is its io_of_wire): the only
    place the node logs, sets a timer, queues an event, sends on a peer
@@ -731,7 +702,6 @@ let node_io_handle h op =
        | None -> (false, (0., [])))
   | [ "tool_checkout"; r ] ->
       let (wt, gd), ok = h.h_tool_checkout r in (true, (0., [ wt; gd; string_of_bool ok ]))
-  | [ "env_entries" ] -> (true, (0., Array.to_list (Unix.environment ())))
   | [ "token" ] -> (true, (0., [ random_hex 8 ]))
   | [ "repo_names" ] -> (true, (0., h.h_repo_names ()))
   | [ "ls_files"; r ] -> (true, (0., [ h.h_ls_files r ]))
@@ -787,6 +757,8 @@ let node_io_handle h op =
   | [ "replay_count" ] -> (true, (0., [ h.h_replayed () ]))
   | "remember_block" :: height :: txs -> (h.h_remember_block height txs, (0., []))
   | [ "signed_text" ] -> (true, (0., [ h.h_signed_text ]))
+  | [ "snapshot_save"; text ] -> h.h_save text; (true, (0., []))
+  | [ "snapshot_load" ] -> (match h.h_snapshot () with Some t -> (true, (0., [ t ])) | None -> (false, (0., [])))
   | "signed_restore" :: slot :: vid :: fields -> h.h_signed_restore slot vid fields; (true, (0., []))
   | _ -> fail "unknown node operation %s" (String.concat " " op)
 (* Path-only operations need no node: a test runs them with no handle. *)
@@ -799,20 +771,21 @@ let node_io id op =
   | [ "fail"; message ] -> fail "%s" message
   | [ "clock" ] -> (true, (Unix.gettimeofday (), []))
   | [ "self_exe" ] -> (true, (0., [ self_exe ]))
+  | [ "env_entries" ] -> (true, (0., Array.to_list (Unix.environment ())))
   (* the commands' I/O (cli.soma) *)
   | [ "say"; text ] -> say "%s" text; (true, (0., []))
   | [ "print"; text ] -> print_string text; flush stdout; (true, (0., []))
   | [ "exit"; code ] -> exit (int_of_string code)
   | [ "file_exists"; path ] -> (Sys.file_exists path, (0., []))
   | [ "write_file"; path; text ] -> write_file path text; (true, (0., []))
-  | [ "chmod"; path; mode ] -> Unix.chmod path (int_of_string ("0o" ^ mode)); (true, (0., []))
+  | [ "chmod"; path; mode ] -> ((try Unix.chmod path (int_of_string ("0o" ^ mode)); true with _ -> false), (0., []))
   | [ "make_dirs"; path ] -> mkdir_p path; (true, (0., []))
   | [ "cwd" ] -> (true, (0., [ Sys.getcwd () ]))
   | [ "new_key"; bits ] ->
       let k = Cryptokit.RSA.new_key ~rng:(Lazy.force rng) ~e:65537 (int_of_string bits) in
       (true, (0., string_of_int k.size :: List.map hex [ k.n; k.e; k.d; k.p; k.q; k.dp; k.dq; k.qinv ]))
   | [ "random_hex"; count ] -> (true, (0., [ random_hex (int_of_string count) ]))
-  | "git" :: dir :: args -> let ok, out = git dir args in (ok, (0., [ String.trim out ]))
+  | "git" :: dir :: args -> let ok, out = git dir args in (ok, (0., [ out ]))
   | [ "clone"; url; dir; commit ] -> (clone url dir commit, (0., []))
   | "spawn_node" :: log :: args ->
       let fd = Unix.openfile log [ O_WRONLY; O_CREAT; O_APPEND ] 0o644 in
@@ -852,59 +825,38 @@ let node_line_item_cap () = string_of_int max_int
 (* a decided merge's I/O: node.soma's perform_merge decides *)
 let rec forever f s = forever f (f s)
 
-let node_open packed home flags =
+let node_open packed config =
   let helpers = unpack_helpers packed in
   Sys.set_signal Sys.sigpipe Sys.Signal_ignore;
-  (* jobs run from scratch directories: every path the node hands out is absolute *)
-  let home = if Filename.is_relative home then Filename.concat (Sys.getcwd ()) home else home in
-  (* the home holds this agent's keys: nobody else reads it, models included *)
-  (try Unix.chmod home 0o700 with _ -> ());
-  let open Yojson.Safe.Util in
-  let gen = read_json (Filename.concat home "genesis.json") in
-  let keyf = read_json (Filename.concat home "key.json") in
-  let me = to_string (member "agent" keyf) and key = key_of_json (member "key" keyf) in
-  let secret = to_string (member "secret" (read_json (Filename.concat home "chain.json"))) in
-  chain_id := to_string (member "chain_id" gen);
-  let agents = to_list (member "agents" gen) in
-  let names = List.map (fun a -> to_string (member "name" a)) agents in
-  (* repositories outside this agent's scope, from its genesis part *)
-  let my_excluded = List.concat_map (fun a -> if to_string (member "name" a) = me then
-                                       (match member "exclude" a with `List l -> List.map to_string l | _ -> []) else []) agents in
-  List.iter (fun a -> Hashtbl.replace pubkeys (to_string (member "name" a)) (key_of_json (member "pubkey" a))) agents;
-  let addr_of_agent n = to_string (member "addr" (List.find (fun a -> to_string (member "name" a) = n) agents)) in
-  let byz = try Sys.getenv "PANTHEON_BYZ" with Not_found -> "" in
-  if byz <> "" then say "FAULT INJECTION: this node misbehaves on purpose (%s)" byz;
+  (* what cli.soma's node_setup read, checked and decided: the settings,
+     this node's key, its excluded repositories, those it can't check, CI
+     commands by repository, the agents, the repositories, those still at
+     genesis, then the boot events *)
+  let settings, key_hex, my_excluded, no_check_l, ci_repo_l, agents_l, repos_l, at_genesis, boot =
+    match unframe_lists config with
+    | s :: k :: ex :: nc :: cr :: ag :: rp :: gs :: boot -> (s, k, ex, nc, cr, ag, rp, gs, boot)
+    | _ -> fail "the node's setup came back malformed" in
+  let home, me, secret, byz, backend_s, listen_s, ci_s, ci_memory_s, ci_image_s, ci_sandbox_s, max_calls_s =
+    match settings with
+    | [ home; me; secret; cid; byz; b; l; ci; mem; img; sbx; mc ] -> chain_id := cid; (home, me, secret, byz, b, l, ci, mem, img, sbx, mc)
+    | _ -> fail "the node's setup came back malformed" in
+  let key : Cryptokit.RSA.key =
+    match key_hex with
+    | [ size; n; e; d; p; q; dp; dq; qinv ] ->
+        { size = int_of_string size; n = unhex n; e = unhex e; d = unhex d; p = unhex p; q = unhex q; dp = unhex dp; dq = unhex dq; qinv = unhex qinv }
+    | _ -> fail "the node's setup came back malformed" in
+  let rec fives = function n :: a :: size :: kn :: ke :: r -> (n, a, size, kn, ke) :: fives r | _ -> [] in
+  let rec pairs = function a :: b :: r -> (a, b) :: pairs r | _ -> [] in
+  let agents = fives agents_l in
+  let names = List.map (fun (n, _, _, _, _) -> n) agents in
+  List.iter (fun (n, _, size, kn, ke) ->
+      Hashtbl.replace pubkeys n { Cryptokit.RSA.size = int_of_string size; n = unhex kn; e = unhex ke; d = ""; p = ""; q = ""; dp = ""; dq = ""; qinv = "" })
+    agents;
+  let addr_of_agent n = match List.find_opt (fun (m, _, _, _, _) -> m = n) agents with Some (_, a, _, _, _) -> a | None -> fail "no agent %s" n in
   let nonce_flood_sent = ref false in
-  (* flags: agent settings, given to Soma as events *)
-  let backend = ref "scripted" and agent_events = ref [] and ci_cmd = ref "" and ci_repo = ref [] and ci_image = ref "alpine:3.20" and ci_sandbox = ref "" in
-  let listen = ref "0.0.0.0" and ci_memory = ref "8g" and no_check = ref [] in
-  let max_calls = ref 100 and calls = ref 0 in
-  let rec go = function
-    | "--backend" :: b :: r -> backend := b; go r
-    | "--behavior" :: b :: r -> agent_events := !agent_events @ [ [ "agent"; "behavior"; b ] ]; go r
-    | "--goal" :: f :: r -> agent_events := !agent_events @ [ [ "goal_text"; file_text f ] ]; go r
-    | "--deny" :: p :: r -> agent_events := !agent_events @ [ [ "agent"; "deny"; p ] ]; go r
-    | "--bid-window" :: n :: r -> agent_events := !agent_events @ [ [ "agent"; "bid_window"; n ] ]; go r
-    | "--perspective" :: t :: r -> agent_events := !agent_events @ [ [ "agent"; "perspective"; t ] ]; go r
-    | "--ci" :: c :: r -> ci_cmd := c; go r
-    | "--ci-repo" :: n :: c :: r -> ci_repo := (n, c) :: !ci_repo; go r
-    (* a repository this node can't build (Soma's CI on a small host): its
-       checks end as this node's problem, so the agent abstains on that
-       repository's bids rather than say yes after only applying the edits *)
-    | "--no-check" :: n :: r -> no_check := n :: !no_check; go r
-    | "--listen" :: h :: r -> listen := h; go r
-    | "--ci-memory" :: m :: r -> ci_memory := m; go r
-    | "--ci-image" :: i :: r -> ci_image := i; go r
-    (* CI without Docker: PROGRAM MEMORY CHECKOUT CMD runs CMD on a copy of the
-       read-only CHECKOUT, with no network, within MEMORY (deploy/host/ci-sandbox) *)
-    | "--ci-sandbox" :: p :: r -> ci_sandbox := p; go r
-    | "--max-llm-calls" :: n :: r -> max_calls := int_of_string n; go r
-    | x :: _ -> fail "unknown node flag %s" x
-    | [] -> ()
-  in
-  go flags;
-  (* Soma reads the raw --backend string (backend_kind_name, backend_behavior_event) *)
-  agent_events := !agent_events @ [ [ "backend_behavior_of"; !backend ] ];
+  let backend = ref backend_s and ci_cmd = ref ci_s and ci_repo = ref (pairs ci_repo_l) and ci_image = ref ci_image_s
+  and ci_sandbox = ref ci_sandbox_s and listen = ref listen_s and ci_memory = ref ci_memory_s and no_check = ref no_check_l in
+  let max_calls = ref (int_of_string max_calls_s) and calls = ref 0 in
   (* state *)
   let queue = Queue.create () in
   let push ev = Queue.add ev queue in
@@ -924,26 +876,14 @@ let node_open packed home flags =
   let signed : (string, string * string list option) Hashtbl.t = Hashtbl.create 64 in
   let signed_text = file_text signed_path in
   let blocks_path = Filename.concat home "blocks.log" in
-  (* the governed repositories: a checkout each, at genesis or later *)
-  let repos = List.map (fun r -> (to_string (member "name" r), to_string (member "url" r), to_string (member "commit" r), to_string (member "tree" r)))
-                (try to_list (member "repos" gen) with _ -> []) in
-  let net_dir = Filename.concat home "network" in
-  List.iter (fun (n, url, commit, tree) ->
-      let dir = ensure_repo home n (repo_url helpers net_dir url) commit in
-      if git_out dir [ "rev-parse"; commit ^ "^{tree}" ] <> tree then fail "genesis says repository %s's commit %s has tree %s; this clone disagrees" n commit tree)
-    repos;
+  (* the governed repositories, checked out and checked by node_setup *)
+  let repos = List.map (fun (n, c) -> (n, "", c, "")) (pairs repos_l) in
   let rdir n = repo_dir home n in
   (* the version of the last merge applied to a checkout: the merges
-     replayed from blocks.log at startup are already in it *)
-  let genesis_commit n = match List.find_opt (fun (m, _, _, _) -> m = n) repos with Some (_, _, c, _) -> c | None -> "" in
-  (* Genesis stays 0. Soma reads Pantheon-Version out of any later commit. *)
-  let applied_body n =
-    if git_out (rdir n) [ "rev-parse"; "HEAD" ] = git_out (rdir n) [ "rev-parse"; genesis_commit n ] then None
-    else Some (snd (git (rdir n) [ "log"; "-1"; "--format=%B" ]))
-  in
+     replayed from blocks.log at startup are already in it; one still at
+     genesis is 0 *)
   let applied = Hashtbl.create 4 in
-  let pending_applied = ref [] in
-  List.iter (fun (n, _, _, _) -> match applied_body n with None -> Hashtbl.replace applied n 0 | Some body -> pending_applied := (n, body) :: !pending_applied) repos;
+  List.iter (fun n -> Hashtbl.replace applied n 0) at_genesis;
   let diverged = ref [] in
   let ci_for r = try List.assoc r !ci_repo with Not_found -> !ci_cmd in
   let peers =
@@ -1146,19 +1086,12 @@ let node_open packed home flags =
      startup and replay use exactly the same output interpreter as the loop. *)
   let boot_rev = ref [] in
   let feed ev = boot_rev := ev :: !boot_rev in
-  (* genesis, then what's on disk *)
-  (* the roster, tips, block_ms, params, repositories and excludes are
-     node.soma's genesis_events, from the file's text *)
-  feed [ "genesis"; read_file (Filename.concat home "genesis.json") ];
-  feed [ "me"; me ];
-  feed [ "backend_kind_of"; !backend ];
-  List.iter feed !agent_events;
-  List.iter (fun (n, body) -> feed ["applied_body"; n; body]) (List.rev !pending_applied);
+  (* node_setup's boot events (genesis, this node, the backend, the flags'
+     events, the merges the checkouts carry), then what's on disk *)
+  List.iter feed boot;
   let replayed = ref 0 in
   (* the file's bytes: node.soma's log_lines splits them into block_log lines *)
   feed ["block_log_text"; file_text blocks_path];
-  let boot_saved = if Sys.file_exists checkpoint_path then
-      Some (Obj.repr (load_consensus checkpoint_path)) else None in
   (* votes with no consensus.state: Soma refuses to start (node.soma's
      signed_needs_snapshot), after it has read signed.log *)
   (* sockets *)
@@ -1360,10 +1293,9 @@ let node_open packed home flags =
       h_repo_names = (fun () -> List.map (fun (n, _, _, _) -> n) repos);
       h_ls_files = (fun r -> git_out (rdir r) [ "ls-files" ]);
       h_head_file = (fun r p -> let ok, c = git (rdir r) [ "show"; "HEAD:" ^ p ] in if ok then Some c else None);
-      h_save = (fun snap -> let c = Obj.obj snap in
-                match !saved with Some p when p == c || p = c -> () | _ -> save_consensus checkpoint_path c; saved := Some c);
+      h_save = (fun text -> if !saved <> Some text then (write_file_synced checkpoint_path text; saved := Some text));
       h_refuse = (fun raw -> if Hashtbl.length refused < 10000 then Hashtbl.replace refused raw ());
-      h_boot = List.rev !boot_rev; h_snapshot = boot_saved;
+      h_boot = List.rev !boot_rev; h_snapshot = (fun () -> if Sys.file_exists checkpoint_path then Some (read_file checkpoint_path) else None);
       h_replayed = (fun () -> string_of_int !replayed);
       h_remember_block = (fun hs txs -> match int_of_string_opt hs with None -> false | Some n -> Hashtbl.replace blocks n txs; replayed := n; true);
       h_conn_admit = (fun oid mode target ->

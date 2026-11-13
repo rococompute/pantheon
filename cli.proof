@@ -82,3 +82,21 @@ Example repo_urls_as_before :
   /\ repo_url "/net" "https://h/r" = "https://h/r" /\ repo_url "/net" "git@h:r" = "git@h:r"
   /\ repo_url "/net" "git@" = "/net/git@".
 Proof. repeat split; reflexivity. Qed.
+
+Example node_flags_as_before :
+  node_flags ["--backend", "claude", "--goal", "g.txt", "--ci-repo", "a", "make", "--ci-repo", "b", "dune",
+              "--no-check", "a", "--no-check", "b", "--bid-window", "6", "--max-llm-calls", "007"]
+             node_flag_defaults [] [] []
+    = inl (put "max_calls" "7" (put "backend" "claude" node_flag_defaults),
+           [["goal_file", "g.txt"], ["agent", "bid_window", "6"]],
+           [("b", "dune"), ("a", "make")], ["b", "a"])
+  /\ node_flags ["--bogus"] [] [] [] [] = inr "unknown node flag --bogus"
+  (* --ci-repo takes two values: with one it isn't a flag *)
+  /\ node_flags ["--ci-repo", "x"] [] [] [] [] = inr "unknown node flag --ci-repo"
+  /\ node_flags ["--max-llm-calls", "x"] [] [] [] [] = inr "--max-llm-calls wants a number, got x".
+Proof. repeat split; reflexivity. Qed.
+
+Example env_value_as_getenv :
+  env_value "PANTHEON_BYZ" ["HOME=/h", "PANTHEON_BYZ=silent", "PANTHEON_BYZ=x"] = "silent"
+  /\ env_value "PANTHEON_BYZ" ["PANTHEON_BYZANTINE=1"] = "" /\ env_value "A" ["A="] = "".
+Proof. repeat split; reflexivity. Qed.

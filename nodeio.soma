@@ -167,7 +167,7 @@ Inductive node_op :=
 (** the commands' I/O (cli.soma): the timestamped line `say` prints, plain
     output, an exit status; files and directories; this directory; a new
     RSA key (e = 65537: [size, n, e, d, p, q, dp, dq, qinv], hex) and random
-    bytes as hex; git in a checkout (its trimmed output), a clone at a
+    bytes as hex; git in a checkout (its output), a clone at a
     commit; starting nodes and waiting for them; and the edits machinery,
     still OCaml's (a checkout's edits, applying edits, the tree a bid's
     edits give) *)
@@ -187,7 +187,12 @@ Inductive node_op :=
 | IoAwaitNodes (pids : list string)
 | IoCheckoutEdits (dir : string)
 | IoApplyEdits (dir : string) (edits : list string)
-| IoCheckTree (repo head out : string) (edits : list string).
+| IoCheckTree (repo head out : string) (edits : list string)
+(** the consensus snapshot (node.soma's snapshot_text): saved atomically
+    and synced before any vote it holds is sent; consensus.state's text,
+    absent when there is none *)
+| IoSnapshotSave (text : string)
+| IoSnapshotLoad.
 
 (** Two arbitrary lists on one wire: tagged field/value pairs, then the
     alternate-list marker. A marker occurring as a value is never a tag.
@@ -330,6 +335,8 @@ io_wire (op : node_op) : list string :=
   | IoCheckoutEdits dir => ["checkout_edits", dir]
   | IoApplyEdits dir edits => "apply_edits" :: dir :: edits
   | IoCheckTree repo head out edits => "check_tree" :: repo :: head :: out :: edits
+  | IoSnapshotSave text => ["snapshot_save", text]
+  | IoSnapshotLoad => ["snapshot_load"]
   end.
 
 io_of_wire (w : list string) : option node_op :=
@@ -454,6 +461,8 @@ io_of_wire (w : list string) : option node_op :=
   | ["checkout_edits", dir] => Some (IoCheckoutEdits dir)
   | "apply_edits" :: dir :: edits => Some (IoApplyEdits dir edits)
   | "check_tree" :: repo :: head :: out :: edits => Some (IoCheckTree repo head out edits)
+  | ["snapshot_save", text] => Some (IoSnapshotSave text)
+  | ["snapshot_load"] => Some IoSnapshotLoad
   | _ => None
   end.
 

@@ -20,8 +20,9 @@ let () =
     round = 2; step = 2; lockr = 3; lockv = ["A"];
     validr = 3; validv = ["A"] } in
   let n = { empty_node with cons = c } in
-  Shell.save_consensus path n.cons;
-  let restarted = restore_cons empty_node (Shell.load_consensus path) in
+  Shell.write_file_synced path (snapshot_text n.cons);
+  let load p = match snapshot_of (In_channel.with_open_bin p In_channel.input_all) with Some c -> c | None -> failwith "malformed" in
+  let restarted = restore_cons empty_node (load path) in
   let restarted, _ = step0 restarted ["start"] in
   let c = restarted.cons in
   assert (c.lockr = 3 && c.lockv = ["A"]);
@@ -37,7 +38,7 @@ let () =
          | _ -> false) outs)
    | None -> assert false);
   let oc = open_out_bin path in output_string oc "broken"; close_out oc;
-  assert (try ignore (Shell.load_consensus path); false with _ -> true);
+  assert (try ignore (load path); false with _ -> true);
   print_endline "ok restart: lock and valid value survive disk load; conflicting proposal prevotes nil"
 ML
 # soma build finds its own switch; dune needs telling

@@ -200,10 +200,11 @@ to start, `IoFail`, when it has votes and there is no snapshot), the boot
 events expanded (`boot_expand_prog`) and replayed (`run_boot_prog`, each
 block remembered for catch-up with `IoRememberBlock`), the replay logged
 and the start step carried (`start_node_prog`; `fresh_boot_reads`). So
-`run_node` is setup (`node_open`), the snapshot read back, then
-`run_shell` of the boot program and `forever` of the tick: every effect
-the node has is a node operation but the snapshot's save and read, and
-`node_open`'s setup.
+`run_node` is the setup program (cli.soma's `node_setup`), the runtime
+built from it (`node_open`), the snapshot read back (`IoSnapshotLoad`),
+then `run_shell` of the boot program and `forever` of the tick: every
+effect the node has is a node operation but building `node_open`'s
+runtime.
 The resend write uses tagged `field`/value pairs followed by `alternate`
 and the untouched second list. Values may themselves contain either tag.
 Resend reads and the native table remain unchanged.
@@ -267,9 +268,10 @@ Each operation:
 | `IoSignedText`, `IoSignedRestore slot vid fields`, `IoFail message` | signed.log's bytes; a vote read back; refusing to start (stderr, exit 1) | signed.log's named file; the stores' signed table; printed, answered false |
 | `IoConnAdmit`, `IoConnClose`, `IoJobFlood`, `IoJobExpire` | admit, refuse or close a socket; kill a job's process | nothing to do: a unikernel's links are its listen handlers', and it runs no processes |
 | `IoSay`, `IoPrint`, `IoExit`, `IoFileExists`, `IoWriteFile`, `IoChmod`, `IoMakeDirs`, `IoCwd` | the commands' output (`say`'s timestamped line, plain text, an exit status) and files | printed; Sandbox's named files; the rest answered false |
-| `IoNewKey bits`, `IoRandomHex count`, `IoGit dir args`, `IoClone url dir commit` | a new RSA key (e = 65537) as hex; random bytes; git in a checkout (trimmed output); a clone at a commit | answered false: a unikernel makes no keys and runs no git |
+| `IoNewKey bits`, `IoRandomHex count`, `IoGit dir args`, `IoClone url dir commit` | a new RSA key (e = 65537) as hex; random bytes; git in a checkout (its output); a clone at a commit | answered false: a unikernel makes no keys and runs no git |
 | `IoSpawnNode log args`, `IoAwaitNodes pids` | `up`'s nodes: one started logging to its node.log; waiting for them, stopping them on SIGINT or SIGTERM | answered false |
 | `IoCheckoutEdits dir`, `IoApplyEdits dir edits`, `IoCheckTree repo head out edits` | the edits machinery, still OCaml's: a checkout's edits, applying edits, the tree a bid's edits give | answered false |
+| `IoSnapshotSave text`, `IoSnapshotLoad` | consensus.state, written atomically and synced (skipped when unchanged); its text, absent when there is none | the named file consensus.state |
 
 The commands are node programs too (`cli.soma`): `init`, `keygen`,
 `genesis`, `up`, `status`, `tx`, `plan`, `edits`, `apply-edits` and
@@ -287,9 +289,31 @@ genesis.json. Two cases that crashed the old binary now say why:
 list of strings. One known difference: a float in network.json's params
 is written as the integer the node reads it as (Yojson kept its digits).
 
+The consensus snapshot is Soma's text (node.soma's `snapshot_text`):
+the state as frames of strings, each its length in decimal, ":" and
+itself, after a header naming the format. It replaced OCaml's Marshal,
+which a unikernel can't read and Soma can't check. Reading it back is
+strict (`snapshot_of`: the text must be exactly what `snapshot_text`
+writes for the state it reads), and a node whose consensus.state Soma
+can't read refuses to start, as it did when Marshal failed: a node that
+signed votes must not start without its lock. A consensus.state written
+by an older Pantheon is refused so; such a network wants a new genesis.
+
+The node's setup is a node program too (cli.soma's `node_setup`, run
+with no node): the home made absolute and private, genesis.json,
+key.json and chain.json read and checked, the PANTHEON_BYZ fault
+injection noted, the node's flags parsed (a --goal's file read in), the
+governed repositories checked out and checked against the genesis's
+trees, and which already carry a merge. It gives `node_open` framed
+data: the settings, this node's key, its exclusions, the repositories it
+can't check, CI commands by repository, the agents, the repositories,
+those still at genesis, then the boot events. `node_open` only builds
+the runtime from it: its tables, the listener, jobs and closures. A home
+whose key.json names no genesis agent, and a --max-llm-calls that isn't
+a number, now say so (the old binary crashed on both).
+
 Not yet operations, still bindings of their own (the next parts of U-1):
-the snapshot (saved and read back: a Soma value, Soma's "storage"),
-`node_open`'s setup (Soma's "storage" still), the listener and
+`node_open`'s runtime (Soma's "storage" still), the listener and
 accepted connections (links), and git, model and CI jobs (Soma's
 "services": `fetch` with a timeout and HTTP POST).
 

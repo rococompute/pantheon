@@ -878,7 +878,7 @@ Proof.
     raw | | raw | who | | | | stamp | path | path | | | timers | | | wait |
     | | height txs | | slot vid fields | message |
     text | text | code | path | path text | path mode | path | | bits | count | dir args |
-    url dir commit | log args | pids | dir | dir edits | repo head out edits ];
+    url dir commit | log args | pids | dir | dir edits | repo head out edits | text | ];
     try reflexivity.
   - change (match resend_parts (resend_fields fields ++ ("alternate" :: alternate)) with
     | Some (original, alt) => Some (IoRememberBroadcast height kind original alt)
@@ -1327,3 +1327,19 @@ Example honest_vote_trace :
    IoRememberBroadcast "1" "all" ["prevote", "1", "0", "-1", "v", "nil"] ["prevote", "1", "0", "-1", "v", "nil"],
    IoSendAll ["prevote", "1", "0", "-1", "v", "nil"]].
 Proof. reflexivity. Qed.
+
+(** consensus.state's text reads back as the state it was written from,
+    lock, valid value and log included; anything else is refused *)
+Example snapshot_reads_back :
+  let c := {| consensus.me := "a"; consensus.nodes := ["a", "b", "c", "d"]; consensus.height := 12;
+              consensus.round := 2; consensus.step := 2; consensus.lockr := 3; consensus.lockv := ["A:1", ""];
+              consensus.validr := 3; consensus.validv := ["A:1", ""]; consensus.once := ["x"]; consensus.block_ms := 500;
+              consensus.log := [{| kd := Prevote; frm := "b"; mh := 12; mr := 2; vr := 0; vid := "v"; value := [] |},
+                                {| kd := Proposal; frm := "c"; mh := 12; mr := 2; vr := 3; vid := "w"; value := ["t1", "t:2"] |}] |} in
+  match snapshot_of (snapshot_text c) with Some d => cons_eq c d = true | None => False end.
+Proof. vm_compute. reflexivity. Qed.
+
+Example snapshot_refuses_others :
+  snapshot_of "broken" = None /\ snapshot_of "" = None
+  /\ snapshot_of (append (snapshot_text (new_consensus "a" ["a"] 1)) "x") = None.
+Proof. repeat split; vm_compute; reflexivity. Qed.
