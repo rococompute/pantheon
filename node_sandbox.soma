@@ -5,13 +5,14 @@
     (blocks.log, signed.log, status.txt, as Sandbox's named files) and the
     same tables (nodeio.soma's [nio_table_op]).
 
-    What Sandbox doesn't give yet is the program's to supply, in
-    [nio_world]: a message's bytes on a peer link (the binary signs it with
-    the node's RSA key; Sandbox has no RSA: Soma's "SHA-256 and RSA" item)
-    and starting a CI check (the binary starts a process; a unikernel asks
-    a CI service, which needs Soma's "services" item: an HTTP POST with a
-    timeout). Checked without booting by test/node-sandbox.sh
-    ([soma build --no-image]). *)
+    Peer links are the binary's: lines signed with Soma's RSA on links
+    this node dials, and what peers' connections do read from Sandbox's
+    mailbox as the binary's select reads its sockets. What Sandbox doesn't
+    give yet is the program's to supply, in [nio_world]: git, model calls
+    and CI (the binary starts processes; a unikernel would ask services,
+    Soma's "services" item: an HTTP POST with a timeout). Checked without
+    booting by test/node-sandbox.sh ([soma build --no-image]), booted
+    among binaries by test/node-image.sh. *)
 Require Import Sandbox.
 From Stdlib Require Import NArith.BinNat PArith.BinPos.
 Import util nodeio node cli.
@@ -60,12 +61,42 @@ Record nio_world := {
       backend, agent events): a unikernel's are its image's *)
   w_boot : list (list string) }.
 
-(** The interpreter's state: the operations' tables and the peer links,
-    in genesis order, by name. *)
-Record nio_kernel := { k_tables : nio_tables; k_peers : list (string * connection) }.
+(** A connection a peer opened: its number (the binary's connection id,
+    as text), the link, the host it came from, when it was last read, and
+    the bytes it sent before it was admitted (the binary reads none until
+    then; they are the first [peer_bytes] once it is). *)
+Record nio_link := { l_id : string; l_conn : connection; l_host : string;
+                     l_last : PrimFloat.float; l_held : string }.
+
+(** The interpreter's state: the operations' tables; the genesis peers, in
+    order (name, IP address, port); the links this node opened to them
+    (written to, as the binary's outgoing sockets), by name; the
+    connections peers opened (read, as the binary's accepted sockets),
+    offered and not yet admitted, and admitted; when it dials next and
+    when it last resent, in Sandbox's milliseconds. *)
+Record nio_kernel := {
+  k_tables : nio_tables;
+  k_names : list (string * (string * nat));
+  k_peers : list (string * connection);
+  k_offers : list nio_link;
+  k_conns : list nio_link;
+  k_next_dial : N;
+  k_last_resend : N }.
 
 nio_kernel_tables (s : nio_kernel) (t : nio_tables) : nio_kernel :=
-  {| k_tables := t; k_peers := k_peers s |}.
+  {| s with k_tables := t |}.
+
+nio_conn_id (c : connection) : string := match c with Connection n => show n end.
+
+(** an address's IP and port: what comes before and after its last ":" *)
+Fixpoint nio_split_rev (rev_cs acc : list Ascii.ascii) : list Ascii.ascii * list Ascii.ascii :=
+  match rev_cs with
+  | [] => ([], acc)
+  | c :: rest => if Ascii.eqb c (Ascii.ascii_of_nat 58) then (rev_onto rest [], acc) else nio_split_rev rest (c :: acc)
+  end.
+
+nio_addr (a : string) : string * nat :=
+  let r := nio_split_rev (rev_onto (chars a) []) [] in (of_chars (fst r), num (of_chars (snd r))).
 
 (** Sandbox's clock is monotonic milliseconds as a binary number; the
     node's is seconds as a float. *)
@@ -84,18 +115,27 @@ nio_seconds (ms : N) : PrimFloat.float :=
 
 nio_newline : string := Stdlib.Strings.String.String (Ascii.ascii_of_nat 10) Stdlib.Strings.String.EmptyString.
 
-Fixpoint nio_send_each (cs : list connection) (line : string) : io unit :=
-  match cs with
-  | [] => ret tt
-  | c :: rest => _ <- send_line c line ;; nio_send_each rest line
+(** a line to a genesis peer, on this node's link to it if there is one
+    (the binary buffers it for its socket); a link the send finds closed
+    is dropped, so the next turn dials again *)
+nio_send_to (s : nio_kernel) (who : string) (line : string) : io nio_kernel :=
+  match List.find (fun p => nio_eq (fst p) who) (k_peers s) with
+  | None => ret s
+  | Some p =>
+      r <- send_line (snd p) line ;;
+      match r with
+      | Sent => ret s
+      | SendClosed => ret {| s with k_peers := List.filter (fun q => negb (nio_eq (fst q) who)) (k_peers s) |}
+      end
   end.
 
-Fixpoint nio_nth_peer (k : nat) (ps : list (string * connection)) : list connection :=
-  match ps, k with
-  | [], _ => []
-  | p :: _, 0 => [snd p]
-  | _ :: rest, S j => nio_nth_peer j rest
+Fixpoint nio_send_names (s : nio_kernel) (names : list string) (line : string) : io nio_kernel :=
+  match names with
+  | [] => ret s
+  | n :: rest => s' <- nio_send_to s n line ;; nio_send_names s' rest line
   end.
+
+nio_peer_names (s : nio_kernel) : list string := List.map fst (k_names s).
 
 (** a count in decimal, as the binary's [string_of_int] *)
 Fixpoint nio_show_digits (fuel n : nat) (acc : string) : string :=
@@ -126,12 +166,115 @@ nio_wait_ms (wait : string) : N :=
   if starts "-" t || seq t "nan" || seq t "inf" then 0%N
   else N.min 1000 (N.of_nat (num t)).
 
+nio_without (id : string) (l : list nio_link) : list nio_link :=
+  List.filter (fun x => negb (nio_eq (l_id x) id)) l.
+
+nio_queue (s : nio_kernel) (ev : list string) : nio_kernel :=
+  nio_kernel_tables s (nio_with_queue (k_tables s) (t_queue (k_tables s) ++ [ev])).
+
+(** What a connection did, as the binary's select makes it an event: an
+    offer (its host, and the hosts of the connections held, for Soma's
+    admission), the bytes an admitted one read, its end. Bytes from one
+    not yet admitted wait for its admission. *)
+nio_take_mail (now : PrimFloat.float) (s : nio_kernel) (e : link_event) : nio_kernel :=
+  match e with
+  | LinkOpened c host =>
+      let id := nio_conn_id c in
+      nio_queue {| s with k_offers := k_offers s ++ [{| l_id := id; l_conn := c; l_host := host; l_last := now; l_held := "" |}] |}
+        ("conn_offer" :: id :: host :: List.map l_host (k_conns s))
+  | LinkBytes c data =>
+      let id := nio_conn_id c in
+      if List.existsb (fun l => nio_eq (l_id l) id) (k_conns s) then
+        nio_queue {| s with k_conns := List.map (fun l => if nio_eq (l_id l) id then {| l with l_last := now |} else l) (k_conns s) |}
+          ["peer_bytes", id, data]
+      else {| s with k_offers := List.map (fun l => if nio_eq (l_id l) id then {| l with l_held := Stdlib.Strings.String.append (l_held l) data |} else l) (k_offers s) |}
+  | LinkClosed c =>
+      let id := nio_conn_id c in
+      if List.existsb (fun l => nio_eq (l_id l) id) (k_conns s) then
+        nio_queue {| s with k_conns := nio_without id (k_conns s) |} ["peer_closed", id]
+      else {| s with k_offers := nio_without id (k_offers s) |}
+  end.
+
+(** An offer carried out as Soma decided ([conn_admit_plan]): refused, it
+    is closed; admitted ("new"), or admitted in place of the connection
+    [target] ("evict", which is closed), it is read from now on, and what
+    it sent while it waited is its first read. *)
+nio_admit (now : PrimFloat.float) (s : nio_kernel) (offer mode target : string) : io nio_kernel :=
+  match List.find (fun l => nio_eq (l_id l) offer) (k_offers s) with
+  | None => ret s
+  | Some o =>
+      let s := {| s with k_offers := nio_without offer (k_offers s) |} in
+      if nio_eq mode "refuse" then close (l_conn o) ;; ret s
+      else
+        s <- (if nio_eq mode "evict" then
+                match List.find (fun l => nio_eq (l_id l) target) (k_conns s) with
+                | Some old => close (l_conn old) ;; ret {| s with k_conns := nio_without target (k_conns s) |}
+                | None => ret s
+                end
+              else ret s) ;;
+        let s := {| s with k_conns := k_conns s ++ [{| o with l_last := now; l_held := "" |}] |} in
+        ret (if nio_eq (l_held o) "" then s else nio_queue s ["peer_bytes", offer, l_held o])
+  end.
+
+(** dial each genesis peer this node has no link to, giving up after 300
+    ms (the binary's connect doesn't wait: a peer that doesn't answer must
+    not hold up the loop) *)
+Fixpoint nio_dial (s : nio_kernel) (names : list (string * (string * nat))) : io nio_kernel :=
+  match names with
+  | [] => ret s
+  | (n, (ip, port)) :: rest =>
+      if List.existsb (fun p => nio_eq (fst p) n) (k_peers s) then nio_dial s rest
+      else
+        r <- connect_within ip port 300%N ;;
+        match r with
+        | Connected c => nio_dial {| s with k_peers := k_peers s ++ [(n, c)] |} rest
+        | _ => nio_dial s rest
+        end
+  end.
+
+(** a recorded broadcast resent as recorded ([resend_recorded]): "each"
+    sends the first peer [fields] and the others [alternate]; "all" sends
+    everyone [fields] *)
+nio_resend (w : nio_world) (s : nio_kernel) (r : string * (string * (list string * list string))) : io nio_kernel :=
+  let '(_, (kind, (fields, alt))) := r in
+  let line f := nio_wire_line (w_chain w) (w_identity w) (w_key w) f in
+  match nio_peer_names s with
+  | [] => ret s
+  | first :: others =>
+      if nio_eq kind "each" then s' <- nio_send_to s first (line fields) ;; nio_send_names s' others (line alt)
+      else if nio_eq kind "all" then nio_send_names s (first :: others) (line fields)
+      else ret s
+  end.
+
+Fixpoint nio_each {A : Type} (f : nio_kernel -> A -> io nio_kernel) (s : nio_kernel) (l : list A) : io nio_kernel :=
+  match l with [] => ret s | x :: rest => s' <- f s x ;; nio_each f s' rest end.
+
+(** The binary's [prep_turn]: dial the peers it has no link to, at most
+    once a second; every 2 seconds resend this height's recorded messages,
+    oldest first, and the node's transactions of the last 2 minutes (not
+    when it is drawn silent), newest first, as the binary keeps them *)
+nio_poll_prep (w : nio_world) (s : nio_kernel) : io nio_kernel :=
+  ms <- monotonic_ms ;;
+  s <- (if N.leb (k_next_dial s) ms then
+          s' <- nio_dial s (k_names s) ;; ret {| s' with k_next_dial := (ms + 1000)%N |}
+        else ret s) ;;
+  if N.ltb (k_last_resend s + 2000)%N ms then
+    let now := nio_seconds ms in
+    let s := {| s with k_last_resend := ms |} in
+    s <- nio_each (nio_resend w) s (List.rev (t_mine (k_tables s))) ;;
+    let txs := List.filter (fun t => PrimFloat.ltb (PrimFloat.sub now (fst t)) (nio_small 120)) (t_txs (k_tables s)) in
+    let s := nio_kernel_tables s (nio_with_txs (k_tables s) txs) in
+    if nio_eq (List.hd "" (w_draw w)) "silent" then ret s
+    else nio_each (fun s t => nio_send_names s (nio_peer_names s)
+                     (nio_wire_line (w_chain w) (w_identity w) (w_key w) ["tx", snd t])) s txs
+  else ret s.
+
 (** One operation: the answer the binary's [node_io] gives, and the new
     state. Logging prints; the clock is Sandbox's; storage appends or
-    writes the named file; peer sends go on the links; a CI check asks
-    [w_check]; connection and job control have nothing to do in a
-    unikernel (its links are its listen handlers', and it runs no
-    processes); the draw, signing a transaction, the check exclusions,
+    writes the named file; peer sends go on the links this node dialed;
+    the select is the mailbox's; connections are admitted and closed as
+    Soma decides; a CI check asks [w_check]; job control has nothing to do
+    (a unikernel runs no processes); the draw, signing a transaction, the check exclusions,
     the checkouts' heads, the backend, the time of day, the git work and
     a model call's are [nio_world]'s; the rest is the tables' and the stores'. *)
 nio_kernel_op (w : nio_world) (s : nio_kernel) (op : node_op)
@@ -146,7 +289,7 @@ nio_kernel_op (w : nio_world) (s : nio_kernel) (op : node_op)
       append_file "signed.log" (Stdlib.Strings.String.append (nio_vote_line slot vid fields) nio_newline) ;;
       nio_kernel_stores s op
   | IoDraw => ret (ans_data true (w_draw w), s)
-  | IoPeerCount => ret (ans_data true [nio_show_nat (List.length (k_peers s))], s)
+  | IoPeerCount => ret (ans_data true [nio_show_nat (List.length (k_names s))], s)
   | IoEncodeTx nonce fields =>
       ret (ans_data true [nio_encode_tx (w_chain w) (w_identity w) (w_key w) nonce fields], s)
   | IoCheckExclusions => ret (ans_data true (w_exclusions w), s)
@@ -162,14 +305,18 @@ nio_kernel_op (w : nio_world) (s : nio_kernel) (op : node_op)
   | IoHeldRequests | IoHeldStore _ _ | IoJobComplete _ _ =>
       a <- w_llm w (io_wire op) ;; ret (a, s)
   | IoWriteStatus text => write_file "status.txt" text ;; ret (nio_ok, s)
-  | IoSendAll fields => nio_send_each (List.map snd (k_peers s)) (nio_wire_line (w_chain w) (w_identity w) (w_key w) fields) ;; ret (nio_ok, s)
+  | IoSendAll fields =>
+      s' <- nio_send_names s (nio_peer_names s) (nio_wire_line (w_chain w) (w_identity w) (w_key w) fields) ;; ret (nio_ok, s')
   | IoSendPeer index fields =>
-      nio_send_each (nio_nth_peer (nio_index index) (k_peers s)) (nio_wire_line (w_chain w) (w_identity w) (w_key w) fields) ;; ret (nio_ok, s)
+      s' <- nio_send_names s (List.firstn 1 (List.skipn (nio_index index) (nio_peer_names s)))
+              (nio_wire_line (w_chain w) (w_identity w) (w_key w) fields) ;;
+      ret (nio_ok, s')
   | IoPeerSend who fields =>
-      nio_send_each (List.map snd (List.filter (fun p => nio_eq (fst p) who) (k_peers s))) (nio_wire_line (w_chain w) (w_identity w) (w_key w) fields) ;;
-      ret (nio_ok, s)
+      s' <- nio_send_names s (List.filter (fun n => nio_eq n who) (nio_peer_names s))
+              (nio_wire_line (w_chain w) (w_identity w) (w_key w) fields) ;;
+      ret (nio_ok, s')
   | IoPeerExists who =>
-      ret (ans_flag (List.existsb (fun p => nio_eq (fst p) who) (k_peers s)), s)
+      ret (ans_flag (List.existsb (fun n => nio_eq n who) (nio_peer_names s)), s)
   | IoCheck id repo head edits => w_check w id repo head edits ;; ret (nio_ok, s)
   | IoCiLaunch _ _ _ _ => a <- w_ci w (io_wire op) ;; ret (a, s)
   | IoReadText path => got <- read_file path ;;
@@ -186,9 +333,8 @@ nio_kernel_op (w : nio_world) (s : nio_kernel) (op : node_op)
                                      Crypto.hex_of_bytes (nk_n (snd p)), Crypto.hex_of_bytes (nk_e (snd p))]
            | None => ans_data false []
            end, s)
-  | IoConns => ret (ans_data true (nio_frame_lists (List.map (fun p => [fst p, "0"]) (k_peers s))), s)
-  (* dialing and resending: a unikernel's links are its listen handlers' *)
-  | IoPollPrep => ret (nio_ok, s)
+  | IoConns => ret (ans_data true (nio_frame_lists (List.map (fun l => [l_id l, w_float_text w (l_last l)]) (k_conns s))), s)
+  | IoPollPrep => s' <- nio_poll_prep w s ;; ret (nio_ok, s')
   | IoTurnNow => ms <- monotonic_ms ;; ret (ans_time (nio_seconds ms), s)
   | IoTimers =>
       ret (ans_data true (nio_frame_lists (List.map (fun p => w_float_text w (fst p) :: snd p)
@@ -218,17 +364,21 @@ nio_kernel_op (w : nio_world) (s : nio_kernel) (op : node_op)
   | IoExit _ | IoChmod _ _ | IoMakeDirs _ | IoCwd | IoNewKey _ | IoRandomHex _ | IoGit _ _
   | IoClone _ _ _ | IoSpawnNode _ _ | IoAwaitNodes _ | IoCheckoutEdits _ | IoApplyEdits _ _
   | IoCheckTree _ _ _ _ => ret (ans_flag false, s)
-  (* the select: nothing comes in but the timers (a unikernel's links are
-     its listen handlers'), so with nothing queued it sleeps until the
-     next is due, as the binary's select waits *)
+  (* the select: what peers' connections did (Sandbox's mailbox), waiting
+     as the binary's select waits when nothing is queued, made the
+     binary's events and queued after what is; then the queue, drained *)
   | IoEvents wait =>
-      match t_queue (k_tables s) with
-      | [] => sleep_ms (nio_wait_ms wait)
-      | _ => ret tt
-      end ;;
-      nio_kernel_stores s op
-  | IoConnAdmit _ _ _ => ret (nio_ok, s)
-  | IoConnClose _ => ret (nio_ok, s)
+      got <- mailbox (match t_queue (k_tables s) with [] => nio_wait_ms wait | _ => 0%N end) ;;
+      ms <- monotonic_ms ;;
+      nio_kernel_stores (List.fold_left (nio_take_mail (nio_seconds ms)) got s) op
+  | IoConnAdmit offer mode target =>
+      ms <- monotonic_ms ;;
+      s' <- nio_admit (nio_seconds ms) s offer mode target ;; ret (nio_ok, s')
+  | IoConnClose cid =>
+      match List.find (fun l => nio_eq (l_id l) cid) (k_conns s) with
+      | Some l => close (l_conn l) ;; ret (nio_ok, {| s with k_conns := nio_without cid (k_conns s) |})
+      | None => ret (nio_ok, s)
+      end
   | IoJobFlood _ => ret (nio_ok, s)
   | IoJobExpire _ => ret (nio_ok, s)
   | _ => nio_kernel_stores s op
@@ -295,24 +445,48 @@ nio_kernel_world (config : list (list string)) : option nio_world :=
   | _ => None
   end.
 
-(** the tables a node starts with: each repository still at genesis at
-    version 0, as the binary's [node_open] notes them *)
-nio_kernel_start (config : list (list string)) : nio_kernel :=
-  let at_genesis := match config with _ :: _ :: _ :: _ :: _ :: _ :: _ :: g :: _ => g | _ => [] end in
-  {| k_tables := {| nio_empty with t_applied := map (fun r => (r, "0")) at_genesis |}; k_peers := [] |}.
+(** the agents' addresses, by name, from the setup's agents (name,
+    address, key size, n, e) *)
+Fixpoint nio_agent_addrs (l : list string) : list (string * (string * nat)) :=
+  match l with
+  | name :: addr :: _ :: _ :: _ :: rest => (name, nio_addr addr) :: nio_agent_addrs rest
+  | _ => []
+  end.
 
-(** [pantheon node] as a unikernel: startup (the snapshot read back, the
-    boot events replayed with blocks.log's, the start step), then the
-    event loop's turns, each from the state the last left: the binary's
-    [run_node] over Sandbox. Its files are the image's storage device's. *)
+nio_config_agents (config : list (list string)) : list (string * (string * nat)) :=
+  match config with _ :: _ :: _ :: _ :: _ :: agents :: _ => nio_agent_addrs agents | _ => [] end.
+
+(** the tables a node starts with (each repository still at genesis at
+    version 0, as the binary's [node_open] notes them), and its genesis
+    peers: the agents but [me], in order, as the binary's [peers] *)
+nio_kernel_start (me : string) (config : list (list string)) : nio_kernel :=
+  let at_genesis := match config with _ :: _ :: _ :: _ :: _ :: _ :: _ :: g :: _ => g | _ => [] end in
+  {| k_tables := {| nio_empty with t_applied := map (fun r => (r, "0")) at_genesis |};
+     k_names := List.filter (fun a => negb (nio_eq (fst a) me)) (nio_config_agents config);
+     k_peers := []; k_offers := []; k_conns := []; k_next_dial := 0%N; k_last_resend := 0%N |}.
+
+(** [pantheon node] as a unikernel: listening on its genesis address's
+    port (its peers' connections into Sandbox's mailbox), startup (the
+    snapshot read back, the boot events replayed with blocks.log's, the
+    start step), then the event loop's turns, each from the state the last
+    left: the binary's [run_node] over Sandbox. Its files are the image's
+    storage device's. Its IP address is the one in the genesis, given to
+    the image (solo5-hvt's --ipv4). *)
 run_node_image (config : list (list string)) : io unit :=
   match nio_kernel_world config with
   | None => print "the node's setup came back malformed"
   | Some w =>
-      r <- run_kernel w (boot_snapshot_prog "") (nio_kernel_start config) ;;
+      let me := w_identity w in
+      match List.find (fun a => nio_eq (fst a) me) (nio_config_agents config) with
+      | None => print "this node is not one of the genesis's agents"
+      | Some a =>
+      listen_mailbox (snd (snd a)) ;;
+      print (Stdlib.Strings.String.append me (Stdlib.Strings.String.append " listening on port " (show (snd (snd a))))) ;;
+      r <- run_kernel w (boot_snapshot_prog "") (nio_kernel_start me config) ;;
       match fst r with
       | Some st =>
           Sandbox.iterate (fun (p : prod node_state nio_kernel) => run_kernel w (node_tick_prog "" (fst p)) (snd p)) (st, snd r)
       | None => print "the node did not start"
+      end
       end
   end.

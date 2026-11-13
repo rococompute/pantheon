@@ -39,7 +39,8 @@ demo : nprog bool :=
        (fun _ => nexec (IoLog "read back"))))))))).
 
 main : io unit :=
-  r <- run_kernel world demo {| k_tables := nio_empty; k_peers := [] |} ;;
+  r <- run_kernel world demo {| k_tables := nio_empty; k_names := []; k_peers := []; k_offers := []; k_conns := [];
+                                k_next_dial := 0%N; k_last_resend := 0%N |} ;;
   stored <- read_file "blocks.log" ;;
   print (match stored with Some s => s | None => "no block log" end) ;;
   print (if fst r then "program ended true" else "program stopped at a false answer").
