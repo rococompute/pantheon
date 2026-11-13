@@ -18,6 +18,11 @@ Extract Inlined Constant Stdlib.Strings.String.get =>
   "(fun n s -> if n < String.length s then Some (String.unsafe_get s n) else None)".
 Extract Inlined Constant Stdlib.Strings.String.substring =>
   "(fun n m s -> let l = String.length s in if n >= l then """" else String.sub s n (min m (l - n)))".
+(** The stores' maps (nodeio.soma's NSM) order keys by [String.compare]:
+    OCaml's comparison of strings is the same order, byte by byte, without
+    taking the strings apart a character at a time. *)
+Extract Inlined Constant Stdlib.Strings.String.compare =>
+  "(fun a b -> let c = Stdlib.compare (a : string) b in if c < 0 then Lt else if c = 0 then Eq else Gt)".
 
 (** The hashes are Soma's (util.soma, Soma.Crypto): the kernel computes
     them, the unikernel runs them. The binary runs Cryptokit's, the same

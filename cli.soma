@@ -874,6 +874,10 @@ image_text (home service : string) (config : list (list string)) : string :=
 Require Import Sandbox.
 Import node_sandbox.
 
+(* the stores' maps compare keys as OCaml compares strings, as the binary does *)
+Extract Inlined Constant Stdlib.Strings.String.compare =>
+  ""(fun a b -> let c = Stdlib.compare (a : string) b in if c < 0 then Lt else if c = 0 then Eq else Gt)"".
+
 node_config : list (list string) := [
   ", Stdlib.Strings.String.concat ",
   " (map soma_strings config), "].

@@ -5,7 +5,14 @@
     with Sandbox (node_sandbox.soma). *)
 From Corelib Require PrimFloat.
 From Corelib Require PrimInt63.
+From Stdlib Require FSets.FMapAVL Structures.OrderedTypeEx.
 Require Crypto.
+
+(** Maps by a string key: balanced trees in the order of [String.compare]
+    (the binary runs it as OCaml's string comparison, the same order). The
+    node's stores are as long as its chain, so a list would cost a scan of
+    every block on each one stored, and on each one replayed at startup. *)
+Module NSM := FMapAVL.Make Structures.OrderedTypeEx.String_as_OT.
 
 (** ---- U-1: the node's I/O as one interface (docs/SHELL-IN-SOMA.md,
     "Two directions, and the unikernel") ----
@@ -695,20 +702,21 @@ nio_wire_line (chain me : string) (k : nio_key) (fields : list string) : string 
 Record nio_tables := {
   t_timers : list (PrimFloat.float * list string);
   t_queue : list (list string);
-  t_served : list ((string * string) * PrimFloat.float);
+  t_served : NSM.t PrimFloat.float;
   t_flood : bool;
   t_diverged : list (string * string);
   t_applied : list (string * string);
   t_mine : list (string * (string * (list string * list string)));
   t_txs : list (PrimFloat.float * string);
   t_height : string;
-  t_blocks : list (string * list string);
-  t_signed : list (string * (string * list string));
-  t_refused : list string }.
+  t_blocks : NSM.t (list string);
+  t_signed : NSM.t (list (string * (string * list string)));
+  t_refused : nat * NSM.t unit }.
 
 nio_empty : nio_tables :=
-  {| t_timers := []; t_queue := []; t_served := []; t_flood := false; t_diverged := [];
-     t_applied := []; t_mine := []; t_txs := []; t_height := "0"; t_blocks := []; t_signed := []; t_refused := [] |}.
+  {| t_timers := []; t_queue := []; t_served := NSM.empty _; t_flood := false; t_diverged := [];
+     t_applied := []; t_mine := []; t_txs := []; t_height := "0"; t_blocks := NSM.empty _;
+     t_signed := NSM.empty _; t_refused := (0, NSM.empty _) |}.
 
 nio_eq (a b : string) : bool := Stdlib.Strings.String.eqb a b.
 
@@ -803,7 +811,7 @@ nio_with_queue (t : nio_tables) (v : list (list string)) : nio_tables :=
   {| t_timers := t_timers t; t_queue := v; t_served := t_served t; t_flood := t_flood t;
      t_diverged := t_diverged t; t_applied := t_applied t; t_mine := t_mine t; t_txs := t_txs t;
      t_height := t_height t; t_blocks := t_blocks t; t_signed := t_signed t; t_refused := t_refused t |}.
-nio_with_served (t : nio_tables) (v : list ((string * string) * PrimFloat.float)) : nio_tables :=
+nio_with_served (t : nio_tables) (v : NSM.t PrimFloat.float) : nio_tables :=
   {| t_timers := t_timers t; t_queue := t_queue t; t_served := v; t_flood := t_flood t;
      t_diverged := t_diverged t; t_applied := t_applied t; t_mine := t_mine t; t_txs := t_txs t;
      t_height := t_height t; t_blocks := t_blocks t; t_signed := t_signed t; t_refused := t_refused t |}.
@@ -832,7 +840,7 @@ nio_with_height (t : nio_tables) (v : string) : nio_tables :=
      t_diverged := t_diverged t; t_applied := t_applied t; t_mine := t_mine t; t_txs := t_txs t;
      t_height := v; t_blocks := t_blocks t; t_signed := t_signed t; t_refused := t_refused t |}.
 
-nio_with_refused (t : nio_tables) (v : list string) : nio_tables :=
+nio_with_refused (t : nio_tables) (v : nat * NSM.t unit) : nio_tables :=
   {| t_timers := t_timers t; t_queue := t_queue t; t_served := t_served t; t_flood := t_flood t;
      t_diverged := t_diverged t; t_applied := t_applied t; t_mine := t_mine t; t_txs := t_txs t;
      t_height := t_height t; t_blocks := t_blocks t; t_signed := t_signed t; t_refused := v |}.
@@ -855,6 +863,10 @@ Fixpoint nio_lookup {A : Type} (k : string) (l : list (string * A)) : option A :
     the height drops resend memory below it; the served table and the
     applied versions keep one entry a key. [None]: the operation isn't a
     table's (logging, the clock, storage, peer links, CI, jobs). *)
+(** a peer and a height, as one key: a name has no NUL *)
+nio_served_key (who first : string) : string :=
+  Stdlib.Strings.String.append who (Stdlib.Strings.String.String (Ascii.ascii_of_nat 0) first).
+
 nio_table_op (now : PrimFloat.float) (t : nio_tables) (op : node_op)
     : option (nanswer * nio_tables) :=
   match op with
@@ -880,21 +892,20 @@ nio_table_op (now : PrimFloat.float) (t : nio_tables) (op : node_op)
       end
   | IoRememberBroadcast h kind fields alt => Some (nio_ok, nio_with_mine t ((h, (kind, (fields, alt))) :: t_mine t))
   | IoServedAt who first =>
-      match nio_find (nio_key_is who first) (t_served t) with
+      match NSM.find (nio_served_key who first) (t_served t) with
       | Some time => Some (ans_time time, t)
       | None => Some (ans_flag false, t)
       end
   | IoMarkServed who first stamp =>
-      Some (nio_ok, nio_with_served t (((who, first), nio_num stamp) ::
-              List.filter (fun e => negb (nio_key_is who first (fst e))) (t_served t)))
+      Some (nio_ok, nio_with_served t (NSM.add (nio_served_key who first) (nio_num stamp) (t_served t)))
   | _ => None
   end.
 
-nio_with_blocks (t : nio_tables) (v : list (string * list string)) : nio_tables :=
+nio_with_blocks (t : nio_tables) (v : NSM.t (list string)) : nio_tables :=
   {| t_timers := t_timers t; t_queue := t_queue t; t_served := t_served t; t_flood := t_flood t;
      t_diverged := t_diverged t; t_applied := t_applied t; t_mine := t_mine t; t_txs := t_txs t;
      t_height := t_height t; t_blocks := v; t_signed := t_signed t; t_refused := t_refused t |}.
-nio_with_signed (t : nio_tables) (v : list (string * (string * list string))) : nio_tables :=
+nio_with_signed (t : nio_tables) (v : NSM.t (list (string * (string * list string)))) : nio_tables :=
   {| t_timers := t_timers t; t_queue := t_queue t; t_served := t_served t; t_flood := t_flood t;
      t_diverged := t_diverged t; t_applied := t_applied t; t_mine := t_mine t; t_txs := t_txs t;
      t_height := t_height t; t_blocks := t_blocks t; t_signed := v; t_refused := t_refused t |}.
@@ -914,6 +925,23 @@ nio_slot_at (h slot : string) : bool :=
   nio_starts (Stdlib.Strings.String.list_ascii_of_string h ++ [nio_char 47])
     (nio_after_slash (Stdlib.Strings.String.list_ascii_of_string slot)).
 
+(** a slot's height: what is between its first and second "/" *)
+Fixpoint nio_upto_slash (cs : list Ascii.ascii) : list Ascii.ascii :=
+  match cs with [] => [] | c :: rest => if Ascii.eqb c (nio_char 47) then [] else c :: nio_upto_slash rest end.
+
+nio_slot_height (slot : string) : string :=
+  Stdlib.Strings.String.string_of_list_ascii (nio_upto_slash (nio_after_slash (Stdlib.Strings.String.list_ascii_of_string slot))).
+
+(** the votes signed at a height, by slot, newest first: one a slot *)
+nio_sign_slot (slot vid : string) (fields : list string) (m : NSM.t (list (string * (string * list string))))
+    : NSM.t (list (string * (string * list string))) :=
+  let h := nio_slot_height slot in
+  let here := match NSM.find h m with Some l => l | None => [] end in
+  NSM.add h ((slot, (vid, fields)) :: List.filter (fun v => negb (nio_eq (fst v) slot)) here) m.
+
+nio_signed_find (slot : string) (m : NSM.t (list (string * (string * list string)))) : option (string * list string) :=
+  match NSM.find (nio_slot_height slot) m with Some l => nio_lookup slot l | None => None end.
+
 (** The stores the binary keeps in memory beside its files: decided blocks
     by height (what catch-up and [IoBlock] read) and the vote signed at
     each slot (what [IoSignedVote] and [IoSignedBody] read), one entry a
@@ -922,36 +950,36 @@ nio_slot_at (h slot : string) : bool :=
     its links' lines come through their listen handlers). *)
 nio_store_op (now : PrimFloat.float) (t : nio_tables) (op : node_op) : option (nanswer * nio_tables) :=
   match op with
-  | IoStore h txs =>
-      Some (ans_ok, nio_with_blocks t ((h, txs) :: List.filter (fun b => negb (nio_eq (fst b) h)) (t_blocks t)))
-  | IoSignVote slot vid fields =>
-      Some (ans_ok, nio_with_signed t ((slot, (vid, fields)) :: List.filter (fun v => negb (nio_eq (fst v) slot)) (t_signed t)))
+  | IoStore h txs => Some (ans_ok, nio_with_blocks t (NSM.add h txs (t_blocks t)))
+  | IoSignVote slot vid fields => Some (ans_ok, nio_with_signed t (nio_sign_slot slot vid fields (t_signed t)))
   | IoBlock h =>
-      match nio_lookup h (t_blocks t) with
+      match NSM.find h (t_blocks t) with
       | Some txs => Some (ans_data true txs, t)
       | None => Some (ans_data false [], t)
       end
   | IoHeight => Some (ans_data true [t_height t], t)
   | IoSignedVote slot =>
-      match nio_lookup slot (t_signed t) with
+      match nio_signed_find slot (t_signed t) with
       | Some v => Some (ans_data true [fst v], t)
       | None => Some (ans_data false [], t)
       end
   | IoSignedBody slot =>
-      match nio_lookup slot (t_signed t) with
+      match nio_signed_find slot (t_signed t) with
       | Some v => Some (ans_data true (snd v), t)
       | None => Some (ans_data false [], t)
       end
   | IoSignedAt h =>
       Some (ans_data true (nio_frame_lists (List.map (fun v => snd (snd v))
-        (List.rev (List.filter (fun v => nio_slot_at h (fst v)) (t_signed t))))), t)
-  | IoRememberBlock h txs =>
-      Some (ans_ok, nio_with_blocks t ((h, txs) :: List.filter (fun b => negb (nio_eq (fst b) h)) (t_blocks t)))
-  | IoSignedRestore slot vid fields =>
-      Some (ans_ok, nio_with_signed t ((slot, (vid, fields)) :: List.filter (fun v => negb (nio_eq (fst v) slot)) (t_signed t)))
-  | IoReplayCount => Some (ans_data true [nio_count (List.length (t_blocks t))], t)
-  | IoRefuse raw => Some (ans_ok, nio_with_refused t (raw :: t_refused t))
-  | IoSeenRefused raw => Some (ans_flag (List.existsb (nio_eq raw) (t_refused t)), t)
+        (List.rev (match NSM.find h (t_signed t) with Some l => l | None => [] end)))), t)
+  | IoRememberBlock h txs => Some (ans_ok, nio_with_blocks t (NSM.add h txs (t_blocks t)))
+  | IoSignedRestore slot vid fields => Some (ans_ok, nio_with_signed t (nio_sign_slot slot vid fields (t_signed t)))
+  | IoReplayCount => Some (ans_data true [nio_count (NSM.cardinal (t_blocks t))], t)
+  (* at most 10000 kept, as the binary kept them *)
+  | IoRefuse raw =>
+      let (n, m) := t_refused t in
+      if NSM.mem raw m || Nat.leb 10000 n then Some (ans_ok, t)
+      else Some (ans_ok, nio_with_refused t (S n, NSM.add raw tt m))
+  | IoSeenRefused raw => Some (ans_flag (NSM.mem raw (snd (t_refused t))), t)
   | IoQueueEmpty => Some (ans_flag (match t_queue t with [] => true | _ => false end), t)
   | IoEvents _ => Some (ans_data true (nio_frame_lists (t_queue t)), nio_with_queue t [])
   | IoSetTimers ts =>
