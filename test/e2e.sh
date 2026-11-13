@@ -129,7 +129,9 @@ scenario_happy() {
 # Eight completed tasks cross several leaders and worker windows. Retain all
 # bids so the status checks count every bid, including the losing one.
 scenario_bidders() {
-  init bidders 28250 term_blocks=60 max_merges=2 bid_cooldown=2 keep_settled=100 || return 1
+  # terms end by their two merges, not by time: a task left open into a
+  # new term gets that term's window (a new leader leaves the pool)
+  init bidders 28250 term_blocks=600 max_merges=2 bid_cooldown=2 keep_settled=100 || return 1
   for i in $(seq 5 8); do echo "- worker rotation task $i" >> "$ROOT/bidders/goal.txt"; done
   for a in $AGENTS; do node bidders "$a"; done
   wait_for bidders claude 150 "eight tasks merged" merges_at_least bidders claude 8 || { stop bidders; return 1; }
@@ -137,13 +139,22 @@ scenario_bidders() {
   agree bidders claude codex grok muse && agree_files bidders claude codex grok muse || return 1
   for a in $AGENTS; do
     status=$ROOT/bidders/$a/status.txt
-    awk '/^bid / { for (i=1;i<=NF;i++) if ($i=="task") n[$(i+1)]++ }
-      END { for (t in n) if (n[t]>2) { print "FAIL bidders: task",t,"drew",n[t],"bids"; exit 1 } }' "$status" || return 1
+    # a task's two-worker window (market.soma's bidders_for) moves on past
+    # a worker only once its bids there were rejected or cleared: in bid
+    # order, a task's third bid needs one such bid before it, its fourth
+    # two, and so on (a bid cleared because its task closed came after),
+    # within a term
+    grep '^bid ' "$status" | sort -k2,2n | awk '
+      $4 == "task" { t = $5
+        if (n[t] >= 2 + gone[t]) { print "FAIL bidders: task", t, "drew bid", $2, "with", n[t], "before it and", gone[t] + 0, "of them rejected or cleared"; bad = 1 }
+        n[t]++
+        if (($3 == "[rejected]" || $3 == "[cleared]") && $0 !~ /task closed/) gone[t]++ }
+      END { exit bad }' || return 1
     for worker in $AGENTS; do
       grep -q " by $worker " "$status" || { echo "FAIL bidders: $worker never bid on $a"; return 1; }
     done
   done
-  echo "ok bidders: at most two bids per task, all four agents worked, all nodes agree"
+  echo "ok bidders: two workers a task, the next only for one whose bids failed; all four agents worked, all nodes agree"
 }
 
 # Silent models let this scenario control the first pair and its rejection.
