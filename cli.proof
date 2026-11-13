@@ -1,0 +1,84 @@
+(** What cli.soma's pure pieces compute, checked whenever cli.soma is
+    built: paths as OCaml's Filename gives them, the commands' argument
+    parsing as shell.ml's did it, and JSON as Yojson.Safe prints it. *)
+
+Example path_as_filename_concat :
+  path "a" "b" = "a/b" /\ path "a/" "b" = "a/b" /\ path "" "b" = "b" /\ path "/" "b" = "/b".
+Proof. repeat split; reflexivity. Qed.
+
+Example basename_as_filename :
+  basename "a/b" = "b" /\ basename "a/b/" = "b" /\ basename "b" = "b" /\ basename "/" = "/"
+  /\ basename "" = "." /\ basename "net/claude//" = "claude".
+Proof. repeat split; reflexivity. Qed.
+
+Example split_on_as_ocaml :
+  split_on ","%char "a=b,c=d" = ["a=b", "c=d"] /\ split_on ","%char "" = [""]
+  /\ split_on "="%char "a=" = ["a", ""] /\ split_on ","%char ",x," = ["", "x", ""].
+Proof. repeat split; reflexivity. Qed.
+
+Example sorted_by_bytes :
+  sort_strings ["muse", "claude", "grok", "codex"] = ["claude", "codex", "grok", "muse"]
+  /\ sort_strings ["b", "B", "a", "ab"] = ["B", "a", "ab", "b"].
+Proof. repeat split; reflexivity. Qed.
+
+Example kv_arg_splits_at_the_first :
+  kv_arg "--param" "a=b=c" = inl ("a", "b=c") /\ kv_arg "--param" "a=" = inl ("a", "")
+  /\ kv_arg "--repo" "calc" = inr "--repo wants name=value, got calc".
+Proof. repeat split; reflexivity. Qed.
+
+Example keygen_args_as_before :
+  keygen_args ["h", "--name", "n", "--addr", "a:1"] "" "" "" = inl ("h", "n", "a:1")
+  /\ keygen_args ["--addr", "a:1", "h", "--name", "n"] "" "" "" = inl ("h", "n", "a:1")
+  /\ keygen_args ["h", "x"] "" "" "" = inr "unknown keygen argument x"
+  (* a flag with no value is taken as the home, as the OCaml match did *)
+  /\ keygen_args ["--name"] "" "" "" = inl ("--name", "", "").
+Proof. repeat split; reflexivity. Qed.
+
+Example up_args_as_before :
+  up_args ["--backends", "claude=claude,muse=scripted", "--bid-window", "6"] [] []
+    = inl ([("claude", "claude"), ("muse", "scripted")], ["--bid-window", "6"])
+  /\ up_args ["--backends", "claude"] [] [] = inr "--backends wants agent=backend,..."
+  /\ up_args ["--backends"] [] [] = inl ([], ["--backends"]).
+Proof. repeat split; reflexivity. Qed.
+
+Example init_args_as_before :
+  match init_parse ["d", "--repo", "calc=src", "--block-ms", "200", "--param", "a=b"]
+          {| ia_dir := ""; ia_repos := []; ia_port := 26700; ia_params := []; ia_block_ms := 500 |} with
+  | inl a => ia_dir a = "d" /\ ia_repos a = [("calc", "src")] /\ ia_port a = 26700
+             /\ ia_params a = [("a", "b")] /\ ia_block_ms a = 200
+  | inr _ => False
+  end.
+Proof. cbn. repeat split; reflexivity. Qed.
+
+Example init_refuses_as_before :
+  init_parse ["d", "e"] {| ia_dir := ""; ia_repos := []; ia_port := 0; ia_params := []; ia_block_ms := 0 |}
+    = inr "unknown init argument e"
+  /\ init_parse ["--base-port", "x"] {| ia_dir := ""; ia_repos := []; ia_port := 0; ia_params := []; ia_block_ms := 0 |}
+    = inr "--base-port wants a number, got x".
+Proof. split; reflexivity. Qed.
+
+Example json_as_yojson_prints :
+  json_text (JObj [("block_ms", JNum "500"), ("params", JObj []), ("s", JStr "a""b\"),
+                   ("l", JList [JNull, JBool "true", JList []])])
+    = "{""block_ms"":500,""params"":{},""s"":""a\""b\\"",""l"":[null,true,[]]}".
+Proof. reflexivity. Qed.
+
+Example json_reads_tokens :
+  json_value 30 ["A", "2", "a", "I", "1", "b", "L", "2", "S", "x", "U"]
+    = Some (JObj [("a", JNum "1"), ("b", JList [JStr "x", JNull])], []).
+Proof. reflexivity. Qed.
+
+Example key_text_sorts_members :
+  key_text (JObj [("size", JNum "2048"), ("n", JStr "ab"), ("e", JStr "01")])
+    = "{""e"":""01"",""n"":""ab"",""size"":2048}".
+Proof. reflexivity. Qed.
+
+Example stamp_as_seconds_and_microseconds :
+  stamp_text "1794540934705916" = "1794540934.705916".
+Proof. reflexivity. Qed.
+
+Example repo_urls_as_before :
+  repo_url "/net" "src" = "/net/src" /\ repo_url "/net" "/abs" = "/abs"
+  /\ repo_url "/net" "https://h/r" = "https://h/r" /\ repo_url "/net" "git@h:r" = "git@h:r"
+  /\ repo_url "/net" "git@" = "/net/git@".
+Proof. repeat split; reflexivity. Qed.

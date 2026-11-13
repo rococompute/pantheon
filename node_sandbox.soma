@@ -199,6 +199,15 @@ nio_kernel_op (w : nio_world) (s : nio_kernel) (op : node_op)
       got <- read_file "signed.log" ;;
       ret (ans_data true [match got with Some t => t | None => "" end], s)
   | IoFail message => print message ;; ret (ans_flag false, s)
+  (* the commands' I/O (cli.soma): a unikernel prints; it has no
+     processes, keys to make, git, or directories to make, and doesn't exit *)
+  | IoSay text | IoPrint text => print text ;; ret (nio_ok, s)
+  | IoWriteFile path text => write_file path text ;; ret (nio_ok, s)
+  | IoFileExists path => got <- read_file path ;;
+      ret (ans_flag (match got with Some _ => true | None => false end), s)
+  | IoExit _ | IoChmod _ _ | IoMakeDirs _ | IoCwd | IoNewKey _ | IoRandomHex _ | IoGit _ _
+  | IoClone _ _ _ | IoSpawnNode _ _ | IoAwaitNodes _ | IoCheckoutEdits _ | IoApplyEdits _ _
+  | IoCheckTree _ _ _ _ => ret (ans_flag false, s)
   | IoConnAdmit _ _ _ => ret (nio_ok, s)
   | IoConnClose _ => ret (nio_ok, s)
   | IoJobFlood _ => ret (nio_ok, s)

@@ -21,18 +21,13 @@ tx_item_cap : unit -> string.
 
 (** Process arguments exclude the executable name. Soma chooses the command. *)
 argv : unit -> list string.
-read_plan : string -> string.
+(** Test programs print their checks with these. *)
 print_lines : list string -> unit.
 print_text : string -> unit.
-cmd_init : (((string -> string -> string -> option string) * (string -> string -> bool)) * (string -> bool)) -> list string -> unit.
-cmd_keygen : list string -> unit.
-cmd_genesis : (((string -> string -> string -> option string) * (string -> string -> bool)) * (string -> bool)) -> string -> string -> unit.
-cmd_edits : (((string -> string -> string -> option string) * (string -> string -> bool)) * (string -> bool)) -> string -> list string -> unit.
-cmd_apply_edits : (((string -> string -> string -> option string) * (string -> string -> bool)) * (string -> bool)) -> string -> string -> unit.
-cmd_check : (((string -> string -> string -> option string) * (string -> string -> bool)) * (string -> bool)) -> string -> string -> string -> string -> unit.
-cmd_status : string -> unit.
-cmd_tx : string -> list string -> unit.
-cmd_up : string -> list string -> unit.
+(** The commands are cli.soma's node programs, run through node_io (their
+    operations need no node). cli_open hands the edits operations Soma's
+    helpers, as node_open does, and names the handle they run under. *)
+cli_open : (((string -> string -> string -> option string) * (string -> string -> bool)) * (string -> bool)) -> string.
 
 (** The node loop is Soma (node.soma's run_node): the shell binds only the
     handle's setup, one select turn, the small bindings of each output, the

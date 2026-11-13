@@ -876,7 +876,9 @@ Proof.
     id kind raw prompt ctx clean launch env | repo | | | | | repo | repo path |
     until reason backoff | backoff | | | probing requests | job result | id out tree ci | path | path |
     raw | | raw | who | | | | stamp | path | path | | | timers | | | wait |
-    | | height txs | | slot vid fields | message ];
+    | | height txs | | slot vid fields | message |
+    text | text | code | path | path text | path mode | path | | bits | count | dir args |
+    url dir commit | log args | pids | dir | dir edits | repo head out edits ];
     try reflexivity.
   - change (match resend_parts (resend_fields fields ++ ("alternate" :: alternate)) with
     | Some (original, alt) => Some (IoRememberBroadcast height kind original alt)

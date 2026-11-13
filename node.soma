@@ -2835,5 +2835,5 @@ run_node (home : string) (flags : list string) : unit :=
   let snap : option consensus_state := boot_snapshot h in
   match run_shell h (boot_prog h snap) with
   | Some st => forever (node_tick h) st
-  | None => print_text ""
+  | None => tt
   end.

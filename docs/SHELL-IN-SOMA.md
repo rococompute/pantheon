@@ -96,7 +96,7 @@ One task each, in order:
    and reading bytes stay bindings.
 6. **Genesis, keys and the other commands.** `build_genesis`, `make_keys`,
    `cmd_init` and the rest move over the RSA, SHA-256, file and JSON
-   bindings.
+   bindings. (Done: `cli.soma`, below.)
 
 The end: `shell.ml` is bindings to Unix (files, processes, sockets, time),
 cryptokit and yojson, none calling Soma, and `soma explore main.soma` lists
@@ -266,6 +266,26 @@ Each operation:
 | `IoBootEvents`, `IoReplayCount`, `IoRememberBlock h txs` | genesis, this node, the backend, applied versions and blocks.log's text; the replayed count; a replayed block kept for catch-up | `w_boot` then blocks.log's named file; the stores' blocks |
 | `IoSignedText`, `IoSignedRestore slot vid fields`, `IoFail message` | signed.log's bytes; a vote read back; refusing to start (stderr, exit 1) | signed.log's named file; the stores' signed table; printed, answered false |
 | `IoConnAdmit`, `IoConnClose`, `IoJobFlood`, `IoJobExpire` | admit, refuse or close a socket; kill a job's process | nothing to do: a unikernel's links are its listen handlers', and it runs no processes |
+| `IoSay`, `IoPrint`, `IoExit`, `IoFileExists`, `IoWriteFile`, `IoChmod`, `IoMakeDirs`, `IoCwd` | the commands' output (`say`'s timestamped line, plain text, an exit status) and files | printed; Sandbox's named files; the rest answered false |
+| `IoNewKey bits`, `IoRandomHex count`, `IoGit dir args`, `IoClone url dir commit` | a new RSA key (e = 65537) as hex; random bytes; git in a checkout (trimmed output); a clone at a commit | answered false: a unikernel makes no keys and runs no git |
+| `IoSpawnNode log args`, `IoAwaitNodes pids` | `up`'s nodes: one started logging to its node.log; waiting for them, stopping them on SIGINT or SIGTERM | answered false |
+| `IoCheckoutEdits dir`, `IoApplyEdits dir edits`, `IoCheckTree repo head out edits` | the edits machinery, still OCaml's: a checkout's edits, applying edits, the tree a bid's edits give | answered false |
+
+The commands are node programs too (`cli.soma`): `init`, `keygen`,
+`genesis`, `up`, `status`, `tx`, `plan`, `edits`, `apply-edits` and
+`check` decide in Soma (their arguments and messages, a new agent's
+key.json, chain.json and public.json with the hash chain's tip, the
+genesis's bytes and every check on them, written through a small JSON
+value that prints as Yojson.Safe does) and do their I/O through the
+operations above, which `node_io` answers with no node (`cli_open` only
+hands the edits operations Soma's helpers). `main.soma`'s `dispatch` runs
+them with `run_shell`; `pantheon node` is `run_node`. The `cmd_*` and
+`read_plan` bindings are gone. A genesis is the same bytes either way:
+the old binary and the new one, given the same parts, write the same
+genesis.json. Two cases that crashed the old binary now say why:
+`up` on a directory with no agents, and an edits file that isn't a JSON
+list of strings. One known difference: a float in network.json's params
+is written as the integer the node reads it as (Yojson kept its digits).
 
 Not yet operations, still bindings of their own (the next parts of U-1):
 the snapshot (saved and read back: a Soma value, Soma's "storage"),

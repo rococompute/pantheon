@@ -1,0 +1,678 @@
+(** Pantheon's commands: init, keygen, genesis, up, status, tx, plan, edits,
+    apply-edits and check, as node programs (U-1; docs/SHELL-IN-SOMA.md).
+    Each is a value of [nprog unit] over [node_op]: the binary runs it
+    through shell.ml's [node_io] (main.soma's [dispatch]), whose path-only
+    arms answer the commands' operations with no node. What a command
+    decides is here: its arguments, its messages, a new agent's files, the
+    genesis's bytes and every check on them. The operations do the I/O:
+    printing, files, git, a new RSA key, starting nodes, and the edits
+    machinery (still OCaml's). [pantheon node] is node.soma's [run_node]. *)
+Import util shell nodeio.
+From Stdlib Require Import Ascii.
+
+cat (l : list string) : string := Stdlib.Strings.String.concat "" l.
+join (sep : string) (l : list string) : string := Stdlib.Strings.String.concat sep l.
+
+(** ---- running ---- *)
+
+(** [op], then [rest], whatever it answered *)
+cli_do (op : node_op) (rest : unit -> nprog unit) : nprog unit := NStep op (fun _ => rest tt).
+
+(** [op], then [rest] given its answer *)
+cli_ask (op : node_op) (rest : nanswer -> nprog unit) : nprog unit := NStep op rest.
+
+(** the message on stderr after "error: ", exit 1 (the binary never comes
+    back; a unikernel prints it and stops) *)
+cli_fail (message : string) : nprog unit := NStep (IoFail message) (fun _ => NDone tt).
+
+cli_say (text : string) (rest : unit -> nprog unit) : nprog unit := cli_do (IoSay text) rest.
+
+cli_exists (path : string) (rest : bool -> nprog unit) : nprog unit :=
+  cli_ask (IoFileExists path) (fun a => rest (fst a)).
+
+(** each of [l] in order, each given what comes after it *)
+Fixpoint cli_each {A : Type} (l : list A) (f : A -> (unit -> nprog unit) -> nprog unit)
+  (k : unit -> nprog unit) : nprog unit :=
+  match l with [] => k tt | x :: r => f x (fun _ => cli_each r f k) end.
+
+(** each of [l] in order, each giving a value; then [k] with them all *)
+Fixpoint cli_map {A B : Type} (l : list A) (f : A -> (B -> nprog unit) -> nprog unit)
+  (k : list B -> nprog unit) : nprog unit :=
+  match l with [] => k [] | x :: r => f x (fun b => cli_map r f (fun bs => k (b :: bs))) end.
+
+(** ---- paths, as OCaml's Filename ---- *)
+
+(** Filename.concat: a separator unless [dir] is empty or ends in one *)
+path (dir file : string) : string :=
+  if (slen dir =? 0) || ends "/" dir then append dir file else cat [dir, "/", file].
+
+is_relative (p : string) : bool := negb (starts "/" p).
+
+Fixpoint drop_slashes (l : list ascii) : list ascii :=
+  match l with c :: r => if Ascii.eqb c "/"%char then drop_slashes r else l | [] => [] end.
+
+Fixpoint take_name (l : list ascii) (acc : list ascii) : list ascii :=
+  match l with c :: r => if Ascii.eqb c "/"%char then acc else take_name r (c :: acc) | [] => acc end.
+
+(** Filename.basename: the last name, trailing separators dropped *)
+basename (s : string) : string :=
+  if seq s "" then "." else
+  match drop_slashes (List.rev (chars s)) with
+  | [] => "/"
+  | r => of_chars (take_name r [])
+  end.
+
+(** String.split_on_char *)
+Fixpoint split_go (c : ascii) (l cur : list ascii) (acc : list string) : list string :=
+  match l with
+  | [] => List.rev (of_chars (List.rev cur) :: acc)
+  | x :: r => if Ascii.eqb x c then split_go c r [] (of_chars (List.rev cur) :: acc) else split_go c r (x :: cur) acc
+  end.
+
+split_on (c : ascii) (s : string) : list string := split_go c (chars s) [] [].
+
+(** ---- ordering, as OCaml's compare on strings: by bytes ---- *)
+
+Fixpoint chars_le (a b : list ascii) : bool :=
+  match a, b with
+  | [], _ => true
+  | _ :: _, [] => false
+  | x :: a', y :: b' =>
+      let m := nat_of_ascii x in let n := nat_of_ascii y in
+      if m <? n then true else if n <? m then false else chars_le a' b'
+  end.
+
+str_le (a b : string) : bool := chars_le (chars a) (chars b).
+str_lt (a b : string) : bool := negb (str_le b a).
+
+Fixpoint insert_str (x : string) (l : list string) : list string :=
+  match l with [] => [x] | y :: r => if str_le x y then x :: l else y :: insert_str x r end.
+
+sort_strings (l : list string) : list string := fold_right insert_str [] l.
+
+(** ---- JSON, as Yojson.Safe reads and writes it ----
+    A value read from node_json_tokens' tokens, and written as
+    Yojson.Safe.to_string does: no spaces, strings escaped as
+    [nio_json_string]. A number keeps its digits; a float keeps the
+    tokens' text (rounded to an integer: the node reads them so too). *)
+Local Set Warnings "-register-all".
+Inductive json :=
+| JStr (s : string)
+| JBool (b : string)
+| JNull
+| JNum (digits : string)
+| JFloat (text : string)
+| JList (l : list json)
+| JObj (members : list (string * json)).
+
+Fixpoint json_text (j : json) : string :=
+  match j with
+  | JStr s => nio_json_string s
+  | JBool b => b
+  | JNull => "null"
+  | JNum d => d
+  | JFloat d => d
+  | JList l => cat ["[", join "," (List.map json_text l), "]"]
+  | JObj kv => cat ["{", join "," (List.map (fun p => match p with (k, v) => cat [nio_json_string k, ":", json_text v] end) kv), "}"]
+  end.
+
+(** what Yojson.Safe.to_file writes: the text and a newline *)
+json_file (j : json) : string := append (json_text j) newline.
+
+Fixpoint json_value (fuel : nat) (t : list string) {struct fuel} : option (json * list string) :=
+  match fuel with
+  | 0 => None
+  | S f =>
+      match t with
+      | "S" :: s :: r => Some (JStr s, r)
+      | "B" :: b :: r => Some (JBool b, r)
+      | "U" :: r => Some (JNull, r)
+      | "I" :: d :: r => Some (JNum d, r)
+      | "F" :: d :: r => Some (JFloat d, r)
+      | "L" :: n :: r =>
+          match json_values f (num n) r with Some (l, r') => Some (JList l, r') | None => None end
+      | "A" :: n :: r =>
+          match json_members f (num n) r with Some (l, r') => Some (JObj l, r') | None => None end
+      | _ => None
+      end
+  end
+with json_values (fuel count : nat) (t : list string) {struct fuel} : option (list json * list string) :=
+  match fuel with
+  | 0 => None
+  | S f =>
+      match count with
+      | 0 => Some ([], t)
+      | S c =>
+          match json_value f t with
+          | Some (v, r) => match json_values f c r with Some (l, r') => Some (v :: l, r') | None => None end
+          | None => None
+          end
+      end
+  end
+with json_members (fuel count : nat) (t : list string) {struct fuel} : option (list (string * json) * list string) :=
+  match fuel with
+  | 0 => None
+  | S f =>
+      match count, t with
+      | 0, _ => Some ([], t)
+      | S c, k :: rest =>
+          match json_value f rest with
+          | Some (v, r) => match json_members f c r with Some (l, r') => Some ((k, v) :: l, r') | None => None end
+          | None => None
+          end
+      | S _, [] => None
+      end
+  end.
+
+(** a JSON text's value; every value and member takes a token or more,
+    and each takes one step of fuel on each side *)
+json_of (raw : string) : option json :=
+  match node_json_tokens raw with
+  | Some t => match json_value (3 * length t + 3) t with Some (j, []) => Some j | _ => None end
+  | None => None
+  end.
+
+(** Yojson.Safe.Util.member: the first member named [k]; null when none *)
+json_member (k : string) (j : json) : json :=
+  match j with JObj kv => match lookup k kv with Some v => v | None => JNull end | _ => JNull end.
+
+json_string (j : json) : option string := match j with JStr s => Some s | _ => None end.
+
+Fixpoint json_strings (l : list json) : option (list string) :=
+  match l with
+  | [] => Some []
+  | JStr s :: r => match json_strings r with Some ss => Some (s :: ss) | None => None end
+  | _ => None
+  end.
+
+Fixpoint kv_insert (x : string * json) (l : list (string * json)) : list (string * json) :=
+  match l with [] => [x] | y :: r => if str_lt (fst x) (fst y) then x :: l else y :: kv_insert x r end.
+
+(** members by name, as a stable sort (List.sort) leaves them *)
+kv_sort (l : list (string * json)) : list (string * json) := fold_left (fun acc x => kv_insert x acc) l [].
+
+cli_read_text (p : string) (missing : string) (k : string -> nprog unit) : nprog unit :=
+  cli_ask (IoReadText p) (fun a => match ans_found_one a with Some t => k t | None => cli_fail missing end).
+
+(** a home's JSON file: refusing it says what's wrong *)
+cli_read_json (p : string) (k : json -> nprog unit) : nprog unit :=
+  let refused := cat ["cannot read ", p, ": is this a home made by `pantheon init`?"] in
+  cli_read_text p refused (fun t => match json_of t with Some j => k j | None => cli_fail refused end).
+
+cli_str (j : json) (refused : string) (k : string -> nprog unit) : nprog unit :=
+  match json_string j with Some s => k s | None => cli_fail refused end.
+
+(** ---- keys ---- *)
+
+(** the draw's hash chain: the tip is the secret hashed this many times *)
+chain_len : nat := 100 * 1000.
+
+Fixpoint iterate (n : nat) (x : string) : string :=
+  match n with 0 => x | S m => iterate m (sha256 x) end.
+
+agents_default : list string := ["claude", "codex", "grok", "muse"].
+
+(** a key as key.json and public.json hold it, from [IoNewKey]'s
+    [size, n, e, d, p, q, dp, dq, qinv]; the private parts only in key.json *)
+key_json (k : list string) (priv : bool) : json :=
+  match k with
+  | [size, n, e, d, p, q, dp, dq, qinv] =>
+      JObj ([("size", JNum size), ("n", JStr n), ("e", JStr e)]
+            ++ if priv then [("d", JStr d), ("p", JStr p), ("q", JStr q), ("dp", JStr dp), ("dq", JStr dq), ("qinv", JStr qinv)] else [])
+  | _ => JNull
+  end.
+
+(** An agent's keys, made on its own machine: key.json and chain.json stay
+    there; public.json is what the network needs. [k] gets its path. *)
+make_keys (home name addr : string) (k : string -> nprog unit) : nprog unit :=
+  cli_exists (path home "key.json") (fun has =>
+  if has then cli_fail (cat [home, " already has keys. They are this agent's identity: keep them. To start over, remove the directory first"]) else
+  cli_do (IoMakeDirs home) (fun _ =>
+  cli_do (IoChmod home "700") (fun _ =>
+  (* e = 65537, not Cryptokit's random 2048-bit default: Soma checks
+     signatures (Soma.Crypto), in about 1 ms with it against 90 *)
+  cli_ask (IoNewKey "2048") (fun key =>
+  let key := ans_list key in
+  cli_ask (IoRandomHex "32") (fun secret =>
+  let secret := ans_one secret in
+  let priv f j := cli_do (IoWriteFile (path home f) (json_file j)) (fun _ => cli_do (IoChmod (path home f) "600") (fun _ => NDone tt)) in
+  nbind (priv "key.json" (JObj [("agent", JStr name), ("key", key_json key true)])) (fun _ =>
+  nbind (priv "chain.json" (JObj [("secret", JStr secret)])) (fun _ =>
+  let pub := path home "public.json" in
+  cli_do (IoWriteFile pub (json_file (JObj [("name", JStr name), ("addr", JStr addr), ("pubkey", key_json key false),
+                                             ("tip", JStr (iterate chain_len secret))]))) (fun _ =>
+  k pub)))))))).
+
+Fixpoint keygen_args (args : list string) (home name addr : string) : (string * string * string) + string :=
+  match args with
+  | "--name" :: n :: r => keygen_args r home n addr
+  | "--addr" :: a :: r => keygen_args r home name a
+  | h :: r => if seq home "" then keygen_args r h name addr else inr (append "unknown keygen argument " h)
+  | [] => inl (home, name, addr)
+  end.
+
+cmd_keygen (args : list string) : nprog unit :=
+  match keygen_args args "" "" "" with
+  | inr e => cli_fail e
+  | inl (home, name, addr) =>
+      if seq home "" || seq name "" || seq addr "" then
+        cli_fail "usage: pantheon keygen HOME --name NAME --addr HOST:PORT (HOST: a name or address the other agents reach over the VPN)"
+      else make_keys home name addr (fun pub =>
+        cli_say (cat ["wrote ", pub, ". Add it to the network as NETWORK/parts/", name,
+                      ".json (a pull request is a good way), then, once every agent's part is in, run: pantheon genesis ",
+                      home, " NETWORK"]) (fun _ => NDone tt))
+  end.
+
+(** ---- genesis ---- *)
+
+(** relative repository URLs are relative to the network directory *)
+repo_url (net url : string) : string :=
+  if contains "://" url || starts "/" url || ((4 <? slen url) && starts "git@" url) then url else path net url.
+
+(** A checkout of a governed repository at its genesis commit, or a check
+    that the one already there descends from it. [k] gets its directory. *)
+ensure_repo (home name url commit : string) (k : string -> nprog unit) : nprog unit :=
+  let dir := path (path home "repos") name in
+  cli_exists (path dir ".git") (fun has =>
+  if negb has then
+    cli_do (IoMakeDirs (path home "repos")) (fun _ =>
+    cli_ask (IoClone url dir commit) (fun cloned =>
+    if fst cloned then k dir
+    else cli_fail (cat ["couldn't clone ", name, " from ", url, " at ", commit, ": check the URL, and that this machine can fetch it"])))
+  else
+    cli_ask (IoGit dir ["merge-base", "--is-ancestor", commit, "HEAD"]) (fun ok =>
+    if fst ok then k dir
+    else cli_fail (cat [dir, " holds a checkout of ", name, " that doesn't descend from its genesis commit ", commit, ": move it aside and run again"]))).
+
+part_refused (pdir f what : string) : string := cat [pdir, "/", f, ": ", what].
+
+(** names in order: the first that came before *)
+Fixpoint check_names (pdir : string) (l : list (string * json)) (seen : list string) (k : unit -> nprog unit) : nprog unit :=
+  match l with
+  | [] => k tt
+  | (f, j) :: r =>
+      cli_str (json_member "name" j) (part_refused pdir f "name is a string") (fun n =>
+      if mem n seen then cli_fail (cat ["duplicate part name ", n, " in genesis parts in ", pdir, ": each agent must add exactly one part under its own name"])
+      else check_names pdir r (n :: seen) k)
+  end.
+
+(** a key as the duplicate check compares it: its members by name *)
+key_text (j : json) : string := match j with JObj kv => json_text (JObj (kv_sort kv)) | other => json_text other end.
+
+Fixpoint check_keys (pdir : string) (l : list (string * json)) (seen : list (string * string)) (k : unit -> nprog unit) : nprog unit :=
+  match l with
+  | [] => k tt
+  | (f, j) :: r =>
+      cli_str (json_member "name" j) (part_refused pdir f "name is a string") (fun n =>
+      let key := key_text (json_member "pubkey" j) in
+      match lookup key seen with
+      | Some other => cli_fail (cat ["duplicate public key in genesis parts in ", pdir, ": ", other, " and ", n,
+                                     " share the same public key; each part must carry its own agent's key"])
+      | None => check_keys pdir r ((key, n) :: seen) k
+      end)
+  end.
+
+(** a part as the genesis holds it, with its name and what it excludes *)
+genesis_part (pdir : string) (fj : string * json) (k : (string * list string * json) -> nprog unit) : nprog unit :=
+  let '(f, j) := fj in
+  cli_str (json_member "name" j) (part_refused pdir f "name is a string") (fun n =>
+  if negb (seq (append n ".json") f) then cli_fail (cat [pdir, "/", f, " is named ", n, " inside: rename the file to ", n, ".json"]) else
+  let refused := cli_fail (part_refused pdir f "exclude is a list of repository names") in
+  let go ex :=
+    k (n, ex, JObj ([("name", json_member "name" j), ("addr", json_member "addr" j), ("pubkey", json_member "pubkey" j),
+                     ("tip", json_member "tip" j)]
+                    ++ match ex with [] => [] | _ => [("exclude", JList (List.map JStr ex))] end)) in
+  match json_member "exclude" j with
+  | JList l => match json_strings l with Some ex => go ex | None => refused end
+  | JNull => go []
+  | _ => refused
+  end).
+
+genesis_repo (home net : string) (r : json) (k : (string * json) -> nprog unit) : nprog unit :=
+  let refused := cli_fail "network.json: a repository's name, url and commit are strings" in
+  match json_string (json_member "name" r), json_string (json_member "url" r), json_string (json_member "commit" r) with
+  | Some name, Some url, Some commit =>
+      if negb (shell_safe_path name) || contains "/" name then cli_fail (append "bad repository name " name) else
+      ensure_repo home name (repo_url net url) commit (fun dir =>
+      cli_ask (IoGit dir ["rev-parse", append commit "^{tree}"]) (fun tree =>
+      k (name, JObj [("name", JStr name), ("url", JStr url), ("commit", JStr commit), ("tree", JStr (ans_one tree))])))
+  | _, _, _ => refused
+  end.
+
+Fixpoint foreign_exclusion (rnames : list string) (parts : list (string * list string * json)) : option (string * string) :=
+  match parts with
+  | [] => None
+  | (n, ex, _) :: rest =>
+      match List.find (fun r => negb (mem r rnames)) ex with
+      | Some r => Some (n, r)
+      | None => foreign_exclusion rnames rest
+      end
+  end.
+
+key_n (j : json) : option string := json_string (json_member "n" j).
+
+(** genesis.json, from NETWORK/network.json and NETWORK/parts/*.json: every
+    agent builds the same bytes from the same files, so they compare one hash *)
+build_genesis (home net : string) (k : unit -> nprog unit) : nprog unit :=
+  cli_read_json (path net "network.json") (fun netj =>
+  let pdir := path net "parts" in
+  cli_ask (IoDirEntries pdir) (fun entries =>
+  let files := sort_strings (List.filter (ends ".json") (ans_list entries)) in
+  (* at least four agents: n >= 3f + 1 tolerates f = (n - 1) / 3 faulty
+     ones, consensus's quorum being n - f; 4, 7 and 10 are the n that need
+     the fewest votes for their f, and any n of 4 or more is safe *)
+  let n := show (length files) in
+  if length files <? 4 then
+    cli_fail (cat ["genesis must have at least 4 parts, got ", n, " (", pdir, " has ", n,
+                   " parts; n agents tolerate (n - 1) / 3 faulty ones, so four is the fewest that tolerate one. Each agent runs `pantheon keygen` and adds its public.json there)"])
+  else
+  cli_map files (fun f k => cli_read_json (path pdir f) (fun j => k (f, j))) (fun raw_parts =>
+  check_names pdir raw_parts [] (fun _ =>
+  check_keys pdir raw_parts [] (fun _ =>
+  cli_map raw_parts (genesis_part pdir) (fun parts =>
+  match json_member "repos" netj with
+  | JList rs =>
+      cli_map rs (genesis_repo home net) (fun repos =>
+      (* a part's exclude names repositories outside that agent's scope:
+         each is one of the network's, and every repository keeps someone
+         whose scope has it, or no one could merge there *)
+      let rnames := List.map fst repos in
+      match foreign_exclusion rnames parts with
+      | Some (pn, r) =>
+          cli_fail (cat [pdir, "/", pn, ".json excludes ", r, ", which isn't one of the network's repositories (", join ", " rnames, ")"])
+      | None =>
+      match List.find (fun r => forallb (fun p => match p with (_, ex, _) => mem r ex end) parts) rnames with
+      | Some r =>
+          cli_fail (cat ["every part in ", pdir, " excludes repository ", r,
+                         ": no agent could merge there; drop it from network.json or from one part's exclude"])
+      | None =>
+      let body := [("block_ms", match json_member "block_ms" netj with JNum i => JNum i | _ => JNum "1000" end),
+                   ("agents", JList (List.map (fun p => match p with (_, _, j) => j end) parts)),
+                   ("params", match json_member "params" netj with JObj kv => JObj kv | _ => JObj [] end),
+                   ("repos", JList (List.map snd repos))] in
+      let id := append "pantheon-" (substr (sha256 (json_text (JObj body))) 0 16) in
+      let text := json_text (JObj (("chain_id", JStr id) :: body)) in
+      let gp := path home "genesis.json" in
+      let ours := path home "key.json" in
+      cli_exists ours (fun has_key =>
+      let written _ :=
+        cli_ask (IoReadText gp) (fun old =>
+        cli_exists (path home "blocks.log") (fun has_blocks =>
+        let differs := match ans_found_one old with Some t => negb (seq t text) | None => false end in
+        if differs && has_blocks then
+          cli_fail (cat [home, " already runs a different chain (it has blocks). A new genesis is a new chain: use a new home, or remove blocks.log and signed.log on purpose"])
+        else
+        cli_do (IoWriteFile gp text) (fun _ =>
+        cli_say (cat ["wrote ", gp, ": chain ", id, ", genesis hash ", sha256 text, ". Every agent should get the same hash"]) k))) in
+      if negb has_key then written tt else
+      cli_read_json ours (fun kj =>
+      match json_string (json_member "agent" kj), key_n (json_member "key" kj) with
+      | Some me, Some kn =>
+          if List.existsb (fun p => match p with (pn, _, j) =>
+               seq pn me && match key_n (json_member "pubkey" j) with Some pk => seq pk kn | None => false end end) parts
+          then written tt
+          else cli_fail (cat [me, "'s key isn't in ", pdir, ": add this agent's public.json as parts/", me, ".json"])
+      | _, _ => cli_fail (cat ["cannot read ", ours, ": is this a home made by `pantheon init`?"])
+      end))
+      end
+      end)
+  | _ => cli_fail "network.json: repos is a list of repositories"
+  end)))))).
+
+cmd_genesis (home net : string) : nprog unit := build_genesis home net (fun _ => NDone tt).
+
+(** ---- init: a whole network on one machine, for trying Pantheon and for tests ---- *)
+
+(** "name=value" as (name, value); refusing it names the flag *)
+kv_arg (flag kv : string) : (string * string) + string :=
+  match find_str "=" kv 0 with
+  | Some i => inl (substr kv 0 i, substr kv (i + 1) (slen kv - i - 1))
+  | None => inr (cat [flag, " wants name=value, got ", kv])
+  end.
+
+Record init_args := { ia_dir : string; ia_repos : list (string * string); ia_port : nat;
+                      ia_params : list (string * string); ia_block_ms : nat }.
+
+number_arg (flag v : string) : nat + string :=
+  match num_opt v with Some n => inl n | None => inr (cat [flag, " wants a number, got ", v]) end.
+
+Fixpoint init_parse (args : list string) (a : init_args) : init_args + string :=
+  match args with
+  | "--repo" :: kv :: r =>
+      match kv_arg "--repo" kv with
+      | inl p => init_parse r {| ia_dir := ia_dir a; ia_repos := ia_repos a ++ [p]; ia_port := ia_port a;
+                                ia_params := ia_params a; ia_block_ms := ia_block_ms a |}
+      | inr e => inr e
+      end
+  | "--base-port" :: p :: r =>
+      match number_arg "--base-port" p with
+      | inl n => init_parse r {| ia_dir := ia_dir a; ia_repos := ia_repos a; ia_port := n;
+                                ia_params := ia_params a; ia_block_ms := ia_block_ms a |}
+      | inr e => inr e
+      end
+  | "--block-ms" :: p :: r =>
+      match number_arg "--block-ms" p with
+      | inl n => init_parse r {| ia_dir := ia_dir a; ia_repos := ia_repos a; ia_port := ia_port a;
+                                ia_params := ia_params a; ia_block_ms := n |}
+      | inr e => inr e
+      end
+  | "--param" :: kv :: r =>
+      match kv_arg "--param" kv with
+      | inl p => init_parse r {| ia_dir := ia_dir a; ia_repos := ia_repos a; ia_port := ia_port a;
+                                ia_params := ia_params a ++ [p]; ia_block_ms := ia_block_ms a |}
+      | inr e => inr e
+      end
+  | d :: r =>
+      if seq (ia_dir a) "" then
+        init_parse r {| ia_dir := d; ia_repos := ia_repos a; ia_port := ia_port a;
+                        ia_params := ia_params a; ia_block_ms := ia_block_ms a |}
+      else inr (append "unknown init argument " d)
+  | [] => inl a
+  end.
+
+Fixpoint indexed {A : Type} (i : nat) (l : list A) : list (nat * A) :=
+  match l with [] => [] | x :: r => (i, x) :: indexed (S i) r end.
+
+cmd_init (args : list string) : nprog unit :=
+  match init_parse args {| ia_dir := ""; ia_repos := []; ia_port := 26700; ia_params := []; ia_block_ms := 500 |} with
+  | inr e => cli_fail e
+  | inl a =>
+  let dir := ia_dir a in
+  if seq dir "" || match ia_repos a with [] => true | _ => false end then
+    cli_fail "usage: pantheon init DIR --repo NAME=GIT-CHECKOUT [--repo ...] [--base-port P] [--block-ms N] [--param name=value]..."
+  else
+  let net := path dir "network" in
+  cli_exists net (fun has =>
+  if has then cli_fail (cat [dir, " already holds a network, keys included. To discard it, stop its nodes and remove the directory; to keep it, pick another DIR"]) else
+  cli_do (IoMakeDirs (path net "parts")) (fun _ =>
+  cli_ask IoCwd (fun cwd =>
+  let abs p := if is_relative p then path (ans_one cwd) p else p in
+  cli_map (ia_repos a) (fun np k =>
+    let '(n, p) := np in
+    let p := abs p in
+    cli_ask (IoGit p ["rev-parse", "HEAD"]) (fun commit =>
+    let commit := ans_one commit in
+    if seq commit "" then cli_fail (append p " is not a git checkout with a commit")
+    else k (JObj [("name", JStr n), ("url", JStr p), ("commit", JStr commit)]))) (fun repos =>
+  cli_do (IoWriteFile (path net "network.json")
+            (json_file (JObj [("block_ms", JNum (show (ia_block_ms a))),
+                              ("params", JObj (List.map (fun kv => (fst kv, JStr (snd kv))) (ia_params a))),
+                              ("repos", JList repos)]))) (fun _ =>
+  cli_each (indexed 0 agents_default) (fun ia k =>
+    let '(i, n) := ia in
+    cli_say (append "making keys for " n) (fun _ =>
+    make_keys (path dir n) n (append "127.0.0.1:" (show (ia_port a + i))) (fun pub =>
+    cli_read_text pub (append "cannot read " pub) (fun t =>
+    cli_do (IoWriteFile (path (path net "parts") (append n ".json")) t) k)))) (fun _ =>
+  cli_each agents_default (fun n k => build_genesis (path dir n) net k) (fun _ =>
+  cli_ask IoSelfExe (fun self =>
+  cli_say (cat ["made a 4-agent network in ", dir, ". Run it with: ", ans_one self, " up ", dir]) (fun _ => NDone tt)))))))))
+  end.
+
+(** ---- up: a network's nodes, each logging to its node.log ---- *)
+
+Fixpoint backend_pairs (l : list string) : option (list (string * string)) :=
+  match l with
+  | [] => Some []
+  | kv :: r =>
+      match split_on "="%char kv, backend_pairs r with
+      | [a, b], Some rest => Some ((a, b) :: rest)
+      | _, _ => None
+      end
+  end.
+
+Fixpoint up_args (args : list string) (backends : list (string * string)) (pass : list string)
+  : (list (string * string) * list string) + string :=
+  match args with
+  | "--backends" :: b :: r =>
+      match backend_pairs (split_on ","%char b) with
+      | Some bs => up_args r bs pass
+      | None => inr "--backends wants agent=backend,..."
+      end
+  | x :: r => up_args r backends (pass ++ [x])
+  | [] => inl (backends, pass)
+  end.
+
+Fixpoint with_keys (dir : string) (names : list string) (k : list string -> nprog unit) : nprog unit :=
+  match names with
+  | [] => k []
+  | a :: r => cli_exists (path (path dir a) "key.json") (fun has => with_keys dir r (fun rest => k (if has then a :: rest else rest)))
+  end.
+
+cmd_up (dir : string) (rest : list string) : nprog unit :=
+  match up_args rest [] [] with
+  | inr e => cli_fail e
+  | inl (backends, pass) =>
+  cli_ask IoSelfExe (fun self =>
+  cli_ask (IoDirEntries dir) (fun entries =>
+  with_keys dir (sort_strings (ans_list entries)) (fun agents =>
+  if match agents with [] => true | _ => false end then cli_fail (cat [dir, " has no network: run `pantheon init ", dir, "` first"]) else
+  cli_map agents (fun a k =>
+    let home := path dir a in
+    cli_exists (path home "genesis.json") (fun has =>
+    if negb has then cli_fail (cat [dir, " has no network: run `pantheon init ", dir, "` first"]) else
+    let b := match lookup a backends with Some b => b | None => "scripted" end in
+    cli_ask (IoSpawnNode (path home "node.log") (["node", home, "--backend", b] ++ pass)) (fun pid => k (ans_one pid)))) (fun pids =>
+  cli_say (cat ["running 4 nodes; logs in ", dir, "/<agent>/node.log; watch with: ", ans_one self, " status ", dir, "/claude"]) (fun _ =>
+  cli_do (IoAwaitNodes pids) (fun _ => NDone tt))))))
+  end.
+
+(** ---- status, tx, plan ---- *)
+
+cmd_status (home : string) : nprog unit :=
+  cli_read_text (path home "status.txt")
+    (cat ["no status in ", home, " yet: is its node running? Start it with `pantheon node ", home, "` or `pantheon up DIR`"])
+    (fun t => cli_do (IoPrint t) (fun _ => NDone tt)).
+
+(** the clock's microseconds as SECONDS.MICROSECONDS, an inbox file's name
+    (the node reads them in name order) *)
+stamp_text (us : string) : string :=
+  let n := slen us in if n <? 7 then us else cat [substr us 0 (n - 6), ".", substr us (n - 6) 6].
+
+cmd_tx (home : string) (fields : list string) : nprog unit :=
+  let d := path home "inbox" in
+  cli_do (IoMakeDirs d) (fun _ =>
+  cli_ask IoClock (fun now =>
+  let name := append (stamp_text (node_float_text (PrimFloat.mul (ans_float now) 1000000%float))) ".json" in
+  cli_do (IoWriteFile (path d name) (nio_json_strings fields)) (fun _ =>
+  cli_say (cat ["queued for ", basename home, "'s agent: ", join " " fields, " (it signs and sends it next; see `pantheon status ", home, "`)"])
+    (fun _ => NDone tt)))).
+
+lines_text (l : list string) : string := cat (List.map (fun x => append x newline) l).
+
+cmd_plan (file : string) : nprog unit :=
+  cli_read_text file (cat ["no ", file, " here: a repository's plan is .plan at its root (docs/PLAN.md)"]) (fun t =>
+  cli_do (IoPrint (lines_text (plan_open t))) (fun _ => NDone tt)).
+
+(** ---- edits, apply-edits, check ---- *)
+
+Fixpoint edits_items (l : list (list string)) : list json :=
+  match l with
+  | [p, o, n] :: r => JObj [("path", JStr p), ("old", JStr o), ("new", JStr n)] :: edits_items r
+  | _ :: r => edits_items r
+  | [] => []
+  end.
+
+(** for a model with tools: what it changed in its checkout, as the reply a
+    patch request wants *)
+cmd_edits (dir : string) (rest : list string) : nprog unit :=
+  cli_ask (IoCheckoutEdits dir) (fun a =>
+  if negb (fst a) then cli_fail (ans_one a) else
+  match nio_lists (ans_list a) with
+  | skipped :: edits =>
+      let note := append (join " " rest)
+                    (match skipped with [] => "" | _ => cat [" (skipped, can't be edits: ", join ", " skipped, ")"] end) in
+      cli_do (IoPrint (append (json_text (JObj [("edits", JList (edits_items edits)), ("note", JStr (trim note))])) newline))
+        (fun _ => NDone tt)
+  | [] => cli_fail "the checkout's edits came back malformed"
+  end).
+
+(** an edits file: a JSON list of strings, each edit's path, old and new *)
+edits_file (file : string) (k : list string -> nprog unit) : nprog unit :=
+  let refused := cat ["cannot read ", file, ": edits are a JSON list of strings (path, old, new for each edit)"] in
+  cli_read_text file refused (fun t =>
+  match json_of t with
+  | Some (JList l) => match json_strings l with Some s => k s | None => cli_fail refused end
+  | _ => cli_fail refused
+  end).
+
+cmd_apply_edits (dir file : string) : nprog unit :=
+  edits_file file (fun edits =>
+  cli_ask (IoApplyEdits dir edits) (fun a =>
+  if fst a then cli_say "applied" (fun _ => NDone tt) else cli_fail (ans_one a))).
+
+(** how `pantheon check` says the failure is the edits' (they don't apply):
+    any other failing exit is this node's (node.soma reads them so) *)
+check_bid_failed : string := "1".
+check_node_failed : string := "3".
+
+cmd_check (repo head file out : string) : nprog unit :=
+  edits_file file (fun edits =>
+  cli_ask (IoCheckTree repo head out edits) (fun a =>
+  match fst a, ans_list a with
+  | true, [tree] => cli_do (IoPrint tree) (fun _ => NDone tt)
+  | false, ["bid", e] => cli_do (IoPrint e) (fun _ => cli_do (IoExit check_bid_failed) (fun _ => NDone tt))
+  | _, ["node", e] => cli_do (IoPrint e) (fun _ => cli_do (IoExit check_node_failed) (fun _ => NDone tt))
+  | _, _ => cli_do (IoPrint "node problem: the check came back malformed") (fun _ => cli_do (IoExit check_node_failed) (fun _ => NDone tt))
+  end)).
+
+(** ---- the commands ---- *)
+
+usage : string := "pantheon: a private BFT labor market where LLM agents take turns as term leader.
+
+  One machine:
+  pantheon init DIR --repo NAME=GIT-CHECKOUT [--repo ...] [--base-port P] [--block-ms N] [--param name=value]...
+  pantheon up DIR [--backends claude=claude,codex=codex,grok=grok,muse=scripted] [node flags]
+
+  One machine per agent (see docs/NETWORK.md):
+  pantheon keygen HOME --name NAME --addr HOST:PORT     then add HOME/public.json to NETWORK/parts/
+  pantheon genesis HOME NETWORK                         once all 4 parts are in
+
+  pantheon node HOME [--backend B] [--behavior honest|deny|silent] [--goal FILE] [--deny PATH] [--listen HOST]
+                     [--ci CMD] [--ci-repo NAME CMD] [--ci-image IMAGE | --ci-sandbox PROGRAM] [--ci-memory 8g] [--bid-window N] [--perspective TEXT] [--max-llm-calls N]
+  pantheon status HOME
+  pantheon tx HOME post REPO ""spec"" [CONTEXT-PATH...]   (or any market transaction's fields)
+  pantheon edits CHECKOUT [NOTE]     a checkout's changes as a patch reply (for models with tools)
+  pantheon plan [FILE]              a .plan's open items (default ./.plan; see docs/PLAN.md)
+  pantheon apply-edits DIR EDITS.json
+
+Backends: scripted, claude, codex, grok (XAI_API_KEY), cmd:PROGRAM (prompt on stdin, JSON reply on stdout;
+a patch request also gets a scratch checkout in $PANTHEON_WORKTREE: see scripts/bidder.sh).
+".
+
+(** every command but [node], as one program *)
+cli_prog (args : list string) : nprog unit :=
+  match args with
+  | "init" :: rest => cmd_init rest
+  | "keygen" :: rest => cmd_keygen rest
+  | ["genesis", home, net] => cmd_genesis home net
+  | "edits" :: dir :: rest => cmd_edits dir rest
+  | ["plan"] => cmd_plan ".plan"
+  | ["plan", file] => cmd_plan file
+  | ["apply-edits", dir, file] => cmd_apply_edits dir file
+  | ["check", repo, head, file, out] => cmd_check repo head file out
+  | ["status", home] => cmd_status home
+  | "tx" :: home :: field :: rest => cmd_tx home (field :: rest)
+  | "up" :: dir :: rest => cmd_up dir rest
+  | _ => cli_do (IoPrint usage) (fun _ => NDone tt)
+  end.

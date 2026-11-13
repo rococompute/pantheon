@@ -163,7 +163,31 @@ Inductive node_op :=
 | IoRememberBlock (height : string) (txs : list string)
 | IoSignedText
 | IoSignedRestore (slot vid : string) (fields : list string)
-| IoFail (message : string).
+| IoFail (message : string)
+(** the commands' I/O (cli.soma): the timestamped line `say` prints, plain
+    output, an exit status; files and directories; this directory; a new
+    RSA key (e = 65537: [size, n, e, d, p, q, dp, dq, qinv], hex) and random
+    bytes as hex; git in a checkout (its trimmed output), a clone at a
+    commit; starting nodes and waiting for them; and the edits machinery,
+    still OCaml's (a checkout's edits, applying edits, the tree a bid's
+    edits give) *)
+| IoSay (text : string)
+| IoPrint (text : string)
+| IoExit (code : string)
+| IoFileExists (path : string)
+| IoWriteFile (path text : string)
+| IoChmod (path mode : string)
+| IoMakeDirs (path : string)
+| IoCwd
+| IoNewKey (bits : string)
+| IoRandomHex (count : string)
+| IoGit (dir : string) (args : list string)
+| IoClone (url dir commit : string)
+| IoSpawnNode (log : string) (args : list string)
+| IoAwaitNodes (pids : list string)
+| IoCheckoutEdits (dir : string)
+| IoApplyEdits (dir : string) (edits : list string)
+| IoCheckTree (repo head out : string) (edits : list string).
 
 (** Two arbitrary lists on one wire: tagged field/value pairs, then the
     alternate-list marker. A marker occurring as a value is never a tag.
@@ -289,6 +313,23 @@ io_wire (op : node_op) : list string :=
   | IoSignedText => ["signed_text"]
   | IoSignedRestore slot vid fields => "signed_restore" :: slot :: vid :: fields
   | IoFail message => ["fail", message]
+  | IoSay text => ["say", text]
+  | IoPrint text => ["print", text]
+  | IoExit code => ["exit", code]
+  | IoFileExists path => ["file_exists", path]
+  | IoWriteFile path text => ["write_file", path, text]
+  | IoChmod path mode => ["chmod", path, mode]
+  | IoMakeDirs path => ["make_dirs", path]
+  | IoCwd => ["cwd"]
+  | IoNewKey bits => ["new_key", bits]
+  | IoRandomHex count => ["random_hex", count]
+  | IoGit dir args => "git" :: dir :: args
+  | IoClone url dir commit => ["clone", url, dir, commit]
+  | IoSpawnNode log args => "spawn_node" :: log :: args
+  | IoAwaitNodes pids => "await_nodes" :: pids
+  | IoCheckoutEdits dir => ["checkout_edits", dir]
+  | IoApplyEdits dir edits => "apply_edits" :: dir :: edits
+  | IoCheckTree repo head out edits => "check_tree" :: repo :: head :: out :: edits
   end.
 
 io_of_wire (w : list string) : option node_op :=
@@ -396,6 +437,23 @@ io_of_wire (w : list string) : option node_op :=
   | ["signed_text"] => Some IoSignedText
   | "signed_restore" :: slot :: vid :: fields => Some (IoSignedRestore slot vid fields)
   | ["fail", message] => Some (IoFail message)
+  | ["say", text] => Some (IoSay text)
+  | ["print", text] => Some (IoPrint text)
+  | ["exit", code] => Some (IoExit code)
+  | ["file_exists", path] => Some (IoFileExists path)
+  | ["write_file", path, text] => Some (IoWriteFile path text)
+  | ["chmod", path, mode] => Some (IoChmod path mode)
+  | ["make_dirs", path] => Some (IoMakeDirs path)
+  | ["cwd"] => Some IoCwd
+  | ["new_key", bits] => Some (IoNewKey bits)
+  | ["random_hex", count] => Some (IoRandomHex count)
+  | "git" :: dir :: args => Some (IoGit dir args)
+  | ["clone", url, dir, commit] => Some (IoClone url dir commit)
+  | "spawn_node" :: log :: args => Some (IoSpawnNode log args)
+  | "await_nodes" :: pids => Some (IoAwaitNodes pids)
+  | ["checkout_edits", dir] => Some (IoCheckoutEdits dir)
+  | "apply_edits" :: dir :: edits => Some (IoApplyEdits dir edits)
+  | "check_tree" :: repo :: head :: out :: edits => Some (IoCheckTree repo head out edits)
   | _ => None
   end.
 

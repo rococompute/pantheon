@@ -1,6 +1,7 @@
 (* The shell: everything Pantheon does that isn't a decision. Soma's node.soma
    decides; this runs it. Sockets, timers, keys and signatures, the block log,
-   model processes and command implementations are here. Soma selects commands.
+   model processes and the commands' I/O are here. Soma decides
+   (node.soma, and cli.soma for the commands).
 
    Every peer message and every transaction is signed with RSA (PKCS#1 v1.5,
    SHA-256: what cryptokit, in Soma's OCaml switch, can do). *)
@@ -432,10 +433,6 @@ let edits_of_checkout helpers dir =
       remove_tree_later snapshot;
       result
 
-let edits_json edits note =
-  `Assoc [ ("edits", `List (List.map (fun (p, o, n) -> `Assoc [ ("path", `String p); ("old", `String o); ("new", `String n) ]) edits));
-           ("note", `String note) ]
-
 (* the tree a bid's edits give on a checkout's HEAD, in a fresh clone. An
    error says whose it is: `Node (this node's checkout or git) or `Bid (the
    edits don't apply), decided here, never read back from the message *)
@@ -448,10 +445,6 @@ let check_tree helpers repo head_tree edits out =
     match apply_edits helpers out edits with
     | Error e -> Error (`Bid, e)
     | Ok () -> if git_ok out [ "add"; "-A"; "-f" ] then Ok (git_out out [ "write-tree" ]) else Error (`Node, "node problem: git add failed")
-
-(* how `pantheon check` says the failure is the edits' (they don't apply):
-   any other failing exit is this node's *)
-let check_bid_failed = 1
 
 (* how a CI command, wrapped by the node, says the bid's CI failed. Any other
    failing exit of the runner (docker's own 125-127, ci-sandbox's 2 and 3,
@@ -467,53 +460,19 @@ let ci_wrap ci =
 (* how a job ended ("!process failed (HOW): ") and its exit code are read in
    Soma (node.soma's ci_job_how and ci_exit_code), never here *)
 
-(* ---------- hash chains for the leader draw ---------- *)
+(* ---------- the commands ----------
+   init, keygen, genesis, up, status, tx, plan, edits, apply-edits and check
+   are cli.soma's node programs; their I/O is node_io's path-only arms.
+   cli_open hands the edits machinery Soma's helpers, as node_open does. *)
+let cli_helpers_ref : helpers option ref = ref None
+let cli_helpers () = match !cli_helpers_ref with Some h -> h | None -> fail "the edits operations need cli_open first"
+let cli_open packed = cli_helpers_ref := Some (unpack_helpers packed); "cli"
 
+(* the draw's hash chain is this long (cli.soma's chain_len makes the tip) *)
 let chain_len = 100_000
-let rec iterate n x = if n = 0 then x else iterate (n - 1) (sha256 x)
 
-(* ---------- keys, genesis, networks ---------- *)
-
-let agents_default = [ "claude"; "codex"; "grok"; "muse" ]
-
-let kv_arg flag kv =
-  match String.index_opt kv '=' with
-  | Some i -> (String.sub kv 0 i, String.sub kv (i + 1) (String.length kv - i - 1))
-  | None -> fail "%s wants name=value, got %s" flag kv
-
-(* An agent's keys, made on its own machine: key.json and chain.json stay
-   there; public.json is what the network needs. *)
-let make_keys home name addr =
-  if Sys.file_exists (Filename.concat home "key.json") then
-    fail "%s already has keys. They are this agent's identity: keep them. To start over, remove the directory first" home;
-  mkdir_p home;
-  Unix.chmod home 0o700;
-  (* e = 65537, not Cryptokit's random 2048-bit default: Soma checks
-     signatures (Soma.Crypto), in about 1 ms with it against 90 *)
-  let key = Cryptokit.RSA.new_key ~rng:(Lazy.force rng) ~e:65537 2048 and secret = random_hex 32 in
-  let priv f j = Yojson.Safe.to_file (Filename.concat home f) j; Unix.chmod (Filename.concat home f) 0o600 in
-  priv "key.json" (`Assoc [ ("agent", `String name); ("key", key_to_json key ~priv:true) ]);
-  priv "chain.json" (`Assoc [ ("secret", `String secret) ]);
-  let pub = Filename.concat home "public.json" in
-  Yojson.Safe.to_file pub
-    (`Assoc [ ("name", `String name); ("addr", `String addr); ("pubkey", key_to_json key ~priv:false); ("tip", `String (iterate chain_len secret)) ]);
-  pub
-
-let cmd_keygen args =
-  let home = ref "" and name = ref "" and addr = ref "" in
-  let rec go = function
-    | "--name" :: n :: r -> name := n; go r
-    | "--addr" :: a :: r -> addr := a; go r
-    | h :: r when !home = "" -> home := h; go r
-    | x :: _ -> fail "unknown keygen argument %s" x
-    | [] -> ()
-  in
-  go args;
-  if !home = "" || !name = "" || !addr = "" then fail "usage: pantheon keygen HOME --name NAME --addr HOST:PORT (HOST: a name or address the other agents reach over the VPN)";
-  let pub = make_keys !home !name !addr in
-  say "wrote %s. Add it to the network as NETWORK/parts/%s.json (a pull request is a good way), then, once every agent's part is in, run: pantheon genesis %s NETWORK" pub !name !home
-
-(* relative repository URLs are relative to the network directory *)
+(* relative repository URLs are relative to the network directory (as
+   cli.soma's repo_url) *)
 let repo_url helpers net url =
   if contains helpers url "://" || (url <> "" && url.[0] = '/') || (String.length url > 4 && String.sub url 0 4 = "git@") then url
   else Filename.concat net url
@@ -521,7 +480,7 @@ let repo_url helpers net url =
 let repo_dir home name = Filename.concat (Filename.concat home "repos") name
 
 (* A checkout of a governed repository at its genesis commit, or a check that
-   the one already there descends from it. *)
+   the one already there descends from it (as cli.soma's ensure_repo). *)
 let ensure_repo home name url commit =
   let dir = repo_dir home name in
   if not (Sys.file_exists (Filename.concat dir ".git")) then begin
@@ -531,114 +490,6 @@ let ensure_repo home name url commit =
   else if not (git_ok dir [ "merge-base"; "--is-ancestor"; commit; "HEAD" ]) then
     fail "%s holds a checkout of %s that doesn't descend from its genesis commit %s: move it aside and run again" dir name commit;
   dir
-
-(* genesis.json, from NETWORK/network.json and NETWORK/parts/*.json: every
-   agent builds the same bytes from the same files, so they compare one hash *)
-let build_genesis helpers home net =
-  let open Yojson.Safe.Util in
-  let netj = read_json (Filename.concat net "network.json") in
-  let pdir = Filename.concat net "parts" in
-  let files = if Sys.file_exists pdir then Sys.readdir pdir |> Array.to_list |> List.filter (fun f -> Filename.check_suffix f ".json") |> List.sort compare else [] in
-  (* at least four agents: n >= 3f + 1 tolerates f = (n - 1) / 3 faulty
-     ones, consensus's quorum being n - f; 4, 7 and 10 are the n that need
-     the fewest votes for their f, and any n of 4 or more is safe *)
-  let n = List.length files in
-  if n < 4 then
-    fail "genesis must have at least 4 parts, got %d (%s has %d parts; n agents tolerate (n - 1) / 3 faulty ones, so four is the fewest that tolerate one. Each agent runs `pantheon keygen` and adds its public.json there)"
-      n pdir n;
-  let raw_parts = List.map (fun f -> (f, read_json (Filename.concat pdir f))) files in
-  let seen_names = ref [] in
-  List.iter (fun (_, j) ->
-      let n = to_string (member "name" j) in
-      if List.mem n !seen_names then fail "duplicate part name %s in genesis parts in %s: each agent must add exactly one part under its own name" n pdir;
-      seen_names := n :: !seen_names) raw_parts;
-  let seen_keys = ref [] in
-  List.iter (fun (_, j) ->
-      let n = to_string (member "name" j) in
-      let k = match member "pubkey" j with
-        | `Assoc kv -> Yojson.Safe.to_string (`Assoc (List.sort (fun (a, _) (b, _) -> String.compare a b) kv))
-        | other -> Yojson.Safe.to_string other in
-      (match List.assoc_opt k !seen_keys with
-       | Some other -> fail "duplicate public key in genesis parts in %s: %s and %s share the same public key; each part must carry its own agent's key" pdir other n
-       | None -> ());
-      seen_keys := (k, n) :: !seen_keys) raw_parts;
-  let parts = List.map (fun (f, j) ->
-                          let n = to_string (member "name" j) in
-                          if n ^ ".json" <> f then fail "%s/%s is named %s inside: rename the file to %s.json" pdir f n n;
-                          let ex = match member "exclude" j with `List l -> List.map to_string l | `Null -> [] | _ -> fail "%s/%s: exclude is a list of repository names" pdir f in
-                          `Assoc ([ ("name", member "name" j); ("addr", member "addr" j); ("pubkey", member "pubkey" j); ("tip", member "tip" j) ]
-                                  @ (if ex = [] then [] else [ ("exclude", `List (List.map (fun r -> `String r) ex)) ]))) raw_parts in
-  let repos = List.map (fun r ->
-      let name = to_string (member "name" r) and url = to_string (member "url" r) and commit = to_string (member "commit" r) in
-      if not (safe_path helpers name) || String.contains name '/' then fail "bad repository name %s" name;
-      let dir = ensure_repo home name (repo_url helpers net url) commit in
-      let tree = git_out dir [ "rev-parse"; commit ^ "^{tree}" ] in
-      `Assoc [ ("name", `String name); ("url", `String url); ("commit", `String commit); ("tree", `String tree) ])
-      (to_list (member "repos" netj)) in
-  (* a part's exclude names repositories outside that agent's scope: each is
-     one of the network's, and every repository keeps someone whose scope has
-     it, or no one could merge there *)
-  let rnames = List.map (fun r -> to_string (member "name" r)) repos in
-  let excl p = match member "exclude" p with `List l -> List.map to_string l | _ -> [] in
-  List.iter (fun p -> List.iter (fun r -> if not (List.mem r rnames) then
-      fail "%s/%s.json excludes %s, which isn't one of the network's repositories (%s)" pdir (to_string (member "name" p)) r (String.concat ", " rnames)) (excl p)) parts;
-  List.iter (fun r -> if List.for_all (fun p -> List.mem r (excl p)) parts then
-      fail "every part in %s excludes repository %s: no agent could merge there; drop it from network.json or from one part's exclude" pdir r) rnames;
-  let body = [ ("block_ms", (match member "block_ms" netj with `Int i -> `Int i | _ -> `Int 1000)); ("agents", `List parts);
-               ("params", (match member "params" netj with `Assoc kv -> `Assoc kv | _ -> `Assoc [])); ("repos", `List repos) ] in
-  let id = "pantheon-" ^ String.sub (sha256 (Yojson.Safe.to_string (`Assoc body))) 0 16 in
-  let text = Yojson.Safe.to_string (`Assoc (("chain_id", `String id) :: body)) in
-  let gp = Filename.concat home "genesis.json" in
-  (match Sys.file_exists (Filename.concat home "key.json") with
-   | true ->
-       let k = read_json (Filename.concat home "key.json") in
-       let me = to_string (member "agent" k) and n = to_string (member "n" (member "key" k)) in
-       if not (List.exists (fun p -> to_string (member "name" p) = me && to_string (member "n" (member "pubkey" p)) = n) parts) then
-         fail "%s's key isn't in %s: add this agent's public.json as parts/%s.json" me pdir me
-   | false -> ());
-  if Sys.file_exists gp && read_file gp <> text && Sys.file_exists (Filename.concat home "blocks.log") then
-    fail "%s already runs a different chain (it has blocks). A new genesis is a new chain: use a new home, or remove blocks.log and signed.log on purpose" home;
-  write_file gp text;
-  say "wrote %s: chain %s, genesis hash %s. Every agent should get the same hash" gp id (sha256 text)
-
-(* A whole network on one machine, for trying Pantheon and for tests. *)
-let cmd_init packed args =
-  let helpers = unpack_helpers packed in
-  let dir = ref "" and repos = ref [] and port = ref 26700 and params = ref [] and block_ms = ref 500 in
-  let rec go = function
-    | "--repo" :: kv :: r -> repos := !repos @ [ kv_arg "--repo" kv ]; go r
-    | "--base-port" :: p :: r -> port := int_of_string p; go r
-    | "--block-ms" :: p :: r -> block_ms := int_of_string p; go r
-    | "--param" :: kv :: r -> params := !params @ [ kv_arg "--param" kv ]; go r
-    | d :: r when !dir = "" -> dir := d; go r
-    | x :: _ -> fail "unknown init argument %s" x
-    | [] -> ()
-  in
-  go args;
-  if !dir = "" || !repos = [] then fail "usage: pantheon init DIR --repo NAME=GIT-CHECKOUT [--repo ...] [--base-port P] [--block-ms N] [--param name=value]...";
-  if Sys.file_exists (Filename.concat !dir "network") then
-    fail "%s already holds a network, keys included. To discard it, stop its nodes and remove the directory; to keep it, pick another DIR" !dir;
-  let net = Filename.concat !dir "network" in
-  mkdir_p (Filename.concat net "parts");
-  let abs p = if Filename.is_relative p then Filename.concat (Sys.getcwd ()) p else p in
-  let repos = List.map (fun (n, path) ->
-      let path = abs path in
-      let commit = git_out path [ "rev-parse"; "HEAD" ] in
-      if commit = "" then fail "%s is not a git checkout with a commit" path;
-      `Assoc [ ("name", `String n); ("url", `String path); ("commit", `String commit) ]) !repos in
-  Yojson.Safe.to_file (Filename.concat net "network.json")
-    (`Assoc [ ("block_ms", `Int !block_ms); ("params", `Assoc (List.map (fun (k, v) -> (k, `String v)) !params)); ("repos", `List repos) ]);
-  List.iteri (fun i n ->
-      say "making keys for %s" n;
-      let pub = make_keys (Filename.concat !dir n) n (Printf.sprintf "127.0.0.1:%d" (!port + i)) in
-      write_file (Filename.concat (Filename.concat net "parts") (n ^ ".json")) (read_file pub))
-    agents_default;
-  List.iter (fun n -> build_genesis helpers (Filename.concat !dir n) net) agents_default;
-  say "made a 4-agent network in %s. Run it with: %s up %s" !dir self_exe !dir
-
-let cmd_genesis packed home net =
-  let helpers = unpack_helpers packed in
-  build_genesis helpers home net
 
 (* ---------- the node ---------- *)
 
@@ -667,70 +518,7 @@ let resolve s =
   | [] -> None
   | exception _ -> None
 
-let cmd_edits packed dir rest =
-  let helpers = unpack_helpers packed in
-      (* for a model with tools: what it changed in its checkout, as the reply a patch request wants *)
-      (match edits_of_checkout helpers dir with
-       | Error e -> fail "%s" e
-       | Ok (es, skipped) ->
-           let note = String.concat " " rest ^ (if skipped = [] then "" else " (skipped, can't be edits: " ^ String.concat ", " skipped ^ ")") in
-           print_endline (Yojson.Safe.to_string (edits_json es (String.trim note))))
-
-let cmd_apply_edits packed dir file =
-  let helpers = unpack_helpers packed in
-      (match apply_edits helpers dir (triples_of (json_strings (Yojson.Safe.from_file file))) with
-       | Ok () -> say "applied"
-       | Error e -> fail "%s" e)
-
-let cmd_check packed repo head file out =
-  let helpers = unpack_helpers packed in
-      (match check_tree helpers repo head (triples_of (json_strings (Yojson.Safe.from_file file))) out with
-       | Ok t -> print_string t
-       | Error (`Bid, e) -> print_string e; exit check_bid_failed
-       | Error (`Node, e) -> print_string e; exit 3)
-
-let cmd_status home =
-      let p = Filename.concat home "status.txt" in
-      if Sys.file_exists p then print_string (read_file p)
-      else fail "no status in %s yet: is its node running? Start it with `pantheon node %s` or `pantheon up DIR`" home home
-
-let cmd_tx home fields =
-      let d = Filename.concat home "inbox" in
-      mkdir_p d;
-      write_file (Filename.concat d (Printf.sprintf "%.6f.json" (Unix.gettimeofday ()))) (Yojson.Safe.to_string (strings_json fields));
-      say "queued for %s's agent: %s (it signs and sends it next; see `pantheon status %s`)" (Filename.basename home) (String.concat " " fields) home
-
-let cmd_up dir rest =
-      let self = self_exe in
-      let backends = ref [] and pass = ref [] in
-      let rec go = function
-        | "--backends" :: b :: r ->
-            backends := List.map (fun kv -> match String.split_on_char '=' kv with [ a; b ] -> (a, b) | _ -> fail "--backends wants agent=backend,...") (String.split_on_char ',' b);
-            go r
-        | x :: r -> pass := !pass @ [ x ]; go r
-        | [] -> ()
-      in
-      go rest;
-      let pids =
-        List.map (fun a ->
-            let home = Filename.concat dir a in
-            if not (Sys.file_exists (Filename.concat home "genesis.json")) then fail "%s has no network: run `pantheon init %s` first" dir dir;
-            let log = Unix.openfile (Filename.concat home "node.log") [ O_WRONLY; O_CREAT; O_APPEND ] 0o644 in
-            let b = try List.assoc a !backends with Not_found -> "scripted" in
-            let args = Array.of_list ([ self; "node"; home; "--backend"; b ] @ !pass) in
-            Unix.create_process self args Unix.stdin log log)
-          (Sys.readdir dir |> Array.to_list |> List.sort compare |> List.filter (fun a -> Sys.file_exists (Filename.concat (Filename.concat dir a) "key.json")))
-      in
-      say "running 4 nodes; logs in %s/<agent>/node.log; watch with: %s status %s/claude" dir self dir;
-      let stop _ = List.iter (fun p -> try Unix.kill p Sys.sigterm with _ -> ()) pids; exit 0 in
-      Sys.set_signal Sys.sigint (Sys.Signal_handle stop);
-      Sys.set_signal Sys.sigterm (Sys.Signal_handle stop);
-      List.iter (fun p -> ignore (Unix.waitpid [] p)) pids
-
-let read_plan f =
-  if not (Sys.file_exists f) then fail "no %s here: a repository's plan is .plan at its root (docs/PLAN.md)" f;
-  read_file f
-
+(* test programs print their checks with these *)
 let print_lines xs = List.iter print_endline xs
 let print_text s = print_string s
 let argv () = Array.to_list Sys.argv |> List.tl
@@ -891,7 +679,6 @@ let node_io_handle h op =
   | "check" :: req :: r :: head :: edits -> h.h_run_check req r head edits; (true, (0., []))
   | [ "merge_applied"; r; v ] -> h.h_merge_set_applied r v; (true, (0., []))
   | [ "merge_diverged"; r; entry ] -> h.h_merge_note_diverged r entry; (true, (0., []))
-  | [ "clock" ] -> (true, (Unix.gettimeofday (), []))
   | [ "peer_exists"; who ] -> (h.h_peer_exists who, (0., []))
   | [ "nonce_flooded" ] -> (h.h_nonce_flooded (), (0., []))
   | [ "is_diverged"; repo ] -> (h.h_merge_diverged repo, (0., []))
@@ -944,7 +731,6 @@ let node_io_handle h op =
        | None -> (false, (0., [])))
   | [ "tool_checkout"; r ] ->
       let (wt, gd), ok = h.h_tool_checkout r in (true, (0., [ wt; gd; string_of_bool ok ]))
-  | [ "self_exe" ] -> (true, (0., [ self_exe ]))
   | [ "env_entries" ] -> (true, (0., Array.to_list (Unix.environment ())))
   | [ "token" ] -> (true, (0., [ random_hex 8 ]))
   | [ "repo_names" ] -> (true, (0., h.h_repo_names ()))
@@ -1011,6 +797,46 @@ let node_io id op =
   | [ "dir_entries"; path ] -> (true, (0., fs_dir_entries path))
   | [ "remove_file"; path ] -> Sys.remove path; (true, (0., []))
   | [ "fail"; message ] -> fail "%s" message
+  | [ "clock" ] -> (true, (Unix.gettimeofday (), []))
+  | [ "self_exe" ] -> (true, (0., [ self_exe ]))
+  (* the commands' I/O (cli.soma) *)
+  | [ "say"; text ] -> say "%s" text; (true, (0., []))
+  | [ "print"; text ] -> print_string text; flush stdout; (true, (0., []))
+  | [ "exit"; code ] -> exit (int_of_string code)
+  | [ "file_exists"; path ] -> (Sys.file_exists path, (0., []))
+  | [ "write_file"; path; text ] -> write_file path text; (true, (0., []))
+  | [ "chmod"; path; mode ] -> Unix.chmod path (int_of_string ("0o" ^ mode)); (true, (0., []))
+  | [ "make_dirs"; path ] -> mkdir_p path; (true, (0., []))
+  | [ "cwd" ] -> (true, (0., [ Sys.getcwd () ]))
+  | [ "new_key"; bits ] ->
+      let k = Cryptokit.RSA.new_key ~rng:(Lazy.force rng) ~e:65537 (int_of_string bits) in
+      (true, (0., string_of_int k.size :: List.map hex [ k.n; k.e; k.d; k.p; k.q; k.dp; k.dq; k.qinv ]))
+  | [ "random_hex"; count ] -> (true, (0., [ random_hex (int_of_string count) ]))
+  | "git" :: dir :: args -> let ok, out = git dir args in (ok, (0., [ String.trim out ]))
+  | [ "clone"; url; dir; commit ] -> (clone url dir commit, (0., []))
+  | "spawn_node" :: log :: args ->
+      let fd = Unix.openfile log [ O_WRONLY; O_CREAT; O_APPEND ] 0o644 in
+      let pid = Unix.create_process self_exe (Array.of_list (self_exe :: args)) Unix.stdin fd fd in
+      Unix.close fd;
+      (true, (0., [ string_of_int pid ]))
+  | "await_nodes" :: pids ->
+      let pids = List.map int_of_string pids in
+      let stop _ = List.iter (fun p -> try Unix.kill p Sys.sigterm with _ -> ()) pids; exit 0 in
+      Sys.set_signal Sys.sigint (Sys.Signal_handle stop);
+      Sys.set_signal Sys.sigterm (Sys.Signal_handle stop);
+      List.iter (fun p -> ignore (Unix.waitpid [] p)) pids;
+      (true, (0., []))
+  | [ "checkout_edits"; dir ] ->
+      (match edits_of_checkout (cli_helpers ()) dir with
+       | Error e -> (false, (0., [ e ]))
+       | Ok (es, skipped) -> (true, (0., frame_lists (skipped :: List.map (fun (p, o, n) -> [ p; o; n ]) es))))
+  | "apply_edits" :: dir :: edits ->
+      (match apply_edits (cli_helpers ()) dir (triples_of edits) with Ok () -> (true, (0., [])) | Error e -> (false, (0., [ e ])))
+  | "check_tree" :: repo :: head :: out :: edits ->
+      (match check_tree (cli_helpers ()) repo head (triples_of edits) out with
+       | Ok t -> (true, (0., [ t ]))
+       | Error (`Bid, e) -> (false, (0., [ "bid"; e ]))
+       | Error (`Node, e) -> (false, (0., [ "node"; e ])))
   | _ -> node_io_handle (lookup_handle id) op
 (* Reads/writes and authenticated socket sends; catch-up policy is Soma.
    The clock is the "clock" arm of node_io. *)
