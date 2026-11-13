@@ -975,10 +975,10 @@ Proof.
     injection H as <-; reflexivity.
 Qed.
 
-Theorem single_outputs_are_their_operation : forall h out op,
-  output_io out = Some op -> perform_output h out = io_do h op.
+Theorem single_outputs_are_their_operation : forall out op,
+  output_io out = Some op -> output_prog out = nexec op.
 Proof.
-  intros h out op H. unfold output_io in H. unfold perform_output, output_prog.
+  intros out op H. unfold output_io in H. unfold output_prog.
   destruct (plan_output out); try discriminate H; injection H as <-; reflexivity.
 Qed.
 
@@ -1300,7 +1300,7 @@ Proof. intros h. reflexivity. Qed.
 
 Theorem remember_peer_is_served_operation : forall who first now,
   action_prog (RememberPeer who first now) =
-    nexec (IoMarkServed who first (node_float_wire now)).
+    nexec (IoMarkServed who first (float_wire now)).
 Proof. reflexivity. Qed.
 
 (** Output actions that are each one operation: when every operation is

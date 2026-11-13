@@ -520,7 +520,7 @@ Proof.
   end.
   { apply merged_block_fold.
     - intros [s outs] raw Hs. cbn [fst] in Hs.
-      destruct (decode_tx raw) as [|a [|n fields]]; cbn [fst]; try exact Hs.
+      destruct (decode_tx s raw) as [|a [|n fields]]; cbn [fst]; try exact Hs.
       destruct (num n =? nonce_of s a + 1); cbn [fst]; [|exact Hs].
       assert (Hn : merged_satisfy P (setf s "nonces" (put a (num n) (nonces s))))
         by (apply merged_setf_other; [reflexivity|exact Hs]).

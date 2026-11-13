@@ -1,7 +1,9 @@
 (** A node: consensus, the market it orders blocks for, its agent, and a
     pool of transactions waiting for a block. [step] is everything the shell
     runs: it takes one event and gives back what to do. *)
-Import util shell nodeio consensus market agent cli.
+Import util nodeio consensus market agent cli.
+(* [float] and its literals, OCaml's (Soma.OCaml) *)
+From Soma Require Import OCaml.
 From Stdlib Require Import Ascii.
 
 Record node_state := { cons : consensus_state; mkt : obj; ag : obj; pool : list string; live : bool;
@@ -69,18 +71,26 @@ empty_node : node_state :=
 nonce_window : nat := 4.
 max_pool_per_agent : nat := 8.
 
+(** OCaml's portable signal numbers, as a job's wait status reports them:
+    Sys.sigkill, sigterm, sigsegv, sigabrt and sigint, the same on every
+    platform (OCaml's own numbering, not the OS's). *)
+job_signal_codes : list string := ["-7", "-11", "-10", "-1", "-6"].
+
+(** The cap on what a job may print, 4 MB (16 times a transaction's). *)
+job_output_limit : string := "4194304".
+
 (** a transaction worth keeping: well formed, for a nonce not yet used and
     at most nonce_window ahead of the sender's next *)
 poolable (m : obj) (raw : string) : bool :=
-  match decode_tx raw with
+  match decode_tx m raw with
   | a :: n :: _ => (nonce_of m a <? num n) && (num n <=? nonce_of m a + nonce_window)
   | _ => false
   end.
 
-tx_sender (raw : string) : string := match decode_tx raw with a :: _ => a | _ => "" end.
+tx_sender (m : obj) (raw : string) : string := match decode_tx m raw with a :: _ => a | _ => "" end.
 
 (** how many of the pool's transactions agent a sent *)
-pooled_by (p : list string) (a : string) : nat := length (filter (fun raw => seq (tx_sender raw) a) p).
+pooled_by (m : obj) (p : list string) (a : string) : nat := length (filter (fun raw => seq (tx_sender m raw) a) p).
 
 and_status (n : node_state) (outs : list (list string)) : node_state * list (list string) :=
   (n, outs ++ [("status" :: status_lines (mkt n) ++ [append "pool " (show (length (pool n)))])]).
@@ -136,6 +146,9 @@ step (n : node_state) (ev : list string) : node_state * list (list string) :=
       let c := cons n in
       (with_cons (with_mkt n (new_market names)) {| c with nodes := names |}, [])
   | ["tip", a, t] => (with_mkt n (setf (mkt n) "tips" (put a t (tips (mkt n)))), [])
+  | ["chain", id] => (with_mkt n (setf (mkt n) "chain" id), [])
+  | ["key", a, size, kn, ke] =>
+      (with_mkt n (setf (mkt n) "keys" (put a [size, kn, ke] (getf (mkt n) "keys" : list (string * list string)))), [])
   | ["param", k, v] =>
       let c := cons n in
       if seq k "block_ms" then (with_cons n {| c with block_ms := num v |}, [])
@@ -165,7 +178,7 @@ step (n : node_state) (ev : list string) : node_state * list (list string) :=
   | "timeout" :: fields => consensus_event n (timeout (cons n) fields (build_block (mkt n) (pool n)))
   | ["tx", raw] =>
       if mem raw (pool n) || negb (poolable (mkt n) raw) || (500 <=? length (pool n))
-         || (max_pool_per_agent <=? pooled_by (pool n) (tx_sender raw)) then (n, [])
+         || (max_pool_per_agent <=? pooled_by (mkt n) (pool n) (tx_sender (mkt n) raw)) then (n, [])
       else (with_pool n (pool n ++ [raw]), [])
   | "local_tx" :: fields => agent_event n (flush (enqueue (ag n) fields) (mkt n))
   | "llm_reply" :: id :: kv => agent_event n (answered (ag n) (mkt n) id kv)
@@ -375,40 +388,10 @@ check_request_op (id repo head : string) (edits denied excluded : list string) :
     IoQueue ["check_unchecked_repo", id, repo, (if outside then "true" else "false")]
   else IoCheck id repo head edits.
 
-(** The binary's interpreter of a node program (nodeio.soma's [nprog]):
-    each operation through the one binding, [node_io], in its wire form, in
-    order, each answer handed to the rest of the program. A unikernel runs
-    the same programs with Sandbox's (node_sandbox.soma). Every operation
-    the node does goes through here. *)
-Fixpoint run_shell {A : Type} (h : node_t) (p : nprog A) : A :=
-  match p with
-  | NDone a => a
-  | NStep op k => run_shell h (k (node_io h (io_wire op)))
-  end.
-
-(** Effects use the first of the pair. The call's result is that bool, so
-    the interpretation is not dropped. *)
-io_do (h : node_t) (op : node_op) : bool := run_shell h (nexec op).
-
-(** Boolean table results use the first component as data. In particular a
-    false result must be passed to policy, rather than chained as an effect. *)
-io_read_bool (h : node_t) (op : node_op) : bool := run_shell h (nexec op).
-
-(** The clock, through the same interpreter. The second of the pair is the
-    time; the first only says the read happened. *)
-io_now (h : node_t) : float := ans_float (run_shell h (nask IoClock)).
-
 (** A missing served record uses false as presence, not effect failure.
     The raw timestamp result is never passed through display formatting. *)
 served_result (answer : nanswer) : option float :=
   if fst answer then Some (ans_float answer) else None.
-io_served_at (h : node_t) (who first : string) : option float :=
-  served_result (run_shell h (nask (IoServedAt who first))).
-
-io_log (h : node_t) (text : string) : bool := io_do h (IoLog text).
-
-io_push (h : node_t) (ev : list string) : bool := io_do h (IoQueue ev).
-
 (** The output actions that are a single operation, and the operation. *)
 action_io (action : output_action) : option node_op :=
   match action with
@@ -419,7 +402,7 @@ action_io (action : output_action) : option node_op :=
   | StoreAction height txs => Some (IoStore height txs)
   | RememberVote slot vid fields => Some (IoSignVote slot vid fields)
   | RememberBroadcast height kind fields alternate => Some (IoRememberBroadcast height kind fields alternate)
-  | RememberPeer who first now => Some (IoMarkServed who first (node_float_wire now))
+  | RememberPeer who first now => Some (IoMarkServed who first (float_wire now))
   | MarkNonceFlood => Some IoMarkNonceFlood
   | _ => None
   end.
@@ -628,9 +611,6 @@ Fixpoint actions_prog (actions : list output_action) : nprog bool :=
   | [] => NDone true
   | action :: rest => nand (action_prog action) (fun _ => actions_prog rest)
   end.
-
-carry_output_actions (h : node_t) (actions : list output_action) : bool :=
-  run_shell h (actions_prog actions).
 
 (** A decided merge: the same edits on this node's checkout, committed the
     same way on every node. A repository this node doesn't have is said, a
@@ -1136,9 +1116,9 @@ reply_close_at (text : string) : option string :=
 (** Over the cap, the braces are not even looked up: the same short
     circuit as before, and no walk of a multi-megabyte output. *)
 reply_fields (text : string) : option (list string) :=
-  let limit := node_job_output_limit tt in
+  let limit := job_output_limit in
   if num limit <? slen text then None
-  else reply_fields_of text limit (reply_open_at text) (reply_close_at text) node_json_tokens.
+  else reply_fields_of text limit (reply_open_at text) (reply_close_at text) json_tokens.
 
 (** The outcome carried out: a limit is noted (its wait, reason and doubled
     backoff, the log line) and the raw request held; otherwise the backoff
@@ -1152,18 +1132,18 @@ reply_prog (id kind prompt0 text : string) (ctx : list string) : nprog (list (li
       let backoff := ans_float release in
       nbind (nask IoLimitInfo) (fun limit =>
       let backend := hd "" (ans_list limit) in
-      let wait := limit_wait (reset_in node_float_of_digits now body) backoff in
+      let wait := limit_wait (reset_in float_of_digits now body) backoff in
       let reason := limit_reason_of body in
-      nbind (nand (nexec (IoLimitSet (node_float_wire (PrimFloat.add now wait)) reason
-                                     (node_float_wire (limit_next_backoff backoff)))) (fun _ =>
-             nand (nexec (IoLog (limit_log_text backend (node_float_text (PrimFloat.div wait 60%float)) reason)))
+      nbind (nand (nexec (IoLimitSet (float_wire (PrimFloat.add now wait)) reason
+                                     (float_wire (limit_next_backoff backoff)))) (fun _ =>
+             nand (nexec (IoLog (limit_log_text backend (float_text (PrimFloat.div wait 60%float)) reason)))
                   (fun _ => nexec (IoLlmHold id kind prompt0 ctx)))) (fun held =>
       NDone (if held then [] else [["llm_error", id, "the request couldn't be held"]])))))
   | ReplyError why =>
-      nbind (nexec (IoLimitClear (node_float_wire 900%float))) (fun ok =>
+      nbind (nexec (IoLimitClear (float_wire 900%float))) (fun ok =>
       NDone (if ok then [["llm_error", id, why]] else []))
   | ReplyFields kv =>
-      nbind (nexec (IoLimitClear (node_float_wire 900%float))) (fun ok =>
+      nbind (nexec (IoLimitClear (float_wire 900%float))) (fun ok =>
       NDone (if ok then [("llm_reply" :: id :: kv)] else []))
   end.
 
@@ -1253,7 +1233,7 @@ grok_reply_of (toks : option (list string)) (text : string) : option string * st
 model_reply_prog (id kind prompt0 text : string) (ctx : list string) : nprog (list (list string)) :=
   nbind (nask IoLimitInfo) (fun limit =>
   if seq (hd "" (ans_list limit)) "grok" then
-    match grok_reply_of (node_json_tokens text) text with
+    match grok_reply_of (json_tokens text) text with
     | (Some content, _) => reply_prog id kind prompt0 content ctx
     | (None, why) => NDone [["llm_error", id, why]]
     end
@@ -1338,14 +1318,14 @@ check_apply_plan_of (byz ci raw : string) : check_apply_plan :=
 (** A check's result event, chosen here (step 5): ok is "true", "error"
     when the failure is this node's own (stage "node": the agent abstains)
     or "false" (the bid's). why is the bid's own output, so its control
-    characters become spaces (node_plain_text, the bytes the market's
+    characters become spaces (clean_text, the bytes the market's
     plain_text accepts, docs/SECURITY-REVIEW-2.md P-17) before it can reach
     a rejection's reason. *)
 check_ok_text (ok : bool) (stage : string) : string :=
   if ok then "true" else if seq stage "node" then "error" else "false".
 
 check_result_event (id : string) (ok : bool) (tree why stage : string) : list string :=
-  ["check_result", id, "ok", check_ok_text ok stage, "tree", tree, "why", node_plain_text why, "stage", stage].
+  ["check_result", id, "ok", check_ok_text ok stage, "tree", tree, "why", clean_text why, "stage", stage].
 
 (** A repository this node doesn't check (--no-check, or outside its
     genesis scope): a failure that is this node's own, so it abstains. *)
@@ -1360,9 +1340,6 @@ check_unchecked_reason (repo : string) (excluded : bool) : string :=
 
 check_unchecked_repo_event (id repo : string) (excluded : bool) : list string :=
   check_unchecked_event id (check_unchecked_reason repo excluded).
-
-push_check_result (h : node_t) (id : string) (ok : bool) (tree why stage : string) : bool :=
-  io_push h (check_result_event id ok tree why stage).
 
 (** The success event the shell's push_check_result used to queue, with an empty why. *)
 check_result_ready (id tree : string) : list string :=
@@ -1407,9 +1384,6 @@ check_apply_prog (id out ci raw : string) : nprog (list (list string)) :=
     end
   else NDone [])).
 
-check_apply_events (h : node_t) (id out ci raw : string) : list (list string) :=
-  run_shell h (check_apply_prog id out ci raw).
-
 (** Generated model replies are interpreted before the turn's events run,
     at the finished job's original queue position. Codex's file remains
     until Soma has applied the process-failure guard and resolved it.
@@ -1437,9 +1411,6 @@ Fixpoint model_outputs_prog (evs : list (list string)) : nprog (list (list strin
       nbind (model_outputs_prog rest) (fun others => NDone (first ++ others)))
   end.
 
-model_output_events (h : node_t) (ev : list string) : list (list string) :=
-  run_shell h (model_output_prog ev).
-
 (** A finished job, as a node program: resumed with its outcome, and the
     events its callback queued turned into what they become. *)
 job_output_prog (st : node_state) (ev : list string) : nprog (node_state * list (list string)) :=
@@ -1447,12 +1418,12 @@ job_output_prog (st : node_state) (ev : list string) : nprog (node_state * list 
   | ["job_finished", id, tag, value, timeout, flooded] =>
       let out := Stdlib.Strings.String.concat "" (job_buffer st id) in
       let st := job_forget st id in
-      match job_wait_status (node_job_signal_codes tt) tag value with
+      match job_wait_status job_signal_codes tag value with
       | None => NDone (st, [])
       | Some status =>
           let seconds := if seq timeout "" then None else Some timeout in
           let result := job_result status seconds (seq flooded "1")
-                          (show (num (node_job_output_limit tt) / num "1048576")) out in
+                          (show (num job_output_limit / num "1048576")) out in
           nbind (nask (IoJobComplete id result)) (fun done =>
           nbind (model_outputs_prog (nio_lists (ans_list done))) (fun evs => NDone (st, evs)))
       end
@@ -1473,12 +1444,6 @@ Fixpoint job_outputs_go_prog (st : node_state) (evs acc : list (list string))
 
 job_outputs_prog (st : node_state) (evs : list (list string)) : nprog (node_state * list (list string)) :=
   job_outputs_go_prog st evs [].
-
-Fixpoint push_all (h : node_t) (evs : list (list string)) : bool :=
-  match evs with
-  | [] => true
-  | ev :: rest => io_push h ev && push_all h rest
-  end.
 
 (** A prompt's parts as node programs: each repository's listing
     ([IoLsFiles]), each .plan at its head ([IoHeadFile]), and a task's
@@ -1709,7 +1674,7 @@ llm_prog (id kind prompt : string) (ctx : list string) : nprog bool :=
   | LlmOverBudget => nexec (IoQueue ["llm_error", id, llm_budget_text max])
   | LlmHeld =>
       nand (nexec (IoLog (llm_hold_text id kind backend
-                            (node_float_text (PrimFloat.div (PrimFloat.sub until now) 60%float)))))
+                            (float_text (PrimFloat.div (PrimFloat.sub until now) 60%float)))))
            (fun _ => nexec (IoLlmHold id kind prompt ctx))
   | LlmAsk =>
       nand (nexec (IoLog (llm_ask_text backend kind id calls max))) (fun _ => llm_call_prog id kind prompt ctx)
@@ -1730,7 +1695,7 @@ status_prog (lines : list string) : nprog bool :=
   let limited := status_limit_active (ans_float now) until in
   let write clock := nexec (IoWriteStatus (status_output lines (ans_pairs heads) (ans_pairs bad)
                                              limited backend clock held reason)) in
-  if limited then nbind (nask (IoLocalTime (node_float_wire until))) (fun t => write (ans_one t))
+  if limited then nbind (nask (IoLocalTime (float_wire until))) (fun t => write (ans_one t))
   else write "")))).
 
 (** What an output does, as a node program: its reads are operations
@@ -1786,8 +1751,6 @@ output_prog (out : list string) : nprog bool :=
   | LegacyOutput _ => NDone true
   end.
 
-perform_output (h : node_t) (out : list string) : bool := run_shell h (output_prog out).
-
 (** Effects return whether they were carried out, and the loop keeps the
     new state only when they were: a unit result would be a cast the
     extraction can erase, and with it the call. *)
@@ -1804,9 +1767,6 @@ Fixpoint carry_all_prog (h : node_t) (snap : consensus_state) (effs : list (list
   | [] => NDone true
   | e :: rest => nand (carry_effect_prog h snap e) (fun _ => carry_all_prog h snap rest)
   end.
-
-carry_all (h : node_t) (snap : consensus_state) (effs : list (list string)) : bool :=
-  run_shell h (carry_all_prog h snap effs).
 
 (** A model request held for a limit, handed back by the shell once the
     limit's wait is over: asked now, its prompt assembled again, with no
@@ -1912,7 +1872,7 @@ peer_line_parts (toks : list string) : option (string * (string * list string)) 
 (** What the shell's Yojson member reads gave: the line through the JSON
     token binding, then its members in Soma. *)
 node_line_parts (raw : string) : option (string * (string * list string)) :=
-  match node_json_tokens raw with
+  match json_tokens raw with
   | Some toks => peer_line_parts toks
   | None => None
   end.
@@ -2057,12 +2017,6 @@ conn_admit_plan (d : admit_decision) (conns : list (string * float)) : string * 
   | AdmitEvict => ("evict", oldest_conn conns)
   end.
 
-Fixpoint queue_lines (h : node_t) (lines : list string) : bool :=
-  match lines with
-  | [] => true
-  | l :: r => io_push h ["peer_raw", l] && queue_lines h r
-  end.
-
 (** A local transaction the operator drops in the node's inbox: a JSON list
     of strings, read through the JSON token binding. Anything else (not
     JSON, not a list, an element that isn't a string) is malformed and
@@ -2197,7 +2151,7 @@ ci_done_prog (id tree memory runner t : string) : nprog bool :=
     says whether it's its own. *)
 peer_raw_prog (raw : string) : nprog (list string) :=
   nbind (nask IoIdentity) (fun me =>
-  let shaped := peer_line_shape (node_line_item_cap tt) raw in
+  let shaped := peer_line_shape (show (Succ (slen raw))) raw in
   let parts := if shaped then node_line_parts raw else None in
   nbind (match parts with
          | Some (_, (_, ["tx", tx])) => nexec (IoSeenRefused tx)
@@ -2207,7 +2161,7 @@ peer_raw_prog (raw : string) : nprog (list string) :=
 
 (** a connection, a timer, a job on the wire *)
 conns_of (ls : list (list string)) : list (string * float) :=
-  flat_map (fun l => match l with [c, t] => [(c, node_float_of_digits t)] | _ => [] end) ls.
+  flat_map (fun l => match l with [c, t] => [(c, float_of_digits t)] | _ => [] end) ls.
 
 (** The step an event takes, and its effects carried: the new state only
     when they all were. *)
@@ -2242,12 +2196,12 @@ run_event_prog (h : node_t) (st : node_state) (ev : list string) : nprog node_st
   | ["ci_done", id, tree, memory, runner, t] =>
       nbind (ci_done_prog id tree memory runner t) (fun ok => NDone (kept st ok))
   | ["inbox_file", path, content] =>
-      match inbox_tx (node_json_tokens content) with
+      match inbox_tx (json_tokens content) with
       | Some fields => step_prog h st ("local_tx" :: fields)
       | None => nbind (nexec (IoLog (append "ignoring malformed " path))) (fun ok => NDone (kept st ok))
       end
   | ["peer_bytes", cid, chunk] =>
-      let (kept_lines, rest) := peer_read_events (peer_buffer st cid) chunk (peer_line_cap (tx_byte_cap tt)) in
+      let (kept_lines, rest) := peer_read_events (peer_buffer st cid) chunk (peer_line_cap tx_byte_cap) in
       let (evs, over) := rest in
       let st := peer_remember st cid kept_lines in
       nbind (queue_prog evs) (fun queued =>
@@ -2257,7 +2211,7 @@ run_event_prog (h : node_t) (st : node_state) (ev : list string) : nprog node_st
       else NDone (with_live st (live st)))
   | ["job_bytes", id, chunk] =>
       let (kept_out, over) := job_feed (job_buffer st id) chunk
-                                (num (node_job_output_limit tt)) (num job_keep_text) in
+                                (num job_output_limit) (num job_keep_text) in
       let st := job_remember st id kept_out in
       if over then nbind (nexec (IoJobFlood id)) (fun ok => NDone (kept st ok)) else NDone st
   | _ => step_prog h st ev
@@ -2268,12 +2222,6 @@ Fixpoint run_events_prog (h : node_t) (st : node_state) (evs : list (list string
   | [] => NDone st
   | ev :: rest => nbind (run_event_prog h st ev) (fun st => run_events_prog h st rest)
   end.
-
-run_event (h : node_t) (st : node_state) (ev : list string) : node_state :=
-  run_shell h (run_event_prog h st ev).
-
-run_events (h : node_t) (st : node_state) (evs : list (list string)) : node_state :=
-  run_shell h (run_events_prog h st evs).
 
 (** After a limit's wait, held model requests go back: one first while the
     backoff is up (only when it comes back without the limit, which resets
@@ -2356,8 +2304,6 @@ release_prog : nprog (list (list string)) :=
       if ok then held_batch_prog ReleaseAll probing else NDone [])
   end))).
 
-release_held (h : node_t) : list (list string) := run_shell h release_prog.
-
 (** ---- Step 5: job deadlines and which timers fire ----
     A job is stopped once the elapsed time is greater than its limit, and
     not again after that. A timer fires when its deadline is at or before
@@ -2380,12 +2326,6 @@ Fixpoint expire_ops (now : float) (jobs : list (string * (float * (float * bool)
       else expire_ops now r
   end.
 
-Fixpoint io_all (h : node_t) (ops : list node_op) : bool :=
-  match ops with
-  | [] => true
-  | op :: rest => io_do h op && io_all h rest
-  end.
-
 (** operations in order, stopping at the first not carried out *)
 Fixpoint ops_prog (ops : list node_op) : nprog bool :=
   match ops with [] => NDone true | op :: rest => ndo op (fun _ => ops_prog rest) end.
@@ -2393,7 +2333,7 @@ Fixpoint ops_prog (ops : list node_op) : nprog bool :=
 jobs_of (ls : list (list string)) : list (string * (float * (float * bool))) :=
   flat_map (fun l => match l with
                      | [id, started, limit, stopped] =>
-                         [(id, (node_float_of_digits started, (node_float_of_digits limit, seq stopped "true")))]
+                         [(id, (float_of_digits started, (float_of_digits limit, seq stopped "true")))]
                      | _ => []
                      end) ls.
 
@@ -2519,15 +2459,15 @@ poll_inbox_prog : nprog bool :=
   nbind (nask IoTurnNow) (fun turn =>
   let now := ans_float turn in
   if inbox_poll_due now last then
-    ndo (IoInboxStamp (node_float_wire now)) (fun _ =>
+    ndo (IoInboxStamp (float_wire now)) (fun _ =>
     nbind (nask (IoDirEntries directory)) (fun names =>
     read_inbox_prog (inbox_paths directory (ans_list names))))
   else NDone true)).
 
 timers_of (ls : list (list string)) : list (float * list string) :=
-  flat_map (fun l => match l with d :: ev => [(node_float_of_digits d, ev)] | [] => [] end) ls.
+  flat_map (fun l => match l with d :: ev => [(float_of_digits d, ev)] | [] => [] end) ls.
 
-timer_wire (t : float * list string) : list string := node_float_wire (fst t) :: snd t.
+timer_wire (t : float * list string) : list string := float_wire (fst t) :: snd t.
 
 (** Stop overdue jobs, keep the timers that have not fired, and queue the
     due ones. Dial, resend and the inbox have already run, so their events
@@ -2560,11 +2500,9 @@ node_tick_prog (h : node_t) (st : node_state) : nprog node_state :=
   nbind (nask IoQueueEmpty) (fun empty =>
   nbind (nask IoTimers) (fun timers =>
   let wait := select_wait (ans_float turn) (fst empty) (timers_of (nio_lists (ans_list timers))) in
-  nbind (nask (IoEvents (node_float_wire wait))) (fun got =>
+  nbind (nask (IoEvents (float_wire wait))) (fun got =>
   nbind (job_outputs_prog st (nio_lists (ans_list got))) (fun r =>
   let (st, evs) := r in run_events_prog h st evs)))))))))).
-
-node_tick (h : node_t) (st : node_state) : node_state := run_shell h (node_tick_prog h st).
 
 (** Replay has no consensus snapshot effects, just as before: a restored
     snapshot is checked against the fully replayed height before start. *)
@@ -2620,7 +2558,7 @@ Fixpoint run_boot_prog (st : node_state) (evs : list (list string)) : nprog node
       nbind (nexec (IoMergeApplied repo (commit_version body))) (fun ok =>
       if ok then run_boot_prog st rest else NDone st)
   | ("block_log" :: line :: _) :: rest =>
-      match block_log_replay (node_json_tokens line) (show (height (cons st))) with
+      match block_log_replay (json_tokens line) (show (height (cons st))) with
       | None => run_boot_prog st rest
       | Some (bh, txs) =>
           nbind (nexec (IoRememberBlock bh txs)) (fun remembered =>
@@ -2653,7 +2591,7 @@ start_node_prog (h : node_t) (st : node_state) : nprog node_state :=
     nothing to send again, left a node refusing to vote at that height. It
     is said and skipped: no vote after the slot, a value id that is
     neither empty nor 64 bytes, or a vote that isn't a JSON list of
-    strings. [tokens] is the yojson binding's (node_json_tokens). *)
+    strings. [tokens] is the yojson binding's (json_tokens). *)
 Inductive signed_entry :=
 | SignedVote (slot vid : string) (fields : list string)
 | SignedCut (slot why : string)
@@ -2693,7 +2631,7 @@ Fixpoint restore_signed_prog (lines : list string) (found : bool) : nprog (bool 
   match lines with
   | [] => NDone (true, found)
   | l :: rest =>
-      match signed_log_entry node_json_tokens l with
+      match signed_log_entry json_tokens l with
       | SignedVote k v f =>
           nbind (nexec (IoSignedRestore k v f)) (fun ok =>
           if ok then restore_signed_prog rest true else NDone (false, found))
@@ -2874,7 +2812,7 @@ genesis_refused_text : string := "genesis.json is not a genesis this node can st
 boot_expand_one (ev : list string) : nprog (list (list string)) :=
   match ev with
   | ["genesis", raw] =>
-      match genesis_events (node_json_tokens raw) with
+      match genesis_events (json_tokens raw) with
       | Some gevs => NDone gevs
       | None => nbind (nexec (IoFail genesis_refused_text)) (fun ok => NDone (if ok then [] else [["genesis_refused"]]))
       end
@@ -2892,9 +2830,6 @@ Fixpoint boot_expand_prog (evs : list (list string)) : nprog (list (list string)
       nbind (boot_expand_one ev) (fun first =>
       nbind (boot_expand_prog rest) (fun others => NDone (first ++ others)))
   end.
-
-boot_expand (h : node_t) (evs : list (list string)) : list (list string) :=
-  run_shell h (boot_expand_prog evs).
 
 (** Startup, as a node program: signed.log read back (refusing to start
     when it has votes and there's no snapshot), the boot events expanded
@@ -2932,15 +2867,3 @@ boot_snapshot_prog (h : node_t) : nprog (option node_state) :=
       end
   end).
 
-(** [pantheon node]: the setup (cli.soma's node_setup, run with no node),
-    the shell's runtime built from it, then startup and the loop *)
-run_node (home : string) (flags : list string) : unit :=
-  match run_shell "" (node_setup home flags) with
-  | Some config =>
-      let h := node_open (pack_helpers node_helpers) (nio_frame_lists config) in
-      match run_shell h (boot_snapshot_prog h) with
-      | Some st => forever (node_tick h) st
-      | None => tt
-      end
-  | None => tt
-  end.

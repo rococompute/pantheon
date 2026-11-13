@@ -19,7 +19,7 @@ evs_text (e : option (list (list string))) : string :=
   | Some l => Stdlib.Strings.String.concat ";" (map (Stdlib.Strings.String.concat ",") l)
   end.
 
-events_of (raw : string) : string := evs_text (genesis_events (node_json_tokens raw)).
+events_of (raw : string) : string := evs_text (genesis_events (json_tokens raw)).
 
 small : string :=
   "{""agents"":[{""name"":""a"",""pubkey"":{""n"":""1""},""tip"":""ta"",""exclude"":[""soma""]},{""name"":""b"",""tip"":""tb""}],""block_ms"":1000,""params"":{""p"":""3"",""q"":""4""},""repos"":[{""name"":""pantheon"",""url"":""u"",""commit"":""c"",""tree"":""t""}],""chain_id"":""x""}".
@@ -43,7 +43,7 @@ wide : string :=
         (append (wide_params (num "12000") "") "},""repos"":[]}"))).
 
 count_events (raw : string) : nat :=
-  match genesis_events (node_json_tokens raw) with Some l => length l | None => 0 end.
+  match genesis_events (json_tokens raw) with Some l => length l | None => 0 end.
 
 main := print_lines [
   check "the old order" (seq (events_of small)

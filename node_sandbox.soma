@@ -14,7 +14,7 @@
     ([soma build --no-image]). *)
 Require Import Sandbox.
 From Stdlib Require Import NArith.BinNat PArith.BinPos.
-Import nodeio.
+Import util nodeio node cli.
 
 Record nio_world := {
   (** the chain's id, this node's key and each agent's public key, from
@@ -119,6 +119,13 @@ nio_kernel_stores (s : nio_kernel) (op : node_op) : io (nanswer * nio_kernel) :=
   | None => ret (ans_flag false, s)
   end.
 
+(** a select's wait, in [float_wire]'s seconds, as milliseconds: at most
+    a second, so the loop looks again at least that often *)
+nio_wait_ms (wait : string) : N :=
+  let t := float_text (PrimFloat.mul (float_of_digits wait) (nio_small 1000)) in
+  if starts "-" t || seq t "nan" || seq t "inf" then 0%N
+  else N.min 1000 (N.of_nat (num t)).
+
 (** One operation: the answer the binary's [node_io] gives, and the new
     state. Logging prints; the clock is Sandbox's; storage appends or
     writes the named file; peer sends go on the links; a CI check asks
@@ -211,6 +218,15 @@ nio_kernel_op (w : nio_world) (s : nio_kernel) (op : node_op)
   | IoExit _ | IoChmod _ _ | IoMakeDirs _ | IoCwd | IoNewKey _ | IoRandomHex _ | IoGit _ _
   | IoClone _ _ _ | IoSpawnNode _ _ | IoAwaitNodes _ | IoCheckoutEdits _ | IoApplyEdits _ _
   | IoCheckTree _ _ _ _ => ret (ans_flag false, s)
+  (* the select: nothing comes in but the timers (a unikernel's links are
+     its listen handlers'), so with nothing queued it sleeps until the
+     next is due, as the binary's select waits *)
+  | IoEvents wait =>
+      match t_queue (k_tables s) with
+      | [] => sleep_ms (nio_wait_ms wait)
+      | _ => ret tt
+      end ;;
+      nio_kernel_stores s op
   | IoConnAdmit _ _ _ => ret (nio_ok, s)
   | IoConnClose _ => ret (nio_ok, s)
   | IoJobFlood _ => ret (nio_ok, s)
@@ -224,4 +240,79 @@ Fixpoint run_kernel {A : Type} (w : nio_world) (p : nprog A) (s : nio_kernel) : 
   match p with
   | NDone a => ret (a, s)
   | NStep op k => r <- nio_kernel_op w s op ;; run_kernel w (k (fst r)) (snd r)
+  end.
+
+(** ---- A node as a unikernel ----
+    What cli.soma's [node_setup] decided for a node's home, as the binary's
+    [node_open] reads it (the settings, this node's key, its excluded
+    repositories, those it can't check, CI commands, the agents, the
+    repositories, those still at genesis, then the boot events), made the
+    unikernel's world: the chain, the keys, the draw (the Byzantine flag,
+    the chain's length, the link secret), the exclusions in
+    [IoCheckExclusions]'s form, each repository at its genesis commit, the
+    boot events. What needs a service (CI, git, model calls) answers that
+    it isn't there. *)
+nio_hex (s : string) : list PrimInt63.int :=
+  match Crypto.bytes_of_hex s with Some l => l | None => [] end.
+
+nio_key_of_hex (size : string) (n e p q dp dq qinv : string) : nio_key :=
+  {| nk_bytes := num size / 8; nk_n := nio_hex n; nk_e := nio_hex e; nk_p := nio_hex p;
+     nk_q := nio_hex q; nk_dp := nio_hex dp; nk_dq := nio_hex dq; nk_qinv := nio_hex qinv |}.
+
+Fixpoint nio_fives (l : list string) : list (string * nio_key) :=
+  match l with
+  | name :: _ :: size :: n :: e :: rest => (name, nio_key_of_hex size n e "" "" "" "" "") :: nio_fives rest
+  | _ => []
+  end.
+
+Fixpoint nio_pairs (l : list string) : list (string * string) :=
+  match l with
+  | a :: b :: rest => (a, b) :: nio_pairs rest
+  | _ => []
+  end.
+
+nio_unavailable (_ : list string) : io nanswer := ret (ans_flag false).
+
+nio_kernel_world (config : list (list string)) : option nio_world :=
+  match config with
+  | settings :: key :: excluded :: no_check :: _ :: agents :: repos :: _ :: boot =>
+      match settings, key with
+      | [_, me, secret, chain, byz, backend, _, _, _, _, _, _], [size, n, e, _, p, q, dp, dq, qinv] =>
+          Some {| w_chain := chain; w_key := nio_key_of_hex size n e p q dp dq qinv;
+                  w_keys := nio_fives agents;
+                  w_check := fun id _ _ _ => print (Stdlib.Strings.String.append "no CI service for check " id);
+                  w_draw := [byz, show chain_len, secret];
+                  w_exclusions := flat_map (fun d => ["field", d]) no_check ++ "alternate" :: excluded;
+                  w_heads := flat_map (fun r => [fst r, snd r]) (nio_pairs repos);
+                  w_backend := backend;
+                  w_local_time := fun stamp => stamp;
+                  w_git := nio_unavailable; w_llm := nio_unavailable; w_ci := nio_unavailable;
+                  w_identity := me;
+                  w_float_text := float_wire;
+                  w_boot := boot |}
+      | _, _ => None
+      end
+  | _ => None
+  end.
+
+(** the tables a node starts with: each repository still at genesis at
+    version 0, as the binary's [node_open] notes them *)
+nio_kernel_start (config : list (list string)) : nio_kernel :=
+  let at_genesis := match config with _ :: _ :: _ :: _ :: _ :: _ :: _ :: g :: _ => g | _ => [] end in
+  {| k_tables := {| nio_empty with t_applied := map (fun r => (r, "0")) at_genesis |}; k_peers := [] |}.
+
+(** [pantheon node] as a unikernel: startup (the snapshot read back, the
+    boot events replayed with blocks.log's, the start step), then the
+    event loop's turns, each from the state the last left: the binary's
+    [run_node] over Sandbox. Its files are the image's storage device's. *)
+run_node_image (config : list (list string)) : io unit :=
+  match nio_kernel_world config with
+  | None => print "the node's setup came back malformed"
+  | Some w =>
+      r <- run_kernel w (boot_snapshot_prog "") (nio_kernel_start config) ;;
+      match fst r with
+      | Some st =>
+          Sandbox.iterate (fun (p : prod node_state nio_kernel) => run_kernel w (node_tick_prog "" (fst p)) (snd p)) (st, snd r)
+      | None => print "the node did not start"
+      end
   end.

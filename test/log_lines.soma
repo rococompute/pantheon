@@ -1,7 +1,7 @@
 (** A log file's bytes become its lines in Soma (node.soma's log_lines),
     and blocks.log's bytes become block_log boot events (boot_expand).
     Fixed texts, no node and no disk. *)
-Import util shell market agent node.
+Import util shell market agent node node_shell.
 From Stdlib Require Import Ascii.
 From Stdlib Require ExtrOcamlNatInt.
 Extract Inlined Constant Nat.div => "(fun a b -> if b = 0 then 0 else a / b)".

@@ -100,3 +100,7 @@ Example env_value_as_getenv :
   env_value "PANTHEON_BYZ" ["HOME=/h", "PANTHEON_BYZ=silent", "PANTHEON_BYZ=x"] = "silent"
   /\ env_value "PANTHEON_BYZ" ["PANTHEON_BYZANTINE=1"] = "" /\ env_value "A" ["A="] = "".
 Proof. repeat split; reflexivity. Qed.
+
+Example image_strings_quote :
+  soma_strings ["a""b", ""] = "[""a""""b"", """"]".
+Proof. reflexivity. Qed.

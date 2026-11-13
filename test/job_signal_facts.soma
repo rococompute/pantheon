@@ -28,7 +28,7 @@ main := print_lines [
  check (seq (finished "other" "K" None false) "none") "malformed tag",
  check (seq (job_signal_name [] "K") "signal K") "missing platform facts",
  check (seq (job_signal_name ["X", "X", "X", "X", "X"] "X") "SIGKILL") "first matching constant wins",
- check (let native := node_job_signal_codes tt in
+ check (let native := job_signal_codes in
         same (map (job_signal_name native) native) ["SIGKILL", "SIGTERM", "SIGSEGV", "SIGABRT", "SIGINT"])
        "actual platform constants"
 ].

@@ -1,6 +1,6 @@
 (** A --goal file's bytes become agent goal events (node.soma's goal_events),
     through the same split as a log. Fixed texts, no node. *)
-Import util shell node.
+Import util shell node node_shell.
 From Stdlib Require Import Ascii.
 From Stdlib Require ExtrOcamlNatInt.
 Extract Inlined Constant Nat.div => "(fun a b -> if b = 0 then 0 else a / b)".

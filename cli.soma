@@ -7,7 +7,9 @@
     genesis's bytes and every check on them. The operations do the I/O:
     printing, files, git, a new RSA key, starting nodes, and the edits
     machinery (still OCaml's). [pantheon node] is node.soma's [run_node]. *)
-Import util shell nodeio.
+Import util nodeio.
+(* [float] and its literals, OCaml's (Soma.OCaml) *)
+From Soma Require Import OCaml.
 From Stdlib Require Import Ascii.
 
 cat (l : list string) : string := Stdlib.Strings.String.concat "" l.
@@ -97,7 +99,7 @@ Fixpoint insert_str (x : string) (l : list string) : list string :=
 sort_strings (l : list string) : list string := fold_right insert_str [] l.
 
 (** ---- JSON, as Yojson.Safe reads and writes it ----
-    A value read from node_json_tokens' tokens, and written as
+    A value read from json_tokens' tokens, and written as
     Yojson.Safe.to_string does: no spaces, strings escaped as
     [nio_json_string]. A number keeps its digits; a float keeps the
     tokens' text (rounded to an integer: the node reads them so too). *)
@@ -173,7 +175,7 @@ with json_members (fuel count : nat) (t : list string) {struct fuel} : option (l
 (** a JSON text's value; every value and member takes a token or more,
     and each takes one step of fuel on each side *)
 json_of (raw : string) : option json :=
-  match node_json_tokens raw with
+  match json_tokens raw with
   | Some t => match json_value (3 * length t + 3) t with Some (j, []) => Some j | _ => None end
   | None => None
   end.
@@ -579,7 +581,7 @@ cmd_tx (home : string) (fields : list string) : nprog unit :=
   let d := path home "inbox" in
   cli_do (IoMakeDirs d) (fun _ =>
   cli_ask IoClock (fun now =>
-  let name := append (stamp_text (node_float_text (PrimFloat.mul (ans_float now) 1000000%float))) ".json" in
+  let name := append (stamp_text (float_text (PrimFloat.mul (ans_float now) 1000000%float))) ".json" in
   cli_do (IoWriteFile (path d name) (nio_json_strings fields)) (fun _ =>
   cli_say (cat ["queued for ", basename home, "'s agent: ", join " " fields, " (it signs and sends it next; see `pantheon status ", home, "`)"])
     (fun _ => NDone tt)))).
@@ -661,27 +663,12 @@ usage : string := "pantheon: a private BFT labor market where LLM agents take tu
   pantheon edits CHECKOUT [NOTE]     a checkout's changes as a patch reply (for models with tools)
   pantheon plan [FILE]              a .plan's open items (default ./.plan; see docs/PLAN.md)
   pantheon apply-edits DIR EDITS.json
+  pantheon image HOME FILE [node flags]   the node as a MirageOS unikernel's source (soma build FILE)
 
 Backends: scripted, claude, codex, grok (XAI_API_KEY), cmd:PROGRAM (prompt on stdin, JSON reply on stdout;
 a patch request also gets a scratch checkout in $PANTHEON_WORKTREE: see scripts/bidder.sh).
 ".
 
-(** every command but [node], as one program *)
-cli_prog (args : list string) : nprog unit :=
-  match args with
-  | "init" :: rest => cmd_init rest
-  | "keygen" :: rest => cmd_keygen rest
-  | ["genesis", home, net] => cmd_genesis home net
-  | "edits" :: dir :: rest => cmd_edits dir rest
-  | ["plan"] => cmd_plan ".plan"
-  | ["plan", file] => cmd_plan file
-  | ["apply-edits", dir, file] => cmd_apply_edits dir file
-  | ["check", repo, head, file, out] => cmd_check repo head file out
-  | ["status", home] => cmd_status home
-  | "tx" :: home :: field :: rest => cmd_tx home (field :: rest)
-  | "up" :: dir :: rest => cmd_up dir rest
-  | _ => cli_do (IoPrint usage) (fun _ => NDone tt)
-  end.
 
 (** ---- the node's setup (pantheon node) ----
     What [node_open] needed decided before it builds the node's runtime
@@ -846,9 +833,15 @@ node_setup (home : string) (flags : list string) : nprog (option (list (list str
      flat_map (fun s => match s with (n, None) => [n] | _ => [] end) states]
     (* the boot events: genesis (node.soma's genesis_events reads the
        roster, tips, block_ms, params, repositories and excludes from its
-       text), this node, the backend, the flags' events, then the merges
-       the checkouts already carry *)
-    ++ [["genesis", gtext], ["me", me], ["backend_kind_of", setting "backend"]] ++ events
+       text), the chain's id and each agent's key (what a transaction's
+       signature is checked with: its size in bytes, n and e as hex), this
+       node, the backend, the flags' events, then the merges the checkouts
+       already carry *)
+    ++ [["genesis", gtext], ["chain", chain_id]]
+    ++ flat_map (fun a => match a with
+                          | [n, _, size, kn, ke] => [["key", n, show (num size / 8), kn, ke]]
+                          | _ => [] end) agents
+    ++ [["me", me], ["backend_kind_of", setting "backend"]] ++ events
     ++ flat_map (fun s => match s with (n, Some body) => [["applied_body", n, body]] | _ => [] end) states)))
   end)
   end))
@@ -858,3 +851,59 @@ node_setup (home : string) (flags : list string) : nprog (option (list (list str
   | _, _ => cli_fail (refused (path home "key.json"))
   end)
   end))).
+
+(** ---- pantheon image ----
+    A node as a MirageOS unikernel: [node_setup] run here, on the home's
+    files, and what it decided written into FILE as a Soma program that
+    boots it (node_sandbox.soma's [run_node_image]). FILE goes in a
+    Pantheon checkout, so its imports resolve; [soma build FILE] makes the
+    image, which keeps blocks.log, signed.log and consensus.state on its
+    storage device. *)
+soma_quote (s : string) : string :=
+  let q := Ascii.ascii_of_nat 34 in
+  of_chars (q :: rev_onto (fold_left (fun acc c => if Ascii.eqb c q then q :: q :: acc else c :: acc) (chars s) []) [q]).
+
+soma_strings (l : list string) : string :=
+  cat ["[", Stdlib.Strings.String.concat ", " (map soma_quote l), "]"].
+
+image_text (home : string) (config : list (list string)) : string :=
+  cat ["(** A Pantheon node as a MirageOS unikernel: ", home, "'s setup, made by
+    `pantheon image`. Build it with soma build; boot it with solo5-hvt and
+    its storage device (--block:storage=DISK). *)
+Require Import Sandbox.
+Import node_sandbox.
+
+node_config : list (list string) := [
+  ", Stdlib.Strings.String.concat ",
+  " (map soma_strings config), "].
+
+main : io unit := run_node_image node_config.
+"].
+
+cmd_image (home file : string) (flags : list string) : nprog unit :=
+  nbind (node_setup home flags) (fun config =>
+  match config with
+  | None => NDone tt
+  | Some c =>
+      cli_ask (IoWriteFile file (image_text home c)) (fun a =>
+      if fst a then cli_say (cat ["wrote ", file, ": soma build it to make the node's image"]) (fun _ => NDone tt)
+      else cli_fail (cat ["cannot write ", file]))
+  end).
+
+(** every command but [node], as one program *)
+cli_prog (args : list string) : nprog unit :=
+  match args with
+  | "init" :: rest => cmd_init rest
+  | "keygen" :: rest => cmd_keygen rest
+  | ["genesis", home, net] => cmd_genesis home net
+  | "edits" :: dir :: rest => cmd_edits dir rest
+  | ["plan"] => cmd_plan ".plan"
+  | ["plan", file] => cmd_plan file
+  | ["apply-edits", dir, file] => cmd_apply_edits dir file
+  | ["check", repo, head, file, out] => cmd_check repo head file out
+  | ["status", home] => cmd_status home
+  | "tx" :: home :: field :: rest => cmd_tx home (field :: rest)
+  | "up" :: dir :: rest => cmd_up dir rest
+  | "image" :: home :: file :: flags => cmd_image home file flags
+  | _ => cli_do (IoPrint usage) (fun _ => NDone tt)
+  end.

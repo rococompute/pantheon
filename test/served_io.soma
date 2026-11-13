@@ -8,7 +8,7 @@ Fixpoint wires_eq (a b : list (list string)) : bool := match a,b with
   | [],[] => true | x::xs,y::ys => eq_strs x y && wires_eq xs ys | _,_ => false end.
 Fixpoint nats_eq (a b : list nat) : bool := match a,b with
   | [],[] => true | x::xs,y::ys => (x =? y) && nats_eq xs ys | _,_ => false end.
-write (now : float) : node_op := IoMarkServed "peer" "3" (node_float_wire now).
+write (now : float) : node_op := IoMarkServed "peer" "3" (float_wire now).
 read_wire : list string := ["served_at","peer","3"].
 Fixpoint scripted_effects (program : list node_op) (answers : list (list string * nanswer))
     : bool * list (list string) :=
@@ -43,10 +43,10 @@ script_is (current : string) (has_peer silent : bool)
   Bool.eqb (script_ok result) ok && wires_eq (script_trace result) trace && nats_eq (script_reads result) reads.
 prefix (now : float) (last : nanswer) : list (list string * nanswer) :=
   [(["clock"],(true,(now,[]))),(read_wire,last)].
-transport (t : float) : float := node_float_of_digits (node_float_wire t).
+transport (t : float) : float := float_of_digits (float_wire t).
 not_due (now previous : float) : bool := negb (catchup_due now (Some (transport previous))).
 due (now previous : float) : bool := catchup_due now (Some (transport previous)).
-roundtrip (s : string) : bool := let f := node_float_of_digits s in float_eq f (transport f).
+roundtrip (s : string) : bool := let f := float_of_digits s in float_eq f (transport f).
 wire_roundtrip (op : node_op) : bool := match io_of_wire (io_wire op) with
   Some parsed => eq_strs (io_wire parsed) (io_wire op) | None => false end.
 checks : list string := [
@@ -65,8 +65,8 @@ checks : list string := [
  check "three quarter just before boundary" (not_due 102.749999%float 100.75%float),
  check "high precision epoch timestamp" (roundtrip "1700000000.1234567"),
  check "production codec finite range" (forallb roundtrip ["0","-0","0.1","-0.1","100.25","100.75","1.0000000000000002","9007199254740991","1e-300","1e300","4.9406564584124654e-324","1.7976931348623157e308"]),
- check "negative zero retained" (seq (node_float_wire (node_float_of_digits "-0")) "-0"),
- check "display formatting preserved" (seq (node_float_text 100.25%float) "100" && seq (node_float_text 100.75%float) "101"),
+ check "negative zero retained" (seq (float_wire (float_of_digits "-0")) "-0"),
+ check "display formatting preserved" (seq (float_text 100.25%float) "100" && seq (float_text 100.75%float) "101"),
  check "missing read writes before block reads" (script_is "5" true false
    (prefix 100.25%float (false,(0%float,[])) ++ [(io_wire (write 100.25%float),(true,(0%float,[])))])
    true [["clock"],read_wire,io_wire (write 100.25%float)] [3,4]),

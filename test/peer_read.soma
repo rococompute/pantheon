@@ -118,9 +118,9 @@ checks : list string := [
   check "a malformed line is no event"
     (eq_strs (line_to_event "me" "{not json" (fun _ => false)) []),
   check "an inbox file becomes its local transaction"
-    (match inbox_tx (node_json_tokens "[""bid"",""x""]") with
+    (match inbox_tx (json_tokens "[""bid"",""x""]") with
      | Some f => eq_strs f ["bid", "x"] | None => false end),
   check "a malformed inbox file is no transaction"
-    (match inbox_tx (node_json_tokens "[1]") with Some _ => false | None => true end)
+    (match inbox_tx (json_tokens "[1]") with Some _ => false | None => true end)
 ].
 main := print_lines checks.

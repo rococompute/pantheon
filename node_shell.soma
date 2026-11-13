@@ -1,0 +1,34 @@
+(** The binary's runner: node programs (nodeio.soma's [nprog]) carried
+    out by shell.ml, through its one interpreting binding, [node_io], and
+    [pantheon node]'s loop. Nothing else of the node calls the shell:
+    node.soma, cli.soma and what they import are Soma over the node's
+    operations, which a unikernel interprets with Sandbox instead
+    (node_sandbox.soma). *)
+Import util shell nodeio node cli.
+
+(** The binary's interpreter of a node program: each operation through
+    [node_io], in its wire form, in order, each answer handed to the rest
+    of the program. A unikernel runs the same programs with Sandbox's
+    ([run_kernel]). Every operation the binary does goes through here. *)
+Fixpoint run_shell {A : Type} (h : node_t) (p : nprog A) : A :=
+  match p with
+  | NDone a => a
+  | NStep op k => run_shell h (k (node_io h (io_wire op)))
+  end.
+
+(** The boot events, expanded (tests read them) *)
+boot_expand (h : node_t) (evs : list (list string)) : list (list string) :=
+  run_shell h (boot_expand_prog evs).
+
+(** [pantheon node]: the setup (cli.soma's node_setup, run with no node),
+    the shell's runtime built from it, then startup and the loop *)
+run_node (home : string) (flags : list string) : unit :=
+  match run_shell "" (node_setup home flags) with
+  | Some config =>
+      let h := node_open (pack_helpers node_helpers) (nio_frame_lists config) in
+      match run_shell h (boot_snapshot_prog h) with
+      | Some st => forever (fun st => run_shell h (node_tick_prog h st)) st
+      | None => tt
+      end
+  | None => tt
+  end.

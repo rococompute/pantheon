@@ -1,5 +1,6 @@
 (** Helpers that the consensus, the market and the agent share. *)
-From Stdlib Require Import Ascii DecimalString.
+From Stdlib Require Import Ascii DecimalString ZArith.
+From Corelib Require Floats.SpecFloat Floats.FloatOps.
 Require Crypto.
 
 (** An object is a record whose fields are looked up by name, each an [Any].
@@ -447,3 +448,495 @@ node_helpers : shell_helpers :=
 
 pack_helpers (h : shell_helpers) :=
   (helper_edit_once h, helper_contains h, helper_safe_path h).
+
+(** the scan without an item cap: a container, colon or comma is one
+    character, so a cap past the text's length never runs out, as the
+    binary's max_int never did *)
+shallow_json_uncapped (max s : string) : bool :=
+  shallow_json_go (slen s) s 0 (num max) (Succ (slen s)) 0 0 false false.
+
+(** ---- Floats as text, in Soma ----
+    What OCaml's Printf "%.17g" and "%.0f" and float_of_string give, computed
+    exactly: a float is m * 2^e (FloatOps.Prim2SF), printed from the exact
+    rational with round-half-even, and read back rounded to the nearest
+    float by SpecFloat's own rounding (binary_round_aux), so reading
+    "%.17g"'s text gives back the float. The binary and a unikernel run
+    the same functions. *)
+
+Local Open Scope Z_scope.
+
+pos_of_nat_digits (k : nat) : positive := Nat.iter k (fun p => Pos.mul 10 p) 1%positive.
+
+(** a positive's decimal digits *)
+Fixpoint pos_decimal_go (fuel : nat) (n : N) (acc : string) : string :=
+  match fuel, n with
+  | O, _ => acc
+  | _, N0 => acc
+  | S f, Npos _ =>
+      let (q, r) := N.div_eucl n 10%N in
+      pos_decimal_go f q (Stdlib.Strings.String.String (ascii_of_N (48 + r)%N) acc)
+  end.
+
+n_decimal (n : N) : string :=
+  match n with
+  | N0 => "0"
+  | Npos p => pos_decimal_go (Pos.size_nat p) n ""
+  end.
+
+(** v = num / den, both positive *)
+float_ratio (m : positive) (e : Z) : positive * positive :=
+  match e with
+  | Z0 => (m, 1%positive)
+  | Zpos k => (Pos.shiftl m (Npos k), 1%positive)
+  | Zneg k => (m, Pos.shiftl 1 (Npos k))
+  end.
+
+(** 10^k for a whole k *)
+pow10 (k : Z) : positive := match k with Zpos p => Pos.pow 10 p | _ => 1%positive end.
+
+(** num/den >= 10^k *)
+ratio_ge_pow10 (num den : positive) (k : Z) : bool :=
+  if 0 <=? k then negb (Pos.ltb num (Pos.mul den (pow10 k)))
+  else negb (Pos.ltb (Pos.mul num (pow10 (- k))) den).
+
+(** the decimal exponent of num/den: 10^E <= v < 10^(E+1), from an
+    estimate by its bits, then adjusted *)
+Fixpoint dec_exp_fix (fuel : nat) (num den : positive) (k : Z) : Z :=
+  match fuel with
+  | O => k
+  | S f =>
+      if negb (ratio_ge_pow10 num den k) then dec_exp_fix f num den (k - 1)
+      else if ratio_ge_pow10 num den (k + 1) then dec_exp_fix f num den (k + 1)
+      else k
+  end.
+
+dec_exp (m : positive) (e : Z) : Z :=
+  let (num, den) := float_ratio m e in
+  let bits := Z.of_nat (Pos.size_nat m) + e - 1 in
+  dec_exp_fix 8 num den (Z.div (bits * 30103) 100000).
+
+(** round num/den to a whole number, half to even *)
+round_half_even (num den : N) : N :=
+  let (q, r) := N.div_eucl num den in
+  match N.compare (2 * r)%N den with
+  | Gt => (q + 1)%N
+  | Eq => if N.even q then q else (q + 1)%N
+  | Lt => q
+  end.
+
+(** 17 significant digits of m * 2^e and the decimal exponent of the
+    first: q * 10^(E - 16), 10^16 <= q < 10^17 *)
+float_digits17 (m : positive) (e : Z) : N * Z :=
+  let (num, den) := float_ratio m e in
+  let k := dec_exp m e in
+  let s := 16 - k in
+  let q := if 0 <=? s then round_half_even (Npos (Pos.mul num (pow10 s))) (Npos den)
+           else round_half_even (Npos num) (Npos (Pos.mul den (pow10 (- s)))) in
+  if N.eqb q (Npos (pow10 17)) then (Npos (pow10 16), k + 1) else (q, k).
+
+Fixpoint drop_zeros_rev (l : list ascii) : list ascii :=
+  match l with "0"%char :: r => drop_zeros_rev r | _ => l end.
+
+(** digits with trailing zeros removed, as %g does *)
+strip_zeros (s : string) : string := of_chars (rev_onto (drop_zeros_rev (rev_onto (chars s) [])) []).
+
+point_part (frac : string) : string := let f := strip_zeros frac in if seq f "" then "" else append "." f.
+
+zeros (k : nat) : string := of_chars (List.repeat "0"%char k).
+
+exp_text (k : Z) : string :=
+  let a := n_decimal (Z.to_N (Z.abs k)) in
+  append (if k <? 0 then "e-" else "e+") (if (slen a <? 2)%nat then append "0" a else a).
+
+(** "%.17g" of m * 2^e, without its sign *)
+g17 (m : positive) (e : Z) : string :=
+  let (q, k) := float_digits17 m e in
+  let ds := n_decimal q in
+  if (k <? -4) || (17 <=? k) then
+    append (substr ds 0 1) (append (point_part (substr ds 1 16)) (exp_text k))
+  else if 0 <=? k then
+    append (substr ds 0 (Z.to_nat (k + 1))) (point_part (substr ds (Z.to_nat (k + 1)) 17))
+  else append "0" (point_part (append (zeros (Z.to_nat (- k - 1))) ds)).
+
+signed (s : bool) (t : string) : string := if s then append "-" t else t.
+
+(** Printf "%.17g": the text a float crosses the wire as, read back exactly *)
+float_wire (f : PrimFloat.float) : string :=
+  match FloatOps.Prim2SF f with
+  | SpecFloat.S754_zero s => signed s "0"
+  | SpecFloat.S754_infinity s => signed s "inf"
+  | SpecFloat.S754_nan => "nan"
+  | SpecFloat.S754_finite s m e => signed s (g17 m e)
+  end.
+
+(** Printf "%.0f": the nearest whole number, half to even, and its sign *)
+float_text (f : PrimFloat.float) : string :=
+  match FloatOps.Prim2SF f with
+  | SpecFloat.S754_zero s => signed s "0"
+  | SpecFloat.S754_infinity s => signed s "inf"
+  | SpecFloat.S754_nan => "nan"
+  | SpecFloat.S754_finite s m e =>
+      let (num, den) := float_ratio m e in
+      signed s (n_decimal (round_half_even (Npos num) (Npos den)))
+  end.
+
+(** the float nearest m * 10^k, with its sign: exact SpecFloat rounding.
+    Past 10^310 it is infinite and under 10^-330 zero, which spares
+    computing a power of ten that large. *)
+float_of_dec (neg : bool) (m : N) (k : Z) : PrimFloat.float :=
+  match m with
+  | N0 => FloatOps.SF2Prim (SpecFloat.S754_zero neg)
+  | Npos p =>
+      let size := Z.of_nat (slen (n_decimal m)) + k in
+      let sf :=
+        if 311 <? size then SpecFloat.S754_infinity false
+        else if size <? -330 then SpecFloat.S754_zero false
+        else if 0 <=? k then SpecFloat.binary_normalize 53 1024 (Zpos (Pos.mul p (pow10 k))) 0 false
+        else
+          let q := pow10 (- k) in
+          let s := Z.max 0 (55 + Z.of_nat (Pos.size_nat q) - Z.of_nat (Pos.size_nat p)) in
+          let (quot, rem) := N.div_eucl (Npos (Pos.shiftl p (Z.to_N s))) (Npos q) in
+          let loc := match rem with
+                     | N0 => SpecFloat.loc_Exact
+                     | _ => SpecFloat.loc_Inexact (N.compare (2 * rem)%N (Npos q))
+                     end in
+          SpecFloat.binary_round_aux 53 1024 false (Z.of_N quot) (- s) loc in
+      let f := FloatOps.SF2Prim sf in
+      if neg then PrimFloat.opp f else f
+  end.
+
+digit_of (c : ascii) : option N :=
+  let n := N_of_ascii c in if ((48 <=? n) && (n <=? 57))%N then Some (n - 48)%N else None.
+
+(** an exponent's digits; past six digits it no longer changes the float *)
+Fixpoint exp_digits (cs : list ascii) (acc : Z) (seen : bool) : option Z :=
+  match cs with
+  | [] => if seen then Some acc else None
+  | "_"%char :: r => exp_digits r acc seen
+  | c :: r => match digit_of c with
+              | Some d => exp_digits r (Z.min 1000000 (acc * 10 + Z.of_N d)) true
+              | None => None
+              end
+  end.
+
+exp_part (cs : list ascii) : option Z :=
+  match cs with
+  | "-"%char :: r => option_map Z.opp (exp_digits r 0 false)
+  | "+"%char :: r => exp_digits r 0 false
+  | _ => exp_digits cs 0 false
+  end.
+
+(** digits, a point and more digits, then an exponent: m, the fraction's
+    length subtracted from the exponent, and whether a digit was seen *)
+Fixpoint mant_digits (cs : list ascii) (m : N) (adj : Z) (point seen : bool) : option (N * Z) :=
+  match cs with
+  | [] => if seen then Some (m, adj) else None
+  | "_"%char :: r => if seen then mant_digits r m adj point seen else None
+  | "."%char :: r => if point then None else mant_digits r m adj true seen
+  | c :: r =>
+      match digit_of c with
+      | Some d => mant_digits r (m * 10 + d)%N (if point then adj - 1 else adj) point true
+      | None =>
+          if seen && (Ascii.eqb c "e"%char || Ascii.eqb c "E"%char) then
+            match exp_part r with Some x => Some (m, adj + x) | None => None end
+          else None
+      end
+  end.
+
+(** OCaml's float_of_string on decimal text: a sign, digits with a point
+    and underscores, an exponent; nan, inf and infinity. What it would
+    refuse (hexadecimal included) is nan here. *)
+float_of_digits (s : string) : PrimFloat.float :=
+  let (neg, rest) := match chars s with
+                     | "-"%char :: r => (true, r) | "+"%char :: r => (false, r) | cs => (false, cs) end in
+  let word := lower (of_chars rest) in
+  if seq word "nan" then PrimFloat.nan
+  else if seq word "inf" || seq word "infinity" then (if neg then PrimFloat.neg_infinity else PrimFloat.infinity)
+  else match mant_digits rest 0 0 false false with
+       | Some (m, k) => float_of_dec neg m k
+       | None => PrimFloat.nan
+       end.
+
+Local Close Scope Z_scope.
+
+(** ---- JSON, read as the binary's yojson read it ----
+    Yojson.Safe.from_string, as tokens in prefix order: "A" count, then
+    each key and its value; "L" count, then each value; "S" text; "B"
+    true/false; "U" null; "I" an integer's digits; "F" a float, as "%.0f"
+    prints it. As yojson does: spaces, tabs, carriage returns, newlines
+    and // and /* */ comments between tokens; a key quoted or a bare
+    identifier; NaN, Infinity and -Infinity; numbers by the longest match
+    (an integer is its own digits, -0 is 0, one past OCaml's int stays as
+    written); escapes, \u with surrogate pairs as UTF-8, other bytes as
+    they are. None for what it refuses: anything else, a value followed by
+    more, or no value. Its tuples and variants are refused, as the
+    binary's tokenizer refused them. *)
+
+json_is (s : string) (i n : nat) : bool :=
+  match char_at s i with Some c => nat_of_ascii c =? n | None => false end.
+
+json_at_word (s : string) (i : nat) (w : string) : bool := seq (substr s i (slen w)) w.
+
+json_newline : string := Stdlib.Strings.String.String (ascii_of_nat 10) "".
+
+(** past spaces and comments; None in a comment that isn't closed *)
+Fixpoint json_space_go (fuel : nat) (s : string) (i : nat) : option nat :=
+  match fuel with
+  | 0 => Some i
+  | Succ f =>
+      match char_at s i with
+      | Some c =>
+          let n := nat_of_ascii c in
+          if (n =? 32) || (n =? 9) || (n =? 13) || (n =? 10) then json_space_go f s (Succ i)
+          else if (n =? 47) && json_is s (Succ i) 47 then
+            match find_str json_newline s (i + 2) with
+            | Some j => json_space_go f s (Succ j)
+            | None => Some (slen s)
+            end
+          else if (n =? 47) && json_is s (Succ i) 42 then
+            match find_str "*/" s (i + 2) with
+            | Some j => json_space_go f s (j + 2)
+            | None => None
+            end
+          else Some i
+      | None => Some i
+      end
+  end.
+
+json_space (s : string) (i : nat) : option nat := json_space_go (Succ (slen s)) s i.
+
+json_digit_at (s : string) (i : nat) : bool :=
+  match char_at s i with Some c => let n := nat_of_ascii c in (48 <=? n) && (n <=? 57) | None => false end.
+
+Fixpoint json_digits_end (fuel : nat) (s : string) (i : nat) : nat :=
+  match fuel with
+  | 0 => i
+  | Succ f => if json_digit_at s i then json_digits_end f s (Succ i) else i
+  end.
+
+(** where yojson's number starting at i ends, by the longest match, and
+    whether it is a float (a fraction or an exponent) *)
+json_number_end (s : string) (i : nat) : option (nat * bool) :=
+  let j := if json_is s i 45 then Succ i else i in
+  if negb (json_digit_at s j) then None else
+  let k := if json_is s j 48 then Succ j else json_digits_end (slen s) s j in
+  let (k2, fraction) := if json_is s k 46 && json_digit_at s (Succ k)
+                        then (json_digits_end (slen s) s (Succ k), true) else (k, false) in
+  let m := if json_is s (Succ k2) 43 || json_is s (Succ k2) 45 then k2 + 2 else Succ k2 in
+  if (json_is s k2 101 || json_is s k2 69) && json_digit_at s m
+  then Some (json_digits_end (slen s) s m, true)
+  else Some (k2, fraction).
+
+json_hex (c : ascii) : option nat :=
+  let n := nat_of_ascii c in
+  if (48 <=? n) && (n <=? 57) then Some (n - 48)
+  else if (97 <=? n) && (n <=? 102) then Some (n - 87)
+  else if (65 <=? n) && (n <=? 70) then Some (n - 55)
+  else None.
+
+json_hex_at (s : string) (i : nat) : option nat :=
+  match char_at s i with Some c => json_hex c | None => None end.
+
+json_hex4 (s : string) (i : nat) : option nat :=
+  match json_hex_at s i, json_hex_at s (i + 1), json_hex_at s (i + 2), json_hex_at s (i + 3) with
+  | Some a, Some b, Some c, Some d => Some (((a * 16 + b) * 16 + c) * 16 + d)
+  | _, _, _, _ => None
+  end.
+
+(** a code point's UTF-8 bytes, last first (they go on a reversed list) *)
+json_utf8_rev (x : nat) : list ascii :=
+  let b (n : nat) := ascii_of_nat n in
+  if x <? 128 then [b x]
+  else if x <? 2048 then [b (128 + x mod 64), b (192 + x / 64)]
+  else if x <? 65536 then [b (128 + x mod 64), b (128 + (x / 64) mod 64), b (224 + x / 4096)]
+  else [b (128 + x mod 64), b (128 + (x / 64) mod 64), b (128 + (x / 4096) mod 64), b (240 + x / 262144)].
+
+(** a string's text, from just past its opening quote: the text and the
+    offset past its closing quote *)
+Fixpoint json_string_go (fuel : nat) (s : string) (i : nat) (acc : list ascii) : option (string * nat) :=
+  match fuel with
+  | 0 => None
+  | Succ f =>
+      match char_at s i with
+      | None => None
+      | Some c =>
+          let n := nat_of_ascii c in
+          if n =? 34 then Some (of_chars (rev_onto acc []), Succ i)
+          else if negb (n =? 92) then json_string_go f s (Succ i) (c :: acc)
+          else
+            match char_at s (Succ i) with
+            | None => None
+            | Some e =>
+                let en := nat_of_ascii e in
+                let one (k : nat) := json_string_go f s (i + 2) (ascii_of_nat k :: acc) in
+                if (en =? 34) || (en =? 92) || (en =? 47) then json_string_go f s (i + 2) (e :: acc)
+                else if en =? 98 then one 8
+                else if en =? 102 then one 12
+                else if en =? 110 then one 10
+                else if en =? 114 then one 13
+                else if en =? 116 then one 9
+                else if negb (en =? 117) then None
+                else
+                  match json_hex4 s (i + 2) with
+                  | None => None
+                  | Some x =>
+                      if (55296 <=? x) && (x <=? 56319) then
+                        if json_is s (i + 6) 92 && json_is s (i + 7) 117 then
+                          match json_hex4 s (i + 8) with
+                          | Some y =>
+                              if (56320 <=? y) && (y <=? 57343)
+                              then json_string_go f s (i + 12)
+                                     (json_utf8_rev (65536 + (x - 55296) * 1024 + (y - 56320)) ++ acc)
+                              else None
+                          | None => None
+                          end
+                        else None
+                      else json_string_go f s (i + 6) (json_utf8_rev x ++ acc)
+                  end
+            end
+      end
+  end.
+
+json_ident_char (c : ascii) (first : bool) : bool :=
+  let n := nat_of_ascii c in
+  ((65 <=? n) && (n <=? 90)) || ((97 <=? n) && (n <=? 122)) || (n =? 95)
+  || (negb first && (48 <=? n) && (n <=? 57)).
+
+Fixpoint json_ident_end (fuel : nat) (s : string) (i : nat) : nat :=
+  match fuel with
+  | 0 => i
+  | Succ f => match char_at s i with
+              | Some c => if json_ident_char c false then json_ident_end f s (Succ i) else i
+              | None => i
+              end
+  end.
+
+(** a key: quoted, or a bare identifier *)
+json_key (s : string) (i : nat) : option (string * nat) :=
+  match char_at s i with
+  | Some c =>
+      if nat_of_ascii c =? 34 then json_string_go (Succ (slen s)) s (Succ i) []
+      else if json_ident_char c true then
+        let j := json_ident_end (slen s) s (Succ i) in Some (substr s i (j - i), j)
+      else None
+  | None => None
+  end.
+
+(** a value at i, its tokens pushed on [acc] (last first); then an
+    array's values after its "[", or an object's members after its "{":
+    their tokens, how many, and the offset past the closer *)
+Fixpoint json_value (fuel : nat) (s : string) (i : nat) (acc : list string) : option (list string * nat) :=
+  match fuel with
+  | 0 => None
+  | Succ f =>
+      match json_space s i with
+      | None => None
+      | Some i =>
+          match char_at s i with
+          | None => None
+          | Some c =>
+              let n := nat_of_ascii c in
+              if n =? 123 then
+                match json_space s (Succ i) with
+                | None => None
+                | Some j =>
+                    if json_is s j 125 then Some ("0" :: "A" :: acc, Succ j)
+                    else match json_members f s j [] 0 with
+                         | Some (kids, count, k) => Some (kids ++ show count :: "A" :: acc, k)
+                         | None => None
+                         end
+                end
+              else if n =? 91 then
+                match json_space s (Succ i) with
+                | None => None
+                | Some j =>
+                    if json_is s j 93 then Some ("0" :: "L" :: acc, Succ j)
+                    else match json_items f s j [] 0 with
+                         | Some (kids, count, k) => Some (kids ++ show count :: "L" :: acc, k)
+                         | None => None
+                         end
+                end
+              else if n =? 34 then
+                match json_string_go (Succ (slen s)) s (Succ i) [] with
+                | Some (t, k) => Some (t :: "S" :: acc, k)
+                | None => None
+                end
+              else if json_at_word s i "true" then Some ("true" :: "B" :: acc, i + 4)
+              else if json_at_word s i "false" then Some ("false" :: "B" :: acc, i + 5)
+              else if json_at_word s i "null" then Some ("U" :: acc, i + 4)
+              else if json_at_word s i "NaN" then Some ("nan" :: "F" :: acc, i + 3)
+              else if json_at_word s i "Infinity" then Some ("inf" :: "F" :: acc, i + 8)
+              else if json_at_word s i "-Infinity" then Some ("-inf" :: "F" :: acc, i + 9)
+              else
+                match json_number_end s i with
+                | Some (k, true) => Some (float_text (float_of_digits (substr s i (k - i))) :: "F" :: acc, k)
+                | Some (k, false) =>
+                    let lexeme := substr s i (k - i) in
+                    Some ((if seq lexeme "-0" then "0" else lexeme) :: "I" :: acc, k)
+                | None => None
+                end
+          end
+      end
+  end
+with json_items (fuel : nat) (s : string) (i : nat) (kids : list string) (count : nat)
+    : option (list string * nat * nat) :=
+  match fuel with
+  | 0 => None
+  | Succ f =>
+      match json_value f s i kids with
+      | None => None
+      | Some (kids, j) =>
+          match json_space s j with
+          | None => None
+          | Some j =>
+              if json_is s j 44 then json_items f s (Succ j) kids (Succ count)
+              else if json_is s j 93 then Some (kids, Succ count, Succ j)
+              else None
+          end
+      end
+  end
+with json_members (fuel : nat) (s : string) (i : nat) (kids : list string) (count : nat)
+    : option (list string * nat * nat) :=
+  match fuel with
+  | 0 => None
+  | Succ f =>
+      match json_key s i with
+      | None => None
+      | Some (key, j) =>
+          match json_space s j with
+          | Some j =>
+              if negb (json_is s j 58) then None else
+              match json_value f s (Succ j) (key :: kids) with
+              | None => None
+              | Some (kids, k) =>
+                  match json_space s k with
+                  | Some k =>
+                      if json_is s k 44 then
+                        match json_space s (Succ k) with
+                        | Some k => json_members f s k kids (Succ count)
+                        | None => None
+                        end
+                      else if json_is s k 125 then Some (kids, Succ count, Succ k)
+                      else None
+                  | None => None
+                  end
+              end
+          | None => None
+          end
+      end
+  end.
+
+json_tokens (raw : string) : option (list string) :=
+  match json_space raw 0 with
+  | None => None
+  | Some i =>
+      if slen raw <=? i then None else
+      match json_value (2 * slen raw + 4) raw i [] with
+      | Some (acc, j) =>
+          match json_space raw j with
+          | Some k => if k =? slen raw then Some (rev_onto acc []) else None
+          | None => None
+          end
+      | None => None
+      end
+  end.

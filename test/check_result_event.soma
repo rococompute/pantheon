@@ -25,7 +25,7 @@ main := print_lines [
   check "this node's failure" (eq_strs (check_result_event "7" false "" "no docker" "node")
     ["check_result", "7", "ok", "error", "tree", "", "why", "no docker", "stage", "node"]),
   check "control characters become spaces, tab and newline stay"
-    (seq (node_plain_text (append "a" (append (ch 0) (append (ch 27) (append (ch 9)
+    (seq (clean_text (append "a" (append (ch 0) (append (ch 27) (append (ch 9)
            (append (ch 10) (append (ch 127) (append (ch 200) "b"))))))))
          (append "a  " (append (ch 9) (append (ch 10) (append " " (append (ch 200) "b")))))),
   check "a no-check refusal is this node's own"

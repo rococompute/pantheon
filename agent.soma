@@ -7,7 +7,7 @@
     The market holds no file contents, so a prompt names what it needs and the
     Soma fills it in from the shell's checkout reads: {{REPOS}} lists every repository's
     files, and {{REPO}} gives a task's context files. *)
-Import util shell market.
+Import util market.
 
 me (a : obj) : string := getf a "me".
 backend (a : obj) : string := getf a "backend".

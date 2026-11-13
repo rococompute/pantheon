@@ -45,8 +45,8 @@ let chain_id = ref ""
 let pubkeys : (string, Cryptokit.RSA.key) Hashtbl.t = Hashtbl.create 8
 let max_tx_bytes = 256 * 1024
 (* the most a job (a model's reply, a CI check) may print: well past any
-   reply a transaction can carry. Soma reads the cap as a decimal string
-   ([node_job_output_limit]); it is not a nat. *)
+   reply a transaction can carry. node.soma's job_output_limit is the
+   same number. *)
 let max_job_output = 16 * max_tx_bytes
 
 let strings_json l = `List (List.map (fun s -> `String s) l)
@@ -62,9 +62,6 @@ let key_wire agent =
   match Hashtbl.find_opt pubkeys agent with
   | Some (k : Cryptokit.RSA.key) -> [ !chain_id; string_of_int (k.size / 8); hex k.n; hex k.e ]
   | None -> []
-let tx_key agent = key_wire agent
-let tx_byte_cap () = string_of_int max_tx_bytes
-let tx_item_cap () = string_of_int max_int
 
 let encode_tx key agent nonce fields =
   Yojson.Safe.to_string
@@ -575,45 +572,14 @@ let node_counter = ref 0
 let lookup_handle id = try Hashtbl.find node_handles id with Not_found -> fail "unknown node handle %s" id
 let fs_dir_entries path = if Sys.file_exists path then Array.to_list (Sys.readdir path) else []
 let fs_read_text path = try Some (read_file path) with _ -> None
-let node_job_signal_codes () =
-  List.map string_of_int [Sys.sigkill; Sys.sigterm; Sys.sigsegv; Sys.sigabrt; Sys.sigint]
-let node_plain_text s = plain_text s
 (* a model call's I/O: node.soma's perform_llm decides and builds the prompt *)
 let node_env_entries () = Array.to_list (Unix.environment ())
 (* a model's output: node.soma's reply_fields decides what it becomes.
    These bindings only report the cap and yojson's value as tokens. Where
    the braces are (reply_open_at, reply_close_at), the slice, the guards
    and the key paths are Soma. *)
-let node_job_output_limit () = string_of_int max_job_output
-(* "A" count key value...; "L" count value...; "S" text; "B" true/false;
-   "U"; "I" digits (an int or an intlit); "F" printed with %.0f. *)
-let json_tokens j =
-  let out = ref [] in
-  let stack : ([ `E of string | `V of Yojson.Safe.t ]) Stack.t = Stack.create () in
-  Stack.push (`V j) stack;
-  while not (Stack.is_empty stack) do
-    match Stack.pop stack with
-    | `E s -> out := s :: !out
-    | `V (`Assoc kv) ->
-        List.iter (fun (k, v) -> Stack.push (`V v) stack; Stack.push (`E k) stack) (List.rev kv);
-        Stack.push (`E (string_of_int (List.length kv))) stack;
-        Stack.push (`E "A") stack
-    | `V (`List l) ->
-        List.iter (fun v -> Stack.push (`V v) stack) (List.rev l);
-        Stack.push (`E (string_of_int (List.length l))) stack;
-        Stack.push (`E "L") stack
-    | `V (`String s) -> Stack.push (`E s) stack; Stack.push (`E "S") stack
-    | `V (`Bool b) -> Stack.push (`E (string_of_bool b)) stack; Stack.push (`E "B") stack
-    | `V `Null -> Stack.push (`E "U") stack
-    | `V (`Int i) -> Stack.push (`E (string_of_int i)) stack; Stack.push (`E "I") stack
-    | `V (`Intlit s) -> Stack.push (`E s) stack; Stack.push (`E "I") stack
-    | `V (`Float f) -> Stack.push (`E (Printf.sprintf "%.0f" f)) stack; Stack.push (`E "F") stack
-  done;
-  List.rev !out
-let node_json_tokens raw = try Some (json_tokens (Yojson.Safe.from_string raw)) with _ -> None
 let node_float_of_digits s = float_of_string s
 let node_float_text f = Printf.sprintf "%.0f" f
-let node_float_wire f = Printf.sprintf "%.17g" f
 (* The node's operations (node.soma's node_op, U-1), one at a time in their
    wire form (node.soma's io_wire; this match is its io_of_wire): the only
    place the node logs, sets a timer, queues an event, sends on a peer
@@ -821,7 +787,6 @@ let node_limit_info id = (lookup_handle id).h_limit_info ()
 (* Node metadata for peer lines. Soma gates the parse, reads the members
    from node_json_tokens' tokens (node.soma's node_line_parts), and decides
    whether to verify and which event the fields carry. *)
-let node_line_item_cap () = string_of_int max_int
 (* a decided merge's I/O: node.soma's perform_merge decides *)
 let rec forever f s = forever f (f s)
 

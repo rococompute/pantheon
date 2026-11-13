@@ -2,7 +2,7 @@
     binding: the old fields in the old order, control characters made
     spaces (tab and newline kept), and a no-check refusal as this node's own.
     No node, no disk. *)
-Import util shell node.
+Import util shell node node_shell.
 From Stdlib Require ExtrOcamlNatInt.
 Extract Inlined Constant Nat.div => "(fun a b -> if b = 0 then 0 else a / b)".
 Extract Inlined Constant Nat.modulo => "(fun a b -> if b = 0 then a else a mod b)".

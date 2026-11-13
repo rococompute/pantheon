@@ -200,7 +200,9 @@ to start, `IoFail`, when it has votes and there is no snapshot), the boot
 events expanded (`boot_expand_prog`) and replayed (`run_boot_prog`, each
 block remembered for catch-up with `IoRememberBlock`), the replay logged
 and the start step carried (`start_node_prog`; `fresh_boot_reads`). So
-`run_node` is the setup program (cli.soma's `node_setup`), the runtime
+`run_node` (node_shell.soma, with `run_shell`: the binary's own
+interpreter, which the unikernel's build never sees) is the setup program
+(cli.soma's `node_setup`), the runtime
 built from it (`node_open`), the snapshot read back (`IoSnapshotLoad`),
 then `run_shell` of the boot program and `forever` of the tick: every
 effect the node has is a node operation but building `node_open`'s
@@ -263,7 +265,7 @@ Each operation:
 | `IoConns`, `IoPollPrep` | live connections and their last reads; sample the turn clock, dial and resend | the peer links (no activity times); nothing (links are listen handlers') |
 | `IoInboxState`, `IoInboxStamp`, `IoDirEntries`, `IoRemoveFile` | the inbox's last poll and directory; note a poll; list a directory; remove a file | an empty inbox (Sandbox's named files can't be listed or removed) |
 | `IoTurnNow`, `IoTimers`, `IoSetTimers`, `IoJobs`, `IoQueueEmpty` | the turn's clock, the timer list read and replaced, the running jobs, the queue | the monotonic clock; the tables' timers (as text by `w_float_text`); no jobs; the tables' queue |
-| `IoEvents wait` | one select, waiting at most `wait` seconds | the queue, drained |
+| `IoEvents wait` | one select, waiting at most `wait` seconds | the queue, drained; when it is empty, a sleep of `wait` first |
 | `IoBootEvents`, `IoReplayCount`, `IoRememberBlock h txs` | genesis, this node, the backend, applied versions and blocks.log's text; the replayed count; a replayed block kept for catch-up | `w_boot` then blocks.log's named file; the stores' blocks |
 | `IoSignedText`, `IoSignedRestore slot vid fields`, `IoFail message` | signed.log's bytes; a vote read back; refusing to start (stderr, exit 1) | signed.log's named file; the stores' signed table; printed, answered false |
 | `IoConnAdmit`, `IoConnClose`, `IoJobFlood`, `IoJobExpire` | admit, refuse or close a socket; kill a job's process | nothing to do: a unikernel's links are its listen handlers', and it runs no processes |
@@ -326,7 +328,8 @@ the two agree on known answers.
 
 Every signature is checked by Soma, in the binary as in the unikernel:
 a transaction's in `decode_tx` (`nio_tx_verify`, with the agent's key from
-the pure binding `tx_key`) and a peer line's in node.soma
+the market's own table, filled by the boot events `["chain", id]` and
+`["key", agent, size, n, e]` that `node_setup` gives) and a peer line's in node.soma
 (`nio_line_verify`, with the sender's key from `IoPeerKey`). The shell
 only hands over keys (`key_wire`: the chain id, the size in bytes, n and e
 as hex). Keys are made with e = 65537 (`make_keys`), which Soma checks in
@@ -334,6 +337,46 @@ about 1.6 ms. A genesis made before has Cryptokit's random 2048-bit public
 exponents, which take about 90 ms each: such a network still works, slowly,
 and wants a new genesis. Signing stays Cryptokit's (`encode_tx`, `wire`):
 the unikernel signs with Soma's RSA, about 12 ms a signature.
+
+## The node as a unikernel
+
+node.soma imports no shell. What it called in `shell.ml` as pure
+bindings is Soma's: JSON (`util.soma`'s `json_tokens`, the tokens
+Yojson.Safe's reader gives, comments, bare keys, NaN and surrogate pairs
+included), floats (`float_wire`, `float_text`, `float_of_digits`: `%.17g`,
+`%.0f` and `float_of_string`, exact, through SpecFloat), `clean_text`, the
+line and job limits, and a transaction's key (the market's table, above).
+`test/text-values.sh` runs 610 floats and 248 JSON texts through them
+against what OCaml and Yojson give. The binary's interpreter, `run_shell`,
+and `run_node` are `node_shell.soma`'s, the one module but main.soma that
+imports `shell`.
+
+`pantheon image HOME FILE` runs a node's setup (`node_setup`, as `pantheon
+node HOME` does) and writes FILE: a Soma program that requires Sandbox,
+with the setup's framed data as a list of strings, whose `main` is
+node_sandbox.soma's `run_node_image`. `soma build FILE` (with
+`SOMA_MIRAGE_SWITCH` naming Soma's MirageOS switch) makes the image, and
+`solo5-hvt --block:storage=DISK` boots it: the boot program (the snapshot
+read back, signed.log restored, genesis and blocks.log replayed), then the
+tick, forever, with Sandbox's `iterate` (a loop with a state, which Soma
+added for it). Its files (blocks.log, signed.log, status.txt,
+consensus.state) are named files on the storage device, so a reboot on
+the same disk restarts the node as the binary's restart does: it reads its
+votes back and won't sign against them. `test/node-image.sh` boots one,
+reads its disk, boots it again and checks signed.log was kept.
+
+What the image doesn't do yet:
+
+- **Peers.** Sandbox's links are handlers that `listen` and `connect`
+  run; the tick has no mailbox to read what they received, so the image
+  runs alone (it signs its first prevote and waits). A node
+  among binaries needs one, or a select over links: Soma's item.
+- **Storage.** Sandbox's named files are rewritten whole on every write
+  (two banks, a 16 MiB cap on all of them), so blocks.log can't grow far.
+  An append that writes only its bytes is Soma's item.
+- **Services.** git, model calls and CI answer false (`w_git`, `w_llm`,
+  `w_ci`): the image can vote but not merge, bid or check.
+- **Time.** Its clock is the monotonic one, from boot.
 
 ## The first pieces, bottom-up (superseded by the section above)
 

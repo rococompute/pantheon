@@ -1,7 +1,7 @@
 (** Pantheon: a private, Byzantine-fault-tolerant labor market where LLM
     agents take turns as term leader. Soma selects commands and node.soma decides the market;
     shell.ml supplies command implementations and I/O. *)
-Import util shell node.
+Import util shell node node_shell.
 
 (** Numbers run as OCaml ints. The kernel and the proofs still see Peano
     naturals: these only say how extracted code computes them. *)

@@ -9,15 +9,12 @@ OCaml Library "yojson".
     shell.ml keeps its own, Cryptokit's, for what it hashes itself (the
     genesis, the leader draw's chains), which are the same function. *)
 
-(** A signed transaction's I/O; market.soma's decode_tx decides, and
-    checks the signature itself (nodeio's nio_tx_verify, Soma's RSA).
-    The agent's genesis key in nio_key_of_wire's form (the chain id, the
-    key's size in bytes, n and e as hex), none for an unknown agent; the
-    transaction byte cap and the item cap of its bounded scan, as decimal
-    strings. *)
-tx_key : string -> list string.
-tx_byte_cap : unit -> string.
-tx_item_cap : unit -> string.
+(** A signed transaction is all Soma's: market.soma's decode_tx reads it
+    (util.soma's json_tokens), checks the signature with the agent's
+    genesis key, which the market keeps from the boot events (nodeio's
+    nio_tx_verify, Soma's RSA), and owns the caps. So are JSON tokens,
+    floats as text and the job caps (util.soma, node.soma): the binary
+    and a unikernel run the same functions. *)
 
 (** Process arguments exclude the executable name. Soma chooses the command. *)
 argv : unit -> list string.
@@ -84,11 +81,6 @@ forever : forall {A : Type}, (A -> A) -> A -> unit.
 
 (** Metadata reads. The clock and the height are node_io operations.
     Soma chooses whether and which catch-up blocks to send. *)
-(** The item's cap as decimal text. Soma scans each raw line before
-    invoking the JSON library (node_json_tokens), reads its members itself
-    (node.soma's node_line_parts), then drops own/refused lines before
-    asking node_io's "verify_line". *)
-node_line_item_cap : unit -> string.
 (** The event loop's own I/O is node_io operations too (nodeio.soma's
     IoRefuse ... IoEvents; node.soma's node_tick_prog decides): "refuse"
     RAW, "identity", "seen_refused" RAW, "verify_line" FROM SIG FIELDS...
@@ -139,25 +131,11 @@ node_env_entries : unit -> list string.
     A run of decimal digits as a float (OCaml's float_of_string); noting a
     limit (until when, its reason, the next backoff; the probe is over);
     and setting the backoff after an answer (the probe is over). *)
-node_job_output_limit : unit -> string.
-(** Platform wait-status constants, in kill/term/segv/abrt/int order, as raw
-    signed integers. Soma chooses names and the resulting failure text. *)
-node_job_signal_codes : unit -> list string.
 (** A job's buffered read chunks, in order. Soma's job_feed appends the
     chunk the shell just read and, past the output cap, keeps the tail;
     the shell stores that list and, when the feed says the job is over,
     signals the process once (node.soma job_feed). Reading the bytes stays
     here. *)
-(** A text's bytes with control characters (other than tab and newline)
-    and DEL made spaces: what the market's plain_text accepts. A byte map
-    here, so a large check output isn't turned into a list of characters;
-    node.soma's check_result_event chooses the event. *)
-node_plain_text : string -> string.
-node_json_tokens : string -> option (list string).
-node_float_of_digits : string -> float.
-node_float_text : float -> string.
-(** Lossless finite binary64 transport; display formatting stays above. *)
-node_float_wire : float -> string.
 
 (** Connection admission and the buffered-line cap are Soma's
     (node.soma admit_decision_of, buffer_over; the per-host and total
