@@ -67,10 +67,12 @@ node_open : (((string -> string -> string -> option string) * (string -> string 
 node_io : string -> list string -> bool * (float * list string).
 (** The data reads are node_io operations too (nodeio.soma's IoDraw,
     IoBlock, IoHeight, IoPeerCount, IoSignedVote, IoSignedBody,
-    IoEncodeTx, IoCheckExclusions): "draw" answers [byz, limit, secret],
+    IoSignedAt, IoEncodeTx, IoCheckExclusions): "draw" answers [byz, limit, secret],
     "block" H the stored block's transactions (found or not), "height"
     and "peer_count" one decimal, "signed_vote" SLOT the value id and
     "signed_body" SLOT the message signed there (found or not),
+    "signed_at" H every message signed at height H, each framed as
+    "field" VALUE... "alternate",
     "encode_tx" NONCE FIELDS the transaction signed with the node's key,
     "check_exclusions" the --no-check names then the scope's, framed as
     "field" NAME... "alternate" NAME... . The status file's facts too:

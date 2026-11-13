@@ -26,7 +26,8 @@ let () =
   let restarted, _ = step0 restarted ["start"] in
   let c = restarted.cons in
   assert (c.lockr = 3 && c.lockv = ["A"]);
-  assert (c.validr = 3 && c.validv = ["A"] && c.round = 3);
+  assert (c.validr = 3 && c.validv = ["A"] && c.round = 2 && c.step = 2);
+  let c = { c with round = 3; step = 0 } in
   let p = { kd = Proposal; frm = proposer c c.height c.round;
     mh = c.height; mr = c.round; vr = 0;
     vid = Shell.hash_list ["B"]; value = ["B"] } in

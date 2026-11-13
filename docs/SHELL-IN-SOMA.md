@@ -248,7 +248,7 @@ Each operation:
 | `IoRememberBroadcast height kind fields alternate` | prepend both message variants to resend memory | the tables' resend memory |
 | `IoMergeApplied repo v`, `IoMergeDiverged repo entry` | the applied-version table, the divergence list | the tables |
 | `IoCheck id repo head edits` | the CI job: a fresh clone, the edits, the CI command as a process; its result comes back as a `check_result` event | `w_check`: a CI service, which needs Soma's "services" item (HTTP POST with a timeout) |
-| `IoBlock height`, `IoHeight`, `IoSignedVote slot`, `IoSignedBody slot` | the decided-block and signed-vote tables beside blocks.log and signed.log, the height; absent is `false` | the stores (`nio_store_op`), filled by `IoStore` and `IoSignVote` |
+| `IoBlock height`, `IoHeight`, `IoSignedVote slot`, `IoSignedBody slot`, `IoSignedAt height` | the decided-block and signed-vote tables beside blocks.log and signed.log, the height; absent is `false`; every message signed at a height, framed | the stores (`nio_store_op`), filled by `IoStore` and `IoSignVote` |
 | `IoPeerCount` | the genesis peers, counted | the genesis peers, counted |
 | `IoDraw`, `IoEncodeTx nonce fields`, `IoCheckExclusions` | the epoch's draw (Byzantine flag, chain length, link secret); a transaction signed with the node's key; the fields this node won't check, `field`-tagged, then `alternate` and the excluded alternates | `w_draw`, `nio_encode_tx` (Soma's RSA), `w_exclusions` |
 | `IoCheckoutHeads`, `IoDivergences` | `git rev-parse --short HEAD` in each checkout; the divergence list (pairs, flattened) | `w_heads`; the tables' divergences |
@@ -386,18 +386,37 @@ the image beside two binaries with the fourth down: a block takes 3 of
 4 votes, so the chain moving shows the image votes (four heights in
 about 7 s), and the image's blocks.log, read from its disk, is the
 binaries'. It stops the image (the chain stops), boots it again on the
-same disk with the fourth agent up, and checks signed.log was kept and
-the image's disk gets the same blocks as claude's.
+same disk three times with the fourth agent still down, and checks the
+chain moves on each time, signed.log was kept and the image's disk gets
+the same blocks as claude's.
 
-One thing that run found is the protocol's, not the image's: a node
-stopped after saving a precommit and before sending it decides that
-height from its snapshot when it starts again, and moves on; it no
-longer resends that precommit, and the others take a block they missed
-only from f + 1 matching `done` messages (consensus.soma). With exactly
-a quorum up (the fourth agent down), one node ahead can't give two
-behind that, and the chain stops. A binary stopped at that moment does
-the same. The fix would be a node answering a peer that is behind with
-its own signed precommits for that height, which the peer can count.
+Rebooting with exactly a quorum up (the fourth agent down) found three
+gaps in the protocol, the binary's as much as the image's, now fixed:
+
+- **Catch-up from one node.** A node stopped after saving a precommit
+  and before sending it decides that height from its snapshot when it
+  starts again, and moves on alone. Resend memory drops a height once
+  it's decided, and a reboot empties it, so that precommit was never
+  sent; the others take a block they missed only from f + 1 matching
+  `done` messages, which one node ahead can't give. Now a node answering
+  a peer one height behind (`behind`, node.soma's `catchup_plan`) also
+  sends it, with `IoSignedAt`, every message it signed at that height,
+  which completes the peer's quorum. A peer two or more behind needs
+  none of it: a quorum decided the next height, so f + 1 honest nodes
+  are past this one and send its block.
+- **A restart left its round.** A node started again went on to the
+  next round. Stopped after its prevote, it left the others, who had
+  precommitted in that round, waiting there for its precommit, and one
+  node in a later round isn't the f + 1 that moves them (4 of 15 runs).
+  Now it stays in its round, with that round's timers back
+  (consensus.soma's `resume_timers`), sends what it signed at its height
+  again and keeps it in resend memory (node.soma's
+  `resume_signed_prog`), and finishes the round with the others.
+- **A snapshot ahead of signed.log.** A step's snapshot was saved before
+  its votes were signed, so a node stopped between the two started from
+  a snapshot saying it had voted, with nothing to send. Now a step's
+  votes are signed before its snapshot and sent after it
+  (`sign_effects`, in `order_effects` and `startup_effects`).
 
 What the image doesn't do yet:
 

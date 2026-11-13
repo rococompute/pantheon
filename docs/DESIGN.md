@@ -257,7 +257,14 @@ applying block h, `on_decided` enters `roster_at` for h + 1
 already logged from agents off it are dropped. The same roster leaves the
 state untouched. A validator off the roster takes no block as valid
 (`member_valid` in `consensus.settle`): it neither locks nor decides on its
-own vote, and moves on only by f + 1 `Done` messages.
+own vote, and moves on only by f + 1 `Done` messages. A peer one height
+behind also gets a node's own signed messages at that height again
+(`catchup_plan`): a node that decided alone, its precommit lost or
+never sent (it stopped after saving it), is then not the only one who
+can finish the others' quorum. A node started again stays in its round
+with that round's timers (`resume_timers`), and sends what it signed at its
+height again and keeps resending it (`resume_signed_prog`); a step's votes
+are in signed.log before its snapshot is saved (`sign_effects`).
 `test/roster-consensus.sh` checks this. Still to do: committing precommit
 certificates in blocks and dispatching roster transactions.
 

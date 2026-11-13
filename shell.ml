@@ -546,6 +546,7 @@ type node_handle = { h_events : float -> string list list;
                      h_send_all : string list -> unit;
                      h_signed_vote : string -> string option;
                      h_signed_body : string -> string list option;
+                     h_signed_at : string -> string list list;
                      h_signed_text : string;
                      h_signed_restore : string -> string -> string list -> unit;
                      h_remember_vote : string -> string -> string list -> unit;
@@ -644,6 +645,9 @@ let node_io_handle h op =
       (match h.h_signed_vote slot with Some vid -> (true, (0., [ vid ])) | None -> (false, (0., [])))
   | [ "signed_body"; slot ] ->
       (match h.h_signed_body slot with Some body -> (true, (0., body)) | None -> (false, (0., [])))
+  | [ "signed_at"; height ] ->
+      (true, (0., List.concat_map (fun body -> List.concat_map (fun f -> [ "field"; f ]) body @ [ "alternate" ])
+                    (h.h_signed_at height)))
   | "encode_tx" :: nonce :: fields -> (true, (0., [ h.h_encode_tx nonce fields ]))
   | [ "check_exclusions" ] ->
       let denied, excluded = h.h_check_exclusions () in
@@ -1323,6 +1327,13 @@ let node_open packed config =
       h_send_all = (fun fields -> let line = wire fields in List.iter (fun p -> send_to p line) peers);
       h_signed_vote = (fun slot -> Option.map fst (Hashtbl.find_opt signed slot));
       h_signed_body = (fun slot -> match Hashtbl.find_opt signed slot with Some (_, body) -> body | None -> None);
+      h_signed_at = (fun height ->
+        Hashtbl.fold (fun slot (_, body) acc ->
+            match String.split_on_char '/' slot, body with
+            | [ _; h; _ ], Some b when h = height -> (slot, b) :: acc
+            | _ -> acc)
+          signed []
+        |> List.sort compare |> List.map snd);
       h_signed_text = signed_text;
       h_signed_restore = (fun slot vid fields -> Hashtbl.replace signed slot (vid, Some fields));
       h_remember_vote = (fun slot vid fields ->

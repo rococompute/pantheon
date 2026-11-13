@@ -170,9 +170,7 @@ step (n : node_state) (ev : list string) : node_state * list (list string) :=
       let (a, o) := tick (ag n) (mkt n) in
       if (round (cons n) =? 0) && (step (cons n) =? 0) && (lockr (cons n) =? 0) then
         and_status (with_ag n a) (o ++ [["height", show h], timer "commit" h 0 0])
-      else
-        let (c, co) := start_round (cons n) (round (cons n) + 1) (build_block (mkt n) (pool n)) in
-        and_status (with_cons (with_ag n a) c) (o ++ [["height", show h]] ++ co)
+      else and_status (with_ag n a) (o ++ [["height", show h]] ++ resume_timers (cons n))
   (* running *)
   | "msg" :: from :: fields => consensus_event n (receive (cons n) from fields)
   | "timeout" :: fields => consensus_event n (timeout (cons n) fields (build_block (mkt n) (pool n)))
@@ -192,10 +190,10 @@ step (n : node_state) (ev : list string) : node_state * list (list string) :=
     [node_open] (I/O setup), startup data, [events] (one select turn),
     smaller output bindings (every output case is decided in Soma),
     the snapshot ([IoSnapshotSave]), [note_refused] and [forever]. An effect is a field list: ["perform"; output...],
-    ["save_snapshot"] or ["refuse"; raw]. [order_effects] is pure: it takes
+    ["save_snapshot"], ["sign"; vote...] or ["refuse"; raw]. [order_effects] is pure: it takes
     the event, the state before and after [step], and the outputs, and puts
-    decided outputs first, then the snapshot when consensus changed, then
-    the rest. A transaction [step] refused leaves the pool unchanged and is
+    decided outputs first, then the votes signed ([sign_effects]), then
+    the snapshot when consensus changed, then the rest. A transaction [step] refused leaves the pool unchanged and is
     remembered; an accepted one enters the pool. *)
 
 node_t : Type := string.
@@ -316,6 +314,19 @@ snapshot_malformed_text : string :=
 is_decided (o : list string) : bool :=
   match o with "decided" :: _ => true | _ => false end.
 
+(** The votes among the outputs, to sign before the snapshot is saved (a
+    [done] is a block, not a vote, as [broadcast_subject] has it). The
+    snapshot says a vote was cast, and the node, started again, goes on
+    to the next round without casting it again: signed first, the vote is
+    in signed.log whenever the snapshot says so, and a node started again
+    sends it ([resume_signed_prog]). Saved first, a node stopped between
+    the two had a vote it never signed or sent, and with exactly a quorum
+    up the others waited for it in the round it left. *)
+sign_effects (outs : list (list string)) : list (list string) :=
+  flat_map (fun o => match o with
+    | "broadcast" :: (k :: _ :: _ :: _ :: _ :: _) as fields => if seq k "done" then [] else [("sign" :: fields)]
+    | _ => [] end) outs.
+
 order_effects (ev : list string) (before after : node_state) (outs : list (list string)) : list (list string) :=
   let refused :=
     match ev with
@@ -325,7 +336,7 @@ order_effects (ev : list string) (before after : node_state) (outs : list (list 
   let decided := map (fun o => "perform" :: o) (filter is_decided outs) in
   let save := if cons_eq (cons before) (cons after) then [] else [["save_snapshot"]] in
   let rest := map (fun o => "perform" :: o) (filter (fun o => negb (is_decided o)) outs) in
-  refused ++ decided ++ save ++ rest.
+  refused ++ decided ++ sign_effects outs ++ save ++ rest.
 
 (** Step 4: classify outputs in Soma. Every case has its own small
     bindings; an output no case names does nothing, as shell.ml's old
@@ -369,6 +380,7 @@ Inductive output_action :=
 | StoreAction (height : string) (txs : list string)
 | RememberPeer (who first : string) (now : float)
 | ReadPeerBlock (who : string) (height : nat)
+| SendSigned (who : string) (height : nat)
 | PublishTransaction (nonce : string) (fields : list string) (message : option string)
 | MarkNonceFlood
 | RememberVote (slot vid : string) (fields : list string)
@@ -449,13 +461,27 @@ catchup_due (now : float) (last : option float) : bool :=
   end.
 
 (** Remember first, including silent/absent peers and empty ranges. A
-    duplicate in the two-second window performs no writes or block reads. *)
+    duplicate in the two-second window performs no writes or block reads.
+
+    A peer one height behind also gets this node's own messages at its
+    height again, as they were signed (signed.log's). The blocks alone,
+    as [done], need f + 1 senders: a node that decided the height and
+    whose precommit never reached the others (lost, or the node stopped
+    after saving it and before sending it, then booted again and decided
+    from its snapshot) is the only one ahead, and with exactly a quorum
+    running the chain would stop. Its precommit completes the others'
+    quorum instead, and consensus decides on it as on any. A peer two or
+    more behind needs none of this: a quorum decided the height after,
+    so f + 1 honest nodes are past this one and send its block. Sent only
+    one height ahead, two nodes past a height don't keep sending each
+    other its messages. *)
 catchup_plan (who first current : string) (now : float) (last : option float)
     (has_peer silent : bool) : list output_action :=
   if catchup_due now last then
     RememberPeer who first now ::
     (if has_peer && negb silent then
-       map (ReadPeerBlock who) (catchup_heights (num first) (num current))
+       map (ReadPeerBlock who) (catchup_heights (num first) (num current)) ++
+       (if num current =? Succ (num first) then [SendSigned who (num first)] else [])
      else [])
   else [].
 
@@ -582,6 +608,13 @@ broadcast_plan (byz : string) (peers : nat) (fields : list string)
     catch-up block is read ([IoBlock]) and sent. Each [ndo] goes on only
     when its operation was carried out, as the [&&] chain this replaced did,
     and each read is an operation in its place in that order. *)
+(** Messages to one peer, in order, stopping at the first not sent. *)
+Fixpoint actions_send (who : string) (messages : list (list string)) : nprog bool :=
+  match messages with
+  | [] => NDone true
+  | m :: rest => nand (nexec (IoPeerSend who m)) (fun _ => actions_send who rest)
+  end.
+
 action_prog (action : output_action) : nprog bool :=
   match action with
   | PublishTransaction nonce fields message =>
@@ -601,6 +634,9 @@ action_prog (action : output_action) : nprog bool :=
       | None => NDone true
       | Some (peer, fields) => nexec (IoPeerSend peer fields)
       end)
+  | SendSigned who k =>
+      nbind (nask (IoSignedAt (show k))) (fun signed =>
+      actions_send who (nio_lists (ans_list signed)))
   | _ => match action_io action with Some op => nexec op | None => NDone true end
   end.
 
@@ -1751,6 +1787,23 @@ output_prog (out : list string) : nprog bool :=
   | LegacyOutput _ => NDone true
   end.
 
+(** A vote signed ahead of its snapshot ([sign_effects]): written to the
+    signed-vote table and signed.log unless its slot has one. Sending it
+    is the broadcast's, after the snapshot, which finds it signed and so
+    doesn't sign it again; a different vote at a slot already signed is
+    the broadcast's to refuse or send as it was. *)
+sign_prog (fields : list string) : nprog bool :=
+  match broadcast_subject fields with
+  | Some (k, ht, r, vid) =>
+      let slot := broadcast_key k ht r in
+      nbind (nask (IoSignedVote slot)) (fun vote =>
+      match ans_found_one vote with
+      | Some _ => NDone true
+      | None => nexec (IoSignVote slot vid fields)
+      end)
+  | None => NDone true
+  end.
+
 (** Effects return whether they were carried out, and the loop keeps the
     new state only when they were: a unit result would be a cast the
     extraction can erase, and with it the call. *)
@@ -1759,6 +1812,7 @@ carry_effect_prog (h : node_t) (snap : consensus_state) (eff : list string) : np
   | "perform" :: out => output_prog out
   | ["save_snapshot"] => nexec (IoSnapshotSave (snapshot_text snap))
   | ["refuse", raw] => nexec (IoRefuse raw)
+  | "sign" :: fields => sign_prog fields
   | _ => NDone true
   end.
 
@@ -2576,12 +2630,28 @@ Fixpoint run_boot_prog (st : node_state) (evs : list (list string)) : nprog node
     restored consensus is unchanged. Decisions still reach blocks.log first. *)
 startup_effects (outs : list (list string)) : list (list string) :=
   map (fun out => "perform" :: out) (filter is_decided outs) ++
-  [["save_snapshot"]] ++
+  sign_effects outs ++ [["save_snapshot"]] ++
   map (fun out => "perform" :: out) (filter (fun out => negb (is_decided out)) outs).
 
 start_node_prog (h : node_t) (st : node_state) : nprog node_state :=
   let (s, outs) := step st ["start"] in
   nbind (carry_all_prog h (cons s) (startup_effects outs)) (fun ok => NDone (if ok then s else st)).
+
+(** Started again, the node sends what it signed at its height again and
+    keeps it in resend memory, as when it first sent it. Resend memory
+    doesn't outlive the process, and the snapshot says these were sent:
+    consensus doesn't ask for them again. A node stopped after signing a
+    vote (signed.log, then the snapshot) and before sending it would never
+    send it, and with exactly a quorum up the others wait for it, and it
+    with them. *)
+resume_plan (byz : string) (peers : nat) (signed : list (list string)) : list output_action :=
+  flat_map (broadcast_deliver byz peers) signed.
+
+resume_signed_prog (st : node_state) : nprog bool :=
+  nbind (nask (IoSignedAt (show (height (cons st))))) (fun signed =>
+  nbind (nask IoDraw) (fun draw =>
+  nbind (nask IoPeerCount) (fun count =>
+  actions_prog (resume_plan (fst (ans_draw draw)) (num (ans_one count)) (nio_lists (ans_list signed)))))).
 
 (** ---- signed.log at startup (step 5) ----
     Each line is "SLOT VID VOTE-AS-JSON". A line with no space is not a
@@ -2833,8 +2903,9 @@ Fixpoint boot_expand_prog (evs : list (list string)) : nprog (list (list string)
 
 (** Startup, as a node program: signed.log read back (refusing to start
     when it has votes and there's no snapshot), the boot events expanded
-    and replayed, the replay logged, the snapshot restored, and the start
-    step carried. None: the node doesn't start. [snap] is the snapshot
+    and replayed, the replay logged, the snapshot restored, the start
+    step carried, and the votes signed at its height sent again
+    ([resume_signed_prog]). None: the node doesn't start. [snap] is the snapshot
     read back ([boot_snapshot_prog]). *)
 boot_prog (h : node_t) (snap : option consensus_state) : nprog (option node_state) :=
   nbind (nask IoSignedText) (fun signed =>
@@ -2850,7 +2921,10 @@ boot_prog (h : node_t) (snap : option consensus_state) : nprog (option node_stat
     let n := ans_one count in
     nbind (if seq n "0" then NDone true else nexec (IoLog (append "replayed " (append n " blocks from disk")))) (fun logged =>
     let st := match snap with Some c => restore_cons st c | None => st end in
-    if logged then nbind (start_node_prog h st) (fun st => NDone (Some st)) else NDone None)))))
+    if logged then
+      nbind (start_node_prog h st) (fun st =>
+      nbind (resume_signed_prog st) (fun _ => NDone (Some st)))
+    else NDone None)))))
   else NDone None))).
 
 

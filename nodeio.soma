@@ -57,7 +57,8 @@ Inductive node_op :=
 (** reads with data (U-1): the byzantine behavior and the draw's chain
     ([byz, limit, secret]), a stored block's transactions (found or not),
     the height, the number of peers, the vote signed at a slot and the
-    message it was signed in, a transaction signed with the node's key,
+    message it was signed in, every message signed at a height (framed: what
+    catch-up sends again), a transaction signed with the node's key,
     and the check exclusions (the --no-check repositories, then the
     genesis scope's, framed as resend memory is) *)
 | IoDraw
@@ -66,6 +67,7 @@ Inductive node_op :=
 | IoPeerCount
 | IoSignedVote (slot : string)
 | IoSignedBody (slot : string)
+| IoSignedAt (height : string)
 | IoEncodeTx (nonce : string) (fields : list string)
 | IoCheckExclusions
 (** the status file's facts (U-1): each checkout's head and the diverged
@@ -261,6 +263,7 @@ io_wire (op : node_op) : list string :=
   | IoPeerCount => ["peer_count"]
   | IoSignedVote slot => ["signed_vote", slot]
   | IoSignedBody slot => ["signed_body", slot]
+  | IoSignedAt height => ["signed_at", height]
   | IoEncodeTx nonce fields => "encode_tx" :: nonce :: fields
   | IoCheckExclusions => ["check_exclusions"]
   | IoCheckoutHeads => ["checkout_heads"]
@@ -377,6 +380,7 @@ io_of_wire (w : list string) : option node_op :=
   | ["peer_count"] => Some IoPeerCount
   | ["signed_vote", slot] => Some (IoSignedVote slot)
   | ["signed_body", slot] => Some (IoSignedBody slot)
+  | ["signed_at", height] => Some (IoSignedAt height)
   | "encode_tx" :: nonce :: fields => Some (IoEncodeTx nonce fields)
   | ["check_exclusions"] => Some IoCheckExclusions
   | ["checkout_heads"] => Some IoCheckoutHeads
@@ -862,6 +866,21 @@ nio_with_signed (t : nio_tables) (v : list (string * (string * list string))) : 
      t_diverged := t_diverged t; t_applied := t_applied t; t_mine := t_mine t; t_txs := t_txs t;
      t_height := t_height t; t_blocks := t_blocks t; t_signed := v; t_refused := t_refused t |}.
 
+(** A slot is KIND/HEIGHT/ROUND: whether it is at [h]. *)
+Fixpoint nio_after_slash (cs : list Ascii.ascii) : list Ascii.ascii :=
+  match cs with [] => [] | c :: rest => if Ascii.eqb c (nio_char 47) then rest else nio_after_slash rest end.
+
+Fixpoint nio_starts (p cs : list Ascii.ascii) : bool :=
+  match p, cs with
+  | [], _ => true
+  | a :: p', c :: cs' => Ascii.eqb a c && nio_starts p' cs'
+  | _ :: _, [] => false
+  end.
+
+nio_slot_at (h slot : string) : bool :=
+  nio_starts (Stdlib.Strings.String.list_ascii_of_string h ++ [nio_char 47])
+    (nio_after_slash (Stdlib.Strings.String.list_ascii_of_string slot)).
+
 (** The stores the binary keeps in memory beside its files: decided blocks
     by height (what catch-up and [IoBlock] read) and the vote signed at
     each slot (what [IoSignedVote] and [IoSignedBody] read), one entry a
@@ -890,6 +909,9 @@ nio_store_op (now : PrimFloat.float) (t : nio_tables) (op : node_op) : option (n
       | Some v => Some (ans_data true (snd v), t)
       | None => Some (ans_data false [], t)
       end
+  | IoSignedAt h =>
+      Some (ans_data true (nio_frame_lists (List.map (fun v => snd (snd v))
+        (List.rev (List.filter (fun v => nio_slot_at h (fst v)) (t_signed t))))), t)
   | IoRememberBlock h txs =>
       Some (ans_ok, nio_with_blocks t ((h, txs) :: List.filter (fun b => negb (nio_eq (fst b) h)) (t_blocks t)))
   | IoSignedRestore slot vid fields =>

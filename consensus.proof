@@ -905,3 +905,18 @@ Proof.
   destruct (n <=? 3 + 7 * limit) eqn:C; [|discriminate H].
   exists n. split; [reflexivity|apply Nat.leb_le; exact C].
 Qed.
+
+(** Started again, a node stays in its round and has its timers back: the
+    propose timer before its prevote, and the prevote and precommit timers
+    once they had started. *)
+Example resume_timers_of_a_round :
+  resume_timers (new_consensus "a" ["a", "b", "c", "d"] 4) = [timer "propose" 4 0 3000] /\
+  resume_timers {| me := "a"; nodes := ["a", "b", "c", "d"]; height := 4; round := 1; step := 1;
+    lockr := 0; lockv := []; validr := 0; validv := []; log := []; once := ["tpv1"]; block_ms := 200 |}
+    = [timer "prevote" 4 1 1500] /\
+  resume_timers {| me := "a"; nodes := ["a", "b", "c", "d"]; height := 4; round := 0; step := 2;
+    lockr := 1; lockv := []; validr := 1; validv := []; log := []; once := ["tpc0", "lock0", "tpv0"]; block_ms := 200 |}
+    = [timer "prevote" 4 0 1000, timer "precommit" 4 0 1000] /\
+  resume_timers {| me := "a"; nodes := ["a", "b", "c", "d"]; height := 4; round := 0; step := 2;
+    lockr := 1; lockv := []; validr := 1; validv := []; log := []; once := ["lock0"]; block_ms := 200 |} = [].
+Proof. repeat split; reflexivity. Qed.

@@ -7,9 +7,9 @@
 # a block needs the image's votes (3 of 4): the chain moving shows the
 # image votes, and its blocks.log, read from its disk, agrees with the
 # binaries'. Then the image is stopped (the chain stops), and booted again
-# on the same disk with the fourth agent up: the chain moves on, the image
-# read its votes back (signed.log kept, byte for byte), and its disk gets
-# the same blocks as the binaries'.
+# on the same disk, three times, with the fourth agent still down: the
+# chain moves on each time, the image read its votes back (signed.log
+# kept, byte for byte), and its disk gets the same blocks as the binaries'.
 #
 # Needs Soma's MirageOS switch (SOMA_MIRAGE_SWITCH, default hvf) with
 # solo5-hvt and solo5-vmnet (macOS 26 or later), as Soma's
@@ -163,23 +163,29 @@ echo "ok its disk holds $k blocks, the same as claude's, and $(wc -l < "$t/signe
 before=$(height claude)
 sleep 3
 [ "$(height claude)" = "$before" ] || { echo 'FAIL the chain moved without the image'; exit 1; }
-# Booted again with grok up too. Not with grok still down: the image may
-# have saved a precommit to its snapshot and been stopped before sending
-# it; booted again, it decides that height from the snapshot's votes and
-# moves on, and catch-up takes f + 1 matching blocks (consensus.soma), which
-# one node ahead can't give two behind: with exactly a quorum up, the chain
-# would stop. That is the binary's protocol, not the image's.
-boot 2
-"$BIN" node "$t/grok" --listen "$gw" --max-llm-calls 0 > "$t/grok/node.log" 2>&1 &
-pids="$pids $!"
-wait_height claude $((before + 2)) 120
-python3 "$t/files.py" "$t/disk.img" signed.log > "$t/signed2"
-head -c "$(wc -c < "$t/signed1")" "$t/signed2" | cmp -s - "$t/signed1" || { echo 'FAIL signed.log changed across the restart'; exit 1; }
-# the image keeps up: its disk gets the blocks claude has, the same ones
-n=0
-until python3 "$t/files.py" "$t/disk.img" blocks.log > "$t/muse-blocks2"; k2=$(wc -l < "$t/muse-blocks2" | tr -d ' '); [ "$k2" -ge $((before + 1)) ]; do
-  sleep 1; n=$((n + 1)); [ $n -lt 60 ] || { echo "FAIL the image's disk has $k2 blocks after its restart, claude has $(height claude)"; exit 1; }
+# Booted again, grok still down, three times. The image may have saved a
+# precommit to its snapshot and been stopped before sending it: booted
+# again, it decides that height from the snapshot and moves on alone, and
+# the binaries, a block behind, can't take it from one node's done (f + 1
+# are needed). It sends them the messages it signed at their height
+# (node.soma's catchup_plan), its precommit among them, and that completes
+# their quorum.
+first=$before
+for r in 2 3 4; do
+  [ "$r" = 2 ] || stop_image
+  boot "$r"
+  from=$(height claude)
+  wait_height claude $((from + 2)) 120
+  python3 "$t/files.py" "$t/disk.img" signed.log > "$t/signed$r"
+  prev=$((r - 1))
+  head -c "$(wc -c < "$t/signed$prev")" "$t/signed$r" | cmp -s - "$t/signed$prev" || { echo "FAIL signed.log changed across reboot $prev"; exit 1; }
 done
-head -n "$k2" "$t/claude/blocks.log" | cmp -s - "$t/muse-blocks2" || { echo 'FAIL the image and claude disagree on a block after the restart'; exit 1; }
-echo "ok booted again on the same disk: signed.log kept, the chain moved on from $before to $(height claude) in $waited s, and the image has $k2 of its blocks"
+# the image keeps up: its disk gets the blocks claude has, the same ones
+target=$(( $(height claude) - 1 ))
+n=0
+until python3 "$t/files.py" "$t/disk.img" blocks.log > "$t/muse-blocks2"; k2=$(wc -l < "$t/muse-blocks2" | tr -d ' '); [ "$k2" -ge "$target" ]; do
+  sleep 1; n=$((n + 1)); [ $n -lt 60 ] || { echo "FAIL the image's disk has $k2 blocks after its reboots, claude has $(height claude)"; exit 1; }
+done
+head -n "$k2" "$t/claude/blocks.log" | cmp -s - "$t/muse-blocks2" || { echo 'FAIL the image and claude disagree on a block after the reboots'; exit 1; }
+echo "ok booted again three times on the same disk with grok down: signed.log kept, the chain moved on from $first to $(height claude), and the image has $k2 of its blocks"
 echo 'PASS a node ran as a MirageOS unikernel among binaries, and booted again'

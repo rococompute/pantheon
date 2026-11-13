@@ -267,6 +267,22 @@ receive (c : consensus_state) (from : string) (fields : list string) : consensus
   | _ => (c, [])
   end.
 
+(** Started again from a snapshot, in the round it was in: the timers that
+    round had going, which didn't outlive the process. The propose timer
+    when no prevote was cast yet; the prevote and precommit timers when
+    they had started (their one-time flags). The node's own messages are
+    sent again by the node (node.soma's [resume_signed_prog]), and the
+    others' come again with their resends. Going on to the next round
+    instead left a node alone in it: with exactly a quorum up, the others,
+    who had voted in the round it left, waited there for its vote, and one
+    node in a later round isn't f + 1. *)
+resume_timers (c : consensus_state) : list (list string) :=
+  let h := height c in
+  let r := round c in
+  (if step c =? 0 then [timer "propose" h r (3000 + 500 * r)] else []) ++
+  (if fired c (append "tpv" (show r)) then [timer "prevote" h r (1000 + 500 * r)] else []) ++
+  (if fired c (append "tpc" (show r)) then [timer "precommit" h r (1000 + 500 * r)] else []).
+
 (** A timer went off: [name; h; r]. *)
 timeout (c : consensus_state) (fields : list string) (getv : list string) : consensus_state * list (list string) :=
   match fields with

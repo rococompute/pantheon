@@ -107,6 +107,11 @@ checks : list string := [
   check "the signed vote a slot, and its body"
     (match stored t2 (IoSignedVote "prevote/3/0"), stored t2 (IoSignedBody "prevote/3/0"), stored t2 (IoSignedVote "prevote/4/0") with
      | (true, (_, ["v2"])), (true, (_, ["prevote", "3", "x"])), (false, (_, [])) => true | _, _, _ => false end),
+  check "every message signed at a height, and none of another"
+    (match nio_lists (ans_list (stored (stores nio_empty [IoSignVote "prevote/3/0" "v" ["prevote", "3"],
+             IoSignVote "precommit/3/1" "v" ["precommit", "3"], IoSignVote "prevote/30/0" "w" ["prevote", "30"]]) (IoSignedAt "3"))),
+           nio_lists (ans_list (stored nio_empty (IoSignedAt "3"))) with
+     | [["prevote", "3"], ["precommit", "3"]], [] => true | _, _ => false end),
   check "the height reads back" (match stored t2 IoHeight with (true, (_, ["3"])) => true | _ => false end),
   check "the diverged repositories, as pairs"
     (match nio_table_op 0%float t1 IoDivergences with Some (a, _) => (match ans_pairs a with [("soma", "3 bad")] => true | _ => false end) | None => false end),

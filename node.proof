@@ -172,6 +172,17 @@ Example vote_saves_before_it_sends :
   = [["save_snapshot"], ["perform", "broadcast", "prevote", "1"]].
 Proof. reflexivity. Qed.
 
+(** A vote is signed before the snapshot that says it was cast, and sent
+    after it; a block ([done]) is no vote. *)
+Example vote_signs_saves_then_sends :
+  order_effects ["msg", "peer"] empty_node (with_cons empty_node (new_consensus "me" ["me"] 2))
+    [["broadcast", "precommit", "4", "0", "0", "v"], ["broadcast", "done", "3", "0", "0", "h"]]
+  = [["sign", "precommit", "4", "0", "0", "v"], ["save_snapshot"],
+     ["perform", "broadcast", "precommit", "4", "0", "0", "v"], ["perform", "broadcast", "done", "3", "0", "0", "h"]] /\
+  startup_effects [["broadcast", "proposal", "4", "1", "0", "v", "tx"]] =
+    [["sign", "proposal", "4", "1", "0", "v", "tx"], ["save_snapshot"], ["perform", "broadcast", "proposal", "4", "1", "0", "v", "tx"]].
+Proof. split; reflexivity. Qed.
+
 (** Step 4's output decisions are pure plans for the actual bindings. *)
 Example timer_selects_delay_and_timeout_fields :
   plan_output ["timer", "commit", "7", "2", "350"] =
@@ -267,7 +278,7 @@ Proof. reflexivity. Qed.
 
 Example catchup_at_two_seconds_can_send_again :
   catchup_plan "peer" "3" "4" 10%float (Some 8%float) true false =
-    [RememberPeer "peer" "3" 10%float, ReadPeerBlock "peer" 3].
+    [RememberPeer "peer" "3" 10%float, ReadPeerBlock "peer" 3, SendSigned "peer" 3].
 Proof. reflexivity. Qed.
 
 Example catchup_backward_clock_still_throttles :
@@ -292,6 +303,26 @@ Example catchup_caps_reads_at_fifty_one :
   catchup_plan "peer" "3" "100" 10%float None true false =
     RememberPeer "peer" "3" 10%float :: map (ReadPeerBlock "peer") (List.seq 3 51).
 Proof. reflexivity. Qed.
+
+Example catchup_one_behind_also_gets_the_signed_messages :
+  catchup_plan "peer" "5" "6" 10%float None true false =
+    [RememberPeer "peer" "5" 10%float, ReadPeerBlock "peer" 5, SendSigned "peer" 5] /\
+  catchup_plan "peer" "5" "6" 10%float None true true = [RememberPeer "peer" "5" 10%float].
+Proof. split; reflexivity. Qed.
+
+Example signed_slots_by_height :
+  nio_slot_at "5" "precommit/5/0" = true /\ nio_slot_at "5" "proposal/5/12" = true /\
+  nio_slot_at "5" "precommit/50/0" = false /\ nio_slot_at "5" "prevote/15/1" = false /\
+  nio_slot_at "5" "5/1" = false /\ nio_slot_at "5" "" = false.
+Proof. repeat split; reflexivity. Qed.
+
+Example started_again_sends_its_signed_votes_again :
+  resume_plan "" 3 [["prevote", "5", "0", "0", "v"]] =
+    [RememberBroadcast "5" "all" ["prevote", "5", "0", "0", "v"] ["prevote", "5", "0", "0", "v"],
+     SendEveryone ["prevote", "5", "0", "0", "v"]] /\
+  resume_plan "silent" 3 [["prevote", "5", "0", "0", "v"]] = [] /\
+  resume_plan "" 3 [] = [].
+Proof. repeat split; reflexivity. Qed.
 
 Example catchup_missing_block_requests_no_send :
   catchup_send "peer" 4 None = None.
@@ -870,7 +901,7 @@ Proof.
     who fields | height txs | height | text | slot vid fields | raw | |
     id repo head edits | repo version | repo entry | | height kind fields alternate |
     offer mode target | conn | job | job | who | | repo | who first | who first timestamp |
-    | height | | | slot | slot | nonce fields | | | | | stamp |
+    | height | | | slot | slot | height | nonce fields | | | | | stamp |
     repo | repo | repo path | repo path | repo path text | repo path |
     repo version tree bid task bidder spec | | id kind prompt ctx |
     id kind raw prompt ctx clean launch env | repo | | | | | repo | repo path |
