@@ -194,7 +194,15 @@ Inductive node_op :=
     and synced before any vote it holds is sent; consensus.state's text,
     absent when there is none *)
 | IoSnapshotSave (text : string)
-| IoSnapshotLoad.
+| IoSnapshotLoad
+(** the node's service ([pantheon service], node.soma's [service_prog]),
+    for a unikernel: listening at an address and port; the next request
+    (found or not within [wait] seconds: its connection, then its fields:
+    the token and an operation's wire form); the answer sent back on that
+    connection, as found, the float's text and its data *)
+| IoServeListen (address port : string)
+| IoServeNext (wait : string)
+| IoServeReply (conn found stamp : string) (fields : list string).
 
 (** Two arbitrary lists on one wire: tagged field/value pairs, then the
     alternate-list marker. A marker occurring as a value is never a tag.
@@ -340,6 +348,9 @@ io_wire (op : node_op) : list string :=
   | IoCheckTree repo head out edits => "check_tree" :: repo :: head :: out :: edits
   | IoSnapshotSave text => ["snapshot_save", text]
   | IoSnapshotLoad => ["snapshot_load"]
+  | IoServeListen address port => ["serve_listen", address, port]
+  | IoServeNext wait => ["serve_next", wait]
+  | IoServeReply conn found stamp fields => "serve_reply" :: conn :: found :: stamp :: fields
   end.
 
 io_of_wire (w : list string) : option node_op :=
@@ -467,7 +478,29 @@ io_of_wire (w : list string) : option node_op :=
   | "check_tree" :: repo :: head :: out :: edits => Some (IoCheckTree repo head out edits)
   | ["snapshot_save", text] => Some (IoSnapshotSave text)
   | ["snapshot_load"] => Some IoSnapshotLoad
+  | ["serve_listen", address, port] => Some (IoServeListen address port)
+  | ["serve_next", wait] => Some (IoServeNext wait)
+  | "serve_reply" :: conn :: found :: stamp :: fields => Some (IoServeReply conn found stamp fields)
   | _ => None
+  end.
+
+(** What a unikernel asks its service for (docs/SHELL-IN-SOMA.md, "The
+    node's service"): what the binary runs as processes or keeps on the
+    host's disk. git in the checkouts, a model call and its limit, CI and
+    checks, the jobs they run and the events those jobs give, the model's
+    reply files and the inbox. Everything else is the image's own: its
+    votes, blocks, peers and tables. A service answers these and nothing
+    else. *)
+service_op (op : node_op) : bool :=
+  match op with
+  | IoMergeReset _ | IoMergeProbe _ _ | IoMergeRead _ _ | IoMergeWrite _ _ _ | IoMergeRemove _ _
+  | IoMergeCommit _ _ _ _ _ _ _ | IoRepoNames | IoLsFiles _ | IoHeadFile _ _ | IoCheckoutHeads
+  | IoLlmBudget | IoLlmHold _ _ _ _ | IoLlmStart _ _ _ _ _ _ _ _ | IoToolCheckout _ | IoSelfExe
+  | IoEnvEntries | IoToken | IoLimitSet _ _ _ | IoLimitClear _ | IoReleaseState | IoHeldRequests
+  | IoHeldStore _ _ | IoLimitInfo | IoJobComplete _ _ | IoJobs | IoJobFlood _ | IoJobExpire _
+  | IoCiLaunch _ _ _ _ | IoCheck _ _ _ _ | IoReadText _ | IoDiscardFile _ | IoRemoveFile _
+  | IoDirEntries _ | IoInboxState | IoInboxStamp _ | IoEvents _ => true
+  | _ => false
   end.
 
 

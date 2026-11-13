@@ -34,6 +34,12 @@ cli_open : (((string -> string -> string -> option string) * (string -> string -
     helpers are passed once as util.soma's shell_helpers record, packed as a
     product (edit_once, contains, shell_safe_path) at the binding boundary. *)
 node_open : (((string -> string -> string -> option string) * (string -> string -> bool)) * (string -> bool)) -> list string -> string.
+(** The node's service (node.soma's service_tick_prog, node_shell.soma's
+    run_service) is node_io operations too: "serve_listen" HOST PORT,
+    "serve_next" WAIT (the next whole request: its connection, then its
+    fields), "serve_reply" CONN FIELDS... (the answer, framed as a request
+    is: a frame of frames, Sandbox's). The shell listens, reads and writes;
+    Soma checks the token, which operations it answers, and runs them. *)
 (** The consensus snapshot is node_io operations: "snapshot_save" TEXT and
     "snapshot_load" (node.soma's snapshot_text and snapshot_of). *)
 (** Startup is data, interpreted by Soma before entering the event loop

@@ -32,3 +32,16 @@ run_node (home : string) (flags : list string) : unit :=
       end
   | None => tt
   end.
+
+(** [pantheon service HOME HOST:PORT]: the setup, the node's runtime built
+    from it as [pantheon node] builds it, then the requests of the node's
+    unikernel answered (node.soma's [service_tick_prog]) *)
+run_service (home addr : string) (flags : list string) : unit :=
+  match run_shell "" (node_setup home flags) with
+  | Some config =>
+      let h := node_open (pack_helpers node_helpers) (nio_frame_lists config) in
+      if run_shell h (service_start_prog addr) then
+        forever (fun pending => run_shell h (service_tick_prog (service_token_of config) pending)) []
+      else tt
+  | None => tt
+  end.

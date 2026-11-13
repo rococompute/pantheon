@@ -909,7 +909,7 @@ Proof.
     raw | | raw | who | | | | stamp | path | path | | | timers | | | wait |
     | | height txs | | slot vid fields | message |
     text | text | code | path | path text | path mode | path | | bits | count | dir args |
-    url dir commit | log args | pids | dir | dir edits | repo head out edits | text | ];
+    url dir commit | log args | pids | dir | dir edits | repo head out edits | text | | address port | wait | conn found stamp fields ];
     try reflexivity.
   - change (match resend_parts (resend_fields fields ++ ("alternate" :: alternate)) with
     | Some (original, alt) => Some (IoRememberBroadcast height kind original alt)
@@ -1374,3 +1374,27 @@ Example snapshot_refuses_others :
   snapshot_of "broken" = None /\ snapshot_of "" = None
   /\ snapshot_of (append (snapshot_text (new_consensus "a" ["a"] 1)) "x") = None.
 Proof. repeat split; vm_compute; reflexivity. Qed.
+
+(** The node's service answers its own operations, for the node's token
+    only: a wrong token, an operation that is the image's own (a vote, a
+    block, a peer send) or junk is refused; events are their own request. *)
+Example service_answers_only_its_own :
+  service_request_of "tok" ["tok", "merge_reset", "calc"] = ServeOp (IoMergeReset "calc") /\
+  service_request_of "tok" ["tok", "ls_files", "calc"] = ServeOp (IoLsFiles "calc") /\
+  service_request_of "tok" ["tok", "events", "0"] = ServeEvents /\
+  service_request_of "tok" ["bad", "merge_reset", "calc"] = ServeRefused /\
+  service_request_of "tok" ["tok", "sign_vote", "prevote/1/0", "v"] = ServeRefused /\
+  service_request_of "tok" ["tok", "store", "1"] = ServeRefused /\
+  service_request_of "tok" ["tok", "send_all", "x"] = ServeRefused /\
+  service_request_of "tok" ["tok", "write_file", "/etc/x", "y"] = ServeRefused /\
+  service_request_of "tok" ["tok", "nonsense"] = ServeRefused /\
+  service_request_of "tok" [] = ServeRefused.
+Proof. repeat split; reflexivity. Qed.
+
+Example service_keeps_job_events_and_batches :
+  service_kept [["job_bytes", "1", "x"], ["conn_offer", "0", "h"], ["peer_bytes", "1", "y"], ["ci_done", "2"]] =
+    [["job_bytes", "1", "x"], ["ci_done", "2"]] /\
+  service_batch 0 [] = ([], []) /\
+  service_batch 0 [["a"], ["b"]] = ([["a"], ["b"]], []) /\
+  service_address "192.168.105.1:39990" = ("192.168.105.1", "39990").
+Proof. repeat split; reflexivity. Qed.

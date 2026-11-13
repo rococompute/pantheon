@@ -731,6 +731,79 @@ let node_io_handle h op =
   | [ "snapshot_load" ] -> (match h.h_snapshot () with Some t -> (true, (0., [ t ])) | None -> (false, (0., [])))
   | "signed_restore" :: slot :: vid :: fields -> h.h_signed_restore slot vid fields; (true, (0., []))
   | _ -> fail "unknown node operation %s" (String.concat " " op)
+(* The node's service (node.soma's service_tick_prog decides; this only
+   listens, reads whole requests and writes answers). A request and an
+   answer are each a frame (four bytes of length, most significant first,
+   then that many bytes, as Soma's Sandbox.frame) of frames, one a field. *)
+let frame s =
+  let n = String.length s in
+  String.init 4 (fun i -> Char.chr ((n lsr (8 * (3 - i))) land 255)) ^ s
+let frame_length s at = (Char.code s.[at] lsl 24) lor (Char.code s.[at + 1] lsl 16) lor (Char.code s.[at + 2] lsl 8) lor Char.code s.[at + 3]
+let unframes s =
+  let rec go at acc =
+    if at + 4 > String.length s then List.rev acc
+    else
+      let n = frame_length s at in
+      if at + 4 + n > String.length s then List.rev acc else go (at + 4 + n) (String.sub s (at + 4) n :: acc)
+  in
+  go 0 []
+type serve_client = { sid : string; sfd : Unix.file_descr; sbuf : Buffer.t }
+let serve_listener = ref None
+let serve_clients : serve_client list ref = ref []
+let serve_counter = ref 0
+let serve_listen address port =
+  match resolve (address ^ ":" ^ port) with
+  | None -> false
+  | Some a ->
+      (try
+         let fd = Unix.socket ~cloexec:true Unix.PF_INET Unix.SOCK_STREAM 0 in
+         Unix.setsockopt fd Unix.SO_REUSEADDR true;
+         Unix.bind fd a; Unix.listen fd 8; serve_listener := Some fd; true
+       with _ -> false)
+let serve_drop c = (try Unix.close c.sfd with _ -> ()); serve_clients := List.filter (fun x -> x.sid <> c.sid) !serve_clients
+(* a whole request a client sent, taken out of its buffer *)
+let serve_take () =
+  List.find_map (fun c ->
+      let s = Buffer.contents c.sbuf in
+      if String.length s < 4 then None
+      else
+        let n = frame_length s 0 in
+        if String.length s < 4 + n then None
+        else begin
+          Buffer.clear c.sbuf; Buffer.add_string c.sbuf (String.sub s (4 + n) (String.length s - 4 - n));
+          Some (c.sid :: unframes (String.sub s 4 n))
+        end)
+    !serve_clients
+let serve_next wait =
+  match serve_take () with
+  | Some r -> Some r
+  | None ->
+      let fds = (match !serve_listener with Some l -> [ l ] | None -> []) @ List.map (fun c -> c.sfd) !serve_clients in
+      let r, _, _ = try Unix.select fds [] [] wait with Unix.Unix_error _ -> ([], [], []) in
+      let buf = Bytes.create 65536 in
+      List.iter (fun fd ->
+          if Some fd = !serve_listener then
+            (match Unix.accept ~cloexec:true fd with
+             | c, _ -> incr serve_counter;
+                 serve_clients := { sid = string_of_int !serve_counter; sfd = c; sbuf = Buffer.create 4096 } :: !serve_clients
+             | exception Unix.Unix_error _ -> ())
+          else
+            match List.find_opt (fun c -> c.sfd = fd) !serve_clients with
+            | None -> ()
+            | Some c ->
+                (match Unix.read fd buf 0 65536 with
+                 | 0 -> serve_drop c
+                 | n -> Buffer.add_subbytes c.sbuf buf 0 n
+                 | exception _ -> serve_drop c))
+        r;
+      serve_take ()
+let serve_reply sid fields =
+  match List.find_opt (fun c -> c.sid = sid) !serve_clients with
+  | None -> ()
+  | Some c ->
+      let data = frame (String.concat "" (List.map frame fields)) in
+      let rec put at = if at < String.length data then put (at + Unix.write_substring c.sfd data at (String.length data - at)) in
+      (try put 0 with _ -> serve_drop c)
 (* Path-only operations need no node: a test runs them with no handle. *)
 let node_io id op =
   match op with
@@ -741,6 +814,10 @@ let node_io id op =
   | [ "fail"; message ] -> fail "%s" message
   | [ "clock" ] -> (true, (Unix.gettimeofday (), []))
   | [ "self_exe" ] -> (true, (0., [ self_exe ]))
+  | [ "serve_listen"; address; port ] -> (serve_listen address port, (0., []))
+  | [ "serve_next"; wait ] ->
+      (match serve_next (float_of_string wait) with Some r -> (true, (0., r)) | None -> (false, (0., [])))
+  | "serve_reply" :: sid :: fields -> serve_reply sid fields; (true, (0., []))
   | [ "env_entries" ] -> (true, (0., Array.to_list (Unix.environment ())))
   (* the commands' I/O (cli.soma) *)
   | [ "say"; text ] -> say "%s" text; (true, (0., []))

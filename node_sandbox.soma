@@ -7,12 +7,16 @@
 
     Peer links are the binary's: lines signed with Soma's RSA on links
     this node dials, and what peers' connections do read from Sandbox's
-    mailbox as the binary's select reads its sockets. What Sandbox doesn't
-    give yet is the program's to supply, in [nio_world]: git, model calls
-    and CI (the binary starts processes; a unikernel would ask services,
-    Soma's "services" item: an HTTP POST with a timeout). Checked without
-    booting by test/node-sandbox.sh ([soma build --no-image]), booted
-    among binaries by test/node-image.sh. *)
+    mailbox as the binary's select reads its sockets. What a unikernel
+    can't do itself (git in checkouts, model calls, CI and checks, the
+    processes they run, the host's reply files and inbox: nodeio.soma's
+    [service_op]) it asks the node's service for, [pantheon service] on
+    the host, over one TCP connection: the operation in its wire form,
+    run there by the binary's own runtime. With no service, those answer
+    that they aren't there, through [nio_world]'s stand-ins. Checked
+    without booting by test/node-sandbox.sh ([soma build --no-image]),
+    booted among binaries by test/node-image.sh, and with its service by
+    test/node-image-service.sh. *)
 Require Import Sandbox.
 From Stdlib Require Import NArith.BinNat PArith.BinPos.
 Import util nodeio node cli.
@@ -43,14 +47,13 @@ Record nio_world := {
   (** a time of day for a timestamp's text (Sandbox's clock is monotonic,
       not the time of day) *)
   w_local_time : string -> string;
-  (** a merge's checkout work ([IoMergeReset] ... [IoMergeCommit], in
-      their wire form): a unikernel's checkouts are a git service's, which
-      needs Soma's "services" item *)
+  (** with no service: a merge's checkout work ([IoMergeReset] ...
+      [IoMergeCommit], in their wire form) *)
   w_git : list string -> io nanswer;
-  (** a model call's work ([IoLlmBudget] ... [IoToken], in their wire
-      form): a model service, which needs Soma's "services" item *)
+  (** with no service: a model call's work ([IoLlmBudget] ... [IoToken],
+      in their wire form) *)
   w_llm : list string -> io nanswer;
-  (** CI started for a tree ([IoCiLaunch]): a CI service *)
+  (** with no service: CI started for a tree ([IoCiLaunch]) *)
   w_ci : list string -> io nanswer;
   (** this node's name *)
   w_identity : string;
@@ -59,7 +62,13 @@ Record nio_world := {
   w_float_text : PrimFloat.float -> string;
   (** the boot events before blocks.log's (genesis, this node's name, the
       backend, agent events): a unikernel's are its image's *)
-  w_boot : list (list string) }.
+  w_boot : list (list string);
+  (** the node's service ([pantheon service] on the host: node.soma's
+      [service_tick_prog]), at this IP address and port, "" for none, and
+      the token its requests carry *)
+  w_service_host : string;
+  w_service_port : nat;
+  w_token : string }.
 
 (** A connection a peer opened: its number (the binary's connection id,
     as text), the link, the host it came from, when it was last read, and
@@ -81,7 +90,11 @@ Record nio_kernel := {
   k_offers : list nio_link;
   k_conns : list nio_link;
   k_next_dial : N;
-  k_last_resend : N }.
+  k_last_resend : N;
+  (** the connection to the node's service, and when to try opening one
+      again after it couldn't be *)
+  k_service : option connection;
+  k_service_retry : N }.
 
 nio_kernel_tables (s : nio_kernel) (t : nio_tables) : nio_kernel :=
   {| s with k_tables := t |}.
@@ -269,6 +282,83 @@ nio_poll_prep (w : nio_world) (s : nio_kernel) : io nio_kernel :=
                      (nio_wire_line (w_chain w) (w_identity w) (w_key w) ["tx", snd t])) s txs
   else ret s.
 
+(** ---- the node's service ----
+    A request is a frame of frames, one a field: the token, then an
+    operation's wire form ([io_wire]). Its answer is one too: found, the
+    float's text, then the data. *)
+nio_frames (fields : list string) : string :=
+  List.fold_right (fun f acc => Stdlib.Strings.String.append (frame f) acc) "" fields.
+
+Fixpoint nio_unframes (fuel : nat) (data : string) : list string :=
+  match fuel with
+  | 0 => []
+  | S k => match take_frame max_frame data with Whole d rest => d :: nio_unframes k rest | _ => [] end
+  end.
+
+nio_answer_of (fields : list string) : nanswer :=
+  match fields with
+  | found :: stamp :: data => (nio_eq found "true", (nio_num stamp, data))
+  | _ => ans_flag false
+  end.
+
+(** one request on [c] and its answer; none when the connection failed *)
+nio_service_ask (c : connection) (request : string) : io (option nanswer) :=
+  sent <- send_frame c request ;;
+  match sent with
+  | SendClosed => ret None
+  | Sent =>
+      got <- receive_frame c 120 ;;
+      match got with
+      | Frame d => ret (Some (nio_answer_of (nio_unframes (Stdlib.Strings.String.length d) d)))
+      | _ => ret None
+      end
+  end.
+
+nio_service_open (w : nio_world) (s : nio_kernel) : io (option connection * nio_kernel) :=
+  ms <- monotonic_ms ;;
+  if N.ltb ms (k_service_retry s) then ret (None, s)
+  else
+    r <- connect_within (w_service_host w) (w_service_port w) 300%N ;;
+    match r with
+    | Connected c => ret (Some c, {| s with k_service := Some c |})
+    | _ => ret (None, {| s with k_service := None; k_service_retry := (ms + 2000)%N |})
+    end.
+
+(** An operation asked of the service: on the connection open, or, when
+    that one has failed (the service started again), on a new one. With
+    no service, or none reachable, the answer is that it isn't there. *)
+nio_service_call (w : nio_world) (s : nio_kernel) (wire : list string) : io (nanswer * nio_kernel) :=
+  let request := nio_frames (w_token w :: wire) in
+  if nio_eq (w_service_host w) "" then ret (ans_flag false, s)
+  else
+    first <- (match k_service s with
+              | Some c => a <- nio_service_ask c request ;;
+                  match a with Some x => ret (Some x) | None => close c ;; ret None end
+              | None => ret None
+              end) ;;
+    match first with
+    | Some a => ret (a, s)
+    | None =>
+        o <- nio_service_open w {| s with k_service := None |} ;;
+        match fst o with
+        | None => ret (ans_flag false, snd o)
+        | Some c =>
+            a <- nio_service_ask c request ;;
+            match a with
+            | Some x => ret (x, snd o)
+            | None => close c ;; ret (ans_flag false, {| (snd o) with k_service := None |})
+            end
+        end
+    end.
+
+(** the events the service's jobs gave, queued after the image's own *)
+nio_service_events (w : nio_world) (s : nio_kernel) : io nio_kernel :=
+  if nio_eq (w_service_host w) "" then ret s
+  else
+    r <- nio_service_call w s ["events", "0"] ;;
+    let t := k_tables (snd r) in
+    ret (nio_kernel_tables (snd r) (nio_with_queue t (t_queue t ++ nio_lists (ans_list (fst r))))).
+
 (** One operation: the answer the binary's [node_io] gives, and the new
     state. Logging prints; the clock is Sandbox's; storage appends or
     writes the named file; peer sends go on the links this node dialed;
@@ -277,7 +367,7 @@ nio_poll_prep (w : nio_world) (s : nio_kernel) : io nio_kernel :=
     (a unikernel runs no processes); the draw, signing a transaction, the check exclusions,
     the checkouts' heads, the backend, the time of day, the git work and
     a model call's are [nio_world]'s; the rest is the tables' and the stores'. *)
-nio_kernel_op (w : nio_world) (s : nio_kernel) (op : node_op)
+nio_kernel_local (w : nio_world) (s : nio_kernel) (op : node_op)
     : io (nanswer * nio_kernel) :=
   match op with
   | IoLog text => print text ;; ret (nio_ok, s)
@@ -368,9 +458,13 @@ nio_kernel_op (w : nio_world) (s : nio_kernel) (op : node_op)
      as the binary's select waits when nothing is queued, made the
      binary's events and queued after what is; then the queue, drained *)
   | IoEvents wait =>
-      got <- mailbox (match t_queue (k_tables s) with [] => nio_wait_ms wait | _ => 0%N end) ;;
+      (* a job's output doesn't wake the mailbox: with a service, it
+         waits a fifth of a second at most *)
+      let most := if nio_eq (w_service_host w) "" then nio_wait_ms wait else N.min 200 (nio_wait_ms wait) in
+      got <- mailbox (match t_queue (k_tables s) with [] => most | _ => 0%N end) ;;
       ms <- monotonic_ms ;;
-      nio_kernel_stores (List.fold_left (nio_take_mail (nio_seconds ms)) got s) op
+      s' <- nio_service_events w (List.fold_left (nio_take_mail (nio_seconds ms)) got s) ;;
+      nio_kernel_stores s' op
   | IoConnAdmit offer mode target =>
       ms <- monotonic_ms ;;
       s' <- nio_admit (nio_seconds ms) s offer mode target ;; ret (nio_ok, s')
@@ -382,6 +476,17 @@ nio_kernel_op (w : nio_world) (s : nio_kernel) (op : node_op)
   | IoJobFlood _ => ret (nio_ok, s)
   | IoJobExpire _ => ret (nio_ok, s)
   | _ => nio_kernel_stores s op
+  end.
+
+(** What the node's service does ([service_op]) goes to it, when there is
+    one; everything else is the image's own. *)
+nio_kernel_op (w : nio_world) (s : nio_kernel) (op : node_op) : io (nanswer * nio_kernel) :=
+  match op with
+  | IoEvents _ => nio_kernel_local w s op
+  | _ =>
+      if negb (nio_eq (w_service_host w) "") && service_op op
+      then nio_service_call w s (io_wire op)
+      else nio_kernel_local w s op
   end.
 
 (** A node program, run by the unikernel: each operation in order, each
@@ -439,7 +544,9 @@ nio_kernel_world (config : list (list string)) : option nio_world :=
                   w_git := nio_unavailable; w_llm := nio_unavailable; w_ci := nio_unavailable;
                   w_identity := me;
                   w_float_text := float_wire;
-                  w_boot := boot |}
+                  w_boot := boot;
+                  w_service_host := ""; w_service_port := 0;
+                  w_token := service_token_of config |}
       | _, _ => None
       end
   | _ => None
@@ -463,7 +570,8 @@ nio_kernel_start (me : string) (config : list (list string)) : nio_kernel :=
   let at_genesis := match config with _ :: _ :: _ :: _ :: _ :: _ :: _ :: g :: _ => g | _ => [] end in
   {| k_tables := {| nio_empty with t_applied := map (fun r => (r, "0")) at_genesis |};
      k_names := List.filter (fun a => negb (nio_eq (fst a) me)) (nio_config_agents config);
-     k_peers := []; k_offers := []; k_conns := []; k_next_dial := 0%N; k_last_resend := 0%N |}.
+     k_peers := []; k_offers := []; k_conns := []; k_next_dial := 0%N; k_last_resend := 0%N;
+     k_service := None; k_service_retry := 0%N |}.
 
 (** [pantheon node] as a unikernel: listening on its genesis address's
     port (its peers' connections into Sandbox's mailbox), startup (the
@@ -472,10 +580,12 @@ nio_kernel_start (me : string) (config : list (list string)) : nio_kernel :=
     left: the binary's [run_node] over Sandbox. Its files are the image's
     storage device's. Its IP address is the one in the genesis, given to
     the image (solo5-hvt's --ipv4). *)
-run_node_image (config : list (list string)) : io unit :=
+run_node_image_at (config : list (list string)) (service : string) : io unit :=
   match nio_kernel_world config with
   | None => print "the node's setup came back malformed"
-  | Some w =>
+  | Some w0 =>
+      let w := if nio_eq service "" then w0
+               else let a := nio_addr service in {| w0 with w_service_host := fst a; w_service_port := snd a |} in
       let me := w_identity w in
       match List.find (fun a => nio_eq (fst a) me) (nio_config_agents config) with
       | None => print "this node is not one of the genesis's agents"
@@ -490,3 +600,7 @@ run_node_image (config : list (list string)) : io unit :=
       end
       end
   end.
+
+(** with no service: it votes and keeps the chain, and can't merge, bid or
+    check *)
+run_node_image (config : list (list string)) : io unit := run_node_image_at config "".

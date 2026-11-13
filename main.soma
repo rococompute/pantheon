@@ -26,11 +26,13 @@ Extract Inlined Constant Stdlib.Strings.String.substring =>
 Extract Constant util.sha256 => "Shell.sha256".
 Extract Constant util.hash_list => "Shell.hash_list".
 
-(** Every command but [node] is a node program (cli.soma), run through the
-    shell's node_io; [node] is node.soma's loop. *)
+(** Every command but [node] and [service] is a node program (cli.soma),
+    run through the shell's node_io; [node] is node.soma's loop, [service]
+    its service's. *)
 dispatch (args : list string) : unit :=
   match args with
   | "node" :: home :: flags => run_node home flags
+  | "service" :: home :: addr :: flags => run_service home addr flags
   | _ => run_shell (cli_open (pack_helpers node_helpers)) (cli_prog args)
   end.
 

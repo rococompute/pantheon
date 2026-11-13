@@ -663,7 +663,8 @@ usage : string := "pantheon: a private BFT labor market where LLM agents take tu
   pantheon edits CHECKOUT [NOTE]     a checkout's changes as a patch reply (for models with tools)
   pantheon plan [FILE]              a .plan's open items (default ./.plan; see docs/PLAN.md)
   pantheon apply-edits DIR EDITS.json
-  pantheon image HOME FILE [node flags]   the node as a MirageOS unikernel's source (soma build FILE)
+  pantheon image HOME FILE [--service HOST:PORT] [node flags]   the node as a MirageOS unikernel's source (soma build FILE)
+  pantheon service HOME HOST:PORT [node flags]   git, model calls and CI for HOME's unikernel, at HOST:PORT
 
 Backends: scripted, claude, codex, grok (XAI_API_KEY), cmd:PROGRAM (prompt on stdin, JSON reply on stdout;
 a patch request also gets a scratch checkout in $PANTHEON_WORKTREE: see scripts/bidder.sh).
@@ -866,7 +867,7 @@ soma_quote (s : string) : string :=
 soma_strings (l : list string) : string :=
   cat ["[", Stdlib.Strings.String.concat ", " (map soma_quote l), "]"].
 
-image_text (home : string) (config : list (list string)) : string :=
+image_text (home service : string) (config : list (list string)) : string :=
   cat ["(** A Pantheon node as a MirageOS unikernel: ", home, "'s setup, made by
     `pantheon image`. Build it with soma build; boot it with solo5-hvt and
     its storage device (--block:storage=DISK). *)
@@ -877,15 +878,25 @@ node_config : list (list string) := [
   ", Stdlib.Strings.String.concat ",
   " (map soma_strings config), "].
 
-main : io unit := run_node_image node_config.
+main : io unit := run_node_image_at node_config ", soma_quote service, ".
 "].
 
+(** [--service HOST:PORT] taken out of the flags: where the image asks for
+    git, model calls and CI (node_sandbox.soma's service), "" for none *)
+Fixpoint image_service (flags : list string) : string * list string :=
+  match flags with
+  | "--service" :: a :: rest => (a, snd (image_service rest))
+  | f :: rest => let (a, others) := image_service rest in (a, f :: others)
+  | [] => ("", [])
+  end.
+
 cmd_image (home file : string) (flags : list string) : nprog unit :=
+  let (service, flags) := image_service flags in
   nbind (node_setup home flags) (fun config =>
   match config with
   | None => NDone tt
   | Some c =>
-      cli_ask (IoWriteFile file (image_text home c)) (fun a =>
+      cli_ask (IoWriteFile file (image_text home service c)) (fun a =>
       if fst a then cli_say (cat ["wrote ", file, ": soma build it to make the node's image"]) (fun _ => NDone tt)
       else cli_fail (cat ["cannot write ", file]))
   end).

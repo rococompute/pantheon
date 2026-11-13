@@ -223,7 +223,7 @@ RSA and SHA-256): `nodeio.soma`'s `nio_encode_tx`, `nio_wire_line` and
 the test checks against lines shell.ml signed with a Cryptokit key, so the
 world gives only the chain's id and the keys (`w_chain`, `w_key`,
 `w_keys`). What Sandbox doesn't give yet is the program's to supply, in
-`nio_world`: starting a CI check (`w_check`), the epoch's draw
+`nio_world` (with no service: see "The node's service"): starting a CI check (`w_check`), the epoch's draw
 (`w_draw`), the check
 exclusions (`w_exclusions`), the checkouts' heads (`w_heads`), the model
 backend (`w_backend`), a time of day (`w_local_time`) and a merge's git
@@ -247,33 +247,34 @@ Each operation:
 | `IoTrackTx raw`, `IoMarkNonceFlood` | the own-transaction retry table (stamped with the time), the flood flag | the tables |
 | `IoRememberBroadcast height kind fields alternate` | prepend both message variants to resend memory | the tables' resend memory |
 | `IoMergeApplied repo v`, `IoMergeDiverged repo entry` | the applied-version table, the divergence list | the tables |
-| `IoCheck id repo head edits` | the CI job: a fresh clone, the edits, the CI command as a process; its result comes back as a `check_result` event | `w_check`: a CI service, which needs Soma's "services" item (HTTP POST with a timeout) |
+| `IoCheck id repo head edits` | the CI job: a fresh clone, the edits, the CI command as a process; its result comes back as a `check_result` event | the node's service (`service_op`); with none, `w_check` |
 | `IoBlock height`, `IoHeight`, `IoSignedVote slot`, `IoSignedBody slot`, `IoSignedAt height` | the decided-block and signed-vote tables beside blocks.log and signed.log, the height; absent is `false`; every message signed at a height, framed | the stores (`nio_store_op`), filled by `IoStore` and `IoSignVote` |
 | `IoPeerCount` | the genesis peers, counted | the genesis peers, counted |
 | `IoDraw`, `IoEncodeTx nonce fields`, `IoCheckExclusions` | the epoch's draw (Byzantine flag, chain length, link secret); a transaction signed with the node's key; the fields this node won't check, `field`-tagged, then `alternate` and the excluded alternates | `w_draw`, `nio_encode_tx` (Soma's RSA), `w_exclusions` |
-| `IoCheckoutHeads`, `IoDivergences` | `git rev-parse --short HEAD` in each checkout; the divergence list (pairs, flattened) | `w_heads`; the tables' divergences |
-| `IoLimitInfo`, `IoLocalTime stamp` | the model limit (until, backend, held requests, reason); `Unix.localtime` as HH:MM | no limit, `w_backend` (the limit is the model calls', not operations yet); `w_local_time` |
+| `IoCheckoutHeads`, `IoDivergences` | `git rev-parse --short HEAD` in each checkout; the divergence list (pairs, flattened) | the heads, the node's service's (`w_heads`, the genesis commits, with none); the tables' divergences |
+| `IoLimitInfo`, `IoLocalTime stamp` | the model limit (until, backend, held requests, reason); `Unix.localtime` as HH:MM | the limit, the node's service's (no limit and `w_backend`, with none); `w_local_time` |
 | `IoAppliedVersion repo` | the applied-version table (absent: a repository this node doesn't have) | the tables' applied versions |
-| `IoMergeReset`, `IoMergeProbe`, `IoMergeRead`, `IoMergeWrite`, `IoMergeRemove`, `IoMergeCommit` | git in the checkout: hard reset and clean, a path's kind, read, write keeping the mode, remove, commit with the merge's message (its tree and short id) | `w_git`, a git service (Soma's "services") |
-| `IoRepoNames`, `IoLsFiles repo`, `IoHeadFile repo path` | the governed repositories; `git ls-files`; `git show HEAD:path` (absent when it fails) | `w_git` |
-| `IoLlmBudget`, `IoLlmHold id kind prompt ctx`, `IoLlmStart ...`, `IoToolCheckout repo`, `IoSelfExe`, `IoEnvEntries`, `IoToken` | the call count (bumped) and budget; hold a request until the limit is over; start the model process (its output event at once when it couldn't start); a cmd: patch's checkout; the node's binary; the environment; a random fence token | `w_llm`, a model service (Soma's "services") |
-| `IoLimitSet`, `IoLimitClear`, `IoReleaseState`, `IoHeldRequests`, `IoHeldStore`, `IoJobComplete` | the model limit's state and backoff; the held requests; a finished job resumed with its outcome (its callback's events) | `w_llm` |
-| `IoCiLaunch id out tree ci` | CI started for a tree (events an immediate failure queued) | `w_ci`, a CI service |
-| `IoReadText path`, `IoDiscardFile path` | a file read; removed if it's there (no node needed) | `read_file`; nothing yet (Sandbox's named files can't be removed) |
+| `IoMergeReset`, `IoMergeProbe`, `IoMergeRead`, `IoMergeWrite`, `IoMergeRemove`, `IoMergeCommit` | git in the checkout: hard reset and clean, a path's kind, read, write keeping the mode, remove, commit with the merge's message (its tree and short id) | the node's service (`service_op`); with none, `w_git` |
+| `IoRepoNames`, `IoLsFiles repo`, `IoHeadFile repo path` | the governed repositories; `git ls-files`; `git show HEAD:path` (absent when it fails) | the node's service (`service_op`); with none, `w_git` |
+| `IoLlmBudget`, `IoLlmHold id kind prompt ctx`, `IoLlmStart ...`, `IoToolCheckout repo`, `IoSelfExe`, `IoEnvEntries`, `IoToken` | the call count (bumped) and budget; hold a request until the limit is over; start the model process (its output event at once when it couldn't start); a cmd: patch's checkout; the node's binary; the environment; a random fence token | the node's service (`service_op`); with none, `w_llm` |
+| `IoLimitSet`, `IoLimitClear`, `IoReleaseState`, `IoHeldRequests`, `IoHeldStore`, `IoJobComplete` | the model limit's state and backoff; the held requests; a finished job resumed with its outcome (its callback's events) | the node's service (`service_op`); with none, `w_llm` |
+| `IoCiLaunch id out tree ci` | CI started for a tree (events an immediate failure queued) | the node's service (`service_op`); with none, `w_ci` |
+| `IoReadText path`, `IoDiscardFile path` | a file read; removed if it's there (no node needed) | the node's service's (the host's files: a model's reply); with none, `read_file` and nothing |
 | `IoRefuse raw`, `IoSeenRefused raw` | the refused-transaction set | the stores' refused list |
 | `IoIdentity`, `IoPeerKey who` | this node's name; a genesis agent's key and the chain id (`key_wire`), which node.soma checks a peer line's signature with (`nio_line_verify`, Soma's RSA) | `w_identity`; the key from `w_keys` |
 | `IoConns`, `IoPollPrep` | live connections and their last reads; sample the turn clock, dial and resend | the admitted connections and their last reads; dial (`connect_within`, 300 ms) and resend (`nio_poll_prep`) |
-| `IoInboxState`, `IoInboxStamp`, `IoDirEntries`, `IoRemoveFile` | the inbox's last poll and directory; note a poll; list a directory; remove a file | an empty inbox (Sandbox's named files can't be listed or removed) |
-| `IoTurnNow`, `IoTimers`, `IoSetTimers`, `IoJobs`, `IoQueueEmpty` | the turn's clock, the timer list read and replaced, the running jobs, the queue | the monotonic clock; the tables' timers (as text by `w_float_text`); no jobs; the tables' queue |
-| `IoEvents wait` | one select, waiting at most `wait` seconds | Sandbox's `mailbox` (waiting at most `wait` when nothing is queued): a connection offered, its bytes, its end, as the binary's events; then the queue, drained |
+| `IoInboxState`, `IoInboxStamp`, `IoDirEntries`, `IoRemoveFile` | the inbox's last poll and directory; note a poll; list a directory; remove a file | the node's service's (the inbox on the host); with none, an empty inbox |
+| `IoTurnNow`, `IoTimers`, `IoSetTimers`, `IoJobs`, `IoQueueEmpty` | the turn's clock, the timer list read and replaced, the running jobs, the queue | the monotonic clock; the tables' timers (as text by `w_float_text`); the node's service's jobs (none without one); the tables' queue |
+| `IoEvents wait` | one select, waiting at most `wait` seconds | Sandbox's `mailbox` (waiting at most `wait` when nothing is queued): a connection offered, its bytes, its end, as the binary's events; then the events the node's service's jobs gave; then the queue, drained |
 | `IoBootEvents`, `IoReplayCount`, `IoRememberBlock h txs` | genesis, this node, the backend, applied versions and blocks.log's text; the replayed count; a replayed block kept for catch-up | `w_boot` then blocks.log's named file; the stores' blocks |
 | `IoSignedText`, `IoSignedRestore slot vid fields`, `IoFail message` | signed.log's bytes; a vote read back; refusing to start (stderr, exit 1) | signed.log's named file; the stores' signed table; printed, answered false |
-| `IoConnAdmit`, `IoConnClose`, `IoJobFlood`, `IoJobExpire` | admit, refuse or close a socket; kill a job's process | admit an offered connection (its held bytes its first read), refuse or close one (Sandbox's `close`); nothing for jobs: it runs no processes |
+| `IoConnAdmit`, `IoConnClose`, `IoJobFlood`, `IoJobExpire` | admit, refuse or close a socket; kill a job's process | admit an offered connection (its held bytes its first read), refuse or close one (Sandbox's `close`); jobs are the node's service's (nothing without one) |
 | `IoSay`, `IoPrint`, `IoExit`, `IoFileExists`, `IoWriteFile`, `IoChmod`, `IoMakeDirs`, `IoCwd` | the commands' output (`say`'s timestamped line, plain text, an exit status) and files | printed; Sandbox's named files; the rest answered false |
 | `IoNewKey bits`, `IoRandomHex count`, `IoGit dir args`, `IoClone url dir commit` | a new RSA key (e = 65537) as hex; random bytes; git in a checkout (its output); a clone at a commit | answered false: a unikernel makes no keys and runs no git |
 | `IoSpawnNode log args`, `IoAwaitNodes pids` | `up`'s nodes: one started logging to its node.log; waiting for them, stopping them on SIGINT or SIGTERM | answered false |
 | `IoCheckoutEdits dir`, `IoApplyEdits dir edits`, `IoCheckTree repo head out edits` | the edits machinery, still OCaml's: a checkout's edits, applying edits, the tree a bid's edits give | answered false |
 | `IoSnapshotSave text`, `IoSnapshotLoad` | consensus.state, written atomically and synced (skipped when unchanged); its text, absent when there is none | the named file consensus.state |
+| `IoServeListen address port`, `IoServeNext wait`, `IoServeReply conn found stamp fields` | the node's service (`pantheon service`): listen; the next whole request (its connection, the token, an operation's wire form); its answer, framed | answered false: the service is the binary's |
 
 The commands are node programs too (`cli.soma`): `init`, `keygen`,
 `genesis`, `up`, `status`, `tx`, `plan`, `edits`, `apply-edits` and
@@ -318,6 +319,9 @@ Not yet operations, still bindings of their own (the next parts of U-1):
 `node_open`'s runtime (Soma's "storage" still), the listener and
 accepted connections (links), and git, model and CI jobs (Soma's
 "services": `fetch` with a timeout and HTTP POST).
+(Since done: the links are operations, and so are git, model and CI
+jobs, which a unikernel asks its node's service for: "The node's
+service", below.)
 
 SHA-256 and RSA are Soma's (`Soma.Crypto`, Soma's item): `sha256` and
 `hash_list` are `util.soma`'s, no longer bindings, so the kernel computes
@@ -418,13 +422,69 @@ gaps in the protocol, the binary's as much as the image's, now fixed:
   votes are signed before its snapshot and sent after it
   (`sign_effects`, in `order_effects` and `startup_effects`).
 
+### The node's service
+
+A unikernel runs no processes and has no checkouts, so what the binary
+does with them it asks the node's service for: `pantheon service HOME
+HOST:PORT [node flags]` on the host, with `pantheon image HOME FILE
+--service HOST:PORT` making the image that uses it. The service is the
+node's own runtime (shell.ml's `node_open`, from HOME's setup, as
+`pantheon node HOME` builds it) with a loop of its own, Soma's like the
+node's (node.soma's `service_tick_prog`, node_shell.soma's
+`run_service`): the next request (`IoServeNext`), run as the binary runs
+that operation (`node_io`), its answer sent back (`IoServeReply`).
+
+What goes to the service is one set, nodeio.soma's `service_op`: git in
+the checkouts (a merge's reset, reads, writes and commit, the files a
+prompt reads, the heads), a model call (its budget, holding a request
+for a limit, starting the model process, a tool's checkout, the limit's
+state), CI and checks (`IoCiLaunch`, `IoCheck`), the jobs they run
+(`IoJobs`, `IoJobFlood`, `IoJobExpire`, `IoJobComplete`), the model's
+reply files and the inbox on the host's disk, and the events those jobs
+give. Everything else is the image's own: its votes, blocks, peers,
+tables and status. The image's interpreter (node_sandbox.soma's
+`nio_kernel_op`) sends a `service_op` operation's wire form (`io_wire`)
+to the service and hands its answer to the program; each select turn
+(`IoEvents`) also asks for the events the service's jobs gave, after the
+mailbox's, waiting a fifth of a second at most when it has a service, as
+a job's output doesn't wake the mailbox. The service keeps those events
+until the image takes them, as many as fit in one answer, and leaves
+out its own listener's (which no peer dials: the image is the node on
+the network).
+
+On the wire, over one TCP connection the image opens (Sandbox's
+`connect_within`, `send_frame`, `receive_frame`): a request is a frame
+(Sandbox's `frame`: four bytes of length, then the bytes) of frames, one
+a field: the token, then the operation's wire form; an answer is one
+too: found, the float as `%.17g` text, then the data. The token is the
+node's, a hash of its private key (`service_token`), which the image and
+the service each have; the service answers `service_op` operations with
+it and refuses anything else (node.proof's `service_answers_only_its_own`).
+A connection that fails is opened again for the next request; with no
+service, or none reachable, those operations answer that they aren't
+there, as before, and the image votes and keeps the chain but can't
+merge, bid or check.
+
+`test/node-image-service.sh` runs the image with its service beside three
+binaries, all four up, with a fake model (a `cmd:` backend): the market
+merges work in about 11 s, the image's bids and attests are in the blocks
+(its attests carry the tree its checks computed, jobs on the service),
+muse's model ran on the service (its copy of the model logs each call),
+the image led a term (picked bids, proposed a merge), and the service's
+checkout is at the binaries' commit.
+
+Limits, for now: a frame is 1 MiB at most (Sandbox's `max_frame`), so a
+model reply file or one job event over that is lost to the image (the
+model's output is capped at 4 MiB); the token crosses the host-only
+vmnet network in the clear, so the service listens on the host's side of
+that network only; and the model budget and limits are the service's
+flags (`--max-llm-calls`, the backend), which should be the image's.
+
 What the image doesn't do yet:
 
 - **Storage.** Sandbox's named files are rewritten whole on every write
   (two banks, a 16 MiB cap on all of them), so blocks.log can't grow far.
   An append that writes only its bytes is Soma's item.
-- **Services.** git, model calls and CI answer false (`w_git`, `w_llm`,
-  `w_ci`): the image can vote but not merge, bid or check.
 - **Time.** Its clock is the monotonic one, from boot.
 
 ## The first pieces, bottom-up (superseded by the section above)

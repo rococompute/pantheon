@@ -2941,3 +2941,86 @@ boot_snapshot_prog (h : node_t) : nprog (option node_state) :=
       end
   end).
 
+
+(** ---- The node's service (docs/SHELL-IN-SOMA.md, "The node's service") ----
+    A unikernel runs no processes and has no checkouts: [pantheon service
+    HOME HOST:PORT] does that for it on the host, with the node's own
+    runtime (shell.ml's, from HOME's setup), and the image asks it for the
+    operations [service_op] names, over one TCP connection. Each request
+    is the token and an operation's wire form; it is run as the binary
+    runs it, and its answer goes back. The token is the node's: a hash of
+    its private key, which the image and the service each have. *)
+service_token (d : string) : string := sha256 (append "pantheon service " d).
+
+(** the token, from the setup's key row ([size, n, e, d, ...]) *)
+service_token_of (config : list (list string)) : string :=
+  match config with _ :: (_ :: _ :: _ :: d :: _) :: _ => service_token d | _ => "" end.
+
+(** What the service's jobs gave that the image takes: the service's own
+    listener isn't the image's, so its connections' events stay out. *)
+service_kept (evs : list (list string)) : list (list string) :=
+  filter (fun e => match e with
+    | "conn_offer" :: _ | "peer_bytes" :: _ | "peer_closed" :: _ => false
+    | _ => true end) evs.
+
+(** As many events as fit in one reply (a Sandbox frame is 1 MiB at
+    most), at least one; the rest wait for the next ask. *)
+Fixpoint service_batch (used : nat) (evs : list (list string)) : list (list string) * list (list string) :=
+  match evs with
+  | [] => ([], [])
+  | e :: rest =>
+      let n := fold_left (fun a f => a + slen f + 16) e (used + 16) in
+      if negb (used =? 0) && (num "600000" <? n) then ([], evs)
+      else let (now, later) := service_batch n rest in (e :: now, later)
+  end.
+
+(** What a request gets: an operation the service answers, its answer; a
+    wrong token or any other operation, refused (not found, nothing). *)
+Inductive service_request := ServeOp (op : node_op) | ServeEvents | ServeRefused.
+
+service_request_of (token : string) (fields : list string) : service_request :=
+  match fields with
+  | tok :: wire =>
+      if seq tok token then
+        match io_of_wire wire with
+        | Some (IoEvents _) => ServeEvents
+        | Some op => if service_op op then ServeOp op else ServeRefused
+        | None => ServeRefused
+        end
+      else ServeRefused
+  | [] => ServeRefused
+  end.
+
+(** One turn: the next request, answered; [pending] are events the image
+    hasn't taken yet. *)
+service_tick_prog (token : string) (pending : list (list string)) : nprog (list (list string)) :=
+  nbind (nask (IoServeNext "1")) (fun a =>
+  match ans_found a with
+  | Some (conn :: fields) =>
+      match service_request_of token fields with
+      | ServeOp op =>
+          nbind (nask op) (fun r =>
+          nbind (nexec (IoServeReply conn (if fst r then "true" else "false") (float_wire (ans_float r)) (ans_list r)))
+            (fun _ => NDone pending))
+      | ServeEvents =>
+          nbind (nask (IoEvents "0")) (fun got =>
+          let (now, later) := service_batch 0 (pending ++ service_kept (nio_lists (ans_list got))) in
+          nbind (nexec (IoServeReply conn "true" "0" (nio_frame_lists now))) (fun _ => NDone later))
+      | ServeRefused => nbind (nexec (IoServeReply conn "false" "0" [])) (fun _ => NDone pending)
+      end
+  | _ => NDone pending
+  end).
+
+(** HOST:PORT, at its first colon (IPv4) *)
+service_address (a : string) : string * string :=
+  match find_str ":" a 0 with
+  | Some i => (substr a 0 i, drop_str (i + 1) a)
+  | None => (a, "")
+  end.
+
+(** Listening, said in the log (the test waits for it), or why not. *)
+service_start_prog (addr : string) : nprog bool :=
+  let (host, port) := service_address addr in
+  nbind (nask (IoServeListen host port)) (fun a =>
+  if fst a then nexec (IoLog (append "service listening on " addr))
+  else nbind (nexec (IoFail (append "service: cannot listen on " addr))) (fun _ => NDone false)).
