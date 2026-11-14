@@ -1,0 +1,98 @@
+(** What [IoPathProbe] answers (node_path.soma), whatever the host's stat
+    answers: it only looks (each part a stat, in order); "symlink"
+    whenever a part on the way is one; "dir" or "file" only when every
+    part is there and none is a symlink; "none" only when a part isn't
+    there. *)
+
+(** the paths it looks at, in order: each part joined to the one before *)
+Fixpoint probe_paths (cur : string) (parts : list string) : list string :=
+  match parts with
+  | [] => []
+  | x :: r => hjoin cur x :: probe_paths (hjoin cur x) r
+  end.
+
+(** what the host's stat says a path is *)
+kind_of (ans : node_op -> nanswer) (c : string) : string := stat_kind (ans (IoPathStat c)).
+
+Lemma seq_true : forall a b, seq a b = true -> a = b.
+Proof. intros a b H. apply Stdlib.Strings.String.eqb_eq. exact H. Qed.
+
+Lemma seq_false : forall a b, seq a b = false -> a <> b.
+Proof. intros a b H E. subst. rewrite Stdlib.Strings.String.eqb_refl in H. discriminate H. Qed.
+
+Lemma nresult_nbind : forall (A B : Type) ans (p : nprog A) (f : A -> nprog B),
+  nresult ans (nbind p f) = nresult ans (f (nresult ans p)).
+Proof. intros A B ans p f. induction p as [a | op k IH]; cbn; [reflexivity | apply IH]. Qed.
+
+(** it only looks: every operation is a stat of one of its paths *)
+Theorem probe_only_looks : forall ans cur parts last op,
+  In op (ntrace ans (probe_walk cur parts last)) -> exists c, In c (probe_paths cur parts) /\ op = IoPathStat c.
+Proof.
+  intros ans cur parts. revert cur. induction parts as [| x r IH]; intros cur last op H; cbn -[stat_kind hjoin seq] in H; [destruct H |].
+  destruct H as [H | H]; [exists (hjoin cur x); split; [left; reflexivity | symmetry; exact H] |].
+  destruct (seq (stat_kind (ans (IoPathStat (hjoin cur x)))) "symlink"); [destruct H |].
+  destruct (seq (stat_kind (ans (IoPathStat (hjoin cur x)))) "none"); [destruct H |].
+  apply IH in H as [c [Hc E]]. exists c. split; [right; exact Hc | exact E].
+Qed.
+
+(** a symlink on the way, every part before it there: "symlink" *)
+Theorem probe_finds_symlinks : forall ans cur parts last c,
+  In c (probe_paths cur parts) -> kind_of ans c = "symlink" ->
+  (forall c', In c' (probe_paths cur parts) -> kind_of ans c' <> "none") ->
+  nresult ans (probe_walk cur parts last) = "symlink".
+Proof.
+  intros ans cur parts. revert cur. induction parts as [| x r IH]; intros cur last c Hc Hs Hn; cbn -[stat_kind hjoin seq] in Hc; [destruct Hc |].
+  cbn -[stat_kind hjoin seq]. unfold kind_of in *.
+  destruct (seq (stat_kind (ans (IoPathStat (hjoin cur x)))) "symlink") eqn:E1; [reflexivity |].
+  destruct (seq (stat_kind (ans (IoPathStat (hjoin cur x)))) "none") eqn:E2.
+  - apply seq_true in E2. exfalso. apply (Hn (hjoin cur x)); [left; reflexivity | exact E2].
+  - destruct Hc as [Hc | Hc].
+    + subst c. apply seq_false in E1. exfalso. exact (E1 Hs).
+    + apply (IH (hjoin cur x) _ c Hc Hs). intros c' H'. apply Hn. right. exact H'.
+Qed.
+
+(** "dir" or "file": every part is there and none is a symlink *)
+Theorem probe_found_every_part : forall ans cur parts last,
+  last <> "symlink" -> last <> "none" ->
+  nresult ans (probe_walk cur parts last) <> "symlink" ->
+  nresult ans (probe_walk cur parts last) <> "none" ->
+  forall c, In c (probe_paths cur parts) -> kind_of ans c <> "symlink" /\ kind_of ans c <> "none".
+Proof.
+  intros ans cur parts. revert cur. induction parts as [| x r IH]; intros cur last Ls Ln Rs Rn c Hc; cbn -[stat_kind hjoin seq] in Hc; [destruct Hc |].
+  cbn -[stat_kind hjoin seq] in Rs, Rn. unfold kind_of in *.
+  destruct (seq (stat_kind (ans (IoPathStat (hjoin cur x)))) "symlink") eqn:E1; [exfalso; exact (Rs eq_refl) |].
+  destruct (seq (stat_kind (ans (IoPathStat (hjoin cur x)))) "none") eqn:E2; [exfalso; exact (Rn eq_refl) |].
+  apply seq_false in E1, E2. destruct Hc as [Hc | Hc]; [subst c; split; assumption |].
+  refine (IH (hjoin cur x) _ _ _ Rs Rn c Hc);
+    destruct (seq (stat_kind (ans (IoPathStat (hjoin cur x)))) "dir"); discriminate.
+Qed.
+
+(** "none": a part isn't there *)
+Theorem probe_none_is_missing : forall ans cur parts last,
+  last <> "none" -> nresult ans (probe_walk cur parts last) = "none" ->
+  exists c, In c (probe_paths cur parts) /\ kind_of ans c = "none".
+Proof.
+  intros ans cur parts. revert cur. induction parts as [| x r IH]; intros cur last Ln R; cbn -[stat_kind hjoin seq] in R; [exfalso; exact (Ln R) |].
+  unfold kind_of.
+  destruct (seq (stat_kind (ans (IoPathStat (hjoin cur x)))) "symlink") eqn:E1; [discriminate R |].
+  destruct (seq (stat_kind (ans (IoPathStat (hjoin cur x)))) "none") eqn:E2.
+  - exists (hjoin cur x). split; [left; reflexivity | apply seq_true; exact E2].
+  - apply IH in R as [c [Hc Hk]]; [exists c; split; [right; exact Hc | exact Hk] |].
+    destruct (seq (stat_kind (ans (IoPathStat (hjoin cur x)))) "dir"); discriminate.
+Qed.
+
+(** what it answers is one of four *)
+Theorem probe_answers : forall ans dir p,
+  In (ans_one (nresult ans (path_probe_prog dir p))) ["symlink", "none", "dir", "file"].
+Proof.
+  intros ans dir p. unfold path_probe_prog.
+  assert (H : forall cur parts last, In last ["symlink", "none", "dir", "file"] ->
+            In (nresult ans (probe_walk cur parts last)) ["symlink", "none", "dir", "file"]).
+  { intros cur parts. revert cur. induction parts as [| x r IH]; intros cur last Hl; cbn -[stat_kind hjoin seq]; [exact Hl |].
+    destruct (seq (stat_kind (ans (IoPathStat (hjoin cur x)))) "symlink"); [left; reflexivity |].
+    destruct (seq (stat_kind (ans (IoPathStat (hjoin cur x)))) "none"); [right; left; reflexivity |].
+    apply IH. destruct (seq (stat_kind (ans (IoPathStat (hjoin cur x)))) "dir"); cbn; tauto. }
+  rewrite nresult_nbind.
+  destruct (H dir (split_on "/"%char p) "dir" ltac:(right; right; left; reflexivity)) as [E | [E | [E | [E | []]]]];
+    rewrite <- E; cbn; tauto.
+Qed.

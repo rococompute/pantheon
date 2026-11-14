@@ -116,7 +116,8 @@ let self_exe =
 
 (* ---------- paths in a checkout ----------
    cli.soma and node_host.soma decide (edits_prog, check_tree_prog, a
-   merge's file work): these look at, write and remove one path. *)
+   merge's file work, node_path.soma's probe for symlinks on the way):
+   these look at, write and remove one path. *)
 
 (* a path, its last part not followed: its kind and whether its owner may
    run it *)
@@ -126,26 +127,6 @@ let path_stat f =
       let kind = match st.st_kind with Unix.S_REG -> "file" | Unix.S_DIR -> "dir" | Unix.S_LNK -> "symlink" | _ -> "other" in
       [ kind; string_of_bool (st.st_perm land 0o100 <> 0) ]
   | exception _ -> [ "none"; "false" ]
-
-(* no part of the path is a symlink: a write can't leave the checkout *)
-let no_symlink dir p =
-  let rec go cur = function
-    | [] -> true
-    | x :: r ->
-        let c = Filename.concat cur x in
-        (match (Unix.lstat c).st_kind with Unix.S_LNK -> false | _ -> go c r | exception Unix.Unix_error _ -> true)
-  in
-  go dir (String.split_on_char '/' p)
-
-(* a path in a checkout, as an edit sees it *)
-let path_probe dir p =
-  let f = Filename.concat dir p in
-  try
-    if not (no_symlink dir p) then "symlink"
-    else if Sys.file_exists f && Sys.is_directory f then "dir"
-    else if Sys.file_exists f then "file"
-    else "none"
-  with _ -> "symlink"
 
 (* "" when it worked, else what went wrong *)
 let attempt f = try f (); "" with e -> Printexc.to_string e
@@ -384,7 +365,6 @@ let node_io op =
        | None -> (false, (0., [ "exec came malformed" ])))
   (* the host's (nodeio.soma's service_op) *)
   | [ "path_stat"; path ] -> ans_data (path_stat path)
-  | [ "path_probe"; dir; path ] -> ans_data [ path_probe dir path ]
   | [ "path_write"; dir; path; text ] -> ans_data [ path_write dir path text ]
   | [ "path_remove"; dir; path ] -> ans_data [ path_remove dir path ]
   | [ "temp_dir"; prefix ] -> ans_data [ Filename.temp_dir prefix "" ]

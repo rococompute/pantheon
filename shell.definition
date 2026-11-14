@@ -97,8 +97,9 @@ forever : forall {A : Type}, (A -> A) -> A -> unit.
 (** The edits machinery's work is node_io operations that need no node
     (nodeio.soma's IoPathStat ... IoGitEnv; cli.soma's edits_prog,
     checkout_edits_prog and check_tree_prog decide): "path_stat" PATH
-    [kind, exec] (its last part not followed), "path_probe" DIR PATH
-    [kind: "symlink", "dir", "file" or "none"], "path_write" DIR PATH TEXT
+    [kind, exec] (its last part not followed: "file", "dir", "symlink",
+    "other" or "none"; node_path.soma's path probe walks a path's parts
+    with it), "path_write" DIR PATH TEXT
     (keeping the mode) and
     "path_remove" DIR PATH ["" or what went wrong], "temp_dir" PREFIX
     [path] and "remove_tree" PATH (later, in the background). Git (IoGit,

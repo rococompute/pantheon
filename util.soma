@@ -33,6 +33,15 @@ chars (s : string) : list ascii := Stdlib.Strings.String.list_ascii_of_string s.
 
 of_chars (l : list ascii) : string := Stdlib.Strings.String.string_of_list_ascii l.
 
+(** String.split_on_char *)
+Fixpoint split_go (c : ascii) (l cur : list ascii) (acc : list string) : list string :=
+  match l with
+  | [] => List.rev (of_chars (List.rev cur) :: acc)
+  | x :: r => if Ascii.eqb x c then split_go c r [] (of_chars (List.rev cur) :: acc) else split_go c r (x :: cur) acc
+  end.
+
+split_on (c : ascii) (s : string) : list string := split_go c (chars s) [] [].
+
 Fixpoint rev_onto {A : Type} (l acc : list A) : list A :=
   match l with [] => acc | x :: r => rev_onto r (x :: acc) end.
 

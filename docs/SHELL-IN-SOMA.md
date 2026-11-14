@@ -441,6 +441,28 @@ for ""), giving whether it succeeded and its output. shell.ml's git,
 clone and run, about 25 lines of environments and arguments, are gone;
 it keeps `capture`, which `IoExec` is.
 
+### Paths
+
+A path in a checkout as an edit, a merge's file work and the service's
+guard see it (`IoPathProbe`) is Soma too: `node_path.soma`, asked by
+`shell_answer` like node_git.soma. It walks the path's parts below the
+directory, each joined to the one before, and asks the host what each
+is (`IoPathStat`, an lstat, which doesn't follow the last part): a
+symlink anywhere on the way answers "symlink", so a write can't leave
+the checkout; a part that isn't there ends it, "none"; otherwise the
+last part's kind, "dir" or "file" (anything else that is there counts
+as a file). That is what shell.ml's `no_symlink` and `path_probe` did,
+which are gone; it keeps `path_stat`, the lstat itself.
+node_path.proof proves it of any answers the host's stat gives:
+`probe_only_looks` (every operation is a stat of one of the path's
+parts, in order), `probe_finds_symlinks` (a symlink on the way, every
+part before it there, answers "symlink"), `probe_found_every_part`
+("dir" or "file" only when every part is there and none is a symlink),
+`probe_none_is_missing` ("none" only when a part isn't there) and
+`probe_answers` (one of the four). With node_service.proof's
+`symlink_never_followed`, the service runs nothing through a symlink the
+host's stat reports at the time it looks.
+
 ## The edits machinery
 
 An edit is a path, the old text and the new (docs/DESIGN.md). What edits

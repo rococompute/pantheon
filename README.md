@@ -190,6 +190,7 @@ escape hatch, where static types are given up, and every assumption.
 | `node_host.soma` | The kernel's host work: a merge's git, the model's budget and limit, jobs (model calls, checks, CI) |
 | `node_shell.soma`, `node_sandbox.soma` | The kernel run by the binary (through shell.ml) and by a unikernel (with Sandbox) |
 | `node_git.soma` | Git, a clone and a program run as the binary runs them: git's environment and flags, over the host's exec |
+| `node_path.soma` | A path in a checkout as the runners look at it: each part's lstat in turn, a symlink on the way refused |
 | `node_service.soma` | The node's service for an image: what it carries out (only the node's own host work: its paths, git, programs), its loop |
 | `node_net.soma` | The binary's network, named files, service socket and jobs' processes: links, buffers, the select, frames (Soma.Wire), the process table and its events, over the host's descriptors and processes |
 | `shell.ml`, `shell.definition` | The host's primitives (sockets by name, files, git, processes), and what Soma takes them to be |

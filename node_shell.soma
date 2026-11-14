@@ -7,7 +7,7 @@
     node_git.soma's over the shell's. Nothing else of the node calls the shell:
     node.soma, cli.soma and what they import are Soma over the node's
     operations. *)
-Import util shell nodeio node node_kernel node_net node_git node_service cli.
+Import util shell nodeio node node_kernel node_net node_git node_path node_service cli.
 
 (** The shell's primitives: each operation through [node_io], in its wire
     form, in order, each answer handed to the rest of the program. Every
@@ -19,12 +19,17 @@ Fixpoint run_prims {A : Type} (p : nprog A) : A :=
   end.
 
 (** One operation as the binary carries it out: git and programs as
-    node_git.soma runs them ([git_op]) over the shell's primitives, the
-    rest by the shell *)
+    node_git.soma runs them ([git_op]), a path in a checkout looked at as
+    node_path.soma does ([path_op]), each over the shell's primitives;
+    the rest by the shell *)
 shell_answer (op : node_op) : nanswer :=
   match git_op op with
   | Some q => run_prims q
-  | None => node_io (io_wire op)
+  | None =>
+      match path_op op with
+      | Some q => run_prims q
+      | None => node_io (io_wire op)
+      end
   end.
 
 (** The binary's interpreter of a node program: each operation carried

@@ -2,7 +2,7 @@
 
 `soma build main.soma` checks the proof files. This inventory includes every
 Theorem, Lemma, Corollary and Example in `consensus.proof` and `market.proof`
-(and the main statements of `node_service.proof`, below),
+(and the main statements of `node_service.proof` and `node_path.proof`, below),
 with its exact source name. These are statements about the pure definitions,
 not proofs of the OCaml shell, extraction to machine integers, cryptography,
 OS isolation, or deployed end-to-end safety. Shell hashes, decoding, signatures
@@ -123,6 +123,20 @@ starts.
 | `git_takes_no_options_of_its_own` | Every git argument is one of the host work's words, not an option, or a clone's git directory it allows. |
 | `checkout_git_is_served`, `merge_commit_is_served`, `tool_checkout_is_served`, `model_launches_are_served`, `check_job_is_served`, `ci_is_served`, `cmd_backend_is_served`, `service_environment_is_served`, `cleanup_is_served`, `temporary_names_are_served` | What node_host.soma and node.soma ask, on paths it allows, is allowed: the restriction takes nothing the node needs, given the service runs with the image's flags. |
 | `the_key_and_beyond_are_refused`, `programs_beyond_the_nodes_are_refused` | Examples on one service's world: the key, `..`, a root's sibling, git aliases and upload packs, `GIT_SSH_COMMAND`, `LD_PRELOAD`, another CI image, the clock. |
+
+### node_path.proof
+
+What a path probe answers (node_path.soma), for any answers the host's
+lstat gives; the lstat itself is shell.ml's, and a change between the
+probe and the operation is outside it.
+
+| Name | What it says, and its limit |
+|---|---|
+| `probe_only_looks` | Every operation it asks is a stat of one of the path's parts, joined in order. |
+| `probe_finds_symlinks` | A part the stat calls a symlink, every part before it there, makes it answer "symlink". |
+| `probe_found_every_part` | Answering neither "symlink" nor "none", every part is there and none is a symlink. |
+| `probe_none_is_missing` | Answering "none", some part isn't there. |
+| `probe_answers` | It answers "symlink", "none", "dir" or "file". |
 
 ## Remaining work
 

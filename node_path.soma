@@ -1,0 +1,41 @@
+(** A path in a checkout as the runners look at it (docs/SHELL-IN-SOMA.md,
+    "Paths"): what [IoPathProbe] answers, for an edit (cli.soma), a
+    merge's file work (node_host.soma) and the service's guard
+    (node_service.soma), whoever runs it (node_shell.soma's runners, so
+    the binary and the service). Each part of the path below the
+    directory is looked at in turn ([IoPathStat], the host's lstat, which
+    doesn't follow the last part): a symlink anywhere on the way is
+    "symlink", so a write can't leave the checkout; a part that isn't
+    there ends it, "none"; otherwise what the last part is, "dir" or
+    "file". *)
+Import util nodeio.
+From Stdlib Require Import Ascii.
+
+(** what a stat answered a part is: "file", "dir", "symlink", "other" or
+    "none" *)
+stat_kind (a : nanswer) : string := hd "none" (ans_list a).
+
+(** the parts from [cur] on, each looked at before the next; [last] is
+    what the one before was *)
+Fixpoint probe_walk (cur : string) (parts : list string) (last : string) : nprog string :=
+  match parts with
+  | [] => NDone last
+  | x :: r =>
+      let c := hjoin cur x in
+      nbind (nask (IoPathStat c)) (fun a =>
+      let k := stat_kind a in
+      if seq k "symlink" then NDone "symlink"
+      else if seq k "none" then NDone "none"
+      else probe_walk c r (if seq k "dir" then "dir" else "file"))
+  end.
+
+(** [p] in [dir], as an edit sees it *)
+path_probe_prog (dir p : string) : nprog nanswer :=
+  nbind (probe_walk dir (split_on "/"%char p) "dir") (fun k => NDone (ans_data true [k])).
+
+(** what the runners carry out this way; anything else goes on as it is *)
+path_op (op : node_op) : option (nprog nanswer) :=
+  match op with
+  | IoPathProbe dir p => Some (path_probe_prog dir p)
+  | _ => None
+  end.

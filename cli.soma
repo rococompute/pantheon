@@ -71,14 +71,6 @@ basename (s : string) : string :=
   | r => of_chars (take_name r [])
   end.
 
-(** String.split_on_char *)
-Fixpoint split_go (c : ascii) (l cur : list ascii) (acc : list string) : list string :=
-  match l with
-  | [] => List.rev (of_chars (List.rev cur) :: acc)
-  | x :: r => if Ascii.eqb x c then split_go c r [] (of_chars (List.rev cur) :: acc) else split_go c r (x :: cur) acc
-  end.
-
-split_on (c : ascii) (s : string) : list string := split_go c (chars s) [] [].
 
 (** ---- ordering, as OCaml's compare on strings: by bytes ---- *)
 
