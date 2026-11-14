@@ -154,27 +154,37 @@ let path_remove dir p = attempt (fun () -> Sys.remove (Filename.concat dir p))
 
 (* ---------- programs and git ---------- *)
 
-(* a program's standard input: [text] in a temporary file, opened and then
-   removed (so no pipe can fill up while its output is read) *)
+(* a program's standard input: /dev/null for "", else [text] in a temporary
+   file, opened and then removed (so no pipe can fill up while its output
+   is read) *)
 let stdin_fd text =
-  let f = temp_file "pantheon-in" ".txt" text in
-  let fd = Unix.openfile f [ O_RDONLY; O_CLOEXEC ] 0 in
-  (try Sys.remove f with _ -> ());
-  fd
+  if text = "" then Unix.openfile "/dev/null" [ O_RDONLY; O_CLOEXEC ] 0
+  else begin
+    let f = temp_file "pantheon-in" ".txt" text in
+    let fd = Unix.openfile f [ O_RDONLY; O_CLOEXEC ] 0 in
+    (try Sys.remove f with _ -> ());
+    fd
+  end
 
 let close_all = List.iter (fun fd -> try Unix.close fd with _ -> ())
 
-(* run a program to its end: whether it succeeded, and its output. With
-   [stdin], it reads that text instead of /dev/null *)
-let capture ?(env = Unix.environment ()) ?stdin prog args =
+(* PROG started (from [cwd], if given) with [env] and [stdin], its output on
+   a pipe and its errors discarded: its pid and the pipe, or why not *)
+let start ?cwd prog stdin env args =
+  let ifd = stdin_fd stdin in
   let r, w = Unix.pipe ~cloexec:true () in
-  let devnull = Unix.openfile "/dev/null" [ O_RDWR; O_CLOEXEC ] 0 in
-  let inp = match stdin with None -> devnull | Some text -> stdin_fd text in
-  let opened = if inp == devnull then [ devnull ] else [ devnull; inp ] in
-  match Unix.create_process_env prog (Array.of_list (prog :: args)) env inp w devnull with
-  | exception e -> close_all (r :: w :: opened); (false, Printexc.to_string e)
-  | pid ->
-      close_all (w :: opened);
+  let devnull = Unix.openfile "/dev/null" [ O_WRONLY; O_CLOEXEC ] 0 in
+  let old = Sys.getcwd () in
+  let back () = if cwd <> None then (try Sys.chdir old with _ -> ()) in
+  match Option.iter Sys.chdir cwd; Unix.create_process_env prog (Array.of_list (prog :: args)) env ifd w devnull with
+  | exception e -> back (); close_all [ r; w; ifd; devnull ]; Error (Printexc.to_string e)
+  | pid -> back (); close_all [ w; ifd; devnull ]; Ok (pid, r)
+
+(* run a program to its end: whether it succeeded, and its output *)
+let capture ?(env = Unix.environment ()) ?(stdin = "") prog args =
+  match start prog stdin env args with
+  | Error e -> (false, e)
+  | Ok (pid, r) ->
       let ic = Unix.in_channel_of_descr r in
       let out = In_channel.input_all ic in
       close_in ic;
@@ -184,11 +194,11 @@ let capture ?(env = Unix.environment ()) ?stdin prog args =
 (* git for a checkout Pantheon owns: no user or system config, no hooks, no
    signing, so every node does exactly the same thing; [extra] environment
    entries first *)
-let git ?(extra = []) ?stdin dir args =
+let git ?(extra = []) ?(stdin = "") dir args =
   let env =
     extra @ [ "GIT_CONFIG_NOSYSTEM=1"; "GIT_CONFIG_GLOBAL=/dev/null"; "GIT_TERMINAL_PROMPT=0" ]
     @ List.filter (fun kv -> not (String.starts_with ~prefix:"GIT_" kv)) (Array.to_list (Unix.environment ())) in
-  capture ~env:(Array.of_list env) ?stdin "git"
+  capture ~env:(Array.of_list env) ~stdin "git"
     ("-C" :: dir :: "-c" :: "core.hooksPath=/dev/null" :: "-c" :: "commit.gpgsign=false" :: "-c" :: "core.autocrlf=false"
      :: "-c" :: "core.fileMode=true" :: "-c" :: "core.symlinks=true" :: args)
 
@@ -213,19 +223,9 @@ let sock_find id = Hashtbl.find_opt socks id
 (* PROG run from [cwd] with [env], [stdin] its standard input from a file:
    [its pid, its output's pipe], or not found and why *)
 let spawn prog stdin cwd env args =
-  let ifd = stdin_fd stdin in
-  let r, w = Unix.pipe ~cloexec:true () in
-  let devnull = Unix.openfile "/dev/null" [ O_WRONLY ] 0 in
-  let old = Sys.getcwd () in
-  match Sys.chdir cwd; Unix.create_process_env prog (Array.of_list (prog :: args)) (Array.of_list env) ifd w devnull with
-  | exception e ->
-      (try Sys.chdir old with _ -> ());
-      close_all [ r; w; ifd; devnull ];
-      (false, (0., [ Printexc.to_string e ]))
-  | pid ->
-      Sys.chdir old;
-      close_all [ w; ifd; devnull ];
-      ans_data [ string_of_int pid; sock_add r ]
+  match start ~cwd prog stdin (Array.of_list env) args with
+  | Ok (pid, r) -> ans_data [ string_of_int pid; sock_add r ]
+  | Error e -> (false, (0., [ e ]))
 
 (* a process's end, waited for: [how, value] (exit, signal or stop, the wait
    status's facts), or not found and why *)
@@ -394,7 +394,7 @@ let node_io op =
   | "git" :: dir :: args -> run_out (git dir args)
   | "git_env" :: dir :: stdin :: rest ->
       (match fields_then_args rest with
-       | Some (extra, args) -> run_out (git ~extra ?stdin:(if stdin = "" then None else Some stdin) dir args)
+       | Some (extra, args) -> run_out (git ~extra ~stdin dir args)
        | None -> (false, (0., [ "git_env came malformed" ])))
   | [ "path_stat"; path ] -> ans_data (path_stat path)
   | [ "path_probe"; dir; path ] -> ans_data [ path_probe dir path ]

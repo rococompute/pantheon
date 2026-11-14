@@ -1,7 +1,7 @@
 (** The node's I/O as one interface (U-1; docs/SHELL-IN-SOMA.md, "Two
     directions, and the unikernel"). Nothing here imports the shell: these
-    are values, which the binary interprets through shell.ml (node.soma's
-    [run_shell] over the [node_io] binding) and a unikernel can interpret
+    are values, which the binary interprets through shell.ml
+    (node_shell.soma's [run_shell] over the [node_io] binding) and a unikernel can interpret
     with Sandbox (node_sandbox.soma). *)
 From Corelib Require PrimFloat.
 From Corelib Require PrimInt63.
@@ -83,20 +83,16 @@ Fixpoint smap_size {A : Type} (m : smap A) : nat :=
 (** ---- U-1: the node's I/O as one interface (docs/SHELL-IN-SOMA.md,
     "Two directions, and the unikernel") ----
     The node's effects are values of [node_op], as a Sandbox program's are
-    values of Sandbox.io: shell.ml interprets them for the binary through
-    one binding, [node_io], and Sandbox could interpret the same values for
-    a unikernel. So far: logging, a timer, queueing an event for the loop,
-    and sending on peer links (to every peer, to the peer at an index, to a
-    peer by name), and the storage writes: storing a decided block, setting
-    the height and writing the assembled status file, the signed-vote log,
-    the own-transaction retry table and nonce-flood mark, a CI check
-    request, and a merge's applied version or divergence. The clock is a read
-    of the same interface: interpreting it yields the time, the same
-    [Unix.gettimeofday] value as before. Table reads, git, model and CI
-    jobs are still bindings of their own: the next parts of U-1. An operation crosses the binding as its
-    wire form ([io_wire]), since a .definition takes no Soma inductive;
-    [io_of_wire] reads it back, and shell.ml's [node_io] does exactly that
-    match. An effect's result is [(true, 0)]; the clock's is [(true, now)]. *)
+    values of Sandbox.io: the kernel (node_kernel.soma) carries out the
+    node's tables, peer links, timers, files and signatures, its host's
+    work (node_host.soma) the jobs, checkouts and model calls; what is left
+    are primitives, which the binary's runner (node_shell.soma over
+    node_net.soma) hands shell.ml through one binding, [node_io], and a
+    unikernel carries out with Sandbox (node_sandbox.soma). An operation
+    crosses the binding as its wire form ([io_wire]), since a .definition
+    takes no Soma inductive; [io_of_wire] reads it back, and shell.ml's
+    [node_io] does exactly that match. An effect's result is [(true, 0)];
+    the clock's is [(true, now)]. *)
 Inductive node_op :=
 | IoLog (text : string)
 | IoTimer (ms : string) (event : list string)
@@ -921,9 +917,6 @@ Fixpoint nio_find {A : Type} (eq : string * string -> bool) (l : list ((string *
   | [] => None
   | (k, v) :: rest => if eq k then Some v else nio_find eq rest
   end.
-
-nio_key_is (who first : string) (k : string * string) : bool :=
-  nio_eq (fst k) who && nio_eq (snd k) first.
 
 Fixpoint nio_has (k : string) (l : list (string * string)) : bool :=
   match l with [] => false | (x, _) :: rest => nio_eq x k || nio_has k rest end.

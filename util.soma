@@ -439,12 +439,6 @@ Fixpoint shallow_json_go (fuel : nat) (s : string) (i : nat) (max items opens cl
 shallow_json (max max_items s : string) : bool :=
   shallow_json_go (slen s) s 0 (num max) (num max_items) 0 0 false false.
 
-(** the scan without an item cap: a container, colon or comma is one
-    character, so a cap past the text's length never runs out, as the
-    binary's max_int never did *)
-shallow_json_uncapped (max s : string) : bool :=
-  shallow_json_go (slen s) s 0 (num max) (Succ (slen s)) 0 0 false false.
-
 (** ---- Floats as text, in Soma ----
     What OCaml's Printf "%.17g" and "%.0f" and float_of_string give, computed
     exactly: a float is m * 2^e (FloatOps.Prim2SF), printed from the exact
@@ -454,8 +448,6 @@ shallow_json_uncapped (max s : string) : bool :=
     the same functions. *)
 
 Local Open Scope Z_scope.
-
-pos_of_nat_digits (k : nat) : positive := Nat.iter k (fun p => Pos.mul 10 p) 1%positive.
 
 (** a positive's decimal digits *)
 Fixpoint pos_decimal_go (fuel : nat) (n : N) (acc : string) : string :=
