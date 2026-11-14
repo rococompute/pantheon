@@ -1,0 +1,404 @@
+(** What the node's service carries out (node_service.soma), proved of the
+    functions it runs: what it refuses runs nothing; what it serves is one
+    of the host's operations, with the node's token; its paths stay under
+    the checkouts, the inbox and what it made, and are looked at for
+    symlinks first; its programs are the node's own, with the service's
+    environment; git gets no option that runs or configures anything. And
+    the other way: what the node's host work asks (node_host.soma,
+    node.soma) is served, so the restriction takes nothing the node
+    needs. *)
+
+(** ---- strings and booleans ---- *)
+
+Lemma seq_true : forall a b, seq a b = true -> a = b.
+Proof. intros a b H. apply Stdlib.Strings.String.eqb_eq. exact H. Qed.
+
+Lemma seq_refl : forall a, seq a a = true.
+Proof. intros a. apply Stdlib.Strings.String.eqb_refl. Qed.
+
+Lemma eq_strs_true : forall a b, eq_strs a b = true -> a = b.
+Proof.
+  induction a as [| x a IH]; destruct b as [| y b]; cbn; intros H; try discriminate H; try reflexivity.
+  apply andb_prop in H as [H1 H2]. apply seq_true in H1. apply IH in H2. subst. reflexivity.
+Qed.
+
+Lemma eq_strs_refl : forall l, eq_strs l l = true.
+Proof. induction l as [| x l IH]; cbn; [reflexivity | rewrite seq_refl, IH; reflexivity]. Qed.
+
+(** ---- what it refuses runs nothing ---- *)
+
+Theorem refused_runs_nothing : forall w made op ans,
+  sv_allowed w made op = false ->
+  ntrace ans (sv_serve w made op) = [IoLog (sv_refused_text op "not the node's own work")].
+Proof. intros w made op ans H. unfold sv_serve. rewrite H. reflexivity. Qed.
+
+(** what it serves is one of the host's operations *)
+Theorem allowed_are_host_ops : forall w made op, sv_allowed w made op = true -> service_op op = true.
+Proof. intros w made op H. destruct op; try reflexivity; cbn in H; discriminate H. Qed.
+
+(** and only for the node's token *)
+Theorem only_the_token_is_served : forall token t wire op,
+  service_request_of token (t :: wire) = ServeOp op ->
+  t = token /\ io_of_wire wire = Some op /\ service_op op = true.
+Proof.
+  intros token t wire op H. unfold service_request_of in H.
+  destruct (seq t token) eqn:E; [| discriminate H]. apply seq_true in E.
+  destruct (io_of_wire wire) as [o |] eqn:W; [| discriminate H].
+  destruct o; cbn in H; try discriminate H; injection H as <-; split; try exact E; split; reflexivity.
+Qed.
+
+(** ---- paths ---- *)
+
+(** a path it serves has no ".." in it and is a root or under one *)
+Theorem paths_stay_in_roots : forall w made p,
+  sv_path w made p = true ->
+  sv_no_up p = true /\ exists r, In r (sv_roots w made) /\ (p = r \/ starts (append r "/") p = true).
+Proof.
+  unfold sv_path. intros w made p H. apply andb_prop in H as [H1 H2]. split; [exact H1 |].
+  apply List.existsb_exists in H2 as [r [Hin Hu]]. exists r. split; [exact Hin |].
+  unfold sv_under in Hu. apply Bool.orb_prop in Hu as [Hu | Hu]; [left; apply seq_true; exact Hu | right; exact Hu].
+Qed.
+
+(** and the roots are the checkouts, the inbox and what it made, each
+    absolute: never the home itself, where the node's key is *)
+Theorem roots_are_the_services : forall w made r,
+  In r (sv_roots w made) ->
+  starts "/" r = true /\
+  (r = hjoin (hw_home (sw_world w)) "repos" \/ r = hjoin (hw_home (sw_world w)) "inbox" \/
+   exists m, In m made /\ (r = m \/ r = append m ".git")).
+Proof.
+  intros w made r H. unfold sv_roots in H. apply List.filter_In in H as [H Hs]. split; [exact Hs |].
+  apply List.in_app_or in H as [H | H].
+  - destruct H as [H | [H | []]]; [left | right; left]; symmetry; exact H.
+  - right; right. apply List.in_flat_map in H as [m [Hm Hr]]. exists m. split; [exact Hm |].
+    destruct Hr as [Hr | [Hr | []]]; [left | right]; symmetry; exact Hr.
+Qed.
+
+Lemma existsb_find : forall {A : Type} (f : A -> bool) l, existsb f l = true -> exists x, find f l = Some x.
+Proof.
+  intros A f l. induction l as [| x l IH]; cbn; intros H; [discriminate H |].
+  destruct (f x); [exists x; reflexivity | apply IH; exact H].
+Qed.
+
+Lemma guard_path_found : forall w made p, sv_path w made p = true -> exists r rel, sv_guard_path w made p = Some (r, rel).
+Proof.
+  intros w made p H. unfold sv_path in H. apply andb_prop in H as [_ H]. apply existsb_find in H as [r Hr].
+  unfold sv_guard_path. rewrite Hr. eexists; eexists; reflexivity.
+Qed.
+
+(** every read, write, listing or removal it serves is looked at first *)
+Theorem path_operations_are_looked_at : forall w made op,
+  sv_allowed w made op = true ->
+  match op with
+  | IoPathStat _ | IoReadText _ | IoDirEntries _ | IoDiscardFile _ | IoRemoveTree _ | IoPathWrite _ _ _ | IoPathRemove _ _ =>
+      exists r rel, sv_guard w made op = Some (r, rel)
+  | _ => True
+  end.
+Proof.
+  intros w made op H. destruct op; try exact I; cbn [sv_allowed sv_guard] in *;
+    try (apply guard_path_found; exact H);
+    apply andb_prop in H as [_ H]; apply guard_path_found; exact H.
+Qed.
+
+(** and one through a symlink never runs *)
+Theorem symlink_never_followed : forall w made op r rel ans,
+  sv_allowed w made op = true -> sv_guard w made op = Some (r, rel) ->
+  ans_one (ans (IoPathProbe r rel)) = "symlink" ->
+  ntrace ans (sv_serve w made op) = [IoPathProbe r rel, IoLog (sv_refused_text op "a symlink on the way")].
+Proof.
+  intros w made op r rel ans H G S. unfold sv_serve. rewrite H. cbn [negb]. rewrite G. cbn. rewrite S. reflexivity.
+Qed.
+
+(** ---- programs ---- *)
+
+(** a process it starts is the node's own binary, the model, CI or the
+    service's own cmd: backend, from a directory it may use, with its own
+    environment and a cmd: patch's paths *)
+Theorem processes_are_the_nodes_own : forall w made prog stdin cwd env args,
+  sv_allowed w made (IoProcStart prog stdin cwd env args) = true ->
+  In prog [sw_self w, "claude", "codex", "curl", "docker", hw_ci_sandbox (sw_world w), drop_str 4 (hw_backend (sw_world w))]
+  /\ sv_path w made cwd = true
+  /\ (forall e, In e env -> In e (sw_env w) \/ exists pre, In pre sv_tool_names /\ starts pre e = true).
+Proof.
+  intros w made prog stdin cwd env args H. cbn [sv_allowed] in H.
+  apply andb_prop in H as [H Hp]. apply andb_prop in H as [Hc He]. split; [| split; [exact Hc |]].
+  - unfold sv_program in Hp.
+    repeat match goal with Hx : (_ || _) = true |- _ => apply Bool.orb_prop in Hx as [Hx | Hx] end;
+    repeat match goal with Hx : (_ && _) = true |- _ => apply andb_prop in Hx as [Hx ?] end;
+    match goal with Hs : seq prog _ = true |- _ => apply seq_true in Hs; subst prog end;
+    repeat (first [apply List.in_eq | apply List.in_cons]).
+  - intros e Hin. rewrite List.forallb_forall in He. specialize (He e Hin). unfold sv_env_ok in He.
+    apply Bool.orb_prop in He as [He | He].
+    + left. apply List.existsb_exists in He as [x [Hx Hs]]. apply seq_true in Hs. subst. exact Hx.
+    + right. apply List.existsb_exists in He as [pre [Hpre Hs]]. exists pre. split; assumption.
+Qed.
+
+(** a program run to its end is rm, chmod or docker *)
+Theorem runs_are_cleanup : forall w made prog args,
+  sv_allowed w made (IoRun prog args) = true -> In prog ["rm", "chmod", "docker"].
+Proof.
+  intros w made prog args H. cbn [sv_allowed sv_run] in H.
+  destruct args as [| a [| b [| c [| d r]]]]; try discriminate H.
+  - apply andb_prop in H as [H _]. apply andb_prop in H as [H _]. apply seq_true in H. subst. left. reflexivity.
+  - apply Bool.orb_prop in H as [H | H];
+      repeat match goal with Hx : (_ && _) = true |- _ => apply andb_prop in Hx as [Hx ?] end;
+      match goal with Hs : seq prog _ = true |- _ => apply seq_true in Hs; subst prog end;
+      repeat (first [apply List.in_eq | apply List.in_cons]).
+Qed.
+
+(** ---- git ---- *)
+
+sv_git_words : list string :=
+  ["rev-parse", "--short", "HEAD", "HEAD^{tree}", "add", "-A", "-f", "ls-files", "reset", "-q", "--hard", "clean",
+   "-d", "-x", "checkout", "--detach", "show", "clone", "--quiet", "--shared", "--no-checkout"].
+
+Lemma git_fixed_words : forall l a, In l sv_git_fixed -> In a l -> In a sv_git_words.
+Proof.
+  intros l a Hl Ha. cbn in Hl.
+  repeat (destruct Hl as [Hl | Hl]; [subst l; cbn in Ha; repeat (destruct Ha as [Ha | Ha]; [subst a; repeat (first [apply List.in_eq | apply List.in_cons]) |]); destruct Ha |]).
+  destruct Hl.
+Qed.
+
+Lemma word_not_option : forall s, sv_word s = true -> seq (substr s 0 1) "-" = false.
+Proof. intros s H. unfold sv_word in H. apply andb_prop in H as [_ H]. apply Bool.negb_true_iff in H. exact H. Qed.
+
+(** every argument git gets is one of the host's work's own words, a
+    value that isn't an option, or a clone's git directory the service
+    may use: no -c, no --config, no --upload-pack, no --template, no
+    --exec, so nothing that runs a program or sets git's configuration *)
+Theorem git_takes_no_options_of_its_own : forall w made dir args a,
+  sv_allowed w made (IoGit dir args) = true -> In a args ->
+  In a sv_git_words \/ seq (substr a 0 1) "-" = false \/
+  (starts "--separate-git-dir=" a = true /\ sv_path w made (drop_str 19 a) = true).
+Proof.
+  intros w made dir args a H Ha. cbn [sv_allowed] in H. unfold sv_git in H.
+  apply Bool.orb_prop in H as [H | H].
+  - left. apply andb_prop in H as [H _]. apply List.existsb_exists in H as [l [Hl He]].
+    apply eq_strs_true in He. subst l. exact (git_fixed_words args a Hl Ha).
+  - destruct args as [| a1 [| a2 [| a3 [| a4 [| a5 [| a6 [| a7 [| a8 r]]]]]]]];
+      cbn -[sv_path sv_word seq starts eq_strs drop_str] in H; try discriminate H;
+      repeat match goal with Hx : (_ && _) = true |- _ => apply andb_prop in Hx as [Hx ?] end.
+    + (* show *)
+      destruct Ha as [Ha | [Ha | []]]; subst a.
+      * left. apply seq_true in H. subst. repeat (first [apply List.in_eq | apply List.in_cons]).
+      * right; left. apply word_not_option. assumption.
+    + (* checkout *)
+      apply eq_strs_true in H. injection H as -> -> ->.
+      destruct Ha as [Ha | [Ha | [Ha | [Ha | []]]]]; subst a;
+        try (left; repeat (first [apply List.in_eq | apply List.in_cons]); fail).
+      right; left. apply word_not_option. assumption.
+    + (* a cmd: patch's clone *)
+      apply eq_strs_true in H. injection H as -> -> -> ->.
+      destruct Ha as [Ha | [Ha | [Ha | [Ha | [Ha | [Ha | [Ha | []]]]]]]]; subst a;
+        try (left; repeat (first [apply List.in_eq | apply List.in_cons]); fail);
+        try (right; left; apply word_not_option; assumption).
+      right; right. split; assumption.
+Qed.
+
+(** ---- what the node's host work asks is served ---- *)
+
+Lemma length_append : forall p s, slen (append p s) = slen p + slen s.
+Proof. induction p as [| c p IH]; intros s; cbn; [reflexivity | unfold slen in IH; rewrite IH; reflexivity]. Qed.
+
+Lemma substring_whole : forall s, Stdlib.Strings.String.substring 0 (Stdlib.Strings.String.length s) s = s.
+Proof. induction s as [| c s IH]; cbn; [reflexivity | rewrite IH; reflexivity]. Qed.
+
+Lemma substring_prefix : forall p s, Stdlib.Strings.String.substring 0 (Stdlib.Strings.String.length p) (append p s) = p.
+Proof. induction p as [| c p IH]; intros s; cbn; [destruct s; reflexivity | rewrite IH; reflexivity]. Qed.
+
+Lemma substring_after : forall p s,
+  Stdlib.Strings.String.substring (Stdlib.Strings.String.length p) (Stdlib.Strings.String.length s) (append p s) = s.
+Proof. induction p as [| c p IH]; intros s; cbn; [apply substring_whole | apply IH]. Qed.
+
+Lemma drop_str_append : forall p s, drop_str (slen p) (append p s) = s.
+Proof.
+  intros p s. unfold drop_str, substr. rewrite length_append. rewrite Nat.add_sub_swap by apply Nat.le_refl.
+  rewrite Nat.sub_diag. cbn. apply substring_after.
+Qed.
+
+Lemma volume_out : forall out,
+  substr (append out ":/work:ro") 0 (slen (append out ":/work:ro") - 9) = out.
+Proof. intros out. unfold substr. rewrite length_append. cbn [slen Stdlib.Strings.String.length]. rewrite Nat.add_sub. apply substring_prefix. Qed.
+
+Lemma volume_ends : forall out, ends ":/work:ro" (append out ":/work:ro") = true.
+Proof.
+  intros out. unfold ends, substr. rewrite length_append.
+  replace (slen out + slen ":/work:ro" - slen ":/work:ro") with (slen out) by (rewrite Nat.add_sub; reflexivity).
+  unfold slen. rewrite substring_after. rewrite seq_refl. rewrite Bool.andb_true_r.
+  apply Nat.leb_le. apply Nat.le_add_l.
+Qed.
+
+Lemma starts_append : forall p s, starts p (append p s) = true.
+Proof. intros p s. unfold starts, substr, slen. rewrite substring_prefix. apply seq_refl. Qed.
+
+Lemma git_fixed_served : forall w made dir args,
+  In args sv_git_fixed -> sv_path w made dir = true -> sv_git w made dir args = true.
+Proof.
+  intros w made dir args Hi H. unfold sv_git. cbv zeta. apply Bool.orb_true_iff. left.
+  rewrite H, Bool.andb_true_r. apply List.existsb_exists. exists args. split; [exact Hi | apply eq_strs_refl].
+Qed.
+
+(** a checkout's git: the heads, a tree, adding, the tracked files,
+    putting it back, a file at its head *)
+Theorem checkout_git_is_served : forall w made dir p,
+  sv_path w made dir = true ->
+  forallb (fun args => sv_allowed w made (IoGit dir args)) sv_git_fixed = true /\
+  sv_allowed w made (IoGit dir ["show", append "HEAD:" p]) = true.
+Proof.
+  intros w made dir p H. split.
+  - apply List.forallb_forall. intros args Hi. cbn [sv_allowed]. apply git_fixed_served; assumption.
+  - cbn [sv_allowed]. unfold sv_git. cbv zeta. apply Bool.orb_true_iff. right.
+    change (seq "show" "show" && sv_word (append "HEAD:" p) && starts "HEAD:" (append "HEAD:" p)
+            && sv_path w made dir = true).
+    rewrite H, starts_append, seq_refl. reflexivity.
+Qed.
+
+(** a merge's commit *)
+Theorem merge_commit_is_served : forall w made dir msg date,
+  sv_path w made dir = true -> sv_allowed w made (IoGitEnv dir msg (merge_who date) merge_commit_args) = true.
+Proof. intros w made dir msg date H. cbn -[sv_path]. rewrite H. destruct date; reflexivity. Qed.
+
+(** a cmd: patch's checkout: the clone beside a directory the service
+    made, then its commit *)
+Theorem tool_checkout_is_served : forall w made dir wt c,
+  sv_word dir = true -> sv_path w made dir = true -> sv_word wt = true -> sv_path w made wt = true ->
+  sv_path w made (append wt ".git") = true -> sv_word c = true ->
+  sv_allowed w made (IoGit "." ["clone", "--quiet", "--shared", "--no-checkout",
+                               append "--separate-git-dir=" (append wt ".git"), dir, wt]) = true /\
+  sv_allowed w made (IoGit wt ["checkout", "-q", "--detach", c]) = true.
+Proof.
+  intros w made dir wt c Hd Pd Hw Pw Pg Hc. split.
+  - cbn [sv_allowed]. unfold sv_git. cbv zeta. apply Bool.orb_true_iff. right.
+    change (eq_strs ["clone", "--quiet", "--shared", "--no-checkout"] ["clone", "--quiet", "--shared", "--no-checkout"]
+            && seq "." "." && starts "--separate-git-dir=" (append "--separate-git-dir=" (append wt ".git"))
+            && sv_path w made (drop_str (slen "--separate-git-dir=") (append "--separate-git-dir=" (append wt ".git")))
+            && sv_word dir && sv_path w made dir && sv_word wt && sv_path w made wt = true).
+    rewrite drop_str_append, starts_append, eq_strs_refl, seq_refl, Hd, Pd, Hw, Pw, Pg. reflexivity.
+  - cbn [sv_allowed]. unfold sv_git. cbv zeta. apply Bool.orb_true_iff. right.
+    change (eq_strs ["checkout", "-q", "--detach"] ["checkout", "-q", "--detach"] && sv_word c && sv_path w made wt = true).
+    rewrite eq_strs_refl, Hc, Pw. reflexivity.
+Qed.
+
+(** the model, as backend_launch launches it *)
+Theorem model_launches_are_served : forall w made cwd stdin env out hdr,
+  sv_path w made cwd = true -> forallb (sv_env_ok w) env = true ->
+  sv_path w made out = true -> sv_path w made hdr = true ->
+  sv_allowed w made (IoProcStart "claude" stdin cwd env (sv_launch_args "claude")) = true /\
+  sv_allowed w made (IoProcStart "codex" stdin cwd env (hswap "@OUT@" out (sv_launch_args "codex"))) = true /\
+  sv_allowed w made (IoProcStart "curl" stdin cwd env (hswap "@HDR@" (append "@" hdr) (sv_launch_args "grok"))) = true.
+Proof.
+  intros w made cwd stdin env out hdr Pc He Po Ph. cbn [sv_allowed]. rewrite Pc, He. cbn [andb].
+  unfold sv_program. rewrite !Bool.orb_true_iff. split; [| split].
+  - left; left; left; left; left; right. rewrite eq_strs_refl. reflexivity.
+  - left; left; left; left; right. cbn -[sv_path eq_strs]. rewrite Po, eq_strs_refl. reflexivity.
+  - left; left; left; right.
+    change (seq "curl" "curl"
+            && (starts "@" (append "@" hdr) && sv_path w made (drop_str (slen "@") (append "@" hdr))
+                && eq_strs (hswap "@HDR@" (append "@" hdr) (sv_launch_args "grok"))
+                           (hswap "@HDR@" (append "@" hdr) (sv_launch_args "grok"))) = true).
+    rewrite drop_str_append, starts_append, seq_refl, Ph, eq_strs_refl. reflexivity.
+Qed.
+
+(** a check of a bid by the node's own binary *)
+Theorem check_job_is_served : forall w made cwd env repo head edits out,
+  sv_path w made cwd = true -> forallb (sv_env_ok w) env = true -> sv_path w made repo = true ->
+  sv_word head = true -> sv_path w made edits = true -> sv_path w made out = true ->
+  sv_allowed w made (IoProcStart (sw_self w) "" cwd env ["check", repo, head, edits, out]) = true.
+Proof.
+  intros w made cwd env repo head edits out Pc He Pr Hh Pe Po. cbn [sv_allowed]. rewrite Pc, He. cbn [andb].
+  unfold sv_program. rewrite !Bool.orb_true_iff. do 6 left. rewrite seq_refl. cbn -[sv_path sv_word].
+  rewrite Pr, Hh, Pe, Po. reflexivity.
+Qed.
+
+(** CI in its container, and with the service's sandbox runner *)
+Theorem ci_is_served : forall w made cwd env x out script,
+  sv_path w made cwd = true -> forallb (sv_env_ok w) env = true ->
+  sv_name (append "pantheon-ci-" x) = true -> sv_path w made out = true ->
+  sv_allowed w made (IoProcStart "docker" "" cwd env
+    (ci_docker_args (append "pantheon-ci-" x) (hw_ci_memory (sw_world w)) out (hw_ci_image (sw_world w)) script)) = true /\
+  (seq (hw_ci_sandbox (sw_world w)) "" = false ->
+   sv_allowed w made (IoProcStart (hw_ci_sandbox (sw_world w)) "" cwd env [hw_ci_memory (sw_world w), out, script]) = true).
+Proof.
+  intros w made cwd env x out script Pc He Hn Po. cbn [sv_allowed]. rewrite Pc, He. cbn [andb].
+  unfold sv_program. split; [| intros Hs]; rewrite !Bool.orb_true_iff.
+  - left; left; right. rewrite seq_refl. cbn [andb]. unfold sv_ci_docker. cbn [ci_docker_args nth last].
+    rewrite volume_out, volume_ends, Hn, Po, eq_strs_refl, starts_append. reflexivity.
+  - left; right. rewrite Hs, !seq_refl. cbn -[sv_path]. rewrite Po. reflexivity.
+Qed.
+
+(** the service's own cmd: backend *)
+Theorem cmd_backend_is_served : forall w made cwd stdin env,
+  sv_path w made cwd = true -> forallb (sv_env_ok w) env = true ->
+  starts "cmd:" (hw_backend (sw_world w)) = true -> (4 <? slen (hw_backend (sw_world w))) = true ->
+  sv_allowed w made (IoProcStart (drop_str 4 (hw_backend (sw_world w))) stdin cwd env []) = true.
+Proof.
+  intros w made cwd stdin env Pc He Hs Hl. cbn [sv_allowed]. rewrite Pc, He. cbn [andb].
+  unfold sv_program. rewrite !Bool.orb_true_iff. right. rewrite Hs, Hl, seq_refl. reflexivity.
+Qed.
+
+(** the model's environment is the service's own, less the node's
+    settings, and so is a check's and CI's *)
+Theorem service_environment_is_served : forall w,
+  forallb (sv_env_ok w) (sw_env w) = true /\ forallb (sv_env_ok w) (model_env_entries (sw_env w)) = true.
+Proof.
+  intros w. assert (Hin : forall e, In e (sw_env w) -> sv_env_ok w e = true).
+  { intros e H. unfold sv_env_ok. apply Bool.orb_true_iff. left. apply List.existsb_exists. exists e. split; [exact H | apply seq_refl]. }
+  split; apply List.forallb_forall; intros e H; apply Hin; [exact H |].
+  unfold model_env_entries in H. apply List.filter_In in H as [H _]. exact H.
+Qed.
+
+(** cleaning up after a job *)
+Theorem cleanup_is_served : forall w made p x,
+  sv_path w made p = true -> sv_name (append "pantheon-ci-" x) = true ->
+  sv_allowed w made (IoRun "rm" ["-rf", p]) = true /\ sv_allowed w made (IoRun "chmod" ["-R", "a+rX", p]) = true /\
+  sv_allowed w made (IoRun "docker" ["rm", "-f", append "pantheon-ci-" x]) = true /\
+  sv_allowed w made (IoRemoveTree p) = true /\ sv_allowed w made (IoDiscardFile p) = true.
+Proof.
+  intros w made p x H Hn. cbn -[sv_path sv_name append starts]. rewrite H, Hn, starts_append. repeat split.
+Qed.
+
+(** the temporary files and directories the host's work makes *)
+Example temporary_names_are_served : forall w made,
+  sv_allowed w made (IoTempDir "pantheon-llm") = true /\ sv_allowed w made (IoTempDir "pantheon-work") = true /\
+  sv_allowed w made (IoTempDir "pantheon-check") = true /\
+  sv_allowed w made (IoTempFile "pantheon-edits" ".json" "[]") = true /\
+  sv_allowed w made (IoTempFile "pantheon-codex" ".txt" "") = true /\
+  sv_allowed w made (IoTempFile "pantheon-h" ".txt" "h") = true /\
+  sv_allowed w made (IoRandomHex "8") = true.
+Proof. intros w made. repeat split. Qed.
+
+(** ---- on one service's world: what is refused ---- *)
+
+w0 : service_world :=
+  {| sw_token := "tok"; sw_self := "/bin/pantheon"; sw_env := ["HOME=/u", "PATH=/bin"];
+     sw_world := {| hw_home := "/h"; hw_backend := "cmd:/h/model.sh"; hw_repos := [("calc", "c0")]; hw_max_calls := "9";
+                    hw_ci := ""; hw_ci_repo := []; hw_ci_memory := "8g"; hw_ci_image := "alpine:3.20"; hw_ci_sandbox := "" |} |}.
+
+Example the_key_and_beyond_are_refused :
+  sv_allowed w0 ["/tmp/pantheon-llm1"] (IoReadText "/h/key.json") = false /\
+  sv_allowed w0 [] (IoReadText "/h/repos/../key.json") = false /\
+  sv_allowed w0 [] (IoReadText "/h/repos2/x") = false /\
+  sv_allowed w0 [] (IoPathWrite "/h/repos/calc" "../../.ssh/authorized_keys" "k") = false /\
+  sv_allowed w0 [] (IoReadText "/tmp/pantheon-llm1/x") = false /\
+  sv_allowed w0 ["/tmp/pantheon-llm1"] (IoReadText "/tmp/pantheon-llm1/x") = true /\
+  sv_allowed w0 ["/tmp/pantheon-work1"] (IoRemoveTree "/tmp/pantheon-work1.git") = true /\
+  sv_allowed w0 [] (IoReadText "/h/repos/calc/a.txt") = true /\
+  sv_allowed w0 [] (IoDirEntries "/h/inbox") = true /\
+  sv_allowed w0 [] (IoTempFile "../x" ".txt" "t") = false.
+Proof. repeat split. Qed.
+
+Example programs_beyond_the_nodes_are_refused :
+  sv_allowed w0 [] (IoGit "/h/repos/calc" ["-c", "alias.x=!sh", "x"]) = false /\
+  sv_allowed w0 [] (IoGit "/h/repos/calc" ["clone", "--upload-pack=sh", "/h/repos/calc", "/h/repos/x"]) = false /\
+  sv_allowed w0 [] (IoGitEnv "/h/repos/calc" "m" ["GIT_SSH_COMMAND=sh"] merge_commit_args) = false /\
+  sv_allowed w0 [] (IoRun "rm" ["-rf", "/"]) = false /\
+  sv_allowed w0 [] (IoRun "sh" ["-c", "id"]) = false /\
+  sv_allowed w0 ["/tmp/pantheon-llm1"] (IoProcStart "sh" "" "/tmp/pantheon-llm1" [] ["-c", "id"]) = false /\
+  sv_allowed w0 ["/tmp/pantheon-llm1"] (IoProcStart "/h/model.sh" "" "/tmp/pantheon-llm1" ["LD_PRELOAD=/x.so"] []) = false /\
+  sv_allowed w0 ["/tmp/pantheon-llm1"] (IoProcStart "/h/model.sh" "p" "/tmp/pantheon-llm1" ["HOME=/u"] []) = true /\
+  sv_allowed w0 ["/tmp/pantheon-llm1"] (IoProcStart "/h/model.sh" "p" "/" ["HOME=/u"] []) = false /\
+  sv_allowed w0 ["/tmp/c"] (IoProcStart "docker" "" "/tmp/c" []
+     (ci_docker_args "pantheon-ci-1" "8g" "/tmp/c" "evil:latest" "true")) = false /\
+  sv_allowed w0 [] (IoRandomHex "100000000") = false /\
+  sv_allowed w0 [] IoClock = false.
+Proof. repeat split. Qed.

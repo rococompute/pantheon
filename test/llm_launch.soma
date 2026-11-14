@@ -36,13 +36,13 @@ checks : list string := [
     (job_text (tool_job_of None None "/bin/p")) "1200;;",
   check "checkout made: 1800 s, its environment and both directories"
     (job_text (tool_job_of (Some "calc") made_ok "/bin/p"))
-    "1800;PANTHEON_WORKTREE=/w|PANTHEON_GITDIR=/w.git|PANTHEON_REPO=calc|PANTHEON_BIN=/bin/p;/w|/w.git",
+    "1800;PANTHEON_WORKTREE=/w|PANTHEON_GITDIR=/w.git|PANTHEON_REPO=calc|PANTHEON_BIN=/bin/p;/w.git|/w",
   check "checkout failed: 600 s, directories still removed"
-    (job_text (tool_job_of (Some "calc") made_bad "/bin/p")) "600;;/w|/w.git",
+    (job_text (tool_job_of (Some "calc") made_bad "/bin/p")) "600;;/w.git|/w",
   check "cmd launch gets its limit and the extra environment first"
     (launch_text (tool_launch (backend_launch "cmd:./bid.sh") ["A=1", "B=2"]
        (tool_job_of (Some "calc") made_ok "/bin/p")))
-    "./bid.sh|1800|cmd;PANTHEON_WORKTREE=/w|PANTHEON_GITDIR=/w.git|PANTHEON_REPO=calc|PANTHEON_BIN=/bin/p|A=1|B=2;/w|/w.git",
+    "./bid.sh|1800|cmd;PANTHEON_WORKTREE=/w|PANTHEON_GITDIR=/w.git|PANTHEON_REPO=calc|PANTHEON_BIN=/bin/p|A=1|B=2;/w.git|/w",
   check "cmd launch without a checkout"
     (launch_text (tool_launch (backend_launch "cmd:x") ["A=1"] (tool_job_of None None "/bin/p")))
     "x|1200|cmd;A=1;",

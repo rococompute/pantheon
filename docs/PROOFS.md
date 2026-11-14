@@ -1,7 +1,8 @@
 # Proof inventory and remaining work
 
 `soma build main.soma` checks the proof files. This inventory includes every
-Theorem, Lemma, Corollary and Example in `consensus.proof` and `market.proof`,
+Theorem, Lemma, Corollary and Example in `consensus.proof` and `market.proof`
+(and the main statements of `node_service.proof`, below),
 with its exact source name. These are statements about the pure definitions,
 not proofs of the OCaml shell, extraction to machine integers, cryptography,
 OS isolation, or deployed end-to-end safety. Shell hashes, decoding, signatures
@@ -102,6 +103,26 @@ commands need not do so. Trusted toolchains and build-cache provenance matter.
 | `reveal_one_step_regression` | Under the stated draw, tip and hash-inequality premises, the next link succeeds and an older link fails; not a universal hash property. |
 | `second_reveal_for_a_draw_is_refused` | Immediately after acceptance, another reveal from that agent is refused; does not cover a later draw. |
 | `accepted_reveals_for_a_draw_are_equal` | Two alternatives accepted from the same state hash to the same tip; equality requires the explicit unique-preimage premise, not proved SHA-256 injectivity. |
+
+### node_service.proof
+
+What the node's service carries out for an image (node_service.soma;
+docs/SHELL-IN-SOMA.md, "The node's service"). Statements about its
+policy functions, not about shell.ml's primitives or the programs it
+starts.
+
+| Name | What it says, and its limit |
+|---|---|
+| `refused_runs_nothing` | A request `sv_allowed` refuses runs only its log line. |
+| `allowed_are_host_ops` | What it allows is one of nodeio's `service_op` operations. |
+| `only_the_token_is_served` | A request served carries the node's token and decodes to a `service_op`; no claim about the token's secrecy. |
+| `paths_stay_in_roots`, `roots_are_the_services` | A path it allows has no `..` part and is an absolute root (HOME/repos, HOME/inbox, a temporary path it made or its `.git`) or under one. |
+| `path_operations_are_looked_at`, `symlink_never_followed` | Every read, write, listing or removal is probed below its root first, and one through a symlink runs nothing; the probe's own truth is shell.ml's. |
+| `processes_are_the_nodes_own` | A process it starts is its binary, the model, docker, its sandbox runner or its `cmd:` backend, from a path it allows, with its own environment's entries and a `cmd:` patch's. |
+| `runs_are_cleanup` | A program run to its end is `rm`, `chmod` or `docker`. |
+| `git_takes_no_options_of_its_own` | Every git argument is one of the host work's words, not an option, or a clone's git directory it allows. |
+| `checkout_git_is_served`, `merge_commit_is_served`, `tool_checkout_is_served`, `model_launches_are_served`, `check_job_is_served`, `ci_is_served`, `cmd_backend_is_served`, `service_environment_is_served`, `cleanup_is_served`, `temporary_names_are_served` | What node_host.soma and node.soma ask, on paths it allows, is allowed: the restriction takes nothing the node needs, given the service runs with the image's flags. |
+| `the_key_and_beyond_are_refused`, `programs_beyond_the_nodes_are_refused` | Examples on one service's world: the key, `..`, a root's sibling, git aliases and upload packs, `GIT_SSH_COMMAND`, `LD_PRELOAD`, another CI image, the clock. |
 
 ## Remaining work
 

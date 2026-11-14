@@ -1529,7 +1529,9 @@ launch_mode (launch : list string) : string := hd "" (tl (tl launch)).
     extra environment, nothing to remove), one the shell made (1800 s, the
     worktree, git directory, repository and the node's binary in the
     environment) or one whose clone or checkout failed (600 s). Both of a
-    made checkout's directories are removed when the job is over. *)
+    made checkout's directories are removed when the job is over, the git
+    directory first (a service allows it while the worktree it sits beside
+    is one it made: node_service.soma). *)
 Record tool_job := { tool_limit : string; tool_env : list string; tool_clean : list string }.
 
 tool_job_of (checkout : option string) (made : option ((string * string) * bool)) (self : string) : tool_job :=
@@ -1540,8 +1542,8 @@ tool_job_of (checkout : option string) (made : option ((string * string) * bool)
         {| tool_limit := "1800";
            tool_env := [append "PANTHEON_WORKTREE=" wt, append "PANTHEON_GITDIR=" gd,
                         append "PANTHEON_REPO=" r, append "PANTHEON_BIN=" self];
-           tool_clean := [wt, gd] |}
-      else {| tool_limit := "600"; tool_env := []; tool_clean := [wt, gd] |}
+           tool_clean := [gd, wt] |}
+      else {| tool_limit := "600"; tool_env := []; tool_clean := [gd, wt] |}
   | _, _ => {| tool_limit := "1200"; tool_env := []; tool_clean := [] |}
   end.
 
@@ -2920,26 +2922,6 @@ service_request_of (token : string) (fields : list string) : service_request :=
       else ServeRefused
   | [] => ServeRefused
   end.
-
-(** One turn: the next request, answered; [pending] are events the image
-    hasn't taken yet. *)
-service_tick_prog (token : string) (pending : list (list string)) : nprog (list (list string)) :=
-  nbind (nask (IoServeNext "1")) (fun a =>
-  match ans_found a with
-  | Some (conn :: fields) =>
-      match service_request_of token fields with
-      | ServeOp op =>
-          nbind (nask op) (fun r =>
-          nbind (nexec (IoServeReply conn (if fst r then "true" else "false") (float_wire (ans_float r)) (ans_list r)))
-            (fun _ => NDone pending))
-      | ServeEvents =>
-          nbind (nask (IoEvents "0")) (fun got =>
-          let (now, later) := service_batch 0 (pending ++ service_kept (nio_lists (ans_list got))) in
-          nbind (nexec (IoServeReply conn "true" "0" (nio_frame_lists now))) (fun _ => NDone later))
-      | ServeRefused => nbind (nexec (IoServeReply conn "false" "0" [])) (fun _ => NDone pending)
-      end
-  | _ => NDone pending
-  end).
 
 (** HOST:PORT, at its first colon (IPv4) *)
 service_address (a : string) : string * string :=

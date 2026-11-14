@@ -121,6 +121,21 @@ Fixpoint hheads (hw : hworld) (repos : list (string * string)) : nprog (list str
       NDone (r :: (if fst a then trim (ans_one a) else genesis) :: others)))
   end.
 
+(** a merge's commit: its message on standard input, no hooks, kept as
+    written *)
+merge_commit_args : list string := ["commit", "-q", "--allow-empty", "--no-verify", "--cleanup=verbatim", "-F", "-"].
+
+(** the environment entries a merge's commit sets: a fixed author and
+    committer, and the date *)
+merge_who_names : list string :=
+  ["GIT_AUTHOR_NAME=", "GIT_AUTHOR_EMAIL=", "GIT_COMMITTER_NAME=", "GIT_COMMITTER_EMAIL=", "GIT_AUTHOR_DATE=",
+   "GIT_COMMITTER_DATE="].
+
+(** a merge's author and committer, at [date] *)
+merge_who (date : string) : list string :=
+  ["GIT_AUTHOR_NAME=Pantheon", "GIT_AUTHOR_EMAIL=pantheon@localhost", "GIT_COMMITTER_NAME=Pantheon",
+   "GIT_COMMITTER_EMAIL=pantheon@localhost", append "GIT_AUTHOR_DATE=" date, append "GIT_COMMITTER_DATE=" date].
+
 (** A decided merge's commit, the same on every node: a fixed author and a
     date from the version, the message on git's standard input (the spec
     in it is the leader's text, which an argument can't carry whole:
@@ -128,14 +143,11 @@ Fixpoint hheads (hw : hworld) (repos : list (string * string)) : nprog (list str
     git commit failed; node.soma's perform_merge decides the rest. *)
 hmerge_commit (dir version tree bid task bidder spec : string) : nprog nanswer :=
   let date := hcat ["@", hdec_add "1700000000" version, " +0000"] in
-  let who := ["GIT_AUTHOR_NAME=Pantheon", "GIT_AUTHOR_EMAIL=pantheon@localhost", "GIT_COMMITTER_NAME=Pantheon",
-              "GIT_COMMITTER_EMAIL=pantheon@localhost", append "GIT_AUTHOR_DATE=" date,
-              append "GIT_COMMITTER_DATE=" date] in
   let msg := hcat ["Merge bid ", bid, " for task ", task, " by ", bidder, hnl, hnl, spec, hnl, hnl,
                    "Pantheon-Version: ", nio_count (num version), hnl, "Pantheon-Bid: ", bid, hnl,
                    "Pantheon-Tree: ", tree, hnl] in
   nbind (nask (IoGit dir ["add", "-A", "-f"])) (fun _ =>
-  nbind (nask (IoGitEnv dir msg who ["commit", "-q", "--allow-empty", "--no-verify", "--cleanup=verbatim", "-F", "-"])) (fun c =>
+  nbind (nask (IoGitEnv dir msg (merge_who date) merge_commit_args)) (fun c =>
   if negb (fst c) then NDone (ans_data false []) else
   nbind (hgit_out dir ["rev-parse", "HEAD^{tree}"]) (fun t =>
   nbind (hgit_out dir ["rev-parse", "--short", "HEAD"]) (fun short =>
@@ -224,6 +236,14 @@ ci_wrap (ci : string) : string :=
   hcat ["( ", ci, hnl, ") 2>&1; r=$?; if [ $r -ne 0 ] && grep -qs 'oom_kill [1-9]' /sys/fs/cgroup/memory.events; then exit 137; fi; ",
         "case $r in 0|124|137) exit $r;; esac; exit 86"].
 
+(** CI's container: no network, a read-only root, a memory and process cap
+    and nobody's uid, the tree read-only at /work, [script] run by sh *)
+ci_docker_args (name mem out image script : string) : list string :=
+  ["run", "--rm", "--name", name, "--network=none", "--read-only", "--tmpfs", append "/tmp:exec,size=" mem,
+   "--cap-drop=ALL", "--security-opt=no-new-privileges", "--pids-limit=512", append "--memory=" mem,
+   append "--memory-swap=" mem, "--user=65534:65534", "-e", "HOME=/tmp", "-v", append out ":/work:ro",
+   "-w", "/work", image, "sh", "-c", script].
+
 (** A CI run started on a tree Soma already accepted: in the sandbox
     runner, or in a container with no network, a read-only root, a memory
     and process cap and nobody's uid, the tree read-only at /work. An hour
@@ -237,11 +257,7 @@ hci_start (hw : hworld) (env : list string) (s : host_state) (w : list string) :
         hstart_job s (nio_small 3600) (hw_ci_sandbox hw) "" [mem, out, ci_wrap ci] env
           (DoneCi id tree mem "sandbox") [CleanTree out]
       else
-        hstart_job s (nio_small 3600) "docker" ""
-          ["run", "--rm", "--name", name, "--network=none", "--read-only", "--tmpfs", append "/tmp:exec,size=" mem,
-           "--cap-drop=ALL", "--security-opt=no-new-privileges", "--pids-limit=512", append "--memory=" mem,
-           append "--memory-swap=" mem, "--user=65534:65534", "-e", "HOME=/tmp", "-v", append out ":/work:ro",
-           "-w", "/work", hw_ci_image hw, "sh", "-c", ci_wrap ci] env
+        hstart_job s (nio_small 3600) "docker" "" (ci_docker_args name mem out (hw_ci_image hw) (ci_wrap ci)) env
           (DoneCi id tree mem "docker") [CleanContainer name, CleanTree out]
   | _ => NDone (s, None)
   end.

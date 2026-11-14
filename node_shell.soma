@@ -7,7 +7,7 @@
     node_git.soma's over the shell's. Nothing else of the node calls the shell:
     node.soma, cli.soma and what they import are Soma over the node's
     operations. *)
-Import util shell nodeio node node_kernel node_net node_git cli.
+Import util shell nodeio node node_kernel node_net node_git node_service cli.
 
 (** The shell's primitives: each operation through [node_io], in its wire
     form, in order, each answer handed to the rest of the program. Every
@@ -81,15 +81,17 @@ run_node (home : string) (flags : list string) : unit :=
   end.
 
 (** [pantheon service HOME HOST:PORT]: the setup, the network's state as
-    [pantheon node] makes it, then the requests of the node's unikernel
-    answered (node.soma's [service_tick_prog]) *)
+    [pantheon node] makes it, what the service knows of itself, then the
+    requests of the node's unikernel answered as the node's own host work
+    asks (node_service.soma's [service_tick_prog]) *)
 run_service (home addr : string) (flags : list string) : unit :=
   match run_shell (node_setup home flags) with
   | Some config =>
-      match run_net (net_open config) (no_sigpipe (service_start_prog addr)) with
-      | (true, s) =>
-          forever (fun ps => run_net (snd ps) (service_tick_prog (service_token_of config) (fst ps))) ([], s)
-      | (false, _) => tt
+      match run_net (net_open config)
+              (no_sigpipe (nbind (service_start_prog addr) (fun ok =>
+               if ok then nbind (service_world_prog config) (fun w => NDone (Some w)) else NDone None))) with
+      | (Some w, s) => forever (fun ps => run_net (snd ps) (service_tick_prog w (fst ps))) (service_begin, s)
+      | (None, _) => tt
       end
   | None => tt
   end.

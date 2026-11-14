@@ -614,9 +614,10 @@ HOST:PORT [node flags]` on the host, with `pantheon image HOME FILE
 --service HOST:PORT` making the image that uses it. The service is the
 node's own runtime (shell.ml's primitives, from HOME's setup, as
 `pantheon node HOME` builds them) with a loop of its own, Soma's like the
-node's (node.soma's `service_tick_prog`, node_shell.soma's
+node's (node_service.soma's `service_tick_prog`, node_shell.soma's
 `run_service`): the next request (`IoServeNext`), run as the binary runs
-that operation (`node_io`), its answer sent back (`IoServeReply`).
+that operation (`run_net`) if the service allows it, its answer sent
+back (`IoServeReply`).
 
 What goes to the service is one set, nodeio.soma's `service_op`: the
 host's primitives the kernel's host work runs on ("The host's work"
@@ -648,6 +649,64 @@ A connection that fails is opened again for the next request; with no
 service, or none reachable, those operations answer that they aren't
 there, as before, and the image votes and keeps the chain but can't
 merge, bid or check.
+
+The service carries out only what the node's own host work asks
+(node_service.soma's `sv_allowed`), judged from what it knows itself:
+its setup (HOME, the backend, CI's memory, image and sandbox runner),
+its own binary and environment (`IoSelfExe`, `IoEnvEntries`, read once),
+and the temporary files and directories it made (newest first, a
+removed one taken out). So a token alone isn't the host:
+
+- **Paths** (stat, read, list, write, remove, probe) are under
+  HOME/repos, HOME/inbox, or a temporary path the service made (or its
+  `.git` beside it), absolute, with no `..` part; never HOME itself,
+  where the node's key is. Before a read, write, listing or removal the
+  service probes every part below the root (`IoPathProbe`) and refuses
+  one through a symlink.
+- **Git** is one of the host work's fixed calls (the heads, a tree,
+  adding everything, the tracked files, putting a checkout back), a
+  commit checked out, a file at the head, a merge's commit (its
+  author, committer and date entries, nothing else in the environment)
+  or a `cmd:` patch's clone between paths it may use; no argument of its
+  own is an option, so no `-c`, `--config`, `--upload-pack`, `--exec`.
+- **Processes** are the node's own binary checking a bid, the model as
+  `backend_launch` launches it (codex's reply file and grok's header
+  file ones it made), CI exactly as `hci_start` makes it (in docker
+  with the service's memory and image over a tree it made, or its
+  sandbox runner), or its own `cmd:` backend with no arguments; from a
+  directory it may use, with its own environment's entries and a `cmd:`
+  patch's four. **Programs run to their end** are `rm -rf` and
+  `chmod -R a+rX` of a path it may use and `docker rm -f` of a CI
+  container.
+- **The rest**: temporary names with no directory in them, random hex of
+  at most 99 digits, killing its own jobs. Any other operation is
+  refused.
+
+A refused request runs nothing, is answered not found with the reason,
+and is said in the service's log (`service refused OP: why`).
+node_service.proof proves it of these functions, both ways. What it
+refuses: `refused_runs_nothing`, `allowed_are_host_ops`,
+`only_the_token_is_served`, `paths_stay_in_roots`,
+`roots_are_the_services`, `path_operations_are_looked_at`,
+`symlink_never_followed`, `processes_are_the_nodes_own`,
+`runs_are_cleanup`, `git_takes_no_options_of_its_own`, and examples on
+one service's world (the key, `..`, a sibling of a root, an alias, an
+upload pack, `GIT_SSH_COMMAND`, `LD_PRELOAD`, another image, the clock).
+And that it takes nothing the node needs: what node_host.soma and
+node.soma ask is served (`checkout_git_is_served`,
+`merge_commit_is_served`, `tool_checkout_is_served`,
+`model_launches_are_served`, `check_job_is_served`, `ci_is_served`,
+`cmd_backend_is_served`, `service_environment_is_served`,
+`cleanup_is_served`, `temporary_names_are_served`). The service has to
+be started with the image's `--backend` and CI flags, as the node's
+host work asks for those.
+
+What it still allows: the token's holder reads the service's
+environment (`IoEnvEntries`, which the model's and git's environments
+are made from); the model, a check and CI run as the node's would, with
+what they can reach; a process the service started could put a symlink
+in a path between the probe and the operation (the service itself is
+one request at a time); and the token crosses vmnet in the clear.
 
 `test/node-image-service.sh` runs the image with its service beside three
 binaries, all four up, with a fake model (a `cmd:` backend): the market

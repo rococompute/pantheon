@@ -1,0 +1,232 @@
+(** The node's service (`pantheon service HOME HOST:PORT`, docs/SHELL-IN-SOMA.md,
+    "The node's service"): the host's work a unikernel asks for, answered
+    only as the node's own host work asks it. A request with the node's
+    token, for one of the host's operations ([service_request_of], in
+    node.soma), is carried out only when it is one of the shapes
+    node_host.soma and node.soma make, from what the service knows itself:
+    its setup (the home, the backend, CI), its own binary and environment,
+    and the temporary paths it made. Anything else is refused, said in the
+    service's log, and nothing of it runs. A path is under HOME/repos,
+    HOME/inbox or a temporary path the service made, with no ".." in it,
+    and nothing on the way to it below that root is a symlink (the service
+    looks first). node_service.proof proves what it refuses, and that what
+    the node's host work asks is never refused. *)
+Import util nodeio node node_host.
+
+(** What the service knows of itself: the node's token, the host's world
+    from its setup, its own binary and its environment. *)
+Record service_world := {
+  sw_token : string;
+  sw_world : hworld;
+  sw_self : string;
+  sw_env : list string }.
+
+(** What it keeps: the events the image hasn't taken yet, and the
+    temporary files and directories it made, newest first. *)
+Record service_state := { ss_pending : list (list string); ss_made : list string }.
+
+service_begin : service_state := {| ss_pending := []; ss_made := [] |}.
+
+(** ---- paths ---- *)
+
+(** no ".." in it as a part *)
+sv_no_up (p : string) : bool :=
+  match find_str "/../" p 0 with
+  | Some _ => false
+  | None => negb (ends "/.." p) && negb (starts "../" p) && negb (seq p "..")
+  end.
+
+(** where the service's paths may be: the checkouts, the inbox, and what
+    it made (a temporary directory's git directory sits beside it, a cmd:
+    patch's: node.soma's tool_job_of); only absolute ones *)
+sv_roots (w : service_world) (made : list string) : list string :=
+  filter (starts "/")
+    ([hjoin (hw_home (sw_world w)) "repos", hjoin (hw_home (sw_world w)) "inbox"]
+     ++ flat_map (fun m => [m, append m ".git"]) made).
+
+sv_under (r p : string) : bool := seq p r || starts (append r "/") p.
+
+sv_path (w : service_world) (made : list string) (p : string) : bool :=
+  sv_no_up p && existsb (fun r => sv_under r p) (sv_roots w made).
+
+(** a word an argument may be: not empty, not an option *)
+sv_word (s : string) : bool := (0 <? slen s) && negb (seq (substr s 0 1) "-").
+
+(** a temporary file's prefix or suffix: no directory in it *)
+sv_name (s : string) : bool :=
+  match find_str "/" s 0 with Some _ => false | None => negb (seq s "..") end.
+
+(** ---- git ---- *)
+
+(** what the host's work asks of git with no argument of its own: a head,
+    a tree, adding everything, the tracked files, putting a checkout back *)
+sv_git_fixed : list (list string) :=
+  [["rev-parse", "--short", "HEAD"], ["rev-parse", "HEAD^{tree}"], ["rev-parse", "HEAD"], ["add", "-A", "-f"],
+   ["ls-files"], ["reset", "-q", "--hard", "HEAD"], ["clean", "-q", "-f", "-d", "-x"]].
+
+(** git in a checkout as the host's work runs it: one of those, a commit
+    checked out, a file at the head, or a cmd: patch's clone (node_host's
+    htool_checkout: from the service's directory, every path its own) *)
+sv_git (w : service_world) (made : list string) (dir : string) (args : list string) : bool :=
+  let path := sv_path w made in
+  (existsb (eq_strs args) sv_git_fixed && path dir)
+  || match args with
+     | [a, b, c, x] => eq_strs [a, b, c] ["checkout", "-q", "--detach"] && sv_word x && path dir
+     | [a, f] => seq a "show" && sv_word f && starts "HEAD:" f && path dir
+     | [a, b, c, d, sep, src, wt] =>
+         eq_strs [a, b, c, d] ["clone", "--quiet", "--shared", "--no-checkout"] && seq dir "."
+         && starts "--separate-git-dir=" sep && path (drop_str 19 sep)
+         && sv_word src && path src && sv_word wt && path wt
+     | _ => false
+     end.
+
+(** ---- programs ---- *)
+
+(** a cmd: patch's environment, besides the service's own *)
+sv_tool_names : list string := ["PANTHEON_WORKTREE=", "PANTHEON_GITDIR=", "PANTHEON_REPO=", "PANTHEON_BIN="].
+
+sv_env_ok (w : service_world) (e : string) : bool :=
+  existsb (seq e) (sw_env w) || existsb (fun pre => starts pre e) sv_tool_names.
+
+(** a backend's arguments, as node.soma's backend_launch has them *)
+sv_launch_args (backend : string) : list string := tl (tl (tl (backend_launch backend))).
+
+(** CI in a container, as node_host's hci_start makes it: its name one the
+    host's work made, the service's memory and image, a tree it made *)
+sv_ci_docker (w : service_world) (made : list string) (args : list string) : bool :=
+  let hw := sw_world w in
+  let name := nth 3 args "" in
+  let vol := nth 17 args "" in
+  let out := substr vol 0 (slen vol - 9) in
+  let script := last args "" in
+  starts "pantheon-ci-" name && sv_name name && ends ":/work:ro" vol && sv_path w made out
+  && eq_strs args (ci_docker_args name (hw_ci_memory hw) out (hw_ci_image hw) script).
+
+(** The programs the host's work runs: the node's own binary checking a
+    bid, the model as backend_launch launches it (codex's reply file and
+    grok's header file ones the service made), CI (in docker, or the
+    service's sandbox runner), or the service's own cmd: backend. *)
+sv_program (w : service_world) (made : list string) (prog : string) (args : list string) : bool :=
+  let hw := sw_world w in
+  let path := sv_path w made in
+  (seq prog (sw_self w)
+   && match args with
+      | [c, repo, head, edits, out] => seq c "check" && path repo && sv_word head && path edits && path out
+      | _ => false
+      end)
+  || (seq prog "claude" && eq_strs args (sv_launch_args "claude"))
+  || (seq prog "codex"
+      && (let out := nth (length args - 2) args "" in
+          path out && eq_strs args (hswap "@OUT@" out (sv_launch_args "codex"))))
+  || (seq prog "curl"
+      && (let h := nth 4 args "" in
+          starts "@" h && path (drop_str 1 h) && eq_strs args (hswap "@HDR@" h (sv_launch_args "grok"))))
+  || (seq prog "docker" && sv_ci_docker w made args)
+  || (negb (seq (hw_ci_sandbox hw) "") && seq prog (hw_ci_sandbox hw)
+      && match args with [mem, out, _] => seq mem (hw_ci_memory hw) && path out | _ => false end)
+  || (starts "cmd:" (hw_backend hw) && (4 <? slen (hw_backend hw)) && seq prog (drop_str 4 (hw_backend hw))
+      && eq_strs args []).
+
+(** a program run to its end: removing a tree it made, letting CI read
+    it, removing a CI container *)
+sv_run (w : service_world) (made : list string) (prog : string) (args : list string) : bool :=
+  match args with
+  | [a, p] => seq prog "rm" && seq a "-rf" && sv_path w made p
+  | [a, b, p] => (seq prog "chmod" && seq a "-R" && seq b "a+rX" && sv_path w made p)
+                 || (seq prog "docker" && seq a "rm" && seq b "-f" && starts "pantheon-ci-" p && sv_name p)
+  | _ => false
+  end.
+
+(** ---- what it carries out ---- *)
+
+(** whether the service carries the operation out *)
+sv_allowed (w : service_world) (made : list string) (op : node_op) : bool :=
+  let path := sv_path w made in
+  match op with
+  | IoGit dir args => sv_git w made dir args
+  | IoGitEnv dir _ extra args =>
+      path dir && forallb (fun e => existsb (fun pre => starts pre e) merge_who_names) extra
+      && eq_strs args merge_commit_args
+  | IoPathStat p | IoReadText p | IoDirEntries p | IoDiscardFile p | IoRemoveTree p => path p
+  | IoPathProbe dir p | IoPathWrite dir p _ | IoPathRemove dir p => path dir && path (hjoin dir p)
+  | IoTempDir prefix => sv_name prefix
+  | IoTempFile prefix suffix _ => sv_name prefix && sv_name suffix
+  | IoRun prog args => sv_run w made prog args
+  | IoProcStart prog _ cwd env args => path cwd && forallb (sv_env_ok w) env && sv_program w made prog args
+  | IoRandomHex count => (0 <? slen count) && (slen count <? 3)
+  | IoProcKill _ | IoSelfExe | IoEnvEntries => true
+  | _ => false
+  end.
+
+(** the root a path is under, and the rest of it *)
+sv_guard_path (w : service_world) (made : list string) (p : string) : option (string * string) :=
+  match find (fun r => sv_under r p) (sv_roots w made) with
+  | Some r => Some (r, if seq p r then "" else drop_str (slen r + 1) p)
+  | None => None
+  end.
+
+(** what is looked at before an operation on a path: nothing below its
+    root may be a symlink *)
+sv_guard (w : service_world) (made : list string) (op : node_op) : option (string * string) :=
+  match op with
+  | IoPathStat p | IoReadText p | IoDirEntries p | IoDiscardFile p | IoRemoveTree p => sv_guard_path w made p
+  | IoPathWrite dir p _ | IoPathRemove dir p => sv_guard_path w made (hjoin dir p)
+  | _ => None
+  end.
+
+sv_refused_text (op : node_op) (why : string) : string :=
+  hcat ["service refused ", hd "" (io_wire op), ": ", why].
+
+sv_refuse (op : node_op) (why : string) : nprog nanswer :=
+  nbind (nexec (IoLog (sv_refused_text op why))) (fun _ => NDone (ans_data false [append "refused: " why])).
+
+(** An operation carried out, or refused: one not allowed runs nothing;
+    one on a path runs only after the path is looked at and isn't
+    through a symlink. *)
+sv_serve (w : service_world) (made : list string) (op : node_op) : nprog nanswer :=
+  if negb (sv_allowed w made op) then sv_refuse op "not the node's own work"
+  else match sv_guard w made op with
+       | Some (r, rel) =>
+           nbind (nask (IoPathProbe r rel)) (fun a =>
+           if seq (ans_one a) "symlink" then sv_refuse op "a symlink on the way" else nask op)
+       | None => nask op
+       end.
+
+(** what it made, after an operation's answer: a temporary file or
+    directory added (an absolute path), one removed taken out *)
+sv_after (made : list string) (op : node_op) (a : nanswer) : list string :=
+  match op with
+  | IoTempDir _ | IoTempFile _ _ _ =>
+      if fst a && starts "/" (ans_one a) then ans_one a :: made else made
+  | IoRemoveTree p | IoDiscardFile p => filter (fun m => negb (seq m p)) made
+  | _ => made
+  end.
+
+(** One turn: the next request, answered; the events the image hasn't
+    taken wait for its next ask. *)
+service_tick_prog (w : service_world) (s : service_state) : nprog service_state :=
+  nbind (nask (IoServeNext "1")) (fun a =>
+  match ans_found a with
+  | Some (conn :: fields) =>
+      match service_request_of (sw_token w) fields with
+      | ServeOp op =>
+          nbind (sv_serve w (ss_made s) op) (fun r =>
+          nbind (nexec (IoServeReply conn (if fst r then "true" else "false") (float_wire (ans_float r)) (ans_list r)))
+            (fun _ => NDone {| ss_pending := ss_pending s; ss_made := sv_after (ss_made s) op r |}))
+      | ServeEvents =>
+          nbind (nask (IoEvents "0")) (fun got =>
+          let (now, later) := service_batch 0 (ss_pending s ++ service_kept (nio_lists (ans_list got))) in
+          nbind (nexec (IoServeReply conn "true" "0" (nio_frame_lists now)))
+            (fun _ => NDone {| ss_pending := later; ss_made := ss_made s |}))
+      | ServeRefused => nbind (nexec (IoServeReply conn "false" "0" [])) (fun _ => NDone s)
+      end
+  | _ => NDone s
+  end).
+
+(** What the service knows of itself, from its setup and the host: its
+    binary and environment, read once. *)
+service_world_prog (config : list (list string)) : nprog service_world :=
+  nbind (nask IoSelfExe) (fun self =>
+  nbind (nask IoEnvEntries) (fun env =>
+  NDone {| sw_token := service_token_of config; sw_world := hworld_of config;
+           sw_self := ans_one self; sw_env := ans_list env |})).
