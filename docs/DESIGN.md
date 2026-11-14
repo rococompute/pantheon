@@ -13,7 +13,7 @@ node.soma  step : obj -> list string -> obj * list (list string)
 node_kernel.soma   the node's kernel: tables, peer links, signatures, files, the select
 node_host.soma   the kernel's host work: a merge's git, the model's limit, jobs, checks and CI
 cli.soma   the commands, the node's setup, and the edits machinery
-node_net.soma   the binary's network: links, buffers, the select, the service's socket
+node_net.soma   the binary's network: links, buffers, the select, the service's socket, the jobs' processes
 shell.ml   the host's primitives: sockets by name, files, git, processes
 ```
 

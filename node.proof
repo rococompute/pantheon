@@ -908,7 +908,7 @@ Proof.
     until reason backoff | backoff | | | probing requests | job result | id out tree ci | path | path |
     raw | | raw | who | | | | stamp | path | | | timers | | | wait |
     | | height txs | | slot vid fields | message | text | code | path | path mode | path | | bits | count | dir args |
-    url dir commit | log args | pids | path | dir path | dir path text | dir path | prefix | path | dir stdin extra args | prog stdin cwd env args | job | prog args | prefix suffix text | host port backlog | host port | ms procs reads writes | fd nonblock | fd | fd data | fd | fd | path durable text | path text | | text | | address port | wait | conn found stamp fields |
+    url dir commit | log args | pids | path | dir path | dir path text | dir path | prefix | path | dir stdin extra args | prog stdin cwd env args | job | prog args | prefix suffix text | host port backlog | host port | ms reads writes | fd nonblock | fd | fd data | fd | fd | path durable text | path text | | prog stdin cwd env args | pid | pid | text | | address port | wait | conn found stamp fields |
     address port | ms | address port ms | conn data | conn | name | name durable text | name text ];
     try reflexivity.
   - change (match resend_parts (resend_fields fields ++ ("alternate" :: alternate)) with
@@ -942,8 +942,12 @@ Proof.
     | None => None end = Some (IoProcStart prog stdin cwd env args)).
     rewrite resend_parts_reads_fields. reflexivity.
   - change (match resend_parts (resend_fields reads ++ ("alternate" :: writes)) with
-    | Some (reads, writes) => Some (IoSockSelect ms procs reads writes)
-    | None => None end = Some (IoSockSelect ms procs reads writes)).
+    | Some (reads, writes) => Some (IoSockSelect ms reads writes)
+    | None => None end = Some (IoSockSelect ms reads writes)).
+    rewrite resend_parts_reads_fields. reflexivity.
+  - change (match resend_parts (resend_fields env ++ ("alternate" :: args)) with
+    | Some (env, args) => Some (IoSpawn prog stdin cwd env args)
+    | None => None end = Some (IoSpawn prog stdin cwd env args)).
     rewrite resend_parts_reads_fields. reflexivity.
 Qed.
 

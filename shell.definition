@@ -38,21 +38,24 @@ print_lines : list string -> unit.
     peer links, signing, the draw, the tables and the host's work
     (node_host.soma). It hands the shell, in node_io's wire form
     (nodeio.soma's io_wire), only primitives, and node_net.soma turns its
-    network and named files into the host's: "sock_listen" HOST PORT
+    network, named files and processes into the host's: "sock_listen" HOST PORT
     BACKLOG ([its name], or not found and why), "sock_dial" HOST PORT
     ([its name, "connected" or "connecting"]: the dial doesn't wait),
-    "sock_select" MS PROCS ("field" NAME)... "alternate" NAMES... (those
-    ready to read, then to write, within MS, framed; PROCS "true": a
-    process's output wakes it too; not found when the select failed, and
-    why), "sock_accept" NAME NONBLOCK ([its name, the peer's address]),
+    "sock_select" MS ("field" NAME)... "alternate" NAMES... (those ready
+    to read, then to write, within MS, framed; not found when the select
+    failed, and why), "sock_accept" NAME NONBLOCK ([its name, the peer's address]),
     "sock_read" NAME (["bytes", DATA], ["again"] or ["closed"]),
     "sock_write" NAME DATA (["wrote", COUNT], ["again"] or ["failed"]),
     "sock_error" NAME (found: the dial failed), "sock_close" NAME, "save"
     PATH DURABLE TEXT (DURABLE "true": synced and renamed into place),
-    "append_synced" PATH TEXT and "no_sigpipe"; "log" TEXT, "clock",
-    "local_time" STAMP, "fail" MESSAGE (refusing to start: the message on
-    stderr, exit 1), "events" "0" (the processes' output and ends, below),
-    and nodeio.soma's service_op operations below. *)
+    "append_synced" PATH TEXT, "no_sigpipe", "spawn" PROG STDIN CWD
+    ("field" ENTRY)... "alternate" ARGS... (PROG run from CWD with that
+    environment, STDIN its standard input from a file: found, [its pid,
+    the name of the pipe its output comes on]; not found, [why it couldn't
+    start]), "wait_pid" PID ([HOW, VALUE]: exit, signal or stop, and its
+    number) and "kill_pid" PID; "log" TEXT, "clock", "local_time" STAMP,
+    "fail" MESSAGE (refusing to start: the message on stderr, exit 1), and
+    nodeio.soma's service_op operations below. *)
 (** The answer is nodeio.soma's nanswer: (carried out or the boolean
     read, (a number, data)); an effect's is (true, (0, [])); "clock"
     returns (true, now). *)
@@ -66,13 +69,8 @@ forever : forall {A : Type}, (A -> A) -> A -> unit.
     "dir_entries" PATH, "read_text" PATH (found or not), "discard_file"
     PATH (removed, if it's there), "self_exe", "env_entries", "random_hex"
     COUNT.
-    Processes: "proc_start" PROG STDIN CWD ("field" ENTRY)... "alternate"
-    ARGS... (PROG run from CWD with that environment, STDIN its standard
-    input from a file: found, [its name]; not found, [why it couldn't
-    start]), "proc_kill" JOB (killed, and it ends at the next look without
-    waiting for its pipe), and "events" "0" giving their output as it comes
-    (["job_bytes", JOB, CHUNK]) and their ends (["job_ended", JOB, HOW,
-    VALUE]: exit, signal or stop, and its number), framed; "run" PROG
+    The jobs' processes (IoProcStart, IoProcKill and IoEvents) are
+    node_net.soma's, over "spawn", "wait_pid" and "kill_pid"; "run" PROG
     ARGS... (run to its end with the user's environment: [its output],
     found when it succeeded); "temp_file" PREFIX SUFFIX TEXT (a new private
     file with TEXT in it: [path]). What a job is for, its limit, what goes

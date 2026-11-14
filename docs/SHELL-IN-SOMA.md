@@ -5,14 +5,16 @@ the node's kernel (`node_kernel.soma`: its tables, peer links, signatures,
 files and select), the host's work it asks for (`node_host.soma`: a
 merge's git, the model's budget and limit, jobs, checks and CI) and the
 edits machinery (`cli.soma`: applying edits, reading a checkout's changes
-as edits, a bid's tree), and the binary's network (`node_net.soma`: its
-links, buffers, select and the service's socket); what is left of the program around them is
-`shell.ml`, about 450 lines of hand-written OCaml (it was about 1,600)
-that `shell.definition` declares to Soma as four assumptions (`sha256`,
-`hash_list`, `decode_tx`, `run`). The goal: as much of `shell.ml` as can be
+as edits, a bid's tree), and the binary's network and jobs
+(`node_net.soma`: its links, buffers, select, the service's socket and
+the process table); what is left of the program around them is
+`shell.ml`, about 410 lines of hand-written OCaml (it was about 1,600)
+that `shell.definition` declares to Soma as four assumptions (`argv`,
+`print_lines`, `node_io`, `forever`), with the crypto main.soma extracts
+to Cryptokit. The goal: as much of `shell.ml` as can be
 is Soma, extracted with the rest, and OCaml is left only as thin bindings to
-the libraries that do I/O: Unix (files, processes, sockets, time),
-cryptokit (RSA, SHA-256) and yojson. Each binding is declared in a
+the libraries that do I/O: Unix (files, processes, sockets, time) and
+cryptokit (RSA, SHA-256). Each binding is declared in a
 `.definition` file, as `examples/example_projects/async_tasks` declares
 Async's functions (GRADUAL.md, "OCaml modules").
 
@@ -358,8 +360,8 @@ asks `host_op`), with its state (`net_state`) handed from one operation
 to the next and from one turn to the next. It keeps the node's home, the
 listener, the links (a peer's, read as it comes; one the kernel dialed,
 with the bytes waiting to go, 64 MiB at most, and whether it is still
-connecting) and the service's listener and clients with the bytes each
-sent past its last whole request. A mailbox is one select over the
+connecting), the service's listener and clients with the bytes each
+sent past its last whole request, and the jobs' processes. A mailbox is one select over the
 listener, peers' links, dialed links with bytes to write or still
 connecting, and the processes (whose output wakes it); then a new
 connection (one a turn), then each link in turn: a dial's outcome
@@ -385,6 +387,27 @@ nothing of the node: `node_open` and its handles are gone, and so is
 node_io's handle argument (`node_io : list string -> nanswer`). This was shell.ml's largest
 part, about 175 lines of links, buffers, the mailbox's select and the
 service's framing; there it is now about 90 lines of socket calls.
+
+The jobs' processes are here too, for the binary and for the service
+(which runs an image's): `IoProcStart`, `IoProcKill` and `IoEvents`,
+which node_host.soma asks for, are `net_op`'s. It keeps each process
+(the job's name for it, numbered as they start, the pipe its output
+comes on, its pid) and the processes killed. A look (`net_proc_events`)
+selects over their pipes without waiting, then takes each in turn: a
+killed one ends at once (a check's shell killed, the `yes` it ran may
+still hold the pipe open and write), a ready one is read (`job_bytes`)
+or, closed, ends; the output comes first, then the ends (`job_ended`,
+how and its number: the wait status's facts). A process ends with its
+pipe closed and a wait (`IoWaitPid`; one that fails is an exit of -1,
+where the shell's exception used to end the node). What it asks the
+shell for: `IoSpawn` (the program from its directory, with its
+environment and standard input, its output on a pipe named among the
+descriptors: its pid and the pipe's name), `IoWaitPid`, `IoKillPid`, and
+the descriptors' select, read and close; `IoSockSelect` no longer has a
+flag for the processes (the mailbox names their pipes). This was
+shell.ml's largest part with logic in it, about 80 lines of the process
+table, kills and events; there it is now about 30 lines of spawn and
+wait.
 
 The service frames with the functions the image uses, and they are
 proved: what is kept never holds a whole frame, and the frames don't
@@ -481,9 +504,9 @@ or system config, no hooks, no signing; `IoGitEnv` with extra environment
 entries and a standard input), the path operations, `IoTempDir`,
 `IoTempFile` (a new private file with its text), `IoRemoveTree`, `IoRun`
 (a program run to its end, with the user's environment: `rm`, `chmod`,
-`docker rm`) and the processes: `IoProcStart`, `IoProcKill`, their events,
-and their descriptors in the select. A process table and the bytes read
-from it are all it holds; `node_open` builds only the network's state.
+`docker rm`) and the processes (`IoSpawn`, `IoWaitPid`, `IoKillPid`),
+whose table and events are node_net.soma's (above, "The binary's
+network").
 
 ## The node as a unikernel
 

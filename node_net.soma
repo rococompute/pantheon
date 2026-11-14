@@ -7,10 +7,14 @@
     its replies ([IoServe*]). Here they're kept and carried out over the
     host's sockets as the shell has them ([IoSock*]: a descriptor's name,
     listen, dial, select, accept, read, write, close) and paths ([IoReadText],
-    [IoSave], [IoAppendSynced]). What it keeps: the node's home, the
-    listener, the links (one a peer opened, read as it comes; one the
-    kernel dialed, written through a buffer the select drains), and the
-    service's listener and clients with the bytes each sent. *)
+    [IoSave], [IoAppendSynced]). The host's work starts, stops and looks
+    at its jobs' processes ([IoProcStart], [IoProcKill], [IoEvents]), which
+    are kept here too, over the host's processes ([IoSpawn]: one started
+    with its output on a pipe named among the descriptors; [IoWaitPid],
+    [IoKillPid]). What it keeps: the node's home, the listener, the links
+    (one a peer opened, read as it comes; one the kernel dialed, written
+    through a buffer the select drains), the service's listener and
+    clients with the bytes each sent, and the processes. *)
 From Stdlib Require Import NArith.BinNat.
 Import util nodeio.
 Require Import Soma.Wire.
@@ -23,16 +27,25 @@ Record nlink := { l_fd : string; l_dialed : bool; l_connecting : bool; l_obuf : 
     request *)
 Record nclient := { c_fd : string; c_buf : string }.
 
-(** the links and clients newest first, as they're added *)
+(** a job's process: the job's name for it, the pipe its output comes on,
+    its pid *)
+Record nproc := { p_job : string; p_fd : string; p_pid : string }.
+
+(** the links, clients and processes newest first, as they're added; the
+    next job's name; the processes killed (their pids) *)
 Record net_state := {
   ns_home : string;
   ns_listener : option string;
   ns_links : list nlink;
   ns_serve : option string;
-  ns_clients : list nclient }.
+  ns_clients : list nclient;
+  ns_procs : list nproc;
+  ns_jobs : nat;
+  ns_cut : list string }.
 
 net_start (home : string) : net_state :=
-  {| ns_home := home; ns_listener := None; ns_links := []; ns_serve := None; ns_clients := [] |}.
+  {| ns_home := home; ns_listener := None; ns_links := []; ns_serve := None; ns_clients := [];
+     ns_procs := []; ns_jobs := 0; ns_cut := [] |}.
 
 net_has (ids : list string) (id : string) : bool := existsb (nio_eq id) ids.
 
@@ -137,13 +150,15 @@ net_after_select (s : net_state) (r w : list string) : nprog (nanswer * net_stat
 
 (** One select: new connections, what peers' connections sent and their
     ends, dialed links connected or written to, waiting [ms] at most; a
-    process's output wakes it too (the host's events read it). A failed
-    select (a descriptor past FD_SETSIZE, EBADF) waits a moment and goes
-    round again rather than ending the node. *)
+    process's output wakes it too (the host's events read it,
+    [net_proc_events]). A failed select (a descriptor past FD_SETSIZE,
+    EBADF) waits a moment and goes round again rather than ending the
+    node. *)
 net_mailbox (s : net_state) (ms : string) : nprog (nanswer * net_state) :=
-  let reads := option_list (ns_listener s) ++ map l_fd (filter (fun l => negb (l_dialed l)) (ns_links s)) in
+  let reads := option_list (ns_listener s) ++ map l_fd (filter (fun l => negb (l_dialed l)) (ns_links s))
+               ++ map p_fd (ns_procs s) in
   let writes := map l_fd (filter (fun l => l_dialed l && (l_connecting l || negb (slen (l_obuf l) =? 0))) (ns_links s)) in
-  nbind (nask (IoSockSelect ms "true" reads writes)) (fun a =>
+  nbind (nask (IoSockSelect ms reads writes)) (fun a =>
   match ans_found a with
   | Some ready =>
       match nio_lists ready with
@@ -152,7 +167,7 @@ net_mailbox (s : net_state) (ms : string) : nprog (nanswer * net_state) :=
       end
   | None =>
       nbind (nexec (IoLog (hcat ["select failed (", ans_one a, "): ", show (length (ns_links s)), " connections"]))) (fun _ =>
-      nbind (nask (IoSockSelect "200" "false" [] [])) (fun _ => net_after_select s [] []))
+      nbind (nask (IoSockSelect "200" [] [])) (fun _ => net_after_select s [] []))
   end).
 
 (** ---- the service's socket ----
@@ -224,7 +239,7 @@ serve_next (s : net_state) (wait : string) : nprog (nanswer * net_state) :=
   | Some (req, s') => NDone (ans_data true req, s')
   | None =>
       let fds := option_list (ns_serve s) ++ map c_fd (ns_clients s) in
-      nbind (nask (IoSockSelect (show (num wait * 1000)) "false" fds [])) (fun a =>
+      nbind (nask (IoSockSelect (show (num wait * 1000)) fds [])) (fun a =>
       let r := if fst a then hd [] (nio_lists (ans_list a)) else [] in
       nbind (serve_ready s r) (fun s' =>
       NDone (match serve_take s' with Some (req, s'') => (ans_data true req, s'') | None => (ans_flag false, s') end)))
@@ -254,6 +269,78 @@ serve_reply (s : net_state) (id : string) (fields : list string) : nprog (nanswe
       if ok then NDone (ans_ok, s) else nbind (serve_drop s id) (fun s' => NDone (ans_ok, s')))
   end.
 
+(** ---- processes ----
+    The host's work's jobs (node_host.soma: what each is for, its time
+    limit, what its end becomes) are processes here: started from a
+    scratch directory the host's work made, their output read as it comes
+    and their end reported, killed when it says. *)
+
+(** started: [the job's name], or not found and why *)
+net_proc_start (s : net_state) (prog stdin cwd : string) (env args : list string) : nprog (nanswer * net_state) :=
+  nbind (nask (IoSpawn prog stdin cwd env args)) (fun a =>
+  match ans_found a with
+  | Some [pid, fd] =>
+      let job := show (ns_jobs s) in
+      NDone (ans_data true [job],
+             {| s with ns_procs := {| p_job := job; p_fd := fd; p_pid := pid |} :: ns_procs s; ns_jobs := ns_jobs s + 1 |})
+  | Some _ => NDone (ans_data false ["spawn came malformed"], s)
+  | None => NDone (a, s)
+  end).
+
+(** killed, and it ends at the next look without waiting for its pipe to
+    close (a check's shell killed, the `yes` it ran may still hold the
+    pipe open and write, which would hold the job, and CI's turn,
+    forever) *)
+net_proc_kill (s : net_state) (job : string) : nprog (nanswer * net_state) :=
+  match find (fun p => nio_eq (p_job p) job) (ns_procs s) with
+  | Some p => nbind (nask (IoKillPid (p_pid p))) (fun _ => NDone (ans_ok, {| s with ns_cut := p_pid p :: ns_cut s |}))
+  | None => NDone (ans_ok, s)
+  end.
+
+(** a process done: its pipe closed and its end waited for, as
+    ["job_ended", JOB, HOW, VALUE] (how: exit, signal or stop, the wait
+    status's facts; a wait that failed is an exit of -1) *)
+net_proc_finish (p : nproc) : nprog (list string) :=
+  nbind (nask (IoSockClose (p_fd p))) (fun _ =>
+  nbind (nask (IoWaitPid (p_pid p))) (fun a =>
+  NDone (match ans_found a with
+         | Some [how, value] => ["job_ended", p_job p, how, value]
+         | _ => ["job_ended", p_job p, "exit", "-1"]
+         end))).
+
+(** each process in turn: one killed ends; one whose pipe the select found
+    ready is read (["job_bytes", JOB, CHUNK]) or, closed, ends; the rest
+    stay. The processes that stay, the kills still to come, and the
+    output, then the ends. *)
+Fixpoint net_procs_look (r cut : list string) (ps kept : list nproc) (out ended : list (list string))
+    : nprog (list nproc * (list string * list (list string))) :=
+  match ps with
+  | [] => NDone (rev kept, (cut, out ++ ended))
+  | p :: rest =>
+      if net_has cut (p_pid p) then
+        nbind (net_proc_finish p) (fun e =>
+        net_procs_look r (filter (fun c => negb (nio_eq c (p_pid p))) cut) rest kept out (ended ++ [e]))
+      else if negb (net_has r (p_fd p)) then net_procs_look r cut rest (p :: kept) out ended
+      else
+        nbind (nask (IoSockRead (p_fd p))) (fun a =>
+        match ans_list a with
+        | ["bytes", data] => net_procs_look r cut rest (p :: kept) (out ++ [["job_bytes", p_job p, data]]) ended
+        | ["again"] => net_procs_look r cut rest (p :: kept) out ended
+        | _ => nbind (net_proc_finish p) (fun e => net_procs_look r cut rest kept out (ended ++ [e]))
+        end)
+  end.
+
+(** the processes' output and ends since the last look, without waiting *)
+net_proc_events (s : net_state) : nprog (nanswer * net_state) :=
+  let fds := map p_fd (ns_procs s) in
+  nbind (match fds with
+         | [] => NDone []
+         | _ => nbind (nask (IoSockSelect "0" fds [])) (fun a =>
+                NDone (if fst a then hd [] (nio_lists (ans_list a)) else []))
+         end) (fun r =>
+  nbind (net_procs_look r (ns_cut s) (ns_procs s) [] [] []) (fun q =>
+  NDone (ans_data true (nio_frame_lists (snd (snd q))), {| s with ns_procs := fst q; ns_cut := fst (snd q) |}))).
+
 (** ---- the runner's layer ----
     What it carries out itself; anything else goes to the shell as it is. *)
 net_op (s : net_state) (op : node_op) : option (nprog (nanswer * net_state)) :=
@@ -270,5 +357,8 @@ net_op (s : net_state) (op : node_op) : option (nprog (nanswer * net_state)) :=
   | IoServeListen host port => Some (serve_listen s host port)
   | IoServeNext wait => Some (serve_next s wait)
   | IoServeReply conn found stamp fields => Some (serve_reply s conn (found :: stamp :: fields))
+  | IoProcStart prog stdin cwd env args => Some (net_proc_start s prog stdin cwd env args)
+  | IoProcKill job => Some (net_proc_kill s job)
+  | IoEvents _ => Some (net_proc_events s)
   | _ => None
   end.

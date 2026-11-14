@@ -198,25 +198,21 @@ let clone url dir commit =
   fst (capture ~env:(Array.append [| "GIT_TERMINAL_PROMPT=0" |] (Unix.environment ())) "git" [ "clone"; "--quiet"; url; dir ])
   && fst (git dir [ "checkout"; "-q"; "--detach"; commit ])
 
+(* the host's descriptors by name: sockets, and the pipes processes write
+   their output on *)
+let socks : (string, Unix.file_descr) Hashtbl.t = Hashtbl.create 64
+let sock_counter = ref 0
+let sock_add fd = incr sock_counter; let id = string_of_int !sock_counter in Hashtbl.replace socks id fd; id
+let sock_find id = Hashtbl.find_opt socks id
+
 (* ---------- processes ----------
-   The kernel's jobs (node_host.soma) are processes here: started from a
-   scratch directory the kernel made, their output read as it comes and
-   their end reported, killed when the kernel says. What a job is for, its
-   time limit, what goes with it and what its end becomes are the kernel's. *)
+   The jobs are node_net.soma's (their names, the kills, what the output
+   and ends become): a process here is started with its output on a pipe
+   named among the sockets, waited for, killed. *)
 
-(* a process the kernel started: its name, the pipe its output comes on,
-   its pid *)
-type proc = { jid : string; jfd : Unix.file_descr; jpid : int }
-
-let procs : proc list ref = ref []
-let proc_counter = ref 0
-(* processes killed: they end at the next look, without waiting for the
-   pipe to close (a check's shell killed, the `yes` it ran may still hold
-   it open and write, which would hold the job, and CI's turn, forever) *)
-let proc_cut : (int, unit) Hashtbl.t = Hashtbl.create 8
-let proc_fds () = List.map (fun j -> j.jfd) !procs
-
-let proc_start prog stdin cwd env args =
+(* PROG run from [cwd] with [env], [stdin] its standard input from a file:
+   [its pid, its output's pipe], or not found and why *)
+let spawn prog stdin cwd env args =
   let ifd = stdin_fd stdin in
   let r, w = Unix.pipe ~cloexec:true () in
   let devnull = Unix.openfile "/dev/null" [ O_WRONLY ] 0 in
@@ -229,43 +225,17 @@ let proc_start prog stdin cwd env args =
   | pid ->
       Sys.chdir old;
       close_all [ w; ifd; devnull ];
-      let jid = string_of_int !proc_counter in
-      incr proc_counter;
-      procs := { jid; jfd = r; jpid = pid } :: !procs;
-      ans_data [ jid ]
+      ans_data [ string_of_int pid; sock_add r ]
 
-let proc_kill jid =
-  match List.find_opt (fun j -> j.jid = jid) !procs with
-  | Some j -> Hashtbl.replace proc_cut j.jpid (); (try Unix.kill j.jpid Sys.sigkill with _ -> ())
-  | None -> ()
-
-(* the processes' output and ends since the last look, without waiting:
-   ["job_bytes", JOB, CHUNK] and ["job_ended", JOB, HOW, VALUE] (how:
-   exit, signal or stop, the wait status's facts) *)
-let proc_events () =
-  let fds = proc_fds () in
-  let r = if fds = [] then [] else
-    (let r, _, _ = try Unix.select fds [] [] 0. with Unix.Unix_error _ -> ([], [], []) in r) in
-  let buf = Bytes.create 65536 in
-  let evs = ref [] and finished = ref [] in
-  let finish j = close_all [ j.jfd ]; finished := (j, snd (Unix.waitpid [] j.jpid)) :: !finished; false in
-  procs := List.filter (fun j ->
-      if Hashtbl.mem proc_cut j.jpid then (Hashtbl.remove proc_cut j.jpid; finish j)
-      else if not (List.mem j.jfd r) then true
-      else
-        match Unix.read j.jfd buf 0 65536 with
-        | 0 -> finish j
-        | n -> evs := [ "job_bytes"; j.jid; Bytes.sub_string buf 0 n ] :: !evs; true
-        | exception _ -> true)
-    !procs;
-  List.iter (fun (j, status) ->
-      let tag, value = match status with
-        | Unix.WEXITED c -> ("exit", c)
-        | Unix.WSIGNALED sg -> ("signal", sg)
-        | Unix.WSTOPPED sg -> ("stop", sg) in
-      evs := [ "job_ended"; j.jid; tag; string_of_int value ] :: !evs)
-    (List.rev !finished);
-  List.rev !evs
+(* a process's end, waited for: [how, value] (exit, signal or stop, the wait
+   status's facts), or not found and why *)
+let rec wait_pid pid =
+  match snd (Unix.waitpid [] pid) with
+  | Unix.WEXITED c -> ans_data [ "exit"; string_of_int c ]
+  | Unix.WSIGNALED sg -> ans_data [ "signal"; string_of_int sg ]
+  | Unix.WSTOPPED sg -> ans_data [ "stop"; string_of_int sg ]
+  | exception Unix.Unix_error (EINTR, _, _) -> wait_pid pid
+  | exception e -> (false, (0., [ Printexc.to_string e ]))
 
 (* lists of lists on one wire (nodeio.soma's nio_frame_lists), and a
    wire's fields, then the rest as it is (nodeio.soma's resend_parts) *)
@@ -288,10 +258,6 @@ let resolve host port =
   | a :: _ -> Some a.Unix.ai_addr
   | [] | (exception _) -> None
 
-let socks : (string, Unix.file_descr) Hashtbl.t = Hashtbl.create 64
-let sock_counter = ref 0
-let sock_add fd = incr sock_counter; let id = string_of_int !sock_counter in Hashtbl.replace socks id fd; id
-let sock_find id = Hashtbl.find_opt socks id
 
 (* a listening socket on HOST:PORT: [its name], or not found and why *)
 let sock_listen host port backlog =
@@ -314,14 +280,13 @@ let sock_dial host port =
        | exception Unix.Unix_error ((EINPROGRESS | EWOULDBLOCK | EAGAIN), _, _) -> ans_data [ sock_add fd; "connecting" ]
        | exception _ -> close_all [ fd ]; ans_flag false)
 
-(* the named sockets ready to read and to write, within [ms], framed; with
-   [procs], a process's output wakes it too. Interrupted: none ready; failed
-   (a descriptor past FD_SETSIZE, EBADF): not found, and why *)
-let sock_select ms procs reads writes =
+(* the named descriptors ready to read and to write, within [ms], framed.
+   Interrupted: none ready; failed (a descriptor past FD_SETSIZE, EBADF):
+   not found, and why *)
+let sock_select ms reads writes =
   let named ids = List.filter_map (fun id -> Option.map (fun fd -> (id, fd)) (sock_find id)) ids in
   let r = named reads and w = named writes in
-  let extra = if procs then proc_fds () else [] in
-  match Unix.select (List.map snd r @ extra) (List.map snd w) [] (float_of_string ms /. 1000.) with
+  match Unix.select (List.map snd r) (List.map snd w) [] (float_of_string ms /. 1000.) with
   | rr, ww, _ ->
       let ready l got = List.filter_map (fun (id, fd) -> if List.mem fd got then Some id else None) l in
       ans_data (frame_lists [ ready r rr; ready w ww ])
@@ -345,7 +310,7 @@ let sock_read id =
       (match Unix.read fd sock_buf 0 65536 with
        | 0 -> ans_data [ "closed" ]
        | k -> ans_data [ "bytes"; Bytes.sub_string sock_buf 0 k ]
-       | exception Unix.Unix_error ((EAGAIN | EWOULDBLOCK), _, _) -> ans_data [ "again" ]
+       | exception Unix.Unix_error ((EAGAIN | EWOULDBLOCK | EINTR), _, _) -> ans_data [ "again" ]
        | exception _ -> ans_data [ "closed" ])
 
 (* ["wrote", COUNT], ["again"] (the socket's buffer is full), or ["failed"] *)
@@ -403,13 +368,13 @@ let node_io op =
       Sys.set_signal Sys.sigterm (Sys.Signal_handle stop);
       List.iter (fun p -> ignore (Unix.waitpid [] p)) pids;
       ans_ok
-  (* the binary runner's (node_net.soma): sockets and the node's files (a
-     file written whole is the commands' too) *)
+  (* the binary runner's (node_net.soma): descriptors, the node's files (a
+     file written whole is the commands' too) and processes *)
   | [ "sock_listen"; host; port; backlog ] -> sock_listen host port (int_of_string backlog)
   | [ "sock_dial"; host; port ] -> sock_dial host port
-  | "sock_select" :: ms :: procs :: rest ->
+  | "sock_select" :: ms :: rest ->
       (match fields_then_args rest with
-       | Some (reads, writes) -> sock_select ms (procs = "true") reads writes
+       | Some (reads, writes) -> sock_select ms reads writes
        | None -> (false, (0., [ "sock_select came malformed" ])))
   | [ "sock_accept"; id; nonblock ] -> sock_accept id (nonblock = "true")
   | [ "sock_read"; id ] -> sock_read id
@@ -419,6 +384,12 @@ let node_io op =
   | [ "save"; path; durable; text ] -> write_file ~sync:(durable = "true") path text; ans_ok
   | [ "append_synced"; path; text ] -> append_synced path text; ans_ok
   | [ "no_sigpipe" ] -> Sys.set_signal Sys.sigpipe Sys.Signal_ignore; ans_ok
+  | "spawn" :: prog :: stdin :: cwd :: rest ->
+      (match fields_then_args rest with
+       | Some (env, args) -> spawn prog stdin cwd env args
+       | None -> (false, (0., [ "spawn came malformed" ])))
+  | [ "wait_pid"; pid ] -> wait_pid (int_of_string pid)
+  | [ "kill_pid"; pid ] -> (try Unix.kill (int_of_string pid) Sys.sigkill with _ -> ()); ans_ok
   (* the host's (nodeio.soma's service_op) *)
   | "git" :: dir :: args -> run_out (git dir args)
   | "git_env" :: dir :: stdin :: rest ->
@@ -438,10 +409,4 @@ let node_io op =
   | [ "self_exe" ] -> ans_data [ self_exe ]
   | [ "env_entries" ] -> ans_data (Array.to_list (Unix.environment ()))
   | "run" :: prog :: args -> run_out (capture prog args)
-  | "proc_start" :: prog :: stdin :: cwd :: rest ->
-      (match fields_then_args rest with
-       | Some (env, args) -> proc_start prog stdin cwd env args
-       | None -> (false, (0., [ "proc_start came malformed" ])))
-  | [ "proc_kill"; jid ] -> proc_kill jid; ans_ok
-  | [ "events"; _ ] -> ans_data (frame_lists (proc_events ()))
   | _ -> fail "unknown node operation %s" (String.concat " " op)
