@@ -1,25 +1,65 @@
 (** The host's work, in the kernel (U-1; docs/SHELL-IN-SOMA.md, "The
-    host's work"): what a node asks of its checkouts and its model, carried
-    out by the kernel (node_kernel.soma) over a few primitives a runner
-    does, git in a directory ([IoGit], [IoGitEnv]), a path's bytes
-    ([IoPathProbe] ... [IoReadText]) and a temporary directory, so the
-    binary and the unikernel (whose service runs those primitives on the
-    host) do it the same way. What it keeps: the model's call count, its
-    limit and the requests held for it, and the inbox's last poll. *)
+    host's work"): what a node asks of its checkouts, its model and CI,
+    carried out by the kernel (node_kernel.soma) over a few primitives a
+    runner does: git in a directory ([IoGit], [IoGitEnv]), a path's bytes
+    ([IoPathProbe] ... [IoReadText]), temporary files and directories, a
+    program run to its end ([IoRun]), and processes started, read and
+    stopped ([IoProcStart], [IoProcKill], their [job_bytes] and
+    [job_ended] events). The binary and the unikernel (whose service runs
+    those primitives on the host) do it the same way. What it keeps: the
+    model's call count, its limit and the requests held for it, the
+    inbox's last poll, and the jobs: what each one's end becomes, what
+    goes with it, its time limit, whether the node stopped it, and CI's
+    turns. *)
 Import util nodeio.
 
 (** What the host's work knows from the node's setup: the home (absolute),
-    the backend, the governed repositories with their genesis commits, and
-    the most model calls (the --max-llm-calls text). *)
+    the backend, the governed repositories with their genesis commits, the
+    most model calls (the --max-llm-calls text), and CI: the command, by
+    repository too, its memory, its Docker image and the sandbox runner
+    that stands in for Docker ("" for none). *)
 Record hworld := {
   hw_home : string;
   hw_backend : string;
   hw_repos : list (string * string);
-  hw_max_calls : string }.
+  hw_max_calls : string;
+  hw_ci : string;
+  hw_ci_repo : list (string * string);
+  hw_ci_memory : string;
+  hw_ci_image : string;
+  hw_ci_sandbox : string }.
+
+(** what a job's end becomes, given its outcome (node.soma's job_result):
+    a model's raw output, codex's (its reply file beside it), a check's (a
+    tree, or a failure), a CI run's *)
+Inductive job_done :=
+| DoneModel (id kind prompt : string) (ctx : list string)
+| DoneCodex (id kind prompt out : string) (ctx : list string)
+| DoneCheck (id out ci : string)
+| DoneCi (id tree memory runner : string).
+
+(** what goes when it's over: a file, a directory's tree (in the
+    background), a container *)
+Inductive job_clean := CleanFile (path : string) | CleanTree (path : string) | CleanContainer (name : string).
+
+(** A job: the runner's name for it, when it started, how long it may run
+    (seconds), what its end becomes and what goes with it, and whether the
+    node stopped it for running past its limit or printing too much. *)
+Record hjob := {
+  j_id : string;
+  j_started : PrimFloat.float;
+  j_limit : PrimFloat.float;
+  j_done : job_done;
+  j_clean : list job_clean;
+  j_overtime : bool;
+  j_flooded : bool }.
 
 (** What it keeps: model calls so far; the limit (until when, why, the next
     backoff) and whether a release is probing; the requests held for it,
-    newest first ([id, kind, prompt, ctx...]); the inbox's last poll. *)
+    newest first ([id, kind, prompt, ctx...]); the inbox's last poll; the
+    jobs running, newest first, and those that ended and wait for the
+    node's outcome; whether a CI run has the turn, and those waiting for it
+    ([id, out, tree, ci, container]); and the events their ends queued. *)
 Record host_state := {
   hs_calls : nat;
   hs_until : PrimFloat.float;
@@ -27,11 +67,17 @@ Record host_state := {
   hs_backoff : PrimFloat.float;
   hs_held : list (list string);
   hs_probing : bool;
-  hs_inbox : PrimFloat.float }.
+  hs_inbox : PrimFloat.float;
+  hs_jobs : list hjob;
+  hs_ended : list hjob;
+  hs_ci_busy : bool;
+  hs_ci_waiting : list (list string);
+  hs_events : list (list string) }.
 
 host_start : host_state :=
   {| hs_calls := 0; hs_until := PrimFloat.zero; hs_reason := ""; hs_backoff := nio_small 900;
-     hs_held := []; hs_probing := false; hs_inbox := PrimFloat.zero |}.
+     hs_held := []; hs_probing := false; hs_inbox := PrimFloat.zero;
+     hs_jobs := []; hs_ended := []; hs_ci_busy := false; hs_ci_waiting := []; hs_events := [] |}.
 
 hcat (l : list string) : string := Stdlib.Strings.String.concat "" l.
 
@@ -115,10 +161,249 @@ hkeep (s : host_state) (a : nanswer) : nprog (nanswer * host_state) := NDone (a,
 
 hpass (s : host_state) (op : node_op) : nprog (nanswer * host_state) := nbind (nask op) (fun a => NDone (a, s)).
 
+
+(** ---- Jobs ----
+    A job is a process the host runs for the node: a model call, a check,
+    a CI run. The runner starts it ([IoProcStart], from a fresh scratch
+    directory), gives its output and its end as events ([job_bytes],
+    [job_ended]) and stops it ([IoProcKill]); the rest is here. *)
+
+done_event (d : job_done) (t : string) : list string :=
+  match d with
+  | DoneModel id kind prompt ctx => "llm_output" :: id :: kind :: prompt :: t :: ctx
+  | DoneCodex id kind prompt out ctx => "codex_file" :: id :: kind :: prompt :: t :: out :: ctx
+  | DoneCheck id out ci => ["check_apply_out", id, out, ci, t]
+  | DoneCi id tree memory runner => ["ci_done", id, tree, memory, runner, t]
+  end.
+
+done_ci (d : job_done) : bool := match d with DoneCi _ _ _ _ => true | _ => false end.
+
+Fixpoint hcleanup (l : list job_clean) : nprog bool :=
+  match l with
+  | [] => NDone true
+  | c :: rest =>
+      nbind (nask (match c with
+                   | CleanFile p => IoDiscardFile p
+                   | CleanTree p => IoRemoveTree p
+                   | CleanContainer n => IoRun "docker" ["rm", "-f", n]
+                   end)) (fun _ => hcleanup rest)
+  end.
+
+hpush (s : host_state) (ev : list string) : host_state := {| s with hs_events := hs_events s ++ [ev] |}.
+
+hpush_opt (s : host_state) (ev : option (list string)) : host_state :=
+  match ev with Some e => hpush s e | None => s end.
+
+(** the events queued, taken: an answer's data, framed *)
+hdrain (s : host_state) : nanswer * host_state :=
+  (ans_data true (nio_frame_lists (hs_events s)), {| s with hs_events := [] |}).
+
+(** A job started: a fresh scratch directory to run from, the process
+    (reading [stdin], with [env] its environment), and the job kept. One
+    that can't start ends at once: its end's event ("!" and why) comes
+    back, and what would have gone with it goes now. *)
+hstart_job (s : host_state) (limit : PrimFloat.float) (prog stdin : string) (args env : list string)
+    (d : job_done) (clean : list job_clean) : nprog (host_state * option (list string)) :=
+  nbind (nask (IoTempDir "pantheon-llm")) (fun t =>
+  let cwd := ans_one t in
+  nbind (nask (IoProcStart prog stdin cwd env args)) (fun a =>
+  if fst a then
+    nbind (nask IoClock) (fun c =>
+    let j := {| j_id := ans_one a; j_started := ans_float c; j_limit := limit; j_done := d;
+                j_clean := CleanTree cwd :: clean; j_overtime := false; j_flooded := false |} in
+    NDone ({| s with hs_jobs := j :: hs_jobs s |}, None))
+  else
+    nbind (hcleanup (CleanTree cwd :: clean)) (fun _ =>
+    NDone (s, Some (done_event d (append "!" (ans_one a))))))).
+
+(** A CI run's script: its output and errors together, and its exit as the
+    node reads it. Exits other than 0, 124 and 137 (the run's time and
+    memory budgets, also the bid's) are 86, the bid's failure; any other
+    failing exit of the runner (docker's own 125-127, ci-sandbox's 2 and 3)
+    is the runner's, so this node's (node.soma's ci_outcome). A build
+    the kernel killed for the container's memory (oom_kill in its cgroup)
+    ends as 137, as docker ends the container itself
+    (docs/SECURITY-REVIEW-2.md P-6). "( " with a space: where sh is bash
+    (Fedora), "((" starts arithmetic. *)
+ci_wrap (ci : string) : string :=
+  hcat ["( ", ci, hnl, ") 2>&1; r=$?; if [ $r -ne 0 ] && grep -qs 'oom_kill [1-9]' /sys/fs/cgroup/memory.events; then exit 137; fi; ",
+        "case $r in 0|124|137) exit $r;; esac; exit 86"].
+
+(** A CI run started on a tree Soma already accepted: in the sandbox
+    runner, or in a container with no network, a read-only root, a memory
+    and process cap and nobody's uid, the tree read-only at /work. An hour
+    at most. What its outcome is (passed, the bid's failure or this node's
+    problem) is node.soma's ci_outcome, from the node's own signals. *)
+hci_start (hw : hworld) (env : list string) (s : host_state) (w : list string) : nprog (host_state * option (list string)) :=
+  match w with
+  | [id, out, tree, ci, name] =>
+      let mem := hw_ci_memory hw in
+      if negb (nio_eq (hw_ci_sandbox hw) "") then
+        hstart_job s (nio_small 3600) (hw_ci_sandbox hw) "" [mem, out, ci_wrap ci] env
+          (DoneCi id tree mem "sandbox") [CleanTree out]
+      else
+        hstart_job s (nio_small 3600) "docker" ""
+          ["run", "--rm", "--name", name, "--network=none", "--read-only", "--tmpfs", append "/tmp:exec,size=" mem,
+           "--cap-drop=ALL", "--security-opt=no-new-privileges", "--pids-limit=512", append "--memory=" mem,
+           append "--memory-swap=" mem, "--user=65534:65534", "-e", "HOME=/tmp", "-v", append out ":/work:ro",
+           "-w", "/work", hw_ci_image hw, "sh", "-c", ci_wrap ci] env
+          (DoneCi id tree mem "docker") [CleanContainer name, CleanTree out]
+  | _ => NDone (s, None)
+  end.
+
+(** The next CI run waiting, started: one that can't start ends at once
+    (its ci_done queued) and the one after it goes. With none waiting, CI
+    is free. *)
+Fixpoint hci_next (fuel : nat) (hw : hworld) (env : list string) (s : host_state) : nprog host_state :=
+  match fuel with
+  | 0 => NDone {| s with hs_ci_busy := false |}
+  | S f =>
+      match hs_ci_waiting s with
+      | [] => NDone {| s with hs_ci_busy := false |}
+      | w :: rest =>
+          nbind (hci_start hw env {| s with hs_ci_waiting := rest |} w) (fun r =>
+          match snd r with
+          | None => NDone (fst r)
+          | Some ev => hci_next f hw env (hpush (fst r) ev)
+          end)
+      end
+  end.
+
+hci_after (hw : hworld) (env : list string) (s : host_state) : nprog host_state :=
+  hci_next (S (List.length (hs_ci_waiting s))) hw env s.
+
+(** One CI run at a time on this node, the rest waiting their turn: two at
+    once (a leader's merge check beside an attest) can take more memory
+    than the machine has, and a build killed for memory reads as the bid's
+    fault. *)
+hci_launch (hw : hworld) (env : list string) (s : host_state) (w : list string) : nprog host_state :=
+  if hs_ci_busy s then NDone {| s with hs_ci_waiting := hs_ci_waiting s ++ [w] |}
+  else
+    nbind (hci_start hw env {| s with hs_ci_busy := true |} w) (fun r =>
+    match snd r with
+    | None => NDone (fst r)
+    | Some ev => hci_after hw env (hpush (fst r) ev)
+    end).
+
+(** A check for an attestor: the node's own binary applies the bid's
+    edits on the head in a fresh clone (cli.soma's [pantheon check]); its
+    output, a tree or why not, becomes node.soma's check_apply_out. The
+    tree goes on to the repository's CI, if it has one, which removes it
+    after; without CI it goes with the job. *)
+hcheck (hw : hworld) (s : host_state) (id repo head : string) (edits : list string) : nprog (nanswer * host_state) :=
+  let ci := match List.find (fun p => nio_eq (fst p) repo) (hw_ci_repo hw) with Some p => snd p | None => hw_ci hw end in
+  nbind (nask (IoTempDir "pantheon-check")) (fun o =>
+  let out := ans_one o in
+  nbind (nask (IoTempFile "pantheon-edits" ".json" (nio_json_strings edits))) (fun e =>
+  let ef := ans_one e in
+  nbind (nask IoSelfExe) (fun self =>
+  nbind (nask IoEnvEntries) (fun env =>
+  nbind (hstart_job s (nio_small 600) (ans_one self) "" ["check", hrepo_dir hw repo, head, ef, out] (ans_list env)
+           (DoneCheck id out ci) (CleanFile ef :: (if nio_eq ci "" then [CleanTree out] else []))) (fun r =>
+  hkeep (hpush_opt (fst r) (snd r)) ans_ok))))).
+
+(** CI for a tree: its checkout's .git goes first (a --shared clone's
+    objects live in this node's own repository, which isn't in CI's
+    sandbox, so git there saw a broken repository and its errors led a
+    rejection's reason), and everyone may read the rest; then its turn.
+    The events queued so far come back. *)
+hci (hw : hworld) (s : host_state) (id out tree ci : string) : nprog (nanswer * host_state) :=
+  nbind (nask (IoRun "rm" ["-rf", hjoin out ".git"])) (fun _ =>
+  nbind (nask (IoRun "chmod" ["-R", "a+rX", out])) (fun _ =>
+  nbind (nask IoToken) (fun tok =>
+  nbind (nask IoEnvEntries) (fun env =>
+  nbind (hci_launch hw (ans_list env) s [id, out, tree, ci, append "pantheon-ci-" (substr (ans_one tok) 0 12)]) (fun s =>
+  NDone (hdrain s)))))).
+
+hswap (mark out : string) (args : list string) : list string :=
+  List.map (fun a => if nio_eq a mark then out else a) args.
+
+(** A model process for a prompt Soma assembled from [raw] ([launch]:
+    the program, its time limit, the backend's mode, then its arguments).
+    codex writes its reply to a file (@OUT@); grok's header text, which
+    holds the key, goes in a file of its own (@HDR@) that goes with the
+    job; a cmd: backend's tool checkout ([clean]) goes with it too. The
+    prompt is the process's standard input. Found: it couldn't start, and
+    this is its output's event at once. *)
+hllm (s : host_state) (id kind raw prompt : string) (ctx clean launch env : list string) : nprog (nanswer * host_state) :=
+  let started r := hkeep (fst r) (match snd r with Some ev => ans_data true ev | None => ans_data false [] end) in
+  match launch with
+  | prog :: lim :: mode :: rest =>
+      let limit := float_of_digits lim in
+      if nio_eq mode "codex" then
+        nbind (nask (IoTempFile "pantheon-codex" ".txt" "")) (fun o =>
+        let out := ans_one o in
+        nbind (hstart_job s limit prog prompt (hswap "@OUT@" out rest) env (DoneCodex id kind raw out ctx) []) started)
+      else match mode, rest with
+           | "grok", hdr_text :: args =>
+               nbind (nask (IoTempFile "pantheon-h" ".txt" hdr_text)) (fun h =>
+               let hdr := ans_one h in
+               nbind (hstart_job s limit prog prompt (hswap "@HDR@" (append "@" hdr) args) env (DoneModel id kind raw ctx)
+                        [CleanFile hdr]) started)
+           | _, _ => nbind (hstart_job s limit prog prompt rest env (DoneModel id kind raw ctx) (List.map CleanTree clean)) started
+           end
+  | _ => hkeep s (ans_data false [])
+  end.
+
+hjob_set (s : host_state) (id : string) (f : hjob -> hjob) : host_state :=
+  {| s with hs_jobs := List.map (fun j => if nio_eq (j_id j) id then f j else j) (hs_jobs s) |}.
+
+hfind_job (id : string) (l : list hjob) : option hjob := List.find (fun j => nio_eq (j_id j) id) l.
+
+hwithout (id : string) (l : list hjob) : list hjob := List.filter (fun j => negb (nio_eq (j_id j) id)) l.
+
+(** A job the node stops (for its time limit or its output), marked so its
+    end says so, and killed once. *)
+hstop (s : host_state) (id : string) (marked : hjob -> bool) (mark : hjob -> hjob) : nprog (nanswer * host_state) :=
+  match hfind_job id (hs_jobs s) with
+  | Some j => if marked j then hkeep s ans_ok
+              else nbind (nask (IoProcKill id)) (fun _ => hkeep (hjob_set s id mark) ans_ok)
+  | None => hkeep s ans_ok
+  end.
+
+(** A finished job resumed with the node's outcome (node.soma's
+    job_result): what its end becomes queued (a CI run's frees CI for the
+    next), what went with it removed, and the events queued so far. *)
+hcomplete (hw : hworld) (s : host_state) (id result : string) : nprog (nanswer * host_state) :=
+  match hfind_job id (hs_ended s) with
+  | None => hkeep s (ans_data true [])
+  | Some j =>
+      let s := hpush {| s with hs_ended := hwithout id (hs_ended s) |} (done_event (j_done j) result) in
+      nbind (if done_ci (j_done j) then nbind (nask IoEnvEntries) (fun env => hci_after hw (ans_list env) s) else NDone s) (fun s =>
+      nbind (hcleanup (j_clean j)) (fun _ => NDone (hdrain s)))
+  end.
+
+(** What the runner saw of the jobs, as the node's events: their output as
+    it is, and a job's end ([job_ended]: how it ended, the runner's facts)
+    as node.soma's [job_finished], with the time limit it was stopped for
+    ("%.0f", "" if none) and whether it printed too much; the job waits
+    for its outcome. The events queued since the last look come first. *)
+hevent (s : host_state) (ev : list string) : host_state * list string :=
+  match ev with
+  | ["job_ended", id, tag, value] =>
+      match hfind_job id (hs_jobs s) with
+      | Some j =>
+          ({| s with hs_jobs := hwithout id (hs_jobs s); hs_ended := hs_ended s ++ [j] |},
+           ["job_finished", id, tag, value, if j_overtime j then float_text (j_limit j) else "",
+            if j_flooded j then "1" else "0"])
+      | None => (s, ["job_finished", id, tag, value, "", "0"])
+      end
+  | _ => (s, ev)
+  end.
+
+Fixpoint hevents_go (s : host_state) (evs acc : list (list string)) : host_state * list (list string) :=
+  match evs with
+  | [] => (s, rev_onto acc [])
+  | ev :: rest => let r := hevent s ev in hevents_go (fst r) rest (snd r :: acc)
+  end.
+
+host_events (s : host_state) (evs : list (list string)) : list (list string) * host_state :=
+  let r := hevents_go s evs [] in (hs_events (fst r) ++ snd r, {| (fst r) with hs_events := [] |}).
+
 (** One of the host's operations, as the kernel carries it out (none: not
     one of them). A checkout's work is git and paths in HOME/repos/NAME;
     the model's budget, limit and held requests, and the inbox's poll, are
-    what it keeps. *)
+    what it keeps; model calls, checks and CI are jobs. *)
 host_op (hw : hworld) (s : host_state) (op : node_op) : option (nprog (nanswer * host_state)) :=
   match op with
   | IoRepoNames => Some (hkeep s (ans_data true (List.map fst (hw_repos hw))))
@@ -155,13 +440,25 @@ host_op (hw : hworld) (s : host_state) (op : node_op) : option (nprog (nanswer *
       Some (hkeep s (true, (hs_until s, [hw_backend hw, nio_count (List.length (hs_held s)), hs_reason s])))
   | IoInboxState => Some (hkeep s (true, (hs_inbox s, [hjoin (hw_home hw) "inbox"])))
   | IoInboxStamp stamp => Some (hkeep {| s with hs_inbox := float_of_digits stamp |} ans_ok)
+  | IoLlmStart id kind raw prompt ctx clean launch env => Some (hllm s id kind raw prompt ctx clean launch env)
+  | IoCheck id repo head edits => Some (hcheck hw s id repo head edits)
+  | IoCiLaunch id out tree ci => Some (hci hw s id out tree ci)
+  | IoJobComplete id result => Some (hcomplete hw s id result)
+  | IoJobs =>
+      Some (hkeep s (ans_data true (nio_frame_lists (List.map (fun j =>
+              [j_id j, float_wire (j_started j), float_wire (j_limit j), if j_overtime j then "true" else "false"]) (hs_jobs s)))))
+  | IoJobExpire id => Some (hstop s id j_overtime (fun j => {| j with j_overtime := true |}))
+  | IoJobFlood id => Some (hstop s id j_flooded (fun j => {| j with j_flooded := true |}))
   | _ => None
   end.
 
 (** the host's world from the node's setup (cli.soma's node_setup: the
-    settings, then the repositories at index 6, [name, genesis commit, ...]) *)
+    settings, CI commands by repository at index 4, the repositories at
+    index 6, [name, genesis commit, ...]) *)
 hworld_of (config : list (list string)) : hworld :=
   let settings := match config with s :: _ => s | [] => [] end in
   let setting i := List.nth i settings "" in
-  let repos := match config with _ :: _ :: _ :: _ :: _ :: _ :: r :: _ => nio_pairs r | _ => [] end in
-  {| hw_home := setting 0; hw_backend := setting 5; hw_repos := repos; hw_max_calls := setting 11 |}.
+  let part i := nio_pairs (List.nth i config []) in
+  {| hw_home := setting 0; hw_backend := setting 5; hw_repos := part 6; hw_max_calls := setting 11;
+     hw_ci := setting 7; hw_ci_repo := part 4; hw_ci_memory := setting 8; hw_ci_image := setting 9;
+     hw_ci_sandbox := setting 10 |}.

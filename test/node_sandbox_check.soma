@@ -17,7 +17,8 @@ world : kworld :=
      w_listen := "0.0.0.0";
      w_port := "9000";
      w_host := {| hw_home := "/home"; hw_backend := "claude"; hw_repos := [("calc", "abc1234")];
-                  hw_max_calls := "100" |} |}.
+                  hw_max_calls := "100"; hw_ci := ""; hw_ci_repo := []; hw_ci_memory := "2g";
+                  hw_ci_image := ""; hw_ci_sandbox := "" |} |}.
 
 iworld : img_world :=
   {| iw_service_host := ""; iw_service_port := 0; iw_token := "" |}.

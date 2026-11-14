@@ -2,10 +2,11 @@
 
 Pantheon's decisions are Soma (`node.soma` and what it imports), and so is
 the node's kernel (`node_kernel.soma`: its tables, peer links, signatures,
-files and select) and the edits machinery (`cli.soma`: applying edits,
-reading a checkout's changes as edits, a bid's tree); what is left of the
-program around them is `shell.ml`, about 910 lines of hand-written OCaml
-(it was about 1,600)
+files and select), the host's work it asks for (`node_host.soma`: a
+merge's git, the model's budget and limit, jobs, checks and CI) and the
+edits machinery (`cli.soma`: applying edits, reading a checkout's changes
+as edits, a bid's tree); what is left of the program around them is
+`shell.ml`, about 630 lines of hand-written OCaml (it was about 1,600)
 that `shell.definition` declares to Soma as four assumptions (`sha256`,
 `hash_list`, `decode_tx`, `run`). The goal: as much of `shell.ml` as can be
 is Soma, extracted with the rest, and OCaml is left only as thin bindings to
@@ -307,7 +308,9 @@ trees, and which already carry a merge. It gives `node_open` framed
 data: the settings, this node's key, its exclusions, the repositories it
 can't check, CI commands by repository, the agents, the repositories,
 those still at genesis, then the boot events. `node_open` only builds
-the runtime from it: its tables, the listener, jobs and closures. A home
+the runtime from it: its tables, the listener, jobs and closures (since
+then it takes only the home, for the network's state: the kernel reads
+the rest, its host work included). A home
 whose key.json names no genesis agent, and a --max-llm-calls that isn't
 a number, now say so (the old binary crashed on both).
 
@@ -317,7 +320,8 @@ accepted connections (links), and git, model and CI jobs (Soma's
 "services": `fetch` with a timeout and HTTP POST).
 (Since done: the links are operations, and so are git, model and CI
 jobs, which a unikernel asks its node's service for: "The node's
-service", below.)
+service", below; and the jobs themselves are the kernel's, over process
+primitives: "The host's work", below.)
 
 SHA-256 and RSA are Soma's (`Soma.Crypto`, Soma's item): `sha256` and
 `hash_list` are `util.soma`'s, no longer bindings, so the kernel computes
@@ -388,6 +392,51 @@ three uses, including the hostile `.git` and `PANTHEON_GITDIR` configs,
 and `test/check-*.sh` the check. `pantheon edits` on a 250-file checkout
 takes about 2.4 s, most of it one `git hash-object` process a file, as
 before.
+
+## The host's work
+
+What a node asks of its checkouts, its model and CI is Soma too, in the
+kernel: `node_host.soma`, which `kernel_op` asks first (`host_op`). The
+binary and the unikernel run the same code; only the primitives below it
+are the runner's (the shell for the binary, the service for an image).
+
+- **A checkout's work**, in HOME/repos/NAME: a merge's reset, its file
+  reads, writes and removals (`IoMerge*` become `IoPathProbe`,
+  `IoReadText`, `IoPathWrite`, `IoPathRemove`), its commit (`git add -A
+  -f`, then `git commit` with a fixed author, a date from the version and
+  the message on standard input, then the tree and short id), the files a
+  prompt reads (`ls-files`, `show HEAD:PATH`), each checkout's head for
+  the status (its genesis commit when git can't read it, as in an image
+  with no service), and a `cmd:` patch's tool checkout (a temporary
+  worktree, its git directory beside it, a shared clone at the head).
+- **What it keeps**: the model's call count, its limit (until when, why,
+  the next backoff), whether a release is probing, the requests held for
+  it, and the inbox's last poll. In an image these are the image's own
+  now, not the service's, so `--max-llm-calls` and the backend are the
+  image's flags.
+- **Jobs**: a model call, a check or a CI run is a job. The kernel starts
+  its process (`IoProcStart`: the program, its arguments, its environment,
+  its standard input, a fresh scratch directory to run from) and keeps
+  what the shell used to keep in closures: what the job's end becomes
+  (`job_done`: a model's `llm_output`, codex's `codex_file`, a check's
+  `check_apply_out`, a CI run's `ci_done`), what goes with it (`job_clean`:
+  a file, a tree, a container), when it started and its time limit, and
+  whether the node stopped it (`IoProcKill`) for its limit or its output.
+  The shell gives a job's output as it comes (`job_bytes`) and its end
+  (`job_ended`: how it ended); the kernel makes that node.soma's
+  `job_finished`, and node.soma's outcome (`IoJobComplete`) queues what the
+  end becomes and removes what went with it. CI's one-at-a-time turn and
+  its queue are the kernel's, as are a CI run's script (`ci_wrap`) and its
+  Docker or sandbox command line.
+
+The shell keeps the primitives: `IoGit` and `IoGitEnv` (git with no user
+or system config, no hooks, no signing; `IoGitEnv` with extra environment
+entries and a standard input), the path operations, `IoTempDir`,
+`IoTempFile` (a new private file with its text), `IoRemoveTree`, `IoRun`
+(a program run to its end, with the user's environment: `rm`, `chmod`,
+`docker rm`) and the processes: `IoProcStart`, `IoProcKill`, their events,
+and their descriptors in the select. A process table and the bytes read
+from it are all it holds; `node_open` builds only the network's state.
 
 ## The node as a unikernel
 
@@ -473,21 +522,21 @@ A unikernel runs no processes and has no checkouts, so what the binary
 does with them it asks the node's service for: `pantheon service HOME
 HOST:PORT [node flags]` on the host, with `pantheon image HOME FILE
 --service HOST:PORT` making the image that uses it. The service is the
-node's own runtime (shell.ml's `node_open`, from HOME's setup, as
-`pantheon node HOME` builds it) with a loop of its own, Soma's like the
+node's own runtime (shell.ml's primitives, from HOME's setup, as
+`pantheon node HOME` builds them) with a loop of its own, Soma's like the
 node's (node.soma's `service_tick_prog`, node_shell.soma's
 `run_service`): the next request (`IoServeNext`), run as the binary runs
 that operation (`node_io`), its answer sent back (`IoServeReply`).
 
-What goes to the service is one set, nodeio.soma's `service_op`: git in
-the checkouts (a merge's reset, reads, writes and commit, the files a
-prompt reads, the heads), a model call (its budget, holding a request
-for a limit, starting the model process, a tool's checkout, the limit's
-state), CI and checks (`IoCiLaunch`, `IoCheck`), the jobs they run
-(`IoJobs`, `IoJobFlood`, `IoJobExpire`, `IoJobComplete`), the model's
-reply files and the inbox on the host's disk, and the events those jobs
-give. Everything else is the image's own: its votes, blocks, peers,
-tables and status. The kernel hands a `service_op` operation on as it
+What goes to the service is one set, nodeio.soma's `service_op`: the
+host's primitives the kernel's host work runs on ("The host's work"
+above): git and paths in the checkouts, temporary files and
+directories, programs run to their end, processes started and killed,
+the model's reply files and the inbox on the host's disk, and the events
+the processes give. What those are for (a merge, a model call, a check,
+CI's turn) is decided in the image's kernel, which keeps the jobs, the
+model's budget and limit and the held requests itself. Everything else
+is the image's own: its votes, blocks, peers, tables and status. The kernel hands a `service_op` operation on as it
 is, and the image's runner (node_sandbox.soma's `iop`) sends its wire
 form (`io_wire`) to the service and hands its answer back; each select
 turn (`IoEvents`) also asks for the host's events, which are the events
@@ -522,8 +571,9 @@ Limits, for now: a frame is 1 MiB at most (Sandbox's `max_frame`), so a
 model reply file or one job event over that is lost to the image (the
 model's output is capped at 4 MiB); the token crosses the host-only
 vmnet network in the clear, so the service listens on the host's side of
-that network only; and the model budget and limits are the service's
-flags (`--max-llm-calls`, the backend), which should be the image's.
+that network only. (The model's budget and limit were the service's
+flags until the host's work moved into the kernel; they are the image's
+now.)
 
 What the image doesn't do yet:
 

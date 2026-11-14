@@ -1,10 +1,11 @@
 (* The shell: the host's side of a Pantheon node and of the commands. Soma
-   decides everything (node.soma, node_kernel.soma, cli.soma); this
-   carries out the kernel's primitives (sockets and named files), the
-   clock, and the host's work: model processes, git, CI and checks, the
-   inbox and reply files, the service's socket. The node's tables, peer
-   links, timers and signatures are the kernel's (docs/SHELL-IN-SOMA.md,
-   "One kernel, two runners"). *)
+   decides everything (node.soma, node_kernel.soma, node_host.soma,
+   cli.soma); this carries out the kernel's primitives (sockets and named
+   files), the clock, and the host's: git, paths, temporary files,
+   processes, the inbox and reply files, the service's socket. The node's
+   tables, peer links, timers and signatures are the kernel's, and so are
+   its jobs, a merge's git and the model's limit (docs/SHELL-IN-SOMA.md,
+   "One kernel, two runners" and "The host's work"). *)
 
 let fail fmt = Printf.ksprintf (fun s -> prerr_endline ("error: " ^ s); exit 1) fmt
 let say fmt = Printf.ksprintf (fun s -> Printf.printf "%s %s\n%!" (string_of_float (Unix.gettimeofday ())) s) fmt
@@ -40,7 +41,6 @@ let rsa_sign_bytes bytes n e p q dp dq qinv msg =
 let rng = lazy (Cryptokit.Random.device_rng "/dev/urandom")
 let random_hex n = hex (Cryptokit.Random.string (Lazy.force rng) n)
 
-let strings_json l = `List (List.map (fun s -> `String s) l)
 
 (* ---------- files ---------- *)
 
@@ -189,24 +189,6 @@ let path_write dir p text =
 
 let path_remove dir p = try Sys.remove (Filename.concat dir p); "" with e -> Printexc.to_string e
 
-(* how a CI command, wrapped by the node, says the bid's CI failed. Any other
-   failing exit of the runner (docker's own 125-127, ci-sandbox's 2 and 3,
-   bwrap or systemd-run failing) is the runner's, so this node's. The bid's
-   exits are remapped to this inside the runner, except 124 and 137 (its
-   time and memory budgets, also the bid's) (docs/SECURITY-REVIEW-2.md P-6) *)
-let ci_bid_failed = 86
-(* "( " with a space: where sh is bash (Fedora), "((" starts arithmetic *)
-let ci_wrap ci =
-  "( " ^ ci ^ "\n) 2>&1; r=$?; if [ $r -ne 0 ] && grep -qs 'oom_kill [1-9]' /sys/fs/cgroup/memory.events; then exit 137; fi; "
-  ^ "case $r in 0|124|137) exit $r;; esac; exit " ^ string_of_int ci_bid_failed
-
-(* how a job ended ("!process failed (HOW): ") and its exit code are read in
-   Soma (node.soma's ci_job_how and ci_exit_code), never here *)
-
-let chain_len = 100_000
-
-let repo_dir home name = Filename.concat (Filename.concat home "repos") name
-
 (* ---------- the node ----------
    The node's kernel is Soma (node_kernel.soma): its tables, peer links,
    signatures, files and select are kept and decided there, the same for
@@ -235,8 +217,9 @@ let print_lines xs = List.iter print_endline xs
 let print_text s = print_string s
 let argv () = Array.to_list Sys.argv |> List.tl
 
-type job = { jid : string; jfd : Unix.file_descr; jpid : int;
-             jdone : string -> unit; jstarted : float; jlimit : float; jclean : unit -> unit }
+(* a process the kernel started (node_host.soma keeps its job): its name,
+   the pipe its output comes on, its pid *)
+type job = { jid : string; jfd : Unix.file_descr; jpid : int }
 
 (* a connection the kernel names: one a peer opened (read as it comes), or
    one the kernel dialed (written through a buffer the select drains; a
@@ -351,18 +334,95 @@ let append_synced p s =
 
 let net_file n name = Filename.concat n.home name
 
+(* ---------- processes ----------
+   The kernel's jobs (node_host.soma) are processes here: started from a
+   scratch directory the kernel made, reading their standard input from a
+   file (so no pipe can fill up while their output is read), their output
+   read as it comes and their end reported, and killed when the kernel
+   says. What a job is for, its time limit, what goes with it and what its
+   end becomes are the kernel's. *)
+let procs : job list ref = ref []
+let proc_counter = ref 0
+(* processes killed: they end at the next look, without waiting for the
+   pipe to close (a check's shell killed, the `yes` it ran may still hold
+   it open and write, which would hold the job, and CI's turn, forever) *)
+let proc_cut : (int, unit) Hashtbl.t = Hashtbl.create 8
+let proc_fds () = List.map (fun j -> j.jfd) !procs
+
+let proc_start prog stdin cwd env args =
+  let inp = Filename.temp_file "pantheon-in" ".txt" in
+  write_file inp stdin;
+  let ifd = Unix.openfile inp [ O_RDONLY ] 0 in
+  (try Sys.remove inp with _ -> ());
+  let r, w = Unix.pipe ~cloexec:true () in
+  let devnull = Unix.openfile "/dev/null" [ O_WRONLY ] 0 in
+  let old = Sys.getcwd () in
+  match Sys.chdir cwd; Unix.create_process_env prog (Array.of_list (prog :: args)) (Array.of_list env) ifd w devnull with
+  | exception e ->
+      (try Sys.chdir old with _ -> ());
+      List.iter (fun fd -> try Unix.close fd with _ -> ()) [ r; w; ifd; devnull ];
+      (false, (0., [ Printexc.to_string e ]))
+  | pid ->
+      Sys.chdir old;
+      Unix.close w; Unix.close ifd; Unix.close devnull;
+      let jid = string_of_int !proc_counter in
+      incr proc_counter;
+      procs := { jid; jfd = r; jpid = pid } :: !procs;
+      (true, (0., [ jid ]))
+
+let proc_kill jid =
+  match List.find_opt (fun j -> j.jid = jid) !procs with
+  | Some j -> Hashtbl.replace proc_cut j.jpid (); (try Unix.kill j.jpid Sys.sigkill with _ -> ())
+  | None -> ()
+
+(* the processes' output and ends since the last look, without waiting:
+   ["job_bytes", JOB, CHUNK] and ["job_ended", JOB, HOW, VALUE] (how:
+   exit, signal or stop, the wait status's facts) *)
+let proc_events () =
+  let fds = proc_fds () in
+  let r = if fds = [] then [] else
+    (let r, _, _ = try Unix.select fds [] [] 0. with Unix.Unix_error _ -> ([], [], []) in r) in
+  let buf = Bytes.create 65536 in
+  let evs = ref [] and finished = ref [] in
+  procs := List.filter (fun j ->
+      if Hashtbl.mem proc_cut j.jpid then begin
+        Hashtbl.remove proc_cut j.jpid;
+        (try Unix.close j.jfd with _ -> ());
+        let _, status = Unix.waitpid [] j.jpid in
+        finished := (j, status) :: !finished;
+        false
+      end
+      else if not (List.mem j.jfd r) then true
+      else
+        match Unix.read j.jfd buf 0 65536 with
+        | 0 ->
+            Unix.close j.jfd;
+            let _, status = Unix.waitpid [] j.jpid in
+            finished := (j, status) :: !finished;
+            false
+        | n -> evs := [ "job_bytes"; j.jid; Bytes.sub_string buf 0 n ] :: !evs; true
+        | exception _ -> true)
+    !procs;
+  List.iter (fun (j, status) ->
+      let tag, value = match status with
+        | Unix.WEXITED c -> ("exit", string_of_int c)
+        | Unix.WSIGNALED sg -> ("signal", string_of_int sg)
+        | Unix.WSTOPPED sg -> ("stop", string_of_int sg) in
+      evs := [ "job_ended"; j.jid; tag; value ] :: !evs)
+    (List.rev !finished);
+  List.rev !evs
+
+(* a new temporary file with [text] in it, private as temp_file makes it *)
+let temp_file prefix suffix text =
+  let f = Filename.temp_file prefix suffix in
+  Out_channel.with_open_bin f (fun oc -> output_string oc text);
+  f
+
 (* The node's handle: node_open builds the host's runtime and the
    primitives' state, and node_io reaches them by this name. *)
-type node_handle = { h_net : net;
-                     h_job_fds : unit -> Unix.file_descr list;
-                     h_events : unit -> string list list;
-                     h_job_complete : string -> string -> string list list;
-                     h_job_flood : string -> unit;
-                     h_ci_launch : string -> string -> string -> string -> string list list;
-                     h_llm_start : string -> string -> string -> string -> string list -> string list -> string list -> string list -> string list option;
-                     h_jobs : unit -> (string * (float * (float * bool))) list;
-                     h_job_expire : string -> unit;
-                     h_run_check : string -> string -> string -> string list -> unit }
+(* The node's handle: node_open builds the primitives' state (the
+   network's), and node_io reaches it by this name. *)
+type node_handle = { h_net : net }
 let node_handles : (string, node_handle) Hashtbl.t = Hashtbl.create 4
 let node_counter = ref 0
 let lookup_handle id = try Hashtbl.find node_handles id with Not_found -> fail "unknown node handle %s" id
@@ -390,7 +450,7 @@ let unframe_lists parts =
 let node_io_handle h op =
   match op with
   | [ "net_listen"; address; port ] -> net_listen h.h_net address port
-  | [ "net_mailbox"; ms ] -> (true, (0., frame_lists (net_mailbox h.h_net (h.h_job_fds ()) ms)))
+  | [ "net_mailbox"; ms ] -> (true, (0., frame_lists (net_mailbox h.h_net (proc_fds ()) ms)))
   | [ "net_connect"; host; port; _ ] -> net_connect h.h_net host port
   | [ "net_send"; conn; data ] -> net_send h.h_net conn data
   | [ "net_close"; conn ] -> (match net_find h.h_net conn with Some l -> net_drop h.h_net l | None -> ()); (true, (0., []))
@@ -399,27 +459,6 @@ let node_io_handle h op =
   | [ "file_write"; name; durable; text ] ->
       (if durable = "true" then write_file_synced else write_file) (net_file h.h_net name) text; (true, (0., []))
   | [ "file_append"; name; text ] -> append_synced (net_file h.h_net name) text; (true, (0., []))
-  | [ "events"; _ ] -> (true, (0., frame_lists (h.h_events ())))
-  | "check" :: req :: r :: head :: edits -> h.h_run_check req r head edits; (true, (0., []))
-  | [ "job_flood"; jid ] -> h.h_job_flood jid; (true, (0., []))
-  | [ "job_expire"; jid ] -> h.h_job_expire jid; (true, (0., []))
-  | [ "jobs" ] ->
-      (true, (0., frame_lists (List.map (fun (id, (started, (limit, stopped))) ->
-         [ id; Printf.sprintf "%.17g" started; Printf.sprintf "%.17g" limit; string_of_bool stopped ]) (h.h_jobs ()))))
-  | "llm_start" :: req :: kind :: raw :: prompt :: parts ->
-      let rec unpack rev = function
-        | "alternate" :: rest -> (List.rev rev, rest)
-        | "field" :: value :: rest -> unpack (value :: rev) rest
-        | _ -> fail "malformed llm_start operation"
-      in
-      let ctx, parts = unpack [] parts in
-      let clean, parts = unpack [] parts in
-      let launch, env = unpack [] parts in
-      (match h.h_llm_start req kind raw prompt ctx clean launch env with
-       | Some ev -> (true, (0., ev))
-       | None -> (false, (0., [])))
-  | [ "job_complete"; job; result ] -> (true, (0., frame_lists (h.h_job_complete job result)))
-  | [ "ci_launch"; req; out; tree; ci ] -> (true, (0., frame_lists (h.h_ci_launch req out tree ci)))
   | _ -> fail "unknown node operation %s" (String.concat " " op)
 let frame s =
   let n = String.length s in
@@ -554,6 +593,20 @@ let node_io id op =
        | Some (extra, args) ->
            let ok, out = git ~extra ?stdin:(if stdin = "" then None else Some stdin) dir args in (ok, (0., [ out ]))
        | None -> (false, (0., [ "git_env came malformed" ])))
+  | "proc_start" :: prog :: stdin :: cwd :: rest ->
+      (* the environment's entries framed ("field" VALUE...), "alternate",
+         then the program's arguments as they are *)
+      let rec split acc = function
+        | "field" :: v :: rest -> split (v :: acc) rest
+        | "alternate" :: args -> Some (List.rev acc, args)
+        | _ -> None in
+      (match split [] rest with
+       | Some (env, args) -> proc_start prog stdin cwd env args
+       | None -> (false, (0., [ "proc_start came malformed" ])))
+  | [ "proc_kill"; jid ] -> proc_kill jid; (true, (0., []))
+  | [ "events"; _ ] -> (true, (0., frame_lists (proc_events ())))
+  | "run" :: prog :: args -> let ok, out = capture prog args in (ok, (0., [ out ]))
+  | [ "temp_file"; prefix; suffix; text ] -> (true, (0., [ temp_file prefix suffix text ]))
   | _ -> node_io_handle (lookup_handle id) op
 let rec forever f s = forever f (f s)
 
@@ -564,239 +617,11 @@ let rec forever f s = forever f (f s)
    the boot events (the kernel's: node_kernel.soma's kernel_world). *)
 let node_open config =
   Sys.set_signal Sys.sigpipe Sys.Signal_ignore;
-  let settings, ci_repo_l =
+  let home =
     match unframe_lists config with
-    | s :: _ :: _ :: _ :: cr :: _ -> (s, cr)
+    | (home :: _) :: _ -> home
     | _ -> fail "the node's setup came back malformed" in
-  let home, ci_s, ci_memory_s, ci_image_s, ci_sandbox_s =
-    match settings with
-    | [ home; _; _; _; _; _; _; ci; mem; img; sbx; _ ] -> (home, ci, mem, img, sbx)
-    | _ -> fail "the node's setup came back malformed" in
-  let rec pairs = function a :: b :: r -> (a, b) :: pairs r | _ -> [] in
-  let ci_cmd = ref ci_s and ci_repo = ref (pairs ci_repo_l) and ci_image = ref ci_image_s
-  and ci_sandbox = ref ci_sandbox_s and ci_memory = ref ci_memory_s in
-  (* the host's events: its jobs' output and ends, and their callbacks' *)
-  let queue = Queue.create () in
-  let push ev = Queue.add ev queue in
-  let drain () = let evs = ref [] in while not (Queue.is_empty queue) do evs := Queue.pop queue :: !evs done; List.rev !evs in
-  let jobs : job list ref = ref [] in
-  let job_counter = ref 0 in
-  let finished_jobs : (string, job) Hashtbl.t = Hashtbl.create 8 in
-  let rdir n = repo_dir home n in
-  let ci_for r = try List.assoc r !ci_repo with Not_found -> !ci_cmd in
-  (* jobs Soma stopped for running past their time limit (job_should_expire) *)
-  let overtime = Hashtbl.create 8 in
-  (* jobs stopped for printing more than any reply can be. Soma's job_feed
-     decides; the IoJobFlood operation marks the job and signals it once. The node
-     holds a job's output in memory, and a check that prints forever (a
-     bid's test running `yes`) would otherwise take the node down with it *)
-  let flooded = Hashtbl.create 8 in
-  let cut = Hashtbl.create 8 in
-  let start_job ?(limit = 600.) prog args ~stdin_text ~env ~on_done ~clean =
-    let inp = Filename.temp_file "pantheon-in" ".txt" in
-    write_file inp stdin_text;
-    let ifd = Unix.openfile inp [ O_RDONLY ] 0 in
-    let r, w = Unix.pipe ~cloexec:true () in
-    let devnull = Unix.openfile "/dev/null" [ O_WRONLY ] 0 in
-    let cwd = Filename.temp_dir "pantheon-llm" "" in
-    let pid =
-      try
-        let old = Sys.getcwd () in
-        Sys.chdir cwd;
-        let pid = Unix.create_process_env prog (Array.of_list (prog :: args)) env ifd w devnull in
-        Sys.chdir old;
-        pid
-      with e -> Unix.close r; Unix.close w; Unix.close ifd; Unix.close devnull; on_done ("!" ^ Printexc.to_string e); -1
-    in
-    if pid > 0 then begin
-      Unix.close w; Unix.close ifd; Unix.close devnull;
-      let jid = string_of_int !job_counter in
-      incr job_counter;
-      jobs := { jid; jfd = r; jpid = pid; jdone = on_done; jstarted = Unix.gettimeofday (); jlimit = limit;
-                jclean = (fun () -> (try Sys.remove inp with _ -> ()); (try remove_tree_later cwd with _ -> ()); clean ()) } :: !jobs
-    end
-  in
-  (* a model call: a scratch directory, no keys in reach; built-in backends
-     have no tools, and a cmd: backend asked for a patch gets a fresh
-     checkout (node_host.soma's). The model's budget, its limit and the
-     requests held for it are the kernel's (node_host.soma). *)
-  (* the model process for a prompt Soma assembled from prompt0. Its output
-     comes back raw as an llm_output event, or at once when the process
-     couldn't start *)
-  let call_model id kind prompt0 prompt ctx clean launch env =
-    let starting = ref true and immediate = ref None in
-    let deliver ev = if !starting then immediate := Some ev else push ev in
-    let reply text = deliver ("llm_output" :: id :: kind :: prompt0 :: text :: ctx) in
-    (match launch with
-     | prog :: limit_s :: "codex" :: args ->
-         let out = Filename.temp_file "pantheon-codex" ".txt" in
-         start_job ~limit:(float_of_string limit_s) prog
-           (List.map (fun a -> if a = "@OUT@" then out else a) args) ~stdin_text:prompt ~env:(Array.of_list env)
-           ~on_done:(fun t -> deliver ("codex_file" :: id :: kind :: prompt0 :: t :: out :: ctx))
-           ~clean:ignore
-     (* Soma's grok_request made the header text and the body (the prompt) *)
-     | prog :: limit_s :: "grok" :: hdr_text :: args ->
-         let hdr = Filename.temp_file "pantheon-h" ".txt" in
-         write_file hdr hdr_text;
-         start_job ~limit:(float_of_string limit_s) prog
-           (List.map (fun a -> if a = "@HDR@" then "@" ^ hdr else a) args) ~stdin_text:prompt ~env:(Array.of_list env)
-           ~on_done:reply (* Soma's model_reply_events takes the content out *)
-           ~clean:(fun () -> try Sys.remove hdr with _ -> ())
-     (* cmd: too, its limit, environment and paths to remove chosen by Soma's tool_job_of *)
-     | prog :: limit_s :: _ :: args ->
-         start_job ~limit:(float_of_string limit_s) prog args ~stdin_text:prompt ~env:(Array.of_list env) ~on_done:reply
-           ~clean:(fun () -> List.iter remove_tree_later clean)
-     | _ -> ());
-    starting := false;
-    !immediate
-  in
-  (* One CI job at a time on this node, the rest waiting their turn: two at
-     once (a leader's merge check beside an attest) can take more memory than
-     the machine has, and a build killed for memory reads as the bid's fault. *)
-  let ci_busy = ref false and ci_waiting = Queue.create () in
-  let ci_next () = match Queue.take_opt ci_waiting with Some f -> f () | None -> ci_busy := false in
-  let with_ci f = if !ci_busy then Queue.add f ci_waiting else (ci_busy := true; f ()) in
-  (* CI for a tree Soma already accepted (node.soma's check_apply_events).
-     The checkout's .git goes: a --shared clone's objects live in this
-     node's own repository (through alternates), which isn't in CI's
-     sandbox, so git there saw a broken repository ("bad object HEAD") and
-     its errors led the reason of a rejection. The tree is already computed. *)
-  let launch_ci id out tree ci =
-    ignore (Sys.command ("rm -rf " ^ Filename.quote (Filename.concat out ".git")));
-    ignore (Sys.command ("chmod -R a+rX " ^ Filename.quote out));
-    let name = "pantheon-ci-" ^ random_hex 6 in
-    with_ci (fun () ->
-      let prog, args =
-        if !ci_sandbox <> "" then (!ci_sandbox, [ !ci_memory; out; ci_wrap ci ]) else
-        ("docker", [ "run"; "--rm"; "--name"; name; "--network=none"; "--read-only"; "--tmpfs"; "/tmp:exec,size=" ^ !ci_memory; "--cap-drop=ALL";
-          "--security-opt=no-new-privileges"; "--pids-limit=512"; "--memory=" ^ !ci_memory; "--memory-swap=" ^ !ci_memory;
-          "--user=65534:65534"; "-e"; "HOME=/tmp";
-          (* its errors too, as start_job keeps only stdout; and a build the
-             kernel killed for the container's memory (oom_kill in its cgroup)
-             ends as 137, the way docker ends the container itself *)
-          "-v"; out ^ ":/work:ro"; "-w"; "/work"; !ci_image; "sh"; "-c"; ci_wrap ci ]) in
-      start_job ~limit:3600. prog args
-        ~stdin_text:"" ~env:(Unix.environment ())
-        ~on_done:(fun t ->
-          (* what the check's outcome is (passed, the bid's failure or
-             this node's problem, and why) is node.soma's ci_outcome,
-             from the node's own signals only (docs/SECURITY-REVIEW-2.md P-6) *)
-          push [ "ci_done"; id; tree; !ci_memory; (if !ci_sandbox <> "" then "sandbox" else "docker"); t ];
-          ci_next ())
-        ~clean:(fun () -> if !ci_sandbox = "" then ignore (Sys.command ("docker rm -f " ^ name ^ " >/dev/null 2>&1")); remove_tree_later out));
-    let evs = ref [] in
-    while not (Queue.is_empty queue) do evs := Queue.pop queue :: !evs done;
-    List.rev !evs
-  in
-  (* A check for an attestor: the bid's edits on the head, in a fresh clone,
-     give a tree; then the repository's CI, if this node has one, runs on it in
-     a container with no network, a read-only root and nobody's uid. *)
-  (* a check's result event is node.soma's check_result_event *)
-  let run_check id r head edits =
-    let out = Filename.temp_dir "pantheon-check" "" in
-    let ef = Filename.temp_file "pantheon-edits" ".json" in
-    write_file ef (Yojson.Safe.to_string (strings_json edits));
-    let ci = ci_for r in
-    let rm_out () = remove_tree_later out in
-    (* ok is true, false (the bid's fault), or error (this node's: the agent
-       abstains rather than blame the bid). stage is where a failure happened:
-       apply (no tree yet), ci (a tree, then CI), or node (this node's own
-       problem, which ok=error already sends the agent to abstain on) *)
-    (* why carries the bid's own output (its CI's): no control character of
-       it goes on to a rejection's reason *)
-    (* whose a failure is comes from stage alone, which the node decides from
-       its own signals (exit codes, a job that never started), never from
-       what the check or the bid's CI printed (docs/SECURITY-REVIEW-2.md P-6) *)
-    (* Soma checks eligibility before requesting this process. *)
-    start_job self_exe [ "check"; rdir r; head; ef; out ] ~stdin_text:"" ~env:(Unix.environment ())
-      ~on_done:(fun t ->
-        (* a failure, the trimmed tree, or a CI run: node.soma's check_apply_events *)
-        push [ "check_apply_out"; id; out; ci; t ])
-      ~clean:(fun () -> (try Sys.remove ef with _ -> ()); if ci = "" then rm_out ())
-  in
-  (* Soma names the job. The limit stored here is the one the finish report uses. *)
-  let expire_job jid =
-    match List.find_opt (fun j -> j.jid = jid) !jobs with
-    | Some j when not (Hashtbl.mem overtime j.jpid) ->
-        Hashtbl.replace overtime j.jpid j.jlimit;
-        Hashtbl.replace cut j.jpid ();
-        (try Unix.kill j.jpid Sys.sigkill with _ -> ())
-    | _ -> ()
-  in
-  (* the jobs' output and ends since the last look, without waiting *)
-  let collect_events () =
-    let fds = List.map (fun j -> j.jfd) !jobs in
-    let r = if fds = [] then [] else
-      (let r, _, _ = try Unix.select fds [] [] 0. with Unix.Unix_error _ -> ([], [], []) in r) in
-    let buf = Bytes.create 65536 in
-    (* finished jobs are taken off the list before their callbacks run: a
-       callback may start the next job *)
-    let finished = ref [] in
-    jobs := List.filter (fun j ->
-        (* a job the node stopped (too long, too much output) ends now: its
-           children may still hold the pipe open (a check's shell killed, the
-           `yes` it ran still writing), and waiting for the pipe to close would
-           hold the job, and the CI turn, forever *)
-        if Hashtbl.mem cut j.jpid then begin
-          Hashtbl.remove cut j.jpid;
-          (try Unix.close j.jfd with _ -> ());
-          let _, status = Unix.waitpid [] j.jpid in
-          finished := (j, status) :: !finished;
-          false
-        end
-        else if not (List.mem j.jfd r) then true
-        else
-          match Unix.read j.jfd buf 0 65536 with
-          | 0 ->
-              Unix.close j.jfd;
-              let _, status = Unix.waitpid [] j.jpid in
-              finished := (j, status) :: !finished;
-              false
-          | n ->
-              (* Soma appends this chunk and applies the output cap
-                 (job_feed in node.soma). The shell only reads the bytes. *)
-              push [ "job_bytes"; j.jid; Bytes.sub_string buf 0 n ];
-              true
-          | exception _ -> true)
-      !jobs;
-    List.iter (fun (j, status) ->
-        (* Report native wait facts. Soma chooses success/failure and the
-           exact output; the callback and cleanup wait for node_job_complete. *)
-        let tag, value = match status with
-          | Unix.WEXITED c -> ("exit", string_of_int c)
-          | Unix.WSIGNALED sg -> ("signal", string_of_int sg)
-          | Unix.WSTOPPED sg -> ("stop", string_of_int sg) in
-        let timeout = match Hashtbl.find_opt overtime j.jpid with Some limit -> node_float_text limit | None -> "" in
-        let flood = if Hashtbl.mem flooded j.jpid then "1" else "0" in
-        Hashtbl.remove overtime j.jpid; Hashtbl.remove flooded j.jpid;
-        Hashtbl.replace finished_jobs j.jid j;
-        push [ "job_finished"; j.jid; tag; value; timeout; flood ])
-      (List.rev !finished);
-    drain ()
-  in
   let handle_id = string_of_int !node_counter in
   incr node_counter;
-  Hashtbl.replace node_handles handle_id
-    { h_net = { home; listener = None; links = []; counter = 0 };
-      h_job_fds = (fun () -> List.map (fun j -> j.jfd) !jobs);
-      h_events = collect_events;
-      h_job_complete = (fun jid result ->
-        match Hashtbl.find_opt finished_jobs jid with
-        | None -> []
-        | Some j ->
-            Hashtbl.remove finished_jobs jid;
-            j.jdone result;
-            j.jclean ();
-            drain ());
-      h_ci_launch = launch_ci;
-      h_job_flood = (fun jid ->
-        match List.find_opt (fun j -> j.jid = jid) !jobs with
-        | Some j when not (Hashtbl.mem flooded j.jpid) ->
-            Hashtbl.replace flooded j.jpid (); Hashtbl.replace cut j.jpid ();
-            (try Unix.kill j.jpid Sys.sigkill with _ -> ())
-        | _ -> ());
-      h_llm_start = call_model;
-      h_jobs = (fun () -> List.map (fun j -> (j.jid, (j.jstarted, (j.jlimit, Hashtbl.mem overtime j.jpid)))) !jobs);
-      h_job_expire = expire_job;
-      h_run_check = run_check };
+  Hashtbl.replace node_handles handle_id { h_net = { home; listener = None; links = []; counter = 0 } };
   handle_id

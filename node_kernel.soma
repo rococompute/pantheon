@@ -254,10 +254,11 @@ kpass (s : nio_kernel) (op : node_op) : nprog (nanswer * nio_kernel) :=
     connections are admitted and closed as Soma decided; decided blocks,
     signed votes, the snapshot and the status are the node's named files;
     the draw, signing a transaction, the check exclusions and the keys are
-    the world's; a checkout's work and the model's limit are
-    node_host.soma's; the tables and stores are nodeio.soma's. Everything
-    else (logging, the clock, model processes, jobs, CI) is handed on as
-    it is. *)
+    the world's; a checkout's work, the model's limit, jobs and CI are
+    node_host.soma's (the host's events, the jobs' ends among them, are
+    read through it); the tables and stores are nodeio.soma's. Everything
+    else (logging, the clock, the host's primitives) is handed on as it
+    is. *)
 kernel_op (w : kworld) (s : nio_kernel) (op : node_op) : nprog (nanswer * nio_kernel) :=
   match op with
   | IoStore height txs =>
@@ -313,8 +314,10 @@ kernel_op (w : kworld) (s : nio_kernel) (op : node_op) : nprog (nanswer * nio_ke
       nbind (nask (IoNetMailbox (match t_queue (k_tables s) with [] => kwait_ms wait | _ => "0" end))) (fun got =>
       let s := List.fold_left (ktake_mail now) (nio_lists (ans_list got)) s in
       nbind (nask (IoEvents "0")) (fun host =>
+      let h := host_events (k_host s) (nio_lists (ans_list host)) in
+      let s := {| s with k_host := snd h |} in
       let t := k_tables s in
-      let s := kernel_tables s (nio_with_queue t (t_queue t ++ nio_lists (ans_list host))) in
+      let s := kernel_tables s (nio_with_queue t (t_queue t ++ fst h)) in
       NDone (kstores now s (IoEvents wait)))))
   | IoConnAdmit offer mode target =>
       nbind kclock (fun now => nbind (kadmit now s offer mode target) (fun s' => NDone (ans_ok, s')))

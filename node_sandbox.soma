@@ -125,15 +125,15 @@ iservice_call (w : img_world) (s : img_state) (wire : list string) : io (nanswer
 
 ihas_service (w : img_world) : bool := negb (nio_eq (iw_service_host w) "").
 
-(** With no service, what the host's work answers: a CI check is
-    reported and comes to nothing; there are no jobs, reply files or
-    inbox; a file the commands write is a named file; the rest (git, so
+(** With no service, what the host's primitives answer: a process
+    can't start (so a check is this node's problem, and it abstains);
+    there are no reply files or inbox; a file the commands write is a named file; the rest (git, so
     the checkouts read as at their genesis commits) isn't there. *)
 ialone (w : img_world) (op : node_op) : io nanswer :=
   match op with
-  | IoCheck id _ _ _ => print (Stdlib.Strings.String.append "no CI service for check " id) ;; ret ans_ok
-  | IoJobs | IoDirEntries _ => ret (ans_data true [])
-  | IoJobFlood _ | IoJobExpire _ | IoDiscardFile _ | IoRemoveFile _ | IoInboxStamp _ => ret ans_ok
+  | IoProcStart prog _ _ _ _ => print (Stdlib.Strings.String.append "no service to run " prog) ;; ret (ans_data false ["no service"])
+  | IoDirEntries _ => ret (ans_data true [])
+  | IoDiscardFile _ | IoRemoveFile _ => ret ans_ok
   | IoReadText path => got <- read_file path ;;
       ret (match got with Some t => ans_data true [t] | None => ans_data false [] end)
   | IoWriteFile path text => write_file path text ;; ret ans_ok

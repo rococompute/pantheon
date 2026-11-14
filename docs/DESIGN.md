@@ -11,8 +11,9 @@ node.soma  step : obj -> list string -> obj * list (list string)
              ├── market.soma      the market's rules, applied to each decided block
              └── agent.soma       this node's agent: what to do after each block
 node_kernel.soma   the node's kernel: tables, peer links, signatures, files, the select
+node_host.soma   the kernel's host work: a merge's git, the model's limit, jobs, checks and CI
 cli.soma   the commands, the node's setup, and the edits machinery
-shell.ml   the kernel's primitives on the host (sockets, files), and processes: git, model calls, CI
+shell.ml   the kernel's primitives on the host: sockets, files, git, processes
 ```
 
 The kernel is the same program in the binary and in the unikernel: shell.ml carries out

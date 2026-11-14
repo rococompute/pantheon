@@ -909,7 +909,7 @@ Proof.
     raw | | raw | who | | | | stamp | path | path | | | timers | | | wait |
     | | height txs | | slot vid fields | message |
     text | text | code | path | path text | path mode | path | | bits | count | dir args |
-    url dir commit | log args | pids | path | dir path | dir path text | dir path | prefix | path | dir stdin extra args | text | | address port | wait | conn found stamp fields |
+    url dir commit | log args | pids | path | dir path | dir path text | dir path | prefix | path | dir stdin extra args | prog stdin cwd env args | job | prog args | prefix suffix text | text | | address port | wait | conn found stamp fields |
     address port | ms | address port ms | conn data | conn | name | name durable text | name text ];
     try reflexivity.
   - change (match resend_parts (resend_fields fields ++ ("alternate" :: alternate)) with
@@ -937,6 +937,10 @@ Proof.
   - change (match resend_parts (resend_fields extra ++ ("alternate" :: args)) with
     | Some (extra, args) => Some (IoGitEnv dir stdin extra args)
     | None => None end = Some (IoGitEnv dir stdin extra args)).
+    rewrite resend_parts_reads_fields. reflexivity.
+  - change (match resend_parts (resend_fields env ++ ("alternate" :: args)) with
+    | Some (env, args) => Some (IoProcStart prog stdin cwd env args)
+    | None => None end = Some (IoProcStart prog stdin cwd env args)).
     rewrite resend_parts_reads_fields. reflexivity.
 Qed.
 
@@ -1382,8 +1386,9 @@ Proof. repeat split; vm_compute; reflexivity. Qed.
 
 (** The node's service answers its own operations, for the node's token
     only: a wrong token, an operation that is the image's own (a vote, a
-    block, a peer send, a merge's checkout work or the model's budget,
-    which its kernel carries out over git and paths) or junk is refused;
+    block, a peer send, a merge's checkout work, the model's budget or a
+    job's bookkeeping, which its kernel carries out over git, paths and
+    processes) or junk is refused;
     events are their own request. *)
 Example service_answers_only_its_own :
   service_request_of "tok" ["tok", "git", "/h/repos/calc", "ls-files"] = ServeOp (IoGit "/h/repos/calc" ["ls-files"]) /\
@@ -1392,6 +1397,8 @@ Example service_answers_only_its_own :
   service_request_of "tok" ["bad", "git", "/h/repos/calc", "ls-files"] = ServeRefused /\
   service_request_of "tok" ["tok", "merge_reset", "calc"] = ServeRefused /\
   service_request_of "tok" ["tok", "llm_budget"] = ServeRefused /\
+  service_request_of "tok" ["tok", "proc_kill", "3"] = ServeOp (IoProcKill "3") /\
+  service_request_of "tok" ["tok", "job_expire", "3"] = ServeRefused /\
   service_request_of "tok" ["tok", "sign_vote", "prevote/1/0", "v"] = ServeRefused /\
   service_request_of "tok" ["tok", "store", "1"] = ServeRefused /\
   service_request_of "tok" ["tok", "send_all", "x"] = ServeRefused /\

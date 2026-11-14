@@ -278,6 +278,17 @@ Inductive node_op :=
 | IoTempDir (prefix : string)
 | IoRemoveTree (path : string)
 | IoGitEnv (dir stdin : string) (extra args : list string)
+(** processes (U-1; node_host.soma keeps the jobs): one started from the
+    directory [cwd], [stdin] its standard input and [env] its environment
+    (found: the runner's name for it; not found: why it couldn't start),
+    its output and end coming back as [job_bytes] and [job_ended] events;
+    one killed; a program run to its end with the user's environment (its
+    output, and whether it succeeded); a new private temporary file with
+    [text] in it (its path) *)
+| IoProcStart (prog stdin cwd : string) (env args : list string)
+| IoProcKill (job : string)
+| IoRun (prog : string) (args : list string)
+| IoTempFile (prefix suffix text : string)
 (** the consensus snapshot (node.soma's snapshot_text): saved atomically
     and synced before any vote it holds is sent; consensus.state's text,
     absent when there is none *)
@@ -459,6 +470,10 @@ io_wire (op : node_op) : list string :=
   | IoTempDir prefix => ["temp_dir", prefix]
   | IoRemoveTree path => ["remove_tree", path]
   | IoGitEnv dir stdin extra args => "git_env" :: dir :: stdin :: resend_fields extra ++ ("alternate" :: args)
+  | IoProcStart prog stdin cwd env args => "proc_start" :: prog :: stdin :: cwd :: resend_fields env ++ ("alternate" :: args)
+  | IoProcKill job => ["proc_kill", job]
+  | IoRun prog args => "run" :: prog :: args
+  | IoTempFile prefix suffix text => ["temp_file", prefix, suffix, text]
   | IoSnapshotSave text => ["snapshot_save", text]
   | IoSnapshotLoad => ["snapshot_load"]
   | IoServeListen address port => ["serve_listen", address, port]
@@ -605,6 +620,14 @@ io_of_wire (w : list string) : option node_op :=
       | Some (extra, args) => Some (IoGitEnv dir stdin extra args)
       | None => None
       end
+  | "proc_start" :: prog :: stdin :: cwd :: rest =>
+      match resend_parts rest with
+      | Some (env, args) => Some (IoProcStart prog stdin cwd env args)
+      | None => None
+      end
+  | ["proc_kill", job] => Some (IoProcKill job)
+  | "run" :: prog :: args => Some (IoRun prog args)
+  | ["temp_file", prefix, suffix, text] => Some (IoTempFile prefix suffix text)
   | ["snapshot_save", text] => Some (IoSnapshotSave text)
   | ["snapshot_load"] => Some IoSnapshotLoad
   | ["serve_listen", address, port] => Some (IoServeListen address port)
@@ -623,19 +646,19 @@ io_of_wire (w : list string) : option node_op :=
 
 (** What a unikernel asks its service for (docs/SHELL-IN-SOMA.md, "The
     node's service"): what the binary runs as processes or keeps on the
-    host's disk: git and paths in the checkouts (the kernel's
-    node_host.soma decides what a merge or a model call asks of them), a
-    model process, CI and checks, the jobs they run and the events those
-    jobs give, the model's reply files and the inbox. Everything else is
-    the image's own: its votes, blocks, peers and tables, and what the
-    host's work keeps (the model's budget and limit, the held requests).
-    A service answers these and nothing else. *)
+    host's disk: git and paths in the checkouts, temporary files,
+    processes and the events they give, the model's reply files and the
+    inbox (the kernel's node_host.soma decides what a merge, a model call,
+    a check or CI asks of them). Everything else is the image's own: its
+    votes, blocks, peers and tables, and what the host's work keeps (the
+    model's budget and limit, the held requests, the jobs). A service
+    answers these and nothing else. *)
 service_op (op : node_op) : bool :=
   match op with
   | IoGit _ _ | IoGitEnv _ _ _ _ | IoPathStat _ | IoPathProbe _ _ | IoPathWrite _ _ _ | IoPathRemove _ _
-  | IoTempDir _ | IoRemoveTree _ | IoLlmStart _ _ _ _ _ _ _ _ | IoSelfExe | IoEnvEntries | IoToken
-  | IoJobComplete _ _ | IoJobs | IoJobFlood _ | IoJobExpire _ | IoCiLaunch _ _ _ _ | IoCheck _ _ _ _
-  | IoReadText _ | IoDiscardFile _ | IoRemoveFile _ | IoDirEntries _ | IoEvents _ => true
+  | IoTempDir _ | IoRemoveTree _ | IoProcStart _ _ _ _ _ | IoProcKill _ | IoRun _ _ | IoTempFile _ _ _
+  | IoSelfExe | IoEnvEntries | IoToken | IoReadText _ | IoDiscardFile _ | IoRemoveFile _ | IoDirEntries _
+  | IoEvents _ => true
   | _ => false
   end.
 

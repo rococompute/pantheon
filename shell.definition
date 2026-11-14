@@ -1,9 +1,10 @@
 (** What Soma takes the shell to be. shell.ml does the host's I/O: the
     kernel's eight primitives (node_kernel.soma: listen, wait for the
     mailbox, connect, send, close; read, write and append a named file),
-    the clock, model processes, git, CI and the commands' I/O. The Soma
-    files decide everything, including the node's tables, peer links,
-    timers and signatures (node_kernel.soma), and Rocq's kernel never
+    the clock, git, paths, processes and the commands' I/O. The Soma files
+    decide everything, including the node's tables, peer links, timers
+    and signatures (node_kernel.soma) and what its checkouts, model calls,
+    checks and CI ask of the host (node_host.soma), and Rocq's kernel never
     computes these, so to a proof each is an assumption: soma explore
     lists them. *)
 OCaml Library "cryptokit".
@@ -31,10 +32,10 @@ print_text : string -> unit.
 (** The node loop is Soma (node_shell.soma's run_node, the kernel's boot
     and turns): the shell binds only the handle, built from what cli.soma's
     node_setup decided (framed: the settings, the key, exclusions, CI,
-    agents, repositories, then the boot events; the shell reads the
-    settings, CI and repositories), and the endless repetition; the rest
-    is node_io operations. The handle is a string naming the shell's side
-    of the node. *)
+    agents, repositories, then the boot events; the shell reads only the
+    home, where the node's named files are), and the endless repetition;
+    the rest is node_io operations. The handle is a string naming the
+    shell's side of the node: its listener and connections. *)
 node_open : list string -> string.
 (** The node's service (node.soma's service_tick_prog, node_shell.soma's
     run_service) is node_io operations too: "serve_listen" HOST PORT,
@@ -45,9 +46,9 @@ node_open : list string -> string.
 (** The node's operations (nodeio.soma's node_op) are the kernel's to
     carry out (node_kernel.soma's kernel_run): the consensus snapshot,
     startup's replay, the block and vote logs, timers, the event queue,
-    peer links, signing, the draw and the tables. It hands the shell, in
-    node_io's wire form (nodeio.soma's io_wire), only its primitives and
-    the host's work:
+    peer links, signing, the draw, the tables and the host's work
+    (node_host.soma). It hands the shell, in node_io's wire form
+    (nodeio.soma's io_wire), only primitives:
     "net_listen" ADDRESS PORT, "net_mailbox" MS (what the peers'
     connections did within MS: ["opened", CONN, HOST], ["bytes", CONN,
     DATA], ["closed", CONN], framed), "net_connect" ADDRESS PORT MS (the
@@ -56,67 +57,46 @@ node_open : list string -> string.
     NAME DURABLE TEXT (DURABLE "true": synced and renamed into place) and
     "file_append" NAME TEXT (synced); "log" TEXT, "clock", "local_time"
     STAMP, "fail" MESSAGE (refusing to start: the message on stderr, exit
-    1), "events" "0" (the host's own events: jobs' output, CI, the inbox),
-    and nodeio.soma's service_op operations below. *)
+    1), "events" "0" (the processes' output and ends, below), and
+    nodeio.soma's service_op operations below. *)
 (** The answer is nodeio.soma's nanswer: (carried out or the boolean
     read, (a number, data)); an effect's is (true, (0, [])); "clock"
     returns (true, now). *)
 node_io : string -> list string -> bool * (float * list string).
-(** The status file's facts are host reads: "checkout_heads" and
-    "divergences" answer pairs flattened (REPO VALUE...), "limit_info"
-    (the time the limit lasts until, [backend, held, reason]),
-    "local_time" STAMP (node_float_wire's text) [HH:MM]. *)
+(** "local_time" STAMP (node_float_wire's text) [HH:MM], for the status
+    file; its other facts are the kernel's. *)
 forever : forall {A : Type}, (A -> A) -> A -> unit.
 
-(** The event loop's host reads (node.soma's node_tick_prog decides):
-    "inbox_state" (the last poll, [dir]), "inbox_stamp" STAMP,
-    "dir_entries" PATH and "remove_file" PATH (need no node; errors
-    propagate), "jobs" ([id, started, limit, stopped], framed). Times go
-    as node_float_wire's text. *)
-
-(** What a model's output becomes, and the held requests, are node_io
-    operations (nodeio.soma's IoLimitSet ... IoDiscardFile; node.soma's
-    reply_prog, release_prog and model_output_prog decide): "limit_set"
-    UNTIL REASON BACKOFF and "limit_clear" BACKOFF (node_float_wire's
-    text; the probe is over), "release_state" (the backoff, then
-    [true/false]: probing), "held_requests" (newest first) and
-    "held_store" PROBING REQUESTS (each ID KIND PROMPT CTX..., framed:
-    "field" VALUE... "alternate", per request), "job_complete" JOB RESULT
-    (a finished job resumed with Soma's outcome; its callback's events,
-    framed so), "ci_launch" REQ OUT TREE CI (CI started for a tree Soma
-    accepted; the events an immediate start failure queued, framed),
-    "read_text" PATH (found or not) and "discard_file" PATH (removed, if
-    it's there); the last two need no node. *)
-
-(** A model call's I/O is node_io operations (nodeio.soma's IoLlmBudget
-    ... IoHeadFile; node.soma's llm_prog decides and assembles the
-    prompt): "llm_budget" [calls, max] (the count bumped for this call),
-    "llm_hold" ID KIND PROMPT CTX..., "llm_start" ID KIND RAW PROMPT then
-    the context, the paths to remove when the job is over and the launch,
-    each framed "field" VALUE... "alternate", then the environment (found:
-    the raw output event at once; not found: it runs), "tool_checkout"
-    REPO [worktree, git directory, "true"/"false"], "self_exe",
-    "env_entries", "token" (a fresh fence token), "repo_names", "ls_files"
-    REPO [text], "head_file" REPO PATH [text] (not found: git show
-    failed). None of these decides anything. The environment, for tests. *)
+(** The host's primitives (nodeio.soma's service_op: what a unikernel
+    asks its service for), which need no node; none decides anything:
+    "dir_entries" PATH and "remove_file" PATH (errors propagate),
+    "read_text" PATH (found or not), "discard_file" PATH (removed, if it's
+    there), "self_exe", "env_entries", "token" (a fresh fence token).
+    Processes: "proc_start" PROG STDIN CWD ("field" ENTRY)... "alternate"
+    ARGS... (PROG run from CWD with that environment, STDIN its standard
+    input from a file: found, [its name]; not found, [why it couldn't
+    start]), "proc_kill" JOB (killed, and it ends at the next look without
+    waiting for its pipe), and "events" "0" giving their output as it comes
+    (["job_bytes", JOB, CHUNK]) and their ends (["job_ended", JOB, HOW,
+    VALUE]: exit, signal or stop, and its number), framed; "run" PROG
+    ARGS... (run to its end with the user's environment: [its output],
+    found when it succeeded); "temp_file" PREFIX SUFFIX TEXT (a new private
+    file with TEXT in it: [path]). What a job is for, its limit, what goes
+    with it and what its end becomes are node_host.soma's. The environment,
+    for tests. *)
 node_env_entries : unit -> list string.
 (** What a model's output becomes is decided in Soma (node.soma's
-    reply_events and reply_fields). node_llm_start gives the raw output event at once
-    when the process couldn't start (none: it runs, and its output comes
-    back as an llm_output or codex_file event). The job-output cap as a decimal string;
+    reply_events and reply_fields). The job-output cap as a decimal string;
     the byte offset of the first "{" and of the last "}" (none when that
     byte is absent); a JSON value, parsed by yojson, as tokens ("A" count
     key value..., "L" count value..., "S" text, "B" true/false, "U", "I"
     digits, "F" the %.0f text), none when it does not parse. Soma cuts the
-    slice, applies the length and shallow_json guards, and flattens.
-    A run of decimal digits as a float (OCaml's float_of_string); noting a
-    limit (until when, its reason, the next backoff; the probe is over);
-    and setting the backoff after an answer (the probe is over). *)
-(** A job's buffered read chunks, in order. Soma's job_feed appends the
-    chunk the shell just read and, past the output cap, keeps the tail;
-    the shell stores that list and, when the feed says the job is over,
-    signals the process once (node.soma job_feed). Reading the bytes stays
-    here. *)
+    slice, applies the length and shallow_json guards, and flattens. *)
+(** A job's buffered read chunks, in order, are the node's: Soma's
+    job_feed appends the chunk the shell just read and, past the output
+    cap, keeps the tail; when the feed says the job printed too much, the
+    kernel kills it once (IoJobFlood, node_host.soma). Reading the bytes
+    stays here. *)
 
 (** Connection admission, the buffered-line cap and a connection's
     buffered bytes are Soma's (node.soma admit_decision_of, conn_admit_plan,
@@ -124,22 +104,19 @@ node_env_entries : unit -> list string.
     connections and their last-activity times). The shell only accepts,
     reads, writes and closes sockets, as the kernel's primitives. *)
 
-(** A decided merge's I/O is node_io operations (nodeio.soma's
-    IoAppliedVersion ... IoMergeCommit; node.soma's merge_prog decides):
-    "applied_version" REPO the version applied (not found: this node
-    doesn't have it), "merge_reset" REPO a hard reset and clean,
-    "merge_probe" REPO PATH a path's kind ("symlink", "dir", "file" or
-    "none"), "merge_read" REPO PATH a file (found or not), "merge_write"
-    REPO PATH TEXT (keeping the mode) and "merge_remove" REPO PATH answer
-    "" or what went wrong, "merge_commit" REPO V TREE BID TASK BIDDER SPEC
-    [tree, short id] (not found when git commit failed). *)
+(** A decided merge's checkout work is the kernel's (node_host.soma, over
+    "git", "git_env" and the path operations below); node.soma's
+    merge_prog decides it. *)
 
 (** The edits machinery's work is node_io operations that need no node
     (nodeio.soma's IoPathStat ... IoGitEnv; cli.soma's edits_prog,
     checkout_edits_prog and check_tree_prog decide): "path_stat" PATH
     [kind, exec] (its last part not followed), "path_probe" DIR PATH
-    [kind] (as "merge_probe"), "path_write" DIR PATH TEXT and
+    [kind: "symlink", "dir", "file" or "none"], "path_write" DIR PATH TEXT
+    (keeping the mode) and
     "path_remove" DIR PATH ["" or what went wrong], "temp_dir" PREFIX
-    [path], "remove_tree" PATH (later, in the background) and "git_env"
-    DIR ("field" ENTRY)... "alternate" ARGS... (git with those environment
-    entries first: [its output], found when it succeeded). *)
+    [path], "remove_tree" PATH (later, in the background), "git" DIR
+    ARGS... and "git_env" DIR STDIN ("field" ENTRY)... "alternate" ARGS...
+    (git with no user or system config, no hooks and no signing; with
+    those environment entries first and STDIN its standard input, "" for
+    none: [its output], found when it succeeded). *)

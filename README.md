@@ -187,8 +187,9 @@ escape hatch, where static types are given up, and every assumption.
 | `util.soma` | Helpers, and `obj`, the loosely typed record the state machines use |
 | `cli.soma` | The commands, the node's setup, and the edits machinery: applying edits, a bid's tree, a checkout's changes as edits |
 | `nodeio.soma`, `node_kernel.soma` | The node's operations, and its kernel: tables, peer links, signatures, files, the select |
+| `node_host.soma` | The kernel's host work: a merge's git, the model's budget and limit, jobs (model calls, checks, CI) |
 | `node_shell.soma`, `node_sandbox.soma` | The kernel run by the binary (through shell.ml) and by a unikernel (with Sandbox) |
-| `shell.ml`, `shell.definition` | The kernel's primitives on the host, processes (git, model calls, CI), and what Soma takes them to be |
+| `shell.ml`, `shell.definition` | The kernel's primitives on the host (sockets, files, git, processes), and what Soma takes them to be |
 | `*.proof` | What is proved so far |
 | `test/e2e.sh`, `test/edits.sh` | The scenarios, and the edit engine |
 | `install.sh` | The one-line install: Soma if it's missing, then Pantheon |
