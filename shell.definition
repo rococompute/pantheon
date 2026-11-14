@@ -8,11 +8,10 @@
     computes these, so to a proof each is an assumption: soma explore
     lists them. *)
 OCaml Library "cryptokit".
-OCaml Library "yojson".
 
-(** sha256 and hash_list are Soma's (util.soma, through Soma.Crypto);
-    shell.ml keeps its own, Cryptokit's, for what it hashes itself (the
-    genesis, the leader draw's chains), which are the same function. *)
+(** sha256, hash_list and RSA signing are Soma's (util.soma and nodeio.soma,
+    through Soma.Crypto); the binary runs shell.ml's, Cryptokit's, the same
+    functions, about ten times faster (main.soma's Extract Constant). *)
 
 (** A signed transaction is all Soma's: market.soma's decode_tx reads it
     (util.soma's json_tokens), checks the signature with the agent's
@@ -69,8 +68,7 @@ forever : forall {A : Type}, (A -> A) -> A -> unit.
 
 (** The host's primitives (nodeio.soma's service_op: what a unikernel
     asks its service for), which need no node; none decides anything:
-    "dir_entries" PATH and "remove_file" PATH (errors propagate),
-    "read_text" PATH (found or not), "discard_file" PATH (removed, if it's
+    "dir_entries" PATH, "read_text" PATH (found or not), "discard_file" PATH (removed, if it's
     there), "self_exe", "env_entries", "token" (a fresh fence token).
     Processes: "proc_start" PROG STDIN CWD ("field" ENTRY)... "alternate"
     ARGS... (PROG run from CWD with that environment, STDIN its standard
@@ -82,16 +80,7 @@ forever : forall {A : Type}, (A -> A) -> A -> unit.
     ARGS... (run to its end with the user's environment: [its output],
     found when it succeeded); "temp_file" PREFIX SUFFIX TEXT (a new private
     file with TEXT in it: [path]). What a job is for, its limit, what goes
-    with it and what its end becomes are node_host.soma's. The environment,
-    for tests. *)
-node_env_entries : unit -> list string.
-(** What a model's output becomes is decided in Soma (node.soma's
-    reply_events and reply_fields). The job-output cap as a decimal string;
-    the byte offset of the first "{" and of the last "}" (none when that
-    byte is absent); a JSON value, parsed by yojson, as tokens ("A" count
-    key value..., "L" count value..., "S" text, "B" true/false, "U", "I"
-    digits, "F" the %.0f text), none when it does not parse. Soma cuts the
-    slice, applies the length and shallow_json guards, and flattens. *)
+    with it and what its end becomes are node_host.soma's. *)
 (** A job's buffered read chunks, in order, are the node's: Soma's
     job_feed appends the chunk the shell just read and, past the output
     cap, keeps the tail; when the feed says the job printed too much, the

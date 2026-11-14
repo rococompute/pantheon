@@ -133,7 +133,7 @@ ialone (w : img_world) (op : node_op) : io nanswer :=
   match op with
   | IoProcStart prog _ _ _ _ => print (Stdlib.Strings.String.append "no service to run " prog) ;; ret (ans_data false ["no service"])
   | IoDirEntries _ => ret (ans_data true [])
-  | IoDiscardFile _ | IoRemoveFile _ => ret ans_ok
+  | IoDiscardFile _ => ret ans_ok
   | IoReadText path => got <- read_file path ;;
       ret (match got with Some t => ans_data true [t] | None => ans_data false [] end)
   | IoWriteFile path text => write_file path text ;; ret ans_ok

@@ -220,7 +220,6 @@ Inductive node_op :=
 | IoInboxState
 | IoInboxStamp (stamp : string)
 | IoDirEntries (path : string)
-| IoRemoveFile (path : string)
 | IoTurnNow
 | IoTimers
 | IoSetTimers (timers : list (list string))
@@ -436,7 +435,6 @@ io_wire (op : node_op) : list string :=
   | IoInboxState => ["inbox_state"]
   | IoInboxStamp stamp => ["inbox_stamp", stamp]
   | IoDirEntries path => ["dir_entries", path]
-  | IoRemoveFile path => ["remove_file", path]
   | IoTurnNow => ["turn_now"]
   | IoTimers => ["timers"]
   | IoSetTimers timers => "set_timers" :: nio_frame_lists timers
@@ -582,7 +580,6 @@ io_of_wire (w : list string) : option node_op :=
   | ["inbox_state"] => Some IoInboxState
   | ["inbox_stamp", stamp] => Some (IoInboxStamp stamp)
   | ["dir_entries", path] => Some (IoDirEntries path)
-  | ["remove_file", path] => Some (IoRemoveFile path)
   | ["turn_now"] => Some IoTurnNow
   | ["timers"] => Some IoTimers
   | "set_timers" :: timers => Some (IoSetTimers (nio_lists timers))
@@ -657,7 +654,7 @@ service_op (op : node_op) : bool :=
   match op with
   | IoGit _ _ | IoGitEnv _ _ _ _ | IoPathStat _ | IoPathProbe _ _ | IoPathWrite _ _ _ | IoPathRemove _ _
   | IoTempDir _ | IoRemoveTree _ | IoProcStart _ _ _ _ _ | IoProcKill _ | IoRun _ _ | IoTempFile _ _ _
-  | IoSelfExe | IoEnvEntries | IoToken | IoReadText _ | IoDiscardFile _ | IoRemoveFile _ | IoDirEntries _
+  | IoSelfExe | IoEnvEntries | IoToken | IoReadText _ | IoDiscardFile _ | IoDirEntries _
   | IoEvents _ => true
   | _ => false
   end.

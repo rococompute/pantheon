@@ -26,7 +26,7 @@ check (label : string) (ok : bool) : string := append (if ok then "ok " else "FA
 codex_file_reply (text path : string) : string := run_shell "" (codex_file_prog text path).
 
 file_path (key : string) : string :=
-  match env_value key (node_env_entries tt) with Some path => path | None => "" end.
+  match env_value key (snd (snd (node_io "cli" ["env_entries"]))) with Some path => path | None => "" end.
 
 main := print_lines [
   check "failure wins" (seq (codex_reply_of "!failed" (fun _ => Some "stale")) "!failed"),
