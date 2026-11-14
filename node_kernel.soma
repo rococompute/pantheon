@@ -18,7 +18,7 @@
     ([run_shell], node_shell.soma), whose sockets, files and select are
     the host's; and the unikernel's, with Sandbox (node_sandbox.soma),
     which asks the node's service for the host's work. *)
-Import util nodeio node cli.
+Import util nodeio node cli node_host.
 
 (** What the kernel is given, from cli.soma's [node_setup]: the chain's
     id, this node's key and each agent's public key, the draw (the
@@ -36,7 +36,8 @@ Record kworld := {
   w_boot : list (list string);
   w_backend : string;
   w_listen : string;
-  w_port : string }.
+  w_port : string;
+  w_host : hworld }.
 
 (** A connection a peer opened: its name (the runner's), the host it came
     from, when it was last read, and the bytes it sent before it was
@@ -48,8 +49,9 @@ Record nio_link := { l_id : string; l_host : string; l_last : PrimFloat.float; l
     peers opened, offered and not yet admitted, and admitted; when it
     dials next and when it last resent; the turn's clock reading (taken
     before a turn, read back for its deadlines, given up by the select);
-    the snapshot text last saved; and the peer lines it signed lately,
-    by their fields (a resend sends the same line again). *)
+    the snapshot text last saved; the peer lines it signed lately, by
+    their fields (a resend sends the same line again); and what the host's
+    work keeps (node_host.soma). *)
 Record nio_kernel := {
   k_tables : nio_tables;
   k_names : list (string * (string * string));
@@ -61,7 +63,8 @@ Record nio_kernel := {
   k_turn : option PrimFloat.float;
   k_saved : option string;
   k_lines : smap string;
-  k_old_lines : smap string }.
+  k_old_lines : smap string;
+  k_host : host_state }.
 
 kernel_tables (s : nio_kernel) (t : nio_tables) : nio_kernel := {| s with k_tables := t |}.
 
@@ -251,8 +254,10 @@ kpass (s : nio_kernel) (op : node_op) : nprog (nanswer * nio_kernel) :=
     connections are admitted and closed as Soma decided; decided blocks,
     signed votes, the snapshot and the status are the node's named files;
     the draw, signing a transaction, the check exclusions and the keys are
-    the world's; the tables and stores are nodeio.soma's. Everything else
-    (logging, the clock, the host's work) is handed on as it is. *)
+    the world's; a checkout's work and the model's limit are
+    node_host.soma's; the tables and stores are nodeio.soma's. Everything
+    else (logging, the clock, model processes, jobs, CI) is handed on as
+    it is. *)
 kernel_op (w : kworld) (s : nio_kernel) (op : node_op) : nprog (nanswer * nio_kernel) :=
   match op with
   | IoStore height txs =>
@@ -318,11 +323,15 @@ kernel_op (w : kworld) (s : nio_kernel) (op : node_op) : nprog (nanswer * nio_ke
       then nbind (nask (IoNetClose cid)) (fun _ => NDone (ans_ok, {| s with k_conns := kwithout cid (k_conns s) |}))
       else NDone (ans_ok, s)
   | _ =>
-      if service_op op then kpass s op
-      else match nio_store_op PrimFloat.zero (k_tables s) op with
-           | Some (answer, t) => NDone (answer, kernel_tables s t)
-           | None => kpass s op
-           end
+      match host_op (w_host w) (k_host s) op with
+      | Some p => nbind p (fun r => NDone (fst r, {| s with k_host := snd r |}))
+      | None =>
+          if service_op op then kpass s op
+          else match nio_store_op PrimFloat.zero (k_tables s) op with
+               | Some (answer, t) => NDone (answer, kernel_tables s t)
+               | None => kpass s op
+               end
+      end
   end.
 
 (** A node program, run by the kernel: each operation in order, each
@@ -378,7 +387,8 @@ kernel_world (config : list (list string)) : option kworld :=
                       w_boot := boot;
                       w_backend := backend;
                       w_listen := listen;
-                      w_port := snd (snd a) |}
+                      w_port := snd (snd a);
+                      w_host := hworld_of config |}
           | None => None
           end
       | _, _ => None
@@ -393,7 +403,7 @@ kernel_start (me : string) (config : list (list string)) : nio_kernel :=
   {| k_tables := {| nio_empty with t_applied := map (fun r => (r, "0")) at_genesis |};
      k_names := List.filter (fun a => negb (nio_eq (fst a) me)) (kconfig_agents config);
      k_peers := []; k_offers := []; k_conns := []; k_next_dial := PrimFloat.zero; k_last_resend := PrimFloat.zero;
-     k_turn := None; k_saved := None; k_lines := SLeaf; k_old_lines := SLeaf |}.
+     k_turn := None; k_saved := None; k_lines := SLeaf; k_old_lines := SLeaf; k_host := host_start |}.
 
 (** Listening on this node's address and port, before anything else: the
     line it logs says where, its peers and its backend; a port it can't

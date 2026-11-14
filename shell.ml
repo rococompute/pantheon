@@ -212,9 +212,11 @@ let repo_dir home name = Filename.concat (Filename.concat home "repos") name
    signatures, files and select are kept and decided there, the same for
    the binary and the unikernel. The shell carries out the kernel's
    primitives on the host (net_* and file_*: Sandbox's, on sockets and
-   files) and the host's work, which a unikernel asks its service for:
-   jobs (model calls, checks, CI), git in the checkouts, the model's limit
-   and the inbox (nodeio.soma's service_op). *)
+   files) and the host's processes, which a unikernel asks its service
+   for: git and paths in the checkouts (what a merge or a model call asks
+   of them is the kernel's node_host.soma, as are the model's limit and
+   the inbox's poll), and jobs: model calls, checks, CI (nodeio.soma's
+   service_op). *)
 
 let split_addr s =
   match String.rindex_opt s ':' with
@@ -357,31 +359,10 @@ type node_handle = { h_net : net;
                      h_job_complete : string -> string -> string list list;
                      h_job_flood : string -> unit;
                      h_ci_launch : string -> string -> string -> string -> string list list;
-                     h_llm_budget : unit -> string * string;
-                     h_llm_hold : string -> string -> string -> string list -> unit;
                      h_llm_start : string -> string -> string -> string -> string list -> string list -> string list -> string list -> string list option;
-                     h_tool_checkout : string -> (string * string) * bool;
-                     h_limit_set : float -> string -> float -> unit;
-                     h_limit_clear : float -> unit;
-                     h_repo_names : unit -> string list;
-                     h_ls_files : string -> string;
-                     h_head_file : string -> string -> string option;
-                     h_inbox_state : unit -> float * string;
-                     h_inbox_stamp : float -> unit;
                      h_jobs : unit -> (string * (float * (float * bool))) list;
                      h_job_expire : string -> unit;
-                     h_checkout_heads : unit -> (string * string) list;
-                     h_limit_info : unit -> float * (string * (string * string));
-                     h_release_state : unit -> float * bool;
-                     h_held_requests : unit -> (((string * string) * string) * string list) list;
-                     h_held_store : (((string * string) * string) * string list) list -> bool -> unit;
-                     h_run_check : string -> string -> string -> string list -> unit;
-                     h_merge_reset : string -> unit;
-                     h_merge_probe : string -> string -> string;
-                     h_merge_read : string -> string -> string option;
-                     h_merge_write : string -> string -> string -> string;
-                     h_merge_remove : string -> string -> string;
-                     h_merge_commit : string -> string -> string -> string -> string -> string -> string -> (string * string) option }
+                     h_run_check : string -> string -> string -> string list -> unit }
 let node_handles : (string, node_handle) Hashtbl.t = Hashtbl.create 4
 let node_counter = ref 0
 let lookup_handle id = try Hashtbl.find node_handles id with Not_found -> fail "unknown node handle %s" id
@@ -425,11 +406,6 @@ let node_io_handle h op =
   | [ "jobs" ] ->
       (true, (0., frame_lists (List.map (fun (id, (started, (limit, stopped))) ->
          [ id; Printf.sprintf "%.17g" started; Printf.sprintf "%.17g" limit; string_of_bool stopped ]) (h.h_jobs ()))))
-  | [ "checkout_heads" ] -> (true, (0., List.concat_map (fun (r, v) -> [ r; v ]) (h.h_checkout_heads ())))
-  | [ "limit_info" ] ->
-      let until, (backend, (held, reason)) = h.h_limit_info () in (true, (until, [ backend; held; reason ]))
-  | [ "llm_budget" ] -> let calls, max = h.h_llm_budget () in (true, (0., [ calls; max ]))
-  | "llm_hold" :: req :: kind :: prompt :: ctx -> h.h_llm_hold req kind prompt ctx; (true, (0., []))
   | "llm_start" :: req :: kind :: raw :: prompt :: parts ->
       let rec unpack rev = function
         | "alternate" :: rest -> (List.rev rev, rest)
@@ -442,36 +418,8 @@ let node_io_handle h op =
       (match h.h_llm_start req kind raw prompt ctx clean launch env with
        | Some ev -> (true, (0., ev))
        | None -> (false, (0., [])))
-  | [ "tool_checkout"; r ] ->
-      let (wt, gd), ok = h.h_tool_checkout r in (true, (0., [ wt; gd; string_of_bool ok ]))
-  | [ "repo_names" ] -> (true, (0., h.h_repo_names ()))
-  | [ "ls_files"; r ] -> (true, (0., [ h.h_ls_files r ]))
-  | [ "head_file"; r; p ] ->
-      (match h.h_head_file r p with Some c -> (true, (0., [ c ])) | None -> (false, (0., [])))
-  | [ "merge_reset"; r ] -> h.h_merge_reset r; (true, (0., []))
-  | [ "merge_probe"; r; p ] -> (true, (0., [ h.h_merge_probe r p ]))
-  | [ "merge_read"; r; p ] ->
-      (match h.h_merge_read r p with Some c -> (true, (0., [ c ])) | None -> (false, (0., [])))
-  | [ "merge_write"; r; p; text ] -> (true, (0., [ h.h_merge_write r p text ]))
-  | [ "merge_remove"; r; p ] -> (true, (0., [ h.h_merge_remove r p ]))
-  | [ "merge_commit"; r; v; tree; bid; task; bidder; spec ] ->
-      (match h.h_merge_commit r v tree bid task bidder spec with
-       | Some (got, short) -> (true, (0., [ got; short ]))
-       | None -> (false, (0., [])))
-  | [ "limit_set"; until; reason; backoff ] ->
-      h.h_limit_set (float_of_string until) reason (float_of_string backoff); (true, (0., []))
-  | [ "limit_clear"; backoff ] -> h.h_limit_clear (float_of_string backoff); (true, (0., []))
-  | [ "release_state" ] -> let backoff, probing = h.h_release_state () in (true, (backoff, [ string_of_bool probing ]))
-  | [ "held_requests" ] ->
-      (true, (0., frame_lists (List.map (fun (((id, kind), prompt), ctx) -> id :: kind :: prompt :: ctx) (h.h_held_requests ()))))
-  | "held_store" :: probing :: parts ->
-      let requests = List.filter_map (function
-        | id :: kind :: prompt :: ctx -> Some (((id, kind), prompt), ctx) | _ -> None) (unframe_lists parts) in
-      h.h_held_store requests (probing = "true"); (true, (0., []))
   | [ "job_complete"; job; result ] -> (true, (0., frame_lists (h.h_job_complete job result)))
   | [ "ci_launch"; req; out; tree; ci ] -> (true, (0., frame_lists (h.h_ci_launch req out tree ci)))
-  | [ "inbox_state" ] -> let last, dir = h.h_inbox_state () in (true, (last, [ dir ]))
-  | [ "inbox_stamp"; stamp ] -> h.h_inbox_stamp (float_of_string stamp); (true, (0., []))
   | _ -> fail "unknown node operation %s" (String.concat " " op)
 let frame s =
   let n = String.length s in
@@ -595,15 +543,16 @@ let node_io id op =
   | [ "path_remove"; dir; path ] -> (true, (0., [ path_remove dir path ]))
   | [ "temp_dir"; prefix ] -> (true, (0., [ Filename.temp_dir prefix "" ]))
   | [ "remove_tree"; path ] -> remove_tree_later path; (true, (0., []))
-  | "git_env" :: dir :: rest ->
-      (* the environment's entries framed ("field" VALUE...), "alternate",
-         then git's arguments as they are *)
+  | "git_env" :: dir :: stdin :: rest ->
+      (* its standard input ("": none), the environment's entries framed
+         ("field" VALUE...), "alternate", then git's arguments as they are *)
       let rec split acc = function
         | "field" :: v :: rest -> split (v :: acc) rest
         | "alternate" :: args -> Some (List.rev acc, args)
         | _ -> None in
       (match split [] rest with
-       | Some (extra, args) -> let ok, out = git ~extra dir args in (ok, (0., [ out ]))
+       | Some (extra, args) ->
+           let ok, out = git ~extra ?stdin:(if stdin = "" then None else Some stdin) dir args in (ok, (0., [ out ]))
        | None -> (false, (0., [ "git_env came malformed" ])))
   | _ -> node_io_handle (lookup_handle id) op
 let rec forever f s = forever f (f s)
@@ -615,18 +564,17 @@ let rec forever f s = forever f (f s)
    the boot events (the kernel's: node_kernel.soma's kernel_world). *)
 let node_open config =
   Sys.set_signal Sys.sigpipe Sys.Signal_ignore;
-  let settings, ci_repo_l, repos_l =
+  let settings, ci_repo_l =
     match unframe_lists config with
-    | s :: _ :: _ :: _ :: cr :: _ :: rp :: _ -> (s, cr, rp)
+    | s :: _ :: _ :: _ :: cr :: _ -> (s, cr)
     | _ -> fail "the node's setup came back malformed" in
-  let home, backend_s, ci_s, ci_memory_s, ci_image_s, ci_sandbox_s, max_calls_s =
+  let home, ci_s, ci_memory_s, ci_image_s, ci_sandbox_s =
     match settings with
-    | [ home; _; _; _; _; b; _; ci; mem; img; sbx; mc ] -> (home, b, ci, mem, img, sbx, mc)
+    | [ home; _; _; _; _; _; _; ci; mem; img; sbx; _ ] -> (home, ci, mem, img, sbx)
     | _ -> fail "the node's setup came back malformed" in
   let rec pairs = function a :: b :: r -> (a, b) :: pairs r | _ -> [] in
-  let backend = ref backend_s and ci_cmd = ref ci_s and ci_repo = ref (pairs ci_repo_l) and ci_image = ref ci_image_s
+  let ci_cmd = ref ci_s and ci_repo = ref (pairs ci_repo_l) and ci_image = ref ci_image_s
   and ci_sandbox = ref ci_sandbox_s and ci_memory = ref ci_memory_s in
-  let max_calls = ref (int_of_string max_calls_s) and calls = ref 0 in
   (* the host's events: its jobs' output and ends, and their callbacks' *)
   let queue = Queue.create () in
   let push ev = Queue.add ev queue in
@@ -634,11 +582,8 @@ let node_open config =
   let jobs : job list ref = ref [] in
   let job_counter = ref 0 in
   let finished_jobs : (string, job) Hashtbl.t = Hashtbl.create 8 in
-  (* the governed repositories, checked out and checked by node_setup *)
-  let repos = List.map fst (pairs repos_l) in
   let rdir n = repo_dir home n in
   let ci_for r = try List.assoc r !ci_repo with Not_found -> !ci_cmd in
-  let last_inbox = ref 0. in
   (* jobs Soma stopped for running past their time limit (job_should_expire) *)
   let overtime = Hashtbl.create 8 in
   (* jobs stopped for printing more than any reply can be. Soma's job_feed
@@ -671,21 +616,10 @@ let node_open config =
                 jclean = (fun () -> (try Sys.remove inp with _ -> ()); (try remove_tree_later cwd with _ -> ()); clean ()) } :: !jobs
     end
   in
-  (* What a prompt asks for from the checkouts is assembled in Soma
-     (node.soma's perform_llm): the shell lists files and reads them at a
-     checkout's head. *)
   (* a model call: a scratch directory, no keys in reach; built-in backends
-     have no tools, and a cmd: backend asked for a patch gets a fresh checkout *)
-  (* A model's subscription or rate limit: its calls are held, not failed, until
-     the limit should have reset (the time it gives, or a backoff from 15
-     minutes, doubling to 2 hours), then asked again. Failing them would spend
-     the agent's tries on calls bound to fail. *)
-  (* What a model's output becomes (held for a limit, an error, a reply),
-     how long a limit holds and the backoff are decided in Soma (node.soma's
-     reply_events); the shell keeps their state. *)
-  let limited_until = ref 0. and limit_reason = ref "" and limit_backoff = ref 900. and held = ref [] and probing = ref false in
-  (* a held request, raw: Soma assembles its prompt again when it's asked *)
-  let hold id kind prompt0 ctx = held := (((id, kind), prompt0), ctx) :: !held in
+     have no tools, and a cmd: backend asked for a patch gets a fresh
+     checkout (node_host.soma's). The model's budget, its limit and the
+     requests held for it are the kernel's (node_host.soma). *)
   (* the model process for a prompt Soma assembled from prompt0. Its output
      comes back raw as an llm_output event, or at once when the process
      couldn't start *)
@@ -780,22 +714,6 @@ let node_open config =
         push [ "check_apply_out"; id; out; ci; t ])
       ~clean:(fun () -> (try Sys.remove ef with _ -> ()); if ci = "" then rm_out ())
   in
-  (* A decided merge's commit, the same on every node (fixed author and
-     date), so every node gets the same commit: its tree and short id, or
-     none when git commit failed. node.soma's perform_merge decides the rest. *)
-  let merge_commit r v tree bid task bidder spec =
-    let dir = rdir r and v = int_of_string v in
-    let date = Printf.sprintf "@%d +0000" (1_700_000_000 + v) in
-    let who = [ "GIT_AUTHOR_NAME=Pantheon"; "GIT_AUTHOR_EMAIL=pantheon@localhost"; "GIT_COMMITTER_NAME=Pantheon";
-                "GIT_COMMITTER_EMAIL=pantheon@localhost"; "GIT_AUTHOR_DATE=" ^ date; "GIT_COMMITTER_DATE=" ^ date ] in
-    let msg = Printf.sprintf "Merge bid %s for task %s by %s\n\n%s\n\nPantheon-Version: %d\nPantheon-Bid: %s\nPantheon-Tree: %s\n" bid task bidder spec v bid tree in
-    ignore (git dir [ "add"; "-A"; "-f" ]);
-    (* the message on stdin, not as an argument: the spec in it is the
-       leader's text, and an argument can't carry every string whole
-       (docs/SECURITY-REVIEW-2.md P-17) *)
-    if not (git_ok ~extra:who ~stdin:msg dir [ "commit"; "-q"; "--allow-empty"; "--no-verify"; "--cleanup=verbatim"; "-F"; "-" ]) then None
-    else Some (git_out dir [ "rev-parse"; "HEAD^{tree}" ], git_out dir [ "rev-parse"; "--short"; "HEAD" ])
-  in
   (* Soma names the job. The limit stored here is the one the finish report uses. *)
   let expire_job jid =
     match List.find_opt (fun j -> j.jid = jid) !jobs with
@@ -877,39 +795,8 @@ let node_open config =
             Hashtbl.replace flooded j.jpid (); Hashtbl.replace cut j.jpid ();
             (try Unix.kill j.jpid Sys.sigkill with _ -> ())
         | _ -> ());
-      h_llm_budget = (fun () -> incr calls; (string_of_int !calls, string_of_int !max_calls));
-      h_llm_hold = hold;
       h_llm_start = call_model;
-      (* a cmd: patch's fresh checkout, its git directory outside the worktree *)
-      h_tool_checkout = (fun r ->
-        let wt = Filename.temp_dir "pantheon-work" "" in
-        let gd = wt ^ ".git" and commit = git_out (rdir r) [ "rev-parse"; "HEAD" ] in
-        ((wt, gd), fst (capture "git" [ "clone"; "--quiet"; "--shared"; "--no-checkout"; "--separate-git-dir=" ^ gd; rdir r; wt ])
-                   && git_ok wt [ "checkout"; "-q"; "--detach"; commit ]));
-      h_limit_set = (fun until reason backoff ->
-        limited_until := until; limit_reason := reason; limit_backoff := backoff; probing := false);
-      h_limit_clear = (fun backoff -> limit_backoff := backoff; probing := false);
-      h_repo_names = (fun () -> repos);
-      h_ls_files = (fun r -> git_out (rdir r) [ "ls-files" ]);
-      h_head_file = (fun r p -> let ok, c = git (rdir r) [ "show"; "HEAD:" ^ p ] in if ok then Some c else None);
-      h_inbox_state = (fun () -> (!last_inbox, Filename.concat home "inbox"));
-      h_inbox_stamp = (fun now -> last_inbox := now);
       h_jobs = (fun () -> List.map (fun j -> (j.jid, (j.jstarted, (j.jlimit, Hashtbl.mem overtime j.jpid)))) !jobs);
       h_job_expire = expire_job;
-      h_checkout_heads = (fun () -> List.map (fun n -> (n, git_out (rdir n) [ "rev-parse"; "--short"; "HEAD" ])) repos);
-      h_limit_info = (fun () -> (!limited_until, (!backend, (string_of_int (List.length !held), !limit_reason))));
-      (* Storage only: Soma chooses the queue, flag and oldest-first events. *)
-      h_release_state = (fun () -> (!limit_backoff, !probing));
-      h_held_requests = (fun () -> !held);
-      h_held_store = (fun requests probe -> held := requests; probing := probe);
-      h_run_check = run_check;
-      h_merge_reset = (fun r ->
-        let dir = rdir r in
-        ignore (git dir [ "reset"; "-q"; "--hard"; "HEAD" ]);
-        ignore (git dir [ "clean"; "-q"; "-f"; "-d"; "-x" ]));
-      h_merge_probe = (fun r p -> path_probe (rdir r) p);
-      h_merge_read = (fun r p -> try Some (read_file (Filename.concat (rdir r) p)) with _ -> None);
-      h_merge_write = (fun r p text -> path_write (rdir r) p text);
-      h_merge_remove = (fun r p -> path_remove (rdir r) p);
-      h_merge_commit = merge_commit };
+      h_run_check = run_check };
   handle_id

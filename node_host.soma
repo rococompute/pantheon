@@ -1,0 +1,167 @@
+(** The host's work, in the kernel (U-1; docs/SHELL-IN-SOMA.md, "The
+    host's work"): what a node asks of its checkouts and its model, carried
+    out by the kernel (node_kernel.soma) over a few primitives a runner
+    does, git in a directory ([IoGit], [IoGitEnv]), a path's bytes
+    ([IoPathProbe] ... [IoReadText]) and a temporary directory, so the
+    binary and the unikernel (whose service runs those primitives on the
+    host) do it the same way. What it keeps: the model's call count, its
+    limit and the requests held for it, and the inbox's last poll. *)
+Import util nodeio.
+
+(** What the host's work knows from the node's setup: the home (absolute),
+    the backend, the governed repositories with their genesis commits, and
+    the most model calls (the --max-llm-calls text). *)
+Record hworld := {
+  hw_home : string;
+  hw_backend : string;
+  hw_repos : list (string * string);
+  hw_max_calls : string }.
+
+(** What it keeps: model calls so far; the limit (until when, why, the next
+    backoff) and whether a release is probing; the requests held for it,
+    newest first ([id, kind, prompt, ctx...]); the inbox's last poll. *)
+Record host_state := {
+  hs_calls : nat;
+  hs_until : PrimFloat.float;
+  hs_reason : string;
+  hs_backoff : PrimFloat.float;
+  hs_held : list (list string);
+  hs_probing : bool;
+  hs_inbox : PrimFloat.float }.
+
+host_start : host_state :=
+  {| hs_calls := 0; hs_until := PrimFloat.zero; hs_reason := ""; hs_backoff := nio_small 900;
+     hs_held := []; hs_probing := false; hs_inbox := PrimFloat.zero |}.
+
+hcat (l : list string) : string := Stdlib.Strings.String.concat "" l.
+
+hnl : string := Stdlib.Strings.String.String (Ascii.ascii_of_nat 10) Stdlib.Strings.String.EmptyString.
+
+(** [dir] and [p] joined as OCaml's Filename.concat joins them *)
+hjoin (dir p : string) : string := if ends "/" dir then hcat [dir, p] else hcat [dir, "/", p].
+
+(** a governed repository's checkout: HOME/repos/NAME *)
+hrepo_dir (hw : hworld) (r : string) : string := hjoin (hjoin (hw_home hw) "repos") r.
+
+(** decimal text added, digit by digit (a node's numbers stay text: a
+    unikernel's naturals may count one by one) *)
+hdigit (l : list Ascii.ascii) : nat := match l with c :: _ => Ascii.nat_of_ascii c - 48 | [] => 0 end.
+
+Fixpoint hadd_rev (fuel : nat) (a b : list Ascii.ascii) (carry : nat) : list Ascii.ascii :=
+  match fuel with
+  | 0 => []
+  | S f =>
+      match a, b with
+      | [], [] => if Nat.eqb carry 0 then [] else [Ascii.ascii_of_nat (48 + carry)]
+      | _, _ =>
+          let d := hdigit a + hdigit b + carry in
+          Ascii.ascii_of_nat (48 + Nat.modulo d 10) :: hadd_rev f (List.tl a) (List.tl b) (Nat.div d 10)
+      end
+  end.
+
+hdec_add (a b : string) : string :=
+  of_chars (rev_onto (hadd_rev (S (slen a + slen b)) (rev_onto (chars a) []) (rev_onto (chars b) []) 0) []).
+
+(** git's output, trimmed, as OCaml's String.trim trims it *)
+hgit_out (dir : string) (args : list string) : nprog string :=
+  nbind (nask (IoGit dir args)) (fun a => NDone (trim (ans_one a))).
+
+hok (a : nanswer) : string := if fst a then "true" else "false".
+
+(** each checkout's short head ([repo, head, ...]); a checkout git can't
+    read (none to read, as in a unikernel with no service) is at its
+    genesis commit *)
+Fixpoint hheads (hw : hworld) (repos : list (string * string)) : nprog (list string) :=
+  match repos with
+  | [] => NDone []
+  | (r, genesis) :: rest =>
+      nbind (nask (IoGit (hrepo_dir hw r) ["rev-parse", "--short", "HEAD"])) (fun a =>
+      nbind (hheads hw rest) (fun others =>
+      NDone (r :: (if fst a then trim (ans_one a) else genesis) :: others)))
+  end.
+
+(** A decided merge's commit, the same on every node: a fixed author and a
+    date from the version, the message on git's standard input (the spec
+    in it is the leader's text, which an argument can't carry whole:
+    docs/SECURITY-REVIEW-2.md P-17). Its tree and short id, or none when
+    git commit failed; node.soma's perform_merge decides the rest. *)
+hmerge_commit (dir version tree bid task bidder spec : string) : nprog nanswer :=
+  let date := hcat ["@", hdec_add "1700000000" version, " +0000"] in
+  let who := ["GIT_AUTHOR_NAME=Pantheon", "GIT_AUTHOR_EMAIL=pantheon@localhost", "GIT_COMMITTER_NAME=Pantheon",
+              "GIT_COMMITTER_EMAIL=pantheon@localhost", append "GIT_AUTHOR_DATE=" date,
+              append "GIT_COMMITTER_DATE=" date] in
+  let msg := hcat ["Merge bid ", bid, " for task ", task, " by ", bidder, hnl, hnl, spec, hnl, hnl,
+                   "Pantheon-Version: ", nio_count (num version), hnl, "Pantheon-Bid: ", bid, hnl,
+                   "Pantheon-Tree: ", tree, hnl] in
+  nbind (nask (IoGit dir ["add", "-A", "-f"])) (fun _ =>
+  nbind (nask (IoGitEnv dir msg who ["commit", "-q", "--allow-empty", "--no-verify", "--cleanup=verbatim", "-F", "-"])) (fun c =>
+  if negb (fst c) then NDone (ans_data false []) else
+  nbind (hgit_out dir ["rev-parse", "HEAD^{tree}"]) (fun t =>
+  nbind (hgit_out dir ["rev-parse", "--short", "HEAD"]) (fun short =>
+  NDone (ans_data true [t, short]))))).
+
+(** a cmd: patch's fresh checkout of [dir]'s head, its git directory
+    outside the worktree: [worktree, git directory, whether it worked] *)
+htool_checkout (dir : string) : nprog nanswer :=
+  nbind (nask (IoTempDir "pantheon-work")) (fun t =>
+  let wt := ans_one t in
+  let gd := append wt ".git" in
+  nbind (hgit_out dir ["rev-parse", "HEAD"]) (fun commit =>
+  nbind (nask (IoGit "." ["clone", "--quiet", "--shared", "--no-checkout", append "--separate-git-dir=" gd, dir, wt])) (fun cl =>
+  nbind (if fst cl then nask (IoGit wt ["checkout", "-q", "--detach", commit]) else NDone (ans_flag false)) (fun co =>
+  NDone (ans_data true [wt, gd, hok co]))))).
+
+hkeep (s : host_state) (a : nanswer) : nprog (nanswer * host_state) := NDone (a, s).
+
+hpass (s : host_state) (op : node_op) : nprog (nanswer * host_state) := nbind (nask op) (fun a => NDone (a, s)).
+
+(** One of the host's operations, as the kernel carries it out (none: not
+    one of them). A checkout's work is git and paths in HOME/repos/NAME;
+    the model's budget, limit and held requests, and the inbox's poll, are
+    what it keeps. *)
+host_op (hw : hworld) (s : host_state) (op : node_op) : option (nprog (nanswer * host_state)) :=
+  match op with
+  | IoRepoNames => Some (hkeep s (ans_data true (List.map fst (hw_repos hw))))
+  | IoLsFiles r => Some (nbind (hgit_out (hrepo_dir hw r) ["ls-files"]) (fun l => hkeep s (ans_data true [l])))
+  | IoHeadFile r p =>
+      Some (nbind (nask (IoGit (hrepo_dir hw r) ["show", append "HEAD:" p])) (fun a =>
+            hkeep s (if fst a then ans_data true [ans_one a] else ans_data false [])))
+  | IoCheckoutHeads => Some (nbind (hheads hw (hw_repos hw)) (fun l => hkeep s (ans_data true l)))
+  | IoMergeReset r =>
+      let dir := hrepo_dir hw r in
+      Some (nbind (nask (IoGit dir ["reset", "-q", "--hard", "HEAD"])) (fun _ =>
+            nbind (nask (IoGit dir ["clean", "-q", "-f", "-d", "-x"])) (fun _ => hkeep s ans_ok)))
+  | IoMergeProbe r p => Some (hpass s (IoPathProbe (hrepo_dir hw r) p))
+  | IoMergeRead r p => Some (hpass s (IoReadText (hjoin (hrepo_dir hw r) p)))
+  | IoMergeWrite r p text => Some (hpass s (IoPathWrite (hrepo_dir hw r) p text))
+  | IoMergeRemove r p => Some (hpass s (IoPathRemove (hrepo_dir hw r) p))
+  | IoMergeCommit r v tree bid task bidder spec =>
+      Some (nbind (hmerge_commit (hrepo_dir hw r) v tree bid task bidder spec) (hkeep s))
+  | IoToolCheckout r => Some (nbind (htool_checkout (hrepo_dir hw r)) (hkeep s))
+  | IoLlmBudget =>
+      let s := {| s with hs_calls := S (hs_calls s) |} in
+      Some (hkeep s (ans_data true [nio_count (hs_calls s), hw_max_calls hw]))
+  | IoLlmHold id kind prompt ctx => Some (hkeep {| s with hs_held := (id :: kind :: prompt :: ctx) :: hs_held s |} ans_ok)
+  | IoLimitSet until reason backoff =>
+      Some (hkeep {| s with hs_until := float_of_digits until; hs_reason := reason;
+                            hs_backoff := float_of_digits backoff; hs_probing := false |} ans_ok)
+  | IoLimitClear backoff => Some (hkeep {| s with hs_backoff := float_of_digits backoff; hs_probing := false |} ans_ok)
+  | IoReleaseState => Some (hkeep s (true, (hs_backoff s, [if hs_probing s then "true" else "false"])))
+  | IoHeldRequests => Some (hkeep s (ans_data true (nio_frame_lists (hs_held s))))
+  | IoHeldStore probing requests =>
+      Some (hkeep {| s with hs_held := List.filter (fun r => Nat.leb 3 (List.length r)) requests;
+                            hs_probing := nio_eq probing "true" |} ans_ok)
+  | IoLimitInfo =>
+      Some (hkeep s (true, (hs_until s, [hw_backend hw, nio_count (List.length (hs_held s)), hs_reason s])))
+  | IoInboxState => Some (hkeep s (true, (hs_inbox s, [hjoin (hw_home hw) "inbox"])))
+  | IoInboxStamp stamp => Some (hkeep {| s with hs_inbox := float_of_digits stamp |} ans_ok)
+  | _ => None
+  end.
+
+(** the host's world from the node's setup (cli.soma's node_setup: the
+    settings, then the repositories at index 6, [name, genesis commit, ...]) *)
+hworld_of (config : list (list string)) : hworld :=
+  let settings := match config with s :: _ => s | [] => [] end in
+  let setting i := List.nth i settings "" in
+  let repos := match config with _ :: _ :: _ :: _ :: _ :: _ :: r :: _ => nio_pairs r | _ => [] end in
+  {| hw_home := setting 0; hw_backend := setting 5; hw_repos := repos; hw_max_calls := setting 11 |}.

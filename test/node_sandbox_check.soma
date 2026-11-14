@@ -2,7 +2,7 @@
     interpreter: what test/node-sandbox.sh checks with soma build
     --no-image (the MirageOS project type-checks, no image is booted). *)
 Require Import Sandbox.
-Import nodeio node_kernel node_sandbox.
+Import nodeio node_host node_kernel node_sandbox.
 
 world : kworld :=
   {| w_chain := "pantheon-test";
@@ -15,11 +15,12 @@ world : kworld :=
      w_boot := [["me", "claude"]];
      w_backend := "claude";
      w_listen := "0.0.0.0";
-     w_port := "9000" |}.
+     w_port := "9000";
+     w_host := {| hw_home := "/home"; hw_backend := "claude"; hw_repos := [("calc", "abc1234")];
+                  hw_max_calls := "100" |} |}.
 
 iworld : img_world :=
-  {| iw_heads := ["calc", "abc1234"]; iw_backend := "claude";
-     iw_service_host := ""; iw_service_port := 0; iw_token := "" |}.
+  {| iw_service_host := ""; iw_service_port := 0; iw_token := "" |}.
 
 (** A decided block as node.soma's outputs make it: logged, stored, the
     height set, the status written, a timer armed; the block and the peer

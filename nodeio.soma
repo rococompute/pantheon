@@ -269,14 +269,15 @@ Inductive node_op :=
     "dir", "file" or "none"); writing it, keeping its mode, and removing it
     ([why] it failed, "" if it didn't); a new temporary directory; removing
     a directory's tree, later; git with the environment's entries [extra]
-    first (git's output, and whether it succeeded) *)
+    first, reading [stdin] on its standard input ("": none) (git's output,
+    and whether it succeeded) *)
 | IoPathStat (path : string)
 | IoPathProbe (dir path : string)
 | IoPathWrite (dir path text : string)
 | IoPathRemove (dir path : string)
 | IoTempDir (prefix : string)
 | IoRemoveTree (path : string)
-| IoGitEnv (dir : string) (extra args : list string)
+| IoGitEnv (dir stdin : string) (extra args : list string)
 (** the consensus snapshot (node.soma's snapshot_text): saved atomically
     and synced before any vote it holds is sent; consensus.state's text,
     absent when there is none *)
@@ -457,7 +458,7 @@ io_wire (op : node_op) : list string :=
   | IoPathRemove dir path => ["path_remove", dir, path]
   | IoTempDir prefix => ["temp_dir", prefix]
   | IoRemoveTree path => ["remove_tree", path]
-  | IoGitEnv dir extra args => "git_env" :: dir :: resend_fields extra ++ ("alternate" :: args)
+  | IoGitEnv dir stdin extra args => "git_env" :: dir :: stdin :: resend_fields extra ++ ("alternate" :: args)
   | IoSnapshotSave text => ["snapshot_save", text]
   | IoSnapshotLoad => ["snapshot_load"]
   | IoServeListen address port => ["serve_listen", address, port]
@@ -599,9 +600,9 @@ io_of_wire (w : list string) : option node_op :=
   | ["path_remove", dir, path] => Some (IoPathRemove dir path)
   | ["temp_dir", prefix] => Some (IoTempDir prefix)
   | ["remove_tree", path] => Some (IoRemoveTree path)
-  | "git_env" :: dir :: rest =>
+  | "git_env" :: dir :: stdin :: rest =>
       match resend_parts rest with
-      | Some (extra, args) => Some (IoGitEnv dir extra args)
+      | Some (extra, args) => Some (IoGitEnv dir stdin extra args)
       | None => None
       end
   | ["snapshot_save", text] => Some (IoSnapshotSave text)
@@ -622,20 +623,19 @@ io_of_wire (w : list string) : option node_op :=
 
 (** What a unikernel asks its service for (docs/SHELL-IN-SOMA.md, "The
     node's service"): what the binary runs as processes or keeps on the
-    host's disk. git in the checkouts, a model call and its limit, CI and
-    checks, the jobs they run and the events those jobs give, the model's
-    reply files and the inbox. Everything else is the image's own: its
-    votes, blocks, peers and tables. A service answers these and nothing
-    else. *)
+    host's disk: git and paths in the checkouts (the kernel's
+    node_host.soma decides what a merge or a model call asks of them), a
+    model process, CI and checks, the jobs they run and the events those
+    jobs give, the model's reply files and the inbox. Everything else is
+    the image's own: its votes, blocks, peers and tables, and what the
+    host's work keeps (the model's budget and limit, the held requests).
+    A service answers these and nothing else. *)
 service_op (op : node_op) : bool :=
   match op with
-  | IoMergeReset _ | IoMergeProbe _ _ | IoMergeRead _ _ | IoMergeWrite _ _ _ | IoMergeRemove _ _
-  | IoMergeCommit _ _ _ _ _ _ _ | IoRepoNames | IoLsFiles _ | IoHeadFile _ _ | IoCheckoutHeads
-  | IoLlmBudget | IoLlmHold _ _ _ _ | IoLlmStart _ _ _ _ _ _ _ _ | IoToolCheckout _ | IoSelfExe
-  | IoEnvEntries | IoToken | IoLimitSet _ _ _ | IoLimitClear _ | IoReleaseState | IoHeldRequests
-  | IoHeldStore _ _ | IoLimitInfo | IoJobComplete _ _ | IoJobs | IoJobFlood _ | IoJobExpire _
-  | IoCiLaunch _ _ _ _ | IoCheck _ _ _ _ | IoReadText _ | IoDiscardFile _ | IoRemoveFile _
-  | IoDirEntries _ | IoInboxState | IoInboxStamp _ | IoEvents _ => true
+  | IoGit _ _ | IoGitEnv _ _ _ _ | IoPathStat _ | IoPathProbe _ _ | IoPathWrite _ _ _ | IoPathRemove _ _
+  | IoTempDir _ | IoRemoveTree _ | IoLlmStart _ _ _ _ _ _ _ _ | IoSelfExe | IoEnvEntries | IoToken
+  | IoJobComplete _ _ | IoJobs | IoJobFlood _ | IoJobExpire _ | IoCiLaunch _ _ _ _ | IoCheck _ _ _ _
+  | IoReadText _ | IoDiscardFile _ | IoRemoveFile _ | IoDirEntries _ | IoEvents _ => true
   | _ => false
   end.
 

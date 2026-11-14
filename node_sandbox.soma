@@ -19,14 +19,9 @@ Require Import Sandbox.
 From Stdlib Require Import NArith.BinNat PArith.BinPos.
 Import util nodeio node node_kernel.
 
-(** What only the unikernel's runner needs: each checkout's head as
-    [IoCheckoutHeads] answers ([repo, head, ...]: with no service, its
-    genesis commit), the backend [IoLimitInfo] names, the node's service
-    at this IP address and port ("" for none) and the token its requests
-    carry. *)
+(** What only the unikernel's runner needs: the node's service at this IP
+    address and port ("" for none) and the token its requests carry. *)
 Record img_world := {
-  iw_heads : list string;
-  iw_backend : string;
   iw_service_host : string;
   iw_service_port : nat;
   iw_token : string }.
@@ -131,18 +126,14 @@ iservice_call (w : img_world) (s : img_state) (wire : list string) : io (nanswer
 ihas_service (w : img_world) : bool := negb (nio_eq (iw_service_host w) "").
 
 (** With no service, what the host's work answers: a CI check is
-    reported and comes to nothing; the checkouts are at their genesis
-    commits; the model has no limit; there are no jobs, reply files or
-    inbox; a file the commands write is a named file; the rest isn't
-    there. *)
+    reported and comes to nothing; there are no jobs, reply files or
+    inbox; a file the commands write is a named file; the rest (git, so
+    the checkouts read as at their genesis commits) isn't there. *)
 ialone (w : img_world) (op : node_op) : io nanswer :=
   match op with
   | IoCheck id _ _ _ => print (Stdlib.Strings.String.append "no CI service for check " id) ;; ret ans_ok
-  | IoCheckoutHeads => ret (ans_data true (iw_heads w))
-  | IoLimitInfo => ret (true, (PrimFloat.zero, [iw_backend w, "0", ""]))
   | IoJobs | IoDirEntries _ => ret (ans_data true [])
   | IoJobFlood _ | IoJobExpire _ | IoDiscardFile _ | IoRemoveFile _ | IoInboxStamp _ => ret ans_ok
-  | IoInboxState => ret (true, (PrimFloat.zero, ["inbox"]))
   | IoReadText path => got <- read_file path ;;
       ret (match got with Some t => ans_data true [t] | None => ans_data false [] end)
   | IoWriteFile path text => write_file path text ;; ret ans_ok
@@ -195,19 +186,9 @@ Fixpoint run_image {A : Type} (w : img_world) (p : nprog A) (s : img_state) : io
   end.
 
 (** ---- A node as a unikernel ---- *)
-Fixpoint ipairs (l : list string) : list (string * string) :=
-  match l with
-  | a :: b :: rest => (a, b) :: ipairs rest
-  | _ => []
-  end.
-
 img_world_of (config : list (list string)) (service : string) : img_world :=
-  let backend := match config with (_ :: _ :: _ :: _ :: _ :: b :: _) :: _ => b | _ => "" end in
-  let repos := match config with _ :: _ :: _ :: _ :: _ :: _ :: r :: _ => r | _ => [] end in
   let a := kaddr service in
-  {| iw_heads := flat_map (fun r => [fst r, snd r]) (ipairs repos);
-     iw_backend := backend;
-     iw_service_host := if nio_eq service "" then "" else fst a;
+  {| iw_service_host := if nio_eq service "" then "" else fst a;
      iw_service_port := if nio_eq service "" then 0 else num (snd a);
      iw_token := service_token_of config |}.
 

@@ -975,7 +975,7 @@ checkout_edits_prog (dir : string) : nprog scan_result :=
       let info := path_join (path_join snap_git "objects") "info" in
       let empty := path_join snap "gitconfig" in
       let g (args : list string) : node_op :=
-        IoGitEnv abs [append "GIT_CONFIG_GLOBAL=" empty, append "GIT_CONFIG_SYSTEM=" empty,
+        IoGitEnv abs "" [append "GIT_CONFIG_GLOBAL=" empty, append "GIT_CONFIG_SYSTEM=" empty,
                       append "GIT_INDEX_FILE=" (path_join snap_git "index")]
           ("-c" :: "core.fsmonitor=false" :: append "--git-dir=" snap_git :: append "--work-tree=" abs :: args) in
       cli_do (IoMakeDirs info) (fun _ =>
