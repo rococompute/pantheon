@@ -145,20 +145,14 @@ Example shallow_json_caps : shallow_json "1" "10" "[1,2]" = true /\ shallow_json
   /\ shallow_json "1" "10" "[""\""[[""]" = true /\ shallow_json "1" "10" "" = true.
 Proof. repeat split; reflexivity. Qed.
 
-(** The actual product sent to node_open: project each callback and use it
-    on pure inputs, including failures and asymmetric contains arguments. *)
-Example packed_node_helpers_work :
-  let '(edit, has, path) := pack_helpers node_helpers in
-  edit "abc" "b" "X" = Some "aXc" /\
-  edit "aaa" "aa" "X" = None /\
-  edit "abc" "z" "X" = None /\
-  has "bc" "abc" = true /\ has "abc" "bc" = false /\
-  path "src/a..b" = true /\ path "../escape" = false /\
-  path "sub/.GiT/config" = false.
-Proof. repeat split; reflexivity. Qed.
-
-Example helper_record_agrees :
-  helper_edit_once node_helpers = edit_once /\
-  helper_contains node_helpers = contains /\
-  helper_safe_path node_helpers = shell_safe_path.
+(** what the edits machinery (cli.soma) leans on: one edit's replacement,
+    including failures, contains' pattern-first arguments, and the paths
+    an edit may name *)
+Example edit_helpers_work :
+  edit_once "abc" "b" "X" = Some "aXc" /\
+  edit_once "aaa" "aa" "X" = None /\
+  edit_once "abc" "z" "X" = None /\
+  contains "bc" "abc" = true /\ contains "abc" "bc" = false /\
+  shell_safe_path "src/a..b" = true /\ shell_safe_path "../escape" = false /\
+  shell_safe_path "sub/.GiT/config" = false.
 Proof. repeat split; reflexivity. Qed.

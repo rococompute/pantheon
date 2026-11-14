@@ -44,7 +44,7 @@ dispatch (args : list string) : unit :=
   match args with
   | "node" :: home :: flags => run_node home flags
   | "service" :: home :: addr :: flags => run_service home addr flags
-  | _ => run_shell (cli_open (pack_helpers node_helpers)) (cli_prog args)
+  | _ => run_shell "cli" (cli_prog args)
   end.
 
 main := dispatch (argv tt).

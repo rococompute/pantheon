@@ -91,20 +91,6 @@ let file_text p = if Sys.file_exists p then read_file p else ""
 (* A .plan's open items are computed in Soma ([plan_open] in util.soma), and
    so are the prompts that quote them (node.soma's perform_llm). *)
 
-(* Soma's record crosses the binding as a product, then is named here.
-   Callers carry it explicitly; no command installs global callbacks. *)
-type helpers = {
-  edit_once : string -> string -> string -> string option;
-  contains : string -> string -> bool;
-  safe_path : string -> bool;
-}
-let unpack_helpers ((edit_once, contains), safe_path) =
-  { edit_once; contains; safe_path }
-let safe_path h p = h.safe_path p
-let edit_once h s old by = h.edit_once s old by
-(* Soma takes the pattern first; shell callers take the text first. *)
-let contains h s sub = h.contains sub s
-
 (* ---------- processes and git ---------- *)
 
 (* run a program; its stdout, and whether it succeeded. With [stdin], the
@@ -157,7 +143,9 @@ let clone url dir commit =
   let ok, _ = capture ~env:(Array.append [| "GIT_TERMINAL_PROMPT=0" |] (Unix.environment ())) "git" [ "clone"; "--quiet"; url; dir ] in
   ok && git_ok dir [ "checkout"; "-q"; "--detach"; commit ]
 
-(* ---------- edits ---------- *)
+(* ---------- the edits machinery's file work ----------
+   cli.soma decides (edits_prog, checkout_edits_prog, check_tree_prog):
+   these look at, write and remove a path in a checkout. *)
 
 (* no part of the path is a symlink: a write can't leave the checkout *)
 let no_symlink dir p =
@@ -176,237 +164,30 @@ let write_keep_mode f s =
   (match mode with Some m -> Unix.chmod tmp m | None -> ());
   Unix.rename tmp f
 
-let rec triples_of = function p :: o :: n :: r -> (p, o, n) :: triples_of r | _ -> []
+(* a path, its last part not followed: its kind and whether its owner may
+   run it *)
+let path_stat f =
+  match Unix.lstat f with
+  | st ->
+      let kind = match st.st_kind with Unix.S_REG -> "file" | Unix.S_DIR -> "dir" | Unix.S_LNK -> "symlink" | _ -> "other" in
+      [ kind; string_of_bool (st.st_perm land 0o100 <> 0) ]
+  | exception _ -> [ "none"; "false" ]
 
-(* Apply edits, in order, to the files under dir. An edit replaces the one
-   place its old text appears; with old "" it writes the whole file, and with
-   new "" too it deletes the file. *)
-let apply_edits helpers dir edits =
-  let rec go = function
-    | [] -> Ok ()
-    | (p, o, n) :: rest ->
-        let f = Filename.concat dir p in
-        if not (safe_path helpers p) then Error ("unsafe path " ^ p)
-        else if not (no_symlink dir p) then Error (p ^ " goes through a symlink")
-        else if Sys.file_exists f && Sys.is_directory f then Error (p ^ " is a directory")
-        else if o = "" && n = "" then (if Sys.file_exists f then (Sys.remove f; go rest) else Error (p ^ ": nothing to delete"))
-        else if o = "" then (mkdir_p (Filename.dirname f); write_keep_mode f n; go rest)
-        else if not (Sys.file_exists f) then Error (p ^ ": no such file to edit")
-        else
-          let c = read_file f in
-          match edit_once helpers c o n with
-          | Some t -> write_keep_mode f t; go rest
-          | None when not (contains helpers c o) -> Error (p ^ ": the old text isn't in the file")
-          | None -> Error (p ^ ": the old text appears more than once, so give more of it")
-  in
-  try go edits with e -> Error (Printexc.to_string e)
+(* a path in a checkout, as an edit sees it *)
+let path_probe dir p =
+  let f = Filename.concat dir p in
+  try
+    if not (no_symlink dir p) then "symlink"
+    else if Sys.file_exists f && Sys.is_directory f then "dir"
+    else if Sys.file_exists f then "file"
+    else "none"
+  with _ -> "symlink"
 
-(* A modified file as edits, one per hunk of git's diff, when replaying them
-   on the old content gives the new; otherwise one whole-file write. *)
-let hunk_edits helpers g p before now =
-  let whole = [ (p, "", now) ] in
-  let ok, d = g [ "diff"; "--cached"; "-U3"; "--no-color"; "--no-ext-diff"; "--no-textconv"; "HEAD"; "--"; p ] in
-  if not ok then whole
-  else begin
-    let hunks = ref [] and cur = ref None and bad = ref false in
-    let close () = match !cur with Some (o, n) -> hunks := (String.concat "" (List.rev o), String.concat "" (List.rev n)) :: !hunks; cur := None | None -> () in
-    List.iter (fun l ->
-        if String.length l >= 2 && String.sub l 0 2 = "@@" then (close (); cur := Some ([], []))
-        else
-          match !cur with
-          | None -> ()
-          | Some (o, n) ->
-              if l <> "" then
-                let t = String.sub l 1 (String.length l - 1) ^ "\n" in
-                match l.[0] with
-                | ' ' -> cur := Some (t :: o, t :: n)
-                | '-' -> cur := Some (t :: o, n)
-                | '+' -> cur := Some (o, t :: n)
-                | '\\' -> bad := true
-                | _ -> ())
-      (String.split_on_char '\n' d);
-    close ();
-    let es = List.rev_map (fun (o, n) -> (p, o, n)) !hunks in
-    if !bad || es = [] || List.exists (fun (_, o, _) -> o = "") es then whole
-    else
-      let step acc (_, o, n) = match acc with Some c -> edit_once helpers c o n | None -> None in
-      if List.fold_left step (Some before) es = Some now then es else whole
-  end
+let path_write dir p text =
+  let f = Filename.concat dir p in
+  try mkdir_p (Filename.dirname f); write_keep_mode f text; "" with e -> Printexc.to_string e
 
-(* What changed in a checkout since its HEAD, as edits. Binary files, and
-   new empty ones, can't be said as edits: they're listed as skipped. What
-   the repository ignores (a build's output, from the model's soma build) is
-   no part of it. Applying edits (check_tree, merges) still takes every path
-   the edits name, ignored or not, so the tree doesn't hang on .gitignore.
-
-   The checkout is the model's to write, so nothing in it is trusted:
-   - only regular files count: a symlink (mode 120000) would otherwise make
-     the node read whatever it points at (a key, a login) into a signed bid;
-   - the snapshot is built in a node-owned temporary repository whose
-     config (and global/system config) is an empty file the node wrote:
-     the checkout's .git and PANTHEON_GITDIR are only read, as plain files,
-     for their HEAD and their object store (through alternates), so no
-     config they hold is ever used -- no clean/smudge filters, fsmonitor,
-     textconv or external diff can run. Each worktree file is hashed with
-     [git hash-object -w --no-filters] into that snapshot, and changed
-     files are staged there with [update-index --cacheinfo], never with
-     [git add] on a repository the model can configure. *)
-let edits_of_checkout helpers dir =
-  let abs_dir = if Filename.is_relative dir then Filename.concat (Sys.getcwd ()) dir else dir in
-  let read_opt p = try Some (read_file p) with _ -> None in
-  let has_prefix s pre = String.length s >= String.length pre && String.sub s 0 (String.length pre) = pre in
-  let resolve_rel base p = if Filename.is_relative p then Filename.concat base p else p in
-  let is_hex s =
-    s <> "" && String.for_all (fun c -> (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) s
-  in
-  (* the repository that holds HEAD and the objects: the checkout's .git
-     (a directory, or a gitdir: file), or PANTHEON_GITDIR when the node
-     kept the repository outside the checkout *)
-  let orig_gitdir =
-    match Sys.getenv_opt "PANTHEON_GITDIR" with
-    | Some g when g <> "" -> resolve_rel abs_dir g
-    | _ ->
-        let dot = Filename.concat abs_dir ".git" in
-        (match (try Some (Unix.stat dot).st_kind with _ -> None) with
-         | Some Unix.S_DIR -> dot
-         | _ ->
-             (match read_opt dot with
-              | Some c ->
-                  let t = String.trim c in
-                  if has_prefix t "gitdir:" then resolve_rel abs_dir (String.trim (String.sub t 7 (String.length t - 7))) else dot
-              | None -> dot))
-  in
-  let common_gitdir =
-    match read_opt (Filename.concat orig_gitdir "commondir") with
-    | Some c -> resolve_rel orig_gitdir (String.trim c)
-    | None -> orig_gitdir
-  in
-  (* HEAD's commit, from the ref files alone: no git command runs on
-     this repository, so nothing its config names can run either *)
-  let head_commit =
-    let from_ref refname =
-      match List.find_map read_opt [ Filename.concat orig_gitdir refname; Filename.concat common_gitdir refname ] with
-      | Some c when is_hex (String.trim c) -> Some (String.trim c)
-      | _ ->
-          (match List.find_map read_opt [ Filename.concat orig_gitdir "packed-refs"; Filename.concat common_gitdir "packed-refs" ] with
-           | None -> None
-           | Some content ->
-               List.find_map
-                 (fun line ->
-                   let line = String.trim line in
-                   if line = "" || line.[0] = '#' || line.[0] = '^' then None
-                   else
-                     match String.index_opt line ' ' with
-                     | Some i when String.sub line (i + 1) (String.length line - i - 1) = refname && is_hex (String.sub line 0 i) ->
-                         Some (String.sub line 0 i)
-                     | _ -> None)
-                 (String.split_on_char '\n' content))
-    in
-    match read_opt (Filename.concat orig_gitdir "HEAD") with
-    | None -> None
-    | Some c ->
-        let t = String.trim c in
-        if has_prefix t "ref:" then from_ref (String.trim (String.sub t 4 (String.length t - 4)))
-        else if is_hex t then Some t
-        else None
-  in
-  match head_commit with
-  | None -> Error (dir ^ " is not a git checkout")
-  | Some head_commit ->
-      let snapshot = Filename.temp_dir "pantheon-snapshot" "" in
-      let result =
-        try
-          let snap_git = Filename.concat snapshot "gitdir" in
-          mkdir_p (Filename.concat (Filename.concat snap_git "objects") "info");
-          mkdir_p (Filename.concat snap_git "refs");
-          write_file (Filename.concat snap_git "config") "";
-          write_file (Filename.concat snap_git "HEAD") (head_commit ^ "\n");
-          write_file (Filename.concat (Filename.concat (Filename.concat snap_git "objects") "info") "alternates")
-            (Filename.concat common_gitdir "objects" ^ "\n");
-          let empty_config = Filename.concat snapshot "gitconfig" in
-          write_file empty_config "";
-          let sgit args =
-            git ~extra:[ "GIT_CONFIG_GLOBAL=" ^ empty_config; "GIT_CONFIG_SYSTEM=" ^ empty_config;
-                         "GIT_INDEX_FILE=" ^ Filename.concat snap_git "index" ]
-              abs_dir
-              ("-c" :: "core.fsmonitor=false" :: ("--git-dir=" ^ snap_git) :: ("--work-tree=" ^ abs_dir) :: args)
-          in
-          let blob spec = let ok, c = sgit [ "cat-file"; "blob"; spec ] in if ok then Some c else None in
-          let ok, out = sgit [ "ls-tree"; "-r"; "-z"; "HEAD" ] in
-          if not ok then Error (dir ^ " is not a git checkout")
-          else
-            let head_tbl = Hashtbl.create 64 in
-            let head_paths =
-              List.filter_map
-                (fun entry ->
-                  match String.index_opt entry '\t' with
-                  | Some tab ->
-                      let meta = String.split_on_char ' ' (String.sub entry 0 tab) in
-                      let p = String.sub entry (tab + 1) (String.length entry - tab - 1) in
-                      (match meta with mode :: _ :: sha :: _ -> Hashtbl.replace head_tbl p (mode, sha) | _ -> ());
-                      Some p
-                  | None -> None)
-                (List.filter (( <> ) "") (String.split_on_char '\000' out))
-            in
-            let ok, out = sgit [ "ls-files"; "--others"; "--exclude-standard"; "-z" ] in
-            if not ok then Error "git ls-files failed"
-            else
-              let paths =
-                List.sort_uniq String.compare (List.filter (( <> ) "") (String.split_on_char '\000' out) @ head_paths)
-              in
-              let skipped = ref [] and edits = ref [] in
-              List.iter
-                (fun p ->
-                  if List.exists (fun x -> String.lowercase_ascii x = ".git") (String.split_on_char '/' p) then ()
-                  else if not (safe_path helpers p) then skipped := p :: !skipped
-                  else
-                    let f = Filename.concat abs_dir p in
-                    let head_entry = Hashtbl.find_opt head_tbl p in
-                    match (try Some (Unix.lstat f) with _ -> None) with
-                    | None -> (match head_entry with Some _ -> edits := !edits @ [ (p, "", "") ] | None -> ())
-                    | Some st when st.st_kind <> Unix.S_REG -> skipped := p :: !skipped
-                    | Some st when not (no_symlink abs_dir p) -> skipped := p :: !skipped
-                    | Some st ->
-                        let mode = if st.st_perm land 0o100 <> 0 then "100755" else "100644" in
-                        let ok, hout = sgit [ "hash-object"; "-w"; "--no-filters"; "--"; p ] in
-                        let hash = String.trim hout in
-                        if not ok || not (is_hex hash) then skipped := p :: !skipped
-                        else
-                          (match head_entry with
-                           | None ->
-                               let now = read_file f in
-                               if String.contains now '\000' || now = "" then skipped := p :: !skipped
-                               else edits := !edits @ [ (p, "", now) ]
-                           | Some (hmode, _) when hmode <> "100644" && hmode <> "100755" -> skipped := p :: !skipped
-                           | Some (hmode, hsha) when hash = hsha && mode = hmode -> ()
-                           | Some (_, hsha) ->
-                               let now = read_file f in
-                               if String.contains now '\000' then skipped := p :: !skipped
-                               else if hash = hsha then edits := !edits @ [ (p, "", now) ]
-                               else if now = "" then
-                                 edits := !edits @ [ (p, Option.value ~default:"" (blob ("HEAD:" ^ p)), "") ]
-                               else if fst (sgit [ "update-index"; "--add"; "--cacheinfo"; mode; hash; p ]) then
-                                 edits := !edits @ hunk_edits helpers sgit p (Option.value ~default:"" (blob ("HEAD:" ^ p))) now
-                               else edits := !edits @ [ (p, "", now) ]))
-                paths;
-              Ok (!edits, List.rev !skipped)
-        with e -> Error (Printexc.to_string e)
-      in
-      remove_tree_later snapshot;
-      result
-
-(* the tree a bid's edits give on a checkout's HEAD, in a fresh clone. An
-   error says whose it is: `Node (this node's checkout or git) or `Bid (the
-   edits don't apply), decided here, never read back from the message *)
-let check_tree helpers repo head_tree edits out =
-  let commit = git_out repo [ "rev-parse"; "HEAD" ] and tree = git_out repo [ "rev-parse"; "HEAD^{tree}" ] in
-  if tree <> head_tree then Error (`Node, Printf.sprintf "node problem: this node's checkout %s is at tree %s, not the market's head %s" repo tree head_tree)
-  else if not (fst (capture "git" [ "clone"; "--quiet"; "--shared"; "--no-checkout"; repo; out ])) then Error (`Node, "node problem: cloning the checkout failed")
-  else if not (git_ok out [ "checkout"; "-q"; "--detach"; commit ]) then Error (`Node, "node problem: checking out the head failed")
-  else
-    match apply_edits helpers out edits with
-    | Error e -> Error (`Bid, e)
-    | Ok () -> if git_ok out [ "add"; "-A"; "-f" ] then Ok (git_out out [ "write-tree" ]) else Error (`Node, "node problem: git add failed")
+let path_remove dir p = try Sys.remove (Filename.concat dir p); "" with e -> Printexc.to_string e
 
 (* how a CI command, wrapped by the node, says the bid's CI failed. Any other
    failing exit of the runner (docker's own 125-127, ci-sandbox's 2 and 3,
@@ -422,15 +203,6 @@ let ci_wrap ci =
 (* how a job ended ("!process failed (HOW): ") and its exit code are read in
    Soma (node.soma's ci_job_how and ci_exit_code), never here *)
 
-(* ---------- the commands ----------
-   init, keygen, genesis, up, status, tx, plan, edits, apply-edits and check
-   are cli.soma's node programs; their I/O is node_io's path-only arms.
-   cli_open hands the edits machinery Soma's helpers, as node_open does. *)
-let cli_helpers_ref : helpers option ref = ref None
-let cli_helpers () = match !cli_helpers_ref with Some h -> h | None -> fail "the edits operations need cli_open first"
-let cli_open packed = cli_helpers_ref := Some (unpack_helpers packed); "cli"
-
-(* the draw's hash chain is this long (cli.soma's chain_len makes the tip) *)
 let chain_len = 100_000
 
 let repo_dir home name = Filename.concat (Filename.concat home "repos") name
@@ -817,17 +589,22 @@ let node_io id op =
       Sys.set_signal Sys.sigterm (Sys.Signal_handle stop);
       List.iter (fun p -> ignore (Unix.waitpid [] p)) pids;
       (true, (0., []))
-  | [ "checkout_edits"; dir ] ->
-      (match edits_of_checkout (cli_helpers ()) dir with
-       | Error e -> (false, (0., [ e ]))
-       | Ok (es, skipped) -> (true, (0., frame_lists (skipped :: List.map (fun (p, o, n) -> [ p; o; n ]) es))))
-  | "apply_edits" :: dir :: edits ->
-      (match apply_edits (cli_helpers ()) dir (triples_of edits) with Ok () -> (true, (0., [])) | Error e -> (false, (0., [ e ])))
-  | "check_tree" :: repo :: head :: out :: edits ->
-      (match check_tree (cli_helpers ()) repo head (triples_of edits) out with
-       | Ok t -> (true, (0., [ t ]))
-       | Error (`Bid, e) -> (false, (0., [ "bid"; e ]))
-       | Error (`Node, e) -> (false, (0., [ "node"; e ])))
+  | [ "path_stat"; path ] -> (true, (0., path_stat path))
+  | [ "path_probe"; dir; path ] -> (true, (0., [ path_probe dir path ]))
+  | [ "path_write"; dir; path; text ] -> (true, (0., [ path_write dir path text ]))
+  | [ "path_remove"; dir; path ] -> (true, (0., [ path_remove dir path ]))
+  | [ "temp_dir"; prefix ] -> (true, (0., [ Filename.temp_dir prefix "" ]))
+  | [ "remove_tree"; path ] -> remove_tree_later path; (true, (0., []))
+  | "git_env" :: dir :: rest ->
+      (* the environment's entries framed ("field" VALUE...), "alternate",
+         then git's arguments as they are *)
+      let rec split acc = function
+        | "field" :: v :: rest -> split (v :: acc) rest
+        | "alternate" :: args -> Some (List.rev acc, args)
+        | _ -> None in
+      (match split [] rest with
+       | Some (extra, args) -> let ok, out = git ~extra dir args in (ok, (0., [ out ]))
+       | None -> (false, (0., [ "git_env came malformed" ])))
   | _ -> node_io_handle (lookup_handle id) op
 let rec forever f s = forever f (f s)
 
@@ -836,8 +613,7 @@ let rec forever f s = forever f (f s)
    its excluded repositories, those it can't check, CI commands by
    repository, the agents, the repositories, those still at genesis, then
    the boot events (the kernel's: node_kernel.soma's kernel_world). *)
-let node_open packed config =
-  let helpers = unpack_helpers packed in
+let node_open config =
   Sys.set_signal Sys.sigpipe Sys.Signal_ignore;
   let settings, ci_repo_l, repos_l =
     match unframe_lists config with
@@ -1131,19 +907,9 @@ let node_open packed config =
         let dir = rdir r in
         ignore (git dir [ "reset"; "-q"; "--hard"; "HEAD" ]);
         ignore (git dir [ "clean"; "-q"; "-f"; "-d"; "-x" ]));
-      h_merge_probe = (fun r p ->
-        let dir = rdir r in
-        let f = Filename.concat dir p in
-        try
-          if not (no_symlink dir p) then "symlink"
-          else if Sys.file_exists f && Sys.is_directory f then "dir"
-          else if Sys.file_exists f then "file"
-          else "none"
-        with _ -> "symlink");
+      h_merge_probe = (fun r p -> path_probe (rdir r) p);
       h_merge_read = (fun r p -> try Some (read_file (Filename.concat (rdir r) p)) with _ -> None);
-      h_merge_write = (fun r p text ->
-        let f = Filename.concat (rdir r) p in
-        try mkdir_p (Filename.dirname f); write_keep_mode f text; "" with e -> Printexc.to_string e);
-      h_merge_remove = (fun r p -> try Sys.remove (Filename.concat (rdir r) p); "" with e -> Printexc.to_string e);
+      h_merge_write = (fun r p text -> path_write (rdir r) p text);
+      h_merge_remove = (fun r p -> path_remove (rdir r) p);
       h_merge_commit = merge_commit };
   handle_id

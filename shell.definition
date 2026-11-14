@@ -25,10 +25,8 @@ argv : unit -> list string.
 (** Test programs print their checks with these. *)
 print_lines : list string -> unit.
 print_text : string -> unit.
-(** The commands are cli.soma's node programs, run through node_io (their
-    operations need no node). cli_open hands the edits operations Soma's
-    helpers, as node_open does, and names the handle they run under. *)
-cli_open : (((string -> string -> string -> option string) * (string -> string -> bool)) * (string -> bool)) -> string.
+(** The commands are cli.soma's node programs, run through node_io under
+    the handle "cli" (their operations need no node). *)
 
 (** The node loop is Soma (node_shell.soma's run_node, the kernel's boot
     and turns): the shell binds only the handle, built from what cli.soma's
@@ -36,10 +34,8 @@ cli_open : (((string -> string -> string -> option string) * (string -> string -
     agents, repositories, then the boot events; the shell reads the
     settings, CI and repositories), and the endless repetition; the rest
     is node_io operations. The handle is a string naming the shell's side
-    of the node. Existing Soma helpers are passed once as util.soma's
-    shell_helpers record, packed as a product (edit_once, contains,
-    shell_safe_path) at the binding boundary. *)
-node_open : (((string -> string -> string -> option string) * (string -> string -> bool)) * (string -> bool)) -> list string -> string.
+    of the node. *)
+node_open : list string -> string.
 (** The node's service (node.soma's service_tick_prog, node_shell.soma's
     run_service) is node_io operations too: "serve_listen" HOST PORT,
     "serve_next" WAIT (the next whole request: its connection, then its
@@ -138,3 +134,12 @@ node_env_entries : unit -> list string.
     "" or what went wrong, "merge_commit" REPO V TREE BID TASK BIDDER SPEC
     [tree, short id] (not found when git commit failed). *)
 
+(** The edits machinery's work is node_io operations that need no node
+    (nodeio.soma's IoPathStat ... IoGitEnv; cli.soma's edits_prog,
+    checkout_edits_prog and check_tree_prog decide): "path_stat" PATH
+    [kind, exec] (its last part not followed), "path_probe" DIR PATH
+    [kind] (as "merge_probe"), "path_write" DIR PATH TEXT and
+    "path_remove" DIR PATH ["" or what went wrong], "temp_dir" PREFIX
+    [path], "remove_tree" PATH (later, in the background) and "git_env"
+    DIR ("field" ENTRY)... "alternate" ARGS... (git with those environment
+    entries first: [its output], found when it succeeded). *)

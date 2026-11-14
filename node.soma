@@ -662,40 +662,6 @@ merge_gate_of (applied : option string) (v : string) (diverged : bool) : merge_g
   | Some a => if num v <=? num a then MergeSkip else if diverged then MergeSkip else MergeApply
   end.
 
-Fixpoint merge_triples (edits : list string) : list (string * string * string) :=
-  match edits with
-  | p :: o :: n :: rest => (p, o, n) :: merge_triples rest
-  | _ => []
-  end.
-
-(** An edit replaces the one place its old text appears; with old "" it
-    writes the whole file, and with new "" too it deletes the file. [kind]
-    is the shell's look at the path: "symlink" (it goes through one),
-    "dir", "file" or "none". *)
-Inductive edit_plan :=
-| EditWrite (path text : string)
-| EditRemove (path : string)
-| EditRead (path : string)
-| EditFail (why : string).
-
-merge_edit_plan (p o n kind : string) : edit_plan :=
-  if negb (shell_safe_path p) then EditFail (append "unsafe path " p)
-  else if seq kind "symlink" then EditFail (append p " goes through a symlink")
-  else if seq kind "dir" then EditFail (append p " is a directory")
-  else if seq o "" && seq n "" then
-    (if seq kind "file" then EditRemove p else EditFail (append p ": nothing to delete"))
-  else if seq o "" then EditWrite p n
-  else if seq kind "none" then EditFail (append p ": no such file to edit")
-  else EditRead p.
-
-merge_edit_apply (p o n c : string) : edit_plan :=
-  match edit_once c o n with
-  | Some t => EditWrite p t
-  | None =>
-      if contains o c then EditFail (append p ": the old text appears more than once, so give more of it")
-      else EditFail (append p ": the old text isn't in the file")
-  end.
-
 merge_diverged_text (r v why : string) : string :=
   append "DIVERGED: repository " (append r (append ", merge " (append (show (num v))
     (append ": " (append why ". Stopped taking merges for it."))))).
@@ -706,39 +672,6 @@ merge_tree_check (tree : string) (committed : option (string * string)) : option
   | Some (got, _) =>
       if seq got tree then None
       else Some (append "got tree " (append got (append ", attested " tree)))
-  end.
-
-(** An edit's plan: a safe path is looked at first ([IoMergeProbe]), and
-    an edit of a file's text reads it ([IoMergeRead]). *)
-merge_edit_prog (r p o n : string) : nprog edit_plan :=
-  if shell_safe_path p then
-    nbind (nask (IoMergeProbe r p)) (fun kind =>
-    match merge_edit_plan p o n (ans_one kind) with
-    | EditRead q =>
-        nbind (nask (IoMergeRead r q)) (fun c =>
-        NDone (match ans_found_one c with
-               | Some text => merge_edit_apply q o n text
-               | None => EditFail (append q ": couldn't be read")
-               end))
-    | other => NDone other
-    end)
-  else NDone (EditFail (append "unsafe path " p)).
-
-(** The edits in order, as a node program; the first that can't be made
-    stops them, with why. *)
-Fixpoint merge_edits_prog (r : string) (es : list (string * string * string)) : nprog (option string) :=
-  match es with
-  | [] => NDone None
-  | (p, o, n) :: rest =>
-      nbind (merge_edit_prog r p o n) (fun plan =>
-      let written failed := if seq (ans_one failed) "" then merge_edits_prog r rest
-                            else NDone (Some (ans_one failed)) in
-      match plan with
-      | EditWrite q text => nbind (nask (IoMergeWrite r q text)) written
-      | EditRemove q => nbind (nask (IoMergeRemove r q)) written
-      | EditFail why => NDone (Some why)
-      | EditRead q => NDone (Some (append q ": couldn't be read"))
-      end)
   end.
 
 merge_diverge_prog (r v why : string) : nprog bool :=
@@ -759,7 +692,7 @@ merge_prog (r v tree bid task bidder spec : string) (edits : list string) : npro
   | MergeSkip => NDone true
   | MergeApply =>
       ndo (IoMergeReset r) (fun _ =>
-      nbind (merge_edits_prog r (merge_triples edits)) (fun failed =>
+      nbind (edits_prog (InRepo r) (edit_triples edits)) (fun failed =>
       match failed with
       | Some why => merge_diverge_prog r v why
       | None =>

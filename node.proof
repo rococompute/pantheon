@@ -502,25 +502,25 @@ Example merge_gate_unknown_applied_newer_and_diverged :
   merge_gate_of (Some "1") "2" false = MergeApply.
 Proof. repeat split; reflexivity. Qed.
 
-Example merge_triples_in_order_dropping_a_short_tail :
-  merge_triples ["a", "o", "n", "b", "", "whole", "c", "x"] = [("a", "o", "n"), ("b", "", "whole")].
+Example edit_triples_in_order_dropping_a_short_tail :
+  edit_triples ["a", "o", "n", "b", "", "whole", "c", "x"] = [("a", "o", "n"), ("b", "", "whole")].
 Proof. reflexivity. Qed.
 
-Example merge_edit_plan_cases :
-  merge_edit_plan "../x" "o" "n" "file" = EditFail "unsafe path ../x" /\
-  merge_edit_plan "a" "o" "n" "symlink" = EditFail "a goes through a symlink" /\
-  merge_edit_plan "a" "o" "n" "dir" = EditFail "a is a directory" /\
-  merge_edit_plan "a" "" "" "file" = EditRemove "a" /\
-  merge_edit_plan "a" "" "" "none" = EditFail "a: nothing to delete" /\
-  merge_edit_plan "a" "" "whole" "none" = EditWrite "a" "whole" /\
-  merge_edit_plan "a" "o" "n" "none" = EditFail "a: no such file to edit" /\
-  merge_edit_plan "a" "o" "n" "file" = EditRead "a".
+Example edit_plan_of_cases :
+  edit_plan_of "../x" "o" "n" "file" = EditFail "unsafe path ../x" /\
+  edit_plan_of "a" "o" "n" "symlink" = EditFail "a goes through a symlink" /\
+  edit_plan_of "a" "o" "n" "dir" = EditFail "a is a directory" /\
+  edit_plan_of "a" "" "" "file" = EditRemove "a" /\
+  edit_plan_of "a" "" "" "none" = EditFail "a: nothing to delete" /\
+  edit_plan_of "a" "" "whole" "none" = EditWrite "a" "whole" /\
+  edit_plan_of "a" "o" "n" "none" = EditFail "a: no such file to edit" /\
+  edit_plan_of "a" "o" "n" "file" = EditRead "a".
 Proof. repeat split; reflexivity. Qed.
 
 Example merge_edit_once_zero_one_several :
-  merge_edit_apply "a" "x" "y" "abc" = EditFail "a: the old text isn't in the file" /\
-  merge_edit_apply "a" "b" "y" "abc" = EditWrite "a" "ayc" /\
-  merge_edit_apply "a" "b" "y" "abcb" = EditFail "a: the old text appears more than once, so give more of it".
+  edit_apply "a" "x" "y" "abc" = EditFail "a: the old text isn't in the file" /\
+  edit_apply "a" "b" "y" "abc" = EditWrite "a" "ayc" /\
+  edit_apply "a" "b" "y" "abcb" = EditFail "a: the old text appears more than once, so give more of it".
 Proof. repeat split; reflexivity. Qed.
 
 Example merge_tree_check_and_texts :
@@ -909,7 +909,7 @@ Proof.
     raw | | raw | who | | | | stamp | path | path | | | timers | | | wait |
     | | height txs | | slot vid fields | message |
     text | text | code | path | path text | path mode | path | | bits | count | dir args |
-    url dir commit | log args | pids | dir | dir edits | repo head out edits | text | | address port | wait | conn found stamp fields |
+    url dir commit | log args | pids | path | dir path | dir path text | dir path | prefix | path | dir extra args | text | | address port | wait | conn found stamp fields |
     address port | ms | address port ms | conn data | conn | name | name durable text | name text ];
     try reflexivity.
   - change (match resend_parts (resend_fields fields ++ ("alternate" :: alternate)) with
@@ -934,6 +934,10 @@ Proof.
     rewrite nio_lists_reads_frames. reflexivity.
   - change (Some (IoSetTimers (nio_lists (nio_frame_lists timers))) = Some (IoSetTimers timers)).
     rewrite nio_lists_reads_frames. reflexivity.
+  - change (match resend_parts (resend_fields extra ++ ("alternate" :: args)) with
+    | Some (extra, args) => Some (IoGitEnv dir extra args)
+    | None => None end = Some (IoGitEnv dir extra args)).
+    rewrite resend_parts_reads_fields. reflexivity.
 Qed.
 
 Example io_wire_forms :

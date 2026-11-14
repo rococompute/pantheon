@@ -434,21 +434,6 @@ Fixpoint shallow_json_go (fuel : nat) (s : string) (i : nat) (max items opens cl
 shallow_json (max max_items s : string) : bool :=
   shallow_json_go (slen s) s 0 (num max) (num max_items) 0 0 false false.
 
-(** The callbacks still used by the shell. The binding transports this record
-    as a product because .definition supports products, not record types. *)
-Record shell_helpers := {
-  helper_edit_once : string -> string -> string -> option string;
-  helper_contains : string -> string -> bool;
-  helper_safe_path : string -> bool
-}.
-
-node_helpers : shell_helpers :=
-  {| helper_edit_once := edit_once; helper_contains := contains;
-     helper_safe_path := shell_safe_path |}.
-
-pack_helpers (h : shell_helpers) :=
-  (helper_edit_once h, helper_contains h, helper_safe_path h).
-
 (** the scan without an item cap: a container, colon or comma is one
     character, so a cap past the text's length never runs out, as the
     binary's max_int never did *)

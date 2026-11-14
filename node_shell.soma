@@ -30,7 +30,7 @@ run_node (home : string) (flags : list string) : unit :=
   | Some config =>
       match kernel_world config with
       | Some w =>
-          let h := node_open (pack_helpers node_helpers) (nio_frame_lists config) in
+          let h := node_open (nio_frame_lists config) in
           match run_shell h (kernel_boot_prog h w (kernel_start (w_identity w) config)) with
           | Some p => forever (fun p => run_shell h (kernel_tick_prog h w p)) p
           | None => tt
@@ -46,7 +46,7 @@ run_node (home : string) (flags : list string) : unit :=
 run_service (home addr : string) (flags : list string) : unit :=
   match run_shell "" (node_setup home flags) with
   | Some config =>
-      let h := node_open (pack_helpers node_helpers) (nio_frame_lists config) in
+      let h := node_open (nio_frame_lists config) in
       if run_shell h (service_start_prog addr) then
         forever (fun pending => run_shell h (service_tick_prog (service_token_of config) pending)) []
       else tt

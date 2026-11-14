@@ -5,8 +5,9 @@
     arms answer the commands' operations with no node. What a command
     decides is here: its arguments, its messages, a new agent's files, the
     genesis's bytes and every check on them. The operations do the I/O:
-    printing, files, git, a new RSA key, starting nodes, and the edits
-    machinery (still OCaml's). [pantheon node] is node.soma's [run_node]. *)
+    printing, files, git, a new RSA key and starting nodes; the edits
+    machinery decides here too, over the shell's file and git work.
+    [pantheon node] is node.soma's [run_node]. *)
 Import util nodeio.
 (* [float] and its literals, OCaml's (Soma.OCaml) *)
 From Soma Require Import OCaml.
@@ -592,27 +593,418 @@ cmd_plan (file : string) : nprog unit :=
   cli_read_text file (cat ["no ", file, " here: a repository's plan is .plan at its root (docs/PLAN.md)"]) (fun t =>
   cli_do (IoPrint (lines_text (plan_open t))) (fun _ => NDone tt)).
 
-(** ---- edits, apply-edits, check ---- *)
+(** ---- edits, apply-edits, check: the edits machinery ----
+    An edit is a path, the old text and the new: it replaces the one place
+    its old text appears; with old "" it writes the whole file, and with
+    new "" too it deletes the file. Applying edits (a merge on the node's
+    checkout, [pantheon apply-edits] and [pantheon check] in a directory),
+    reading a checkout's changes as edits ([pantheon edits], for a model
+    with tools) and making a bid's tree are decided here; the shell looks
+    at, reads, writes and removes files and runs git. *)
 
-Fixpoint edits_items (l : list (list string)) : list json :=
+Fixpoint edit_triples (edits : list string) : list (string * string * string) :=
+  match edits with
+  | p :: o :: n :: rest => (p, o, n) :: edit_triples rest
+  | _ => []
+  end.
+
+(** what to do for an edit, from the shell's look at its path ([kind]):
+    "symlink" (it goes through one), "dir", "file" or "none" *)
+Inductive edit_plan :=
+| EditWrite (path text : string)
+| EditRemove (path : string)
+| EditRead (path : string)
+| EditFail (why : string).
+
+edit_plan_of (p o n kind : string) : edit_plan :=
+  if negb (shell_safe_path p) then EditFail (append "unsafe path " p)
+  else if seq kind "symlink" then EditFail (append p " goes through a symlink")
+  else if seq kind "dir" then EditFail (append p " is a directory")
+  else if seq o "" && seq n "" then
+    (if seq kind "file" then EditRemove p else EditFail (append p ": nothing to delete"))
+  else if seq o "" then EditWrite p n
+  else if seq kind "none" then EditFail (append p ": no such file to edit")
+  else EditRead p.
+
+edit_apply (p o n c : string) : edit_plan :=
+  match edit_once c o n with
+  | Some t => EditWrite p t
+  | None =>
+      if contains o c then EditFail (append p ": the old text appears more than once, so give more of it")
+      else EditFail (append p ": the old text isn't in the file")
+  end.
+
+(** a path in a directory, as OCaml's Filename.concat *)
+path_join (d p : string) : string :=
+  if seq d "" then p else if ends "/" d then append d p else cat [d, "/", p].
+
+(** where edits are made: a governed repository's checkout, by name (a
+    merge: the node knows where it is), or a directory *)
+Inductive edit_place := InRepo (repo : string) | InDir (dir : string).
+
+place_probe (pl : edit_place) (p : string) : node_op :=
+  match pl with InRepo r => IoMergeProbe r p | InDir d => IoPathProbe d p end.
+place_read (pl : edit_place) (p : string) : node_op :=
+  match pl with InRepo r => IoMergeRead r p | InDir d => IoReadText (path_join d p) end.
+place_write (pl : edit_place) (p text : string) : node_op :=
+  match pl with InRepo r => IoMergeWrite r p text | InDir d => IoPathWrite d p text end.
+place_remove (pl : edit_place) (p : string) : node_op :=
+  match pl with InRepo r => IoMergeRemove r p | InDir d => IoPathRemove d p end.
+
+(** An edit's plan: a safe path is looked at first, and an edit of a
+    file's text reads it. *)
+edit_prog (pl : edit_place) (p o n : string) : nprog edit_plan :=
+  if shell_safe_path p then
+    nbind (nask (place_probe pl p)) (fun kind =>
+    match edit_plan_of p o n (ans_one kind) with
+    | EditRead q =>
+        nbind (nask (place_read pl q)) (fun c =>
+        NDone (match ans_found_one c with
+               | Some text => edit_apply q o n text
+               | None => EditFail (append q ": couldn't be read")
+               end))
+    | other => NDone other
+    end)
+  else NDone (EditFail (append "unsafe path " p)).
+
+(** The edits in order; the first that can't be made stops them, with
+    why. *)
+Fixpoint edits_prog (pl : edit_place) (es : list (string * string * string)) : nprog (option string) :=
+  match es with
+  | [] => NDone None
+  | (p, o, n) :: rest =>
+      nbind (edit_prog pl p o n) (fun plan =>
+      let written failed := if seq (ans_one failed) "" then edits_prog pl rest
+                            else NDone (Some (ans_one failed)) in
+      match plan with
+      | EditWrite q text => nbind (nask (place_write pl q text)) written
+      | EditRemove q => nbind (nask (place_remove pl q)) written
+      | EditFail why => NDone (Some why)
+      | EditRead q => NDone (Some (append q ": couldn't be read"))
+      end)
+  end.
+
+(** ---- a bid's tree (pantheon check) ----
+    The tree a bid's edits give on a checkout's HEAD, in a fresh clone. A
+    failure says whose it is: this node's (its checkout or git) or the
+    bid's (the edits don't apply), decided here, never read back from a
+    message. *)
+Inductive tree_result := TreeMade (tree : string) | TreeBid (why : string) | TreeNode (why : string).
+
+check_tree_prog (repo head out : string) (edits : list string) : nprog tree_result :=
+  nbind (nask (IoGit repo ["rev-parse", "HEAD"])) (fun commit =>
+  nbind (nask (IoGit repo ["rev-parse", "HEAD^{tree}"])) (fun tree =>
+  let tree := trim (ans_one tree) in
+  if negb (seq tree head) then
+    NDone (TreeNode (cat ["node problem: this node's checkout ", repo, " is at tree ", tree, ", not the market's head ", head]))
+  else
+  nbind (nask (IoGit "." ["clone", "--quiet", "--shared", "--no-checkout", repo, out])) (fun cloned =>
+  if negb (fst cloned) then NDone (TreeNode "node problem: cloning the checkout failed") else
+  nbind (nask (IoGit out ["checkout", "-q", "--detach", trim (ans_one commit)])) (fun co =>
+  if negb (fst co) then NDone (TreeNode "node problem: checking out the head failed") else
+  nbind (edits_prog (InDir out) (edit_triples edits)) (fun failed =>
+  match failed with
+  | Some why => NDone (TreeBid why)
+  | None =>
+      nbind (nask (IoGit out ["add", "-A", "-f"])) (fun added =>
+      if negb (fst added) then NDone (TreeNode "node problem: git add failed") else
+      nbind (nask (IoGit out ["write-tree"])) (fun t => NDone (TreeMade (trim (ans_one t)))))
+  end))))).
+
+(** ---- a checkout's changes as edits (pantheon edits) ----
+    What changed in a checkout since its HEAD, as edits. Binary files, and
+    new empty ones, can't be said as edits: they're listed as skipped.
+    What the repository ignores (a build's output, from the model's soma
+    build) is no part of it. Applying edits still takes every path the
+    edits name, ignored or not, so the tree doesn't hang on .gitignore.
+
+    The checkout is the model's to write, so nothing in it is trusted:
+    - only regular files count: a symlink would otherwise make the node
+      read whatever it points at (a key, a login) into a signed bid;
+    - the snapshot is built in a node-owned temporary repository whose
+      config (and global and system config) is an empty file the node
+      wrote: the checkout's .git and PANTHEON_GITDIR are only read, as
+      plain files, for their HEAD and their object store (through
+      alternates), so no config they hold is ever used: no clean or
+      smudge filters, fsmonitor, textconv or external diff can run. Each
+      worktree file is hashed with [git hash-object -w --no-filters] into
+      that snapshot, and changed files are staged there with
+      [update-index --cacheinfo], never with [git add] on a repository the
+      model can configure. *)
+
+(** [s] split at each [sep], as OCaml's String.split_on_char *)
+Fixpoint split_text_go (fuel : nat) (sep s : string) (i : nat) (acc : list string) : list string :=
+  match fuel with
+  | 0 => rev_onto (substr s i (slen s - i) :: acc) []
+  | S f => match find_str sep s i with
+           | Some j => split_text_go f sep s (j + slen sep) (substr s i (j - i) :: acc)
+           | None => rev_onto (substr s i (slen s - i) :: acc) []
+           end
+  end.
+
+split_text (sep s : string) : list string := split_text_go (slen s + 1) sep s 0 [].
+
+tab_text : string := SCons (ascii_of_nat 9) SNil.
+
+(** the strings in order, once each *)
+sort_uniq (l : list string) : list string :=
+  smap_keys_onto (List.fold_left (fun m p => smap_add p tt m) l (@SLeaf unit)) [].
+
+(** an environment's value for [name], from its NAME=VALUE entries *)
+Fixpoint env_find (name : string) (env : list string) : option string :=
+  match env with
+  | [] => None
+  | e :: rest => if starts (append name "=") e then Some (drop_str (slen name + 1) e) else env_find name rest
+  end.
+
+resolve_rel (base p : string) : string := if starts "/" p then p else path_join base p.
+
+hex_digit (c : ascii) : bool :=
+  let n := nat_of_ascii c in
+  ((48 <=? n) && (n <=? 57)) || ((97 <=? n) && (n <=? 102)) || ((65 <=? n) && (n <=? 70)).
+
+all_hex (s : string) : bool := negb (seq s "") && forallb hex_digit (chars s).
+
+read_opt_prog (path : string) : nprog (option string) :=
+  nbind (nask (IoReadText path)) (fun a => NDone (ans_found_one a)).
+
+(** the first of the files that can be read *)
+Fixpoint first_read_prog (paths : list string) : nprog (option string) :=
+  match paths with
+  | [] => NDone None
+  | p :: rest => nbind (read_opt_prog p) (fun c => match c with Some t => NDone (Some t) | None => first_read_prog rest end)
+  end.
+
+(** The repository that holds HEAD and the objects: the checkout's .git
+    (a directory, or a gitdir: file), or PANTHEON_GITDIR when the node
+    kept the repository outside the checkout. *)
+checkout_gitdir_prog (abs : string) : nprog string :=
+  let dot := path_join abs ".git" in
+  let from_dot :=
+    nbind (read_opt_prog dot) (fun c => NDone (match c with
+      | Some c => let t := trim c in
+                  if starts "gitdir:" t then resolve_rel abs (trim (drop_str 7 t)) else dot
+      | None => dot
+      end)) in
+  nbind (nask IoEnvEntries) (fun env =>
+  match env_find "PANTHEON_GITDIR" (ans_list env) with
+  | Some g => if seq g "" then from_dot else NDone (resolve_rel abs g)
+  | None => from_dot
+  end).
+
+(** a ref's commit in packed-refs' lines *)
+Fixpoint packed_ref (refname : string) (lines : list string) : option string :=
+  match lines with
+  | [] => None
+  | l :: rest =>
+      let l := trim l in
+      if seq l "" || starts "#" l || starts "^" l then packed_ref refname rest
+      else match find_str " " l 0 with
+           | Some i => if seq (drop_str (i + 1) l) refname && all_hex (substr l 0 i)
+                       then Some (substr l 0 i) else packed_ref refname rest
+           | None => packed_ref refname rest
+           end
+  end.
+
+(** HEAD's commit, from the ref files alone: no git command runs on this
+    repository, so nothing its config names can run either *)
+head_commit_prog (orig common : string) : nprog (option string) :=
+  let packed refname :=
+    nbind (first_read_prog [path_join orig "packed-refs", path_join common "packed-refs"]) (fun c =>
+    NDone (match c with Some content => packed_ref refname (split_lines content) | None => None end)) in
+  let from_ref refname :=
+    nbind (first_read_prog [path_join orig refname, path_join common refname]) (fun c =>
+    match c with
+    | Some c => if all_hex (trim c) then NDone (Some (trim c)) else packed refname
+    | None => packed refname
+    end) in
+  nbind (read_opt_prog (path_join orig "HEAD")) (fun c =>
+  match c with
+  | None => NDone None
+  | Some c =>
+      let t := trim c in
+      if starts "ref:" t then from_ref (trim (drop_str 4 t))
+      else if all_hex t then NDone (Some t)
+      else NDone None
+  end).
+
+(** git's diff of a file, read as hunks: each one's old text and new,
+    newest first; and whether a line said the file has no final newline *)
+diff_close (cur : option (list string * list string)) (acc : list (string * string)) : list (string * string) :=
+  match cur with Some (o, n) => (cat (rev_onto o []), cat (rev_onto n [])) :: acc | None => acc end.
+
+Fixpoint diff_hunks (lines : list string) (cur : option (list string * list string))
+    (acc : list (string * string)) (bad : bool) : list (string * string) * bool :=
+  match lines with
+  | [] => (diff_close cur acc, bad)
+  | l :: rest =>
+      if starts "@@" l then diff_hunks rest (Some ([], [])) (diff_close cur acc) bad
+      else match cur, char_at l 0 with
+           | Some (o, n), Some c =>
+               let t := append (drop_str 1 l) newline in
+               let k := nat_of_ascii c in
+               if k =? 32 then diff_hunks rest (Some (t :: o, t :: n)) acc bad
+               else if k =? 45 then diff_hunks rest (Some (t :: o, n)) acc bad
+               else if k =? 43 then diff_hunks rest (Some (o, t :: n)) acc bad
+               else if k =? 92 then diff_hunks rest cur acc true
+               else diff_hunks rest cur acc bad
+           | _, _ => diff_hunks rest cur acc bad
+           end
+  end.
+
+(** A modified file as edits, one per hunk of git's diff [d], when
+    replaying them on the old content gives the new; otherwise one
+    whole-file write. *)
+hunk_edits_of (p before now d : string) : list (string * string * string) :=
+  let whole := [(p, "", now)] in
+  let r := diff_hunks (split_lines d) None [] false in
+  let es := List.map (fun h => (p, fst h, snd h)) (rev_onto (fst r) []) in
+  let replayed := List.fold_left (fun acc (e : string * string * string) =>
+                    match acc, e with Some c, (_, o, n) => edit_once c o n | None, _ => None end) es (Some before) in
+  if snd r || (match es with [] => true | _ => false end)
+     || List.existsb (fun (e : string * string * string) => match e with (_, o, _) => seq o "" end) es
+  then whole
+  else match replayed with Some t => if seq t now then es else whole | None => whole end.
+
+(** the paths in HEAD's tree ([git ls-tree -r -z]), in order, and each
+    one's mode and blob *)
+Fixpoint tree_entries (entries : list string) (heads : smap (string * string)) (paths : list string)
+    : smap (string * string) * list string :=
+  match entries with
+  | [] => (heads, rev_onto paths [])
+  | e :: rest =>
+      match find_str tab_text e 0 with
+      | Some i =>
+          let p := drop_str (i + 1) e in
+          let heads := match split_text " " (substr e 0 i) with
+                       | mode :: _ :: sha :: _ => smap_add p (mode, sha) heads
+                       | _ => heads
+                       end in
+          tree_entries rest heads (p :: paths)
+      | None => tree_entries rest heads paths
+      end
+  end.
+
+(** A path of the checkout, looked at: the edits it gives (newest first,
+    onto the first list) or skipped (onto the second). [g] is git in the
+    snapshot. *)
+scan_path_prog (g : list string -> node_op) (abs : string) (heads : smap (string * string)) (p : string)
+    (st : list (string * string * string) * list string) : nprog (list (string * string * string) * list string) :=
+  let keep := NDone st in
+  let skip := NDone (fst st, p :: snd st) in
+  let edit (es : list (string * string * string)) := NDone (rev_onto es (fst st), snd st) in
+  let blob := nbind (nask (g ["cat-file", "blob", append "HEAD:" p])) (fun a => NDone (if fst a then ans_one a else "")) in
+  let f := path_join abs p in
+  let head := smap_find p heads in
+  if List.existsb (fun x => seq (lower x) ".git") (split_text "/" p) then keep
+  else if negb (shell_safe_path p) then skip
+  else
+  nbind (nask (IoPathStat f)) (fun stat =>
+  match ans_list stat with
+  | ["none", _] => match head with Some _ => edit [(p, "", "")] | None => keep end
+  | ["file", exec] =>
+      nbind (nask (IoPathProbe abs p)) (fun probe =>
+      if seq (ans_one probe) "symlink" then skip else
+      let mode := if seq exec "true" then "100755" else "100644" in
+      nbind (nask (g ["hash-object", "-w", "--no-filters", "--", p])) (fun h =>
+      let hash := trim (ans_one h) in
+      if negb (fst h) || negb (all_hex hash) then skip else
+      match head with
+      | None =>
+          nbind (read_opt_prog f) (fun now =>
+          match now with
+          | Some now => if contains nio_nul now || seq now "" then skip else edit [(p, "", now)]
+          | None => skip
+          end)
+      | Some (hmode, hsha) =>
+          if negb (seq hmode "100644" || seq hmode "100755") then skip
+          else if seq hash hsha && seq mode hmode then keep
+          else
+          nbind (read_opt_prog f) (fun now =>
+          match now with
+          | None => skip
+          | Some now =>
+              if contains nio_nul now then skip
+              else if seq hash hsha then edit [(p, "", now)]
+              else if seq now "" then nbind blob (fun old => edit [(p, old, "")])
+              else
+              nbind (nask (g ["update-index", "--add", "--cacheinfo", mode, hash, p])) (fun u =>
+              if negb (fst u) then edit [(p, "", now)] else
+              nbind blob (fun before =>
+              nbind (nask (g ["diff", "--cached", "-U3", "--no-color", "--no-ext-diff", "--no-textconv", "HEAD", "--", p])) (fun d =>
+              edit (if fst d then hunk_edits_of p before now (ans_one d) else [(p, "", now)]))))
+          end)
+      end))
+  | _ => skip
+  end).
+
+Fixpoint scan_paths_prog (g : list string -> node_op) (abs : string) (heads : smap (string * string)) (paths : list string)
+    (st : list (string * string * string) * list string) : nprog (list (string * string * string) * list string) :=
+  match paths with
+  | [] => NDone st
+  | p :: rest => nbind (scan_path_prog g abs heads p st) (scan_paths_prog g abs heads rest)
+  end.
+
+Inductive scan_result :=
+| ScanFailed (why : string)
+| Scanned (edits : list (string * string * string)) (skipped : list string).
+
+scan_checkout_prog (g : list string -> node_op) (abs dir : string) : nprog scan_result :=
+  nbind (nask (g ["ls-tree", "-r", "-z", "HEAD"])) (fun lt =>
+  if negb (fst lt) then NDone (ScanFailed (append dir " is not a git checkout")) else
+  let t := tree_entries (split_text nio_nul (ans_one lt)) (@SLeaf (string * string)) [] in
+  nbind (nask (g ["ls-files", "--others", "--exclude-standard", "-z"])) (fun lf =>
+  if negb (fst lf) then NDone (ScanFailed "git ls-files failed") else
+  let paths := sort_uniq (List.filter (fun x => negb (seq x "")) (split_text nio_nul (ans_one lf)) ++ snd t) in
+  nbind (scan_paths_prog g abs (fst t) paths ([], [])) (fun st =>
+  NDone (Scanned (rev_onto (fst st) []) (rev_onto (snd st) []))))).
+
+checkout_edits_prog (dir : string) : nprog scan_result :=
+  nbind (nask IoCwd) (fun cwd =>
+  let abs := resolve_rel (ans_one cwd) dir in
+  nbind (checkout_gitdir_prog abs) (fun orig =>
+  nbind (read_opt_prog (path_join orig "commondir")) (fun cd =>
+  let common := match cd with Some c => resolve_rel orig (trim c) | None => orig end in
+  nbind (head_commit_prog orig common) (fun head =>
+  match head with
+  | None => NDone (ScanFailed (append dir " is not a git checkout"))
+  | Some head =>
+      nbind (nask (IoTempDir "pantheon-snapshot")) (fun made =>
+      let snap := ans_one made in
+      let snap_git := path_join snap "gitdir" in
+      let info := path_join (path_join snap_git "objects") "info" in
+      let empty := path_join snap "gitconfig" in
+      let g (args : list string) : node_op :=
+        IoGitEnv abs [append "GIT_CONFIG_GLOBAL=" empty, append "GIT_CONFIG_SYSTEM=" empty,
+                      append "GIT_INDEX_FILE=" (path_join snap_git "index")]
+          ("-c" :: "core.fsmonitor=false" :: append "--git-dir=" snap_git :: append "--work-tree=" abs :: args) in
+      cli_do (IoMakeDirs info) (fun _ =>
+      cli_do (IoMakeDirs (path_join snap_git "refs")) (fun _ =>
+      cli_do (IoWriteFile (path_join snap_git "config") "") (fun _ =>
+      cli_do (IoWriteFile (path_join snap_git "HEAD") (append head newline)) (fun _ =>
+      cli_do (IoWriteFile (path_join info "alternates") (append (path_join common "objects") newline)) (fun _ =>
+      cli_do (IoWriteFile empty "") (fun _ =>
+      nbind (scan_checkout_prog g abs dir) (fun r =>
+      cli_do (IoRemoveTree snap) (fun _ => NDone r)))))))))
+  end)))).
+
+Fixpoint edits_items (l : list (string * string * string)) : list json :=
   match l with
-  | [p, o, n] :: r => JObj [("path", JStr p), ("old", JStr o), ("new", JStr n)] :: edits_items r
-  | _ :: r => edits_items r
+  | (p, o, n) :: r => JObj [("path", JStr p), ("old", JStr o), ("new", JStr n)] :: edits_items r
   | [] => []
   end.
 
 (** for a model with tools: what it changed in its checkout, as the reply a
     patch request wants *)
 cmd_edits (dir : string) (rest : list string) : nprog unit :=
-  cli_ask (IoCheckoutEdits dir) (fun a =>
-  if negb (fst a) then cli_fail (ans_one a) else
-  match nio_lists (ans_list a) with
-  | skipped :: edits =>
+  nbind (checkout_edits_prog dir) (fun r =>
+  match r with
+  | ScanFailed why => cli_fail why
+  | Scanned edits skipped =>
       let note := append (join " " rest)
                     (match skipped with [] => "" | _ => cat [" (skipped, can't be edits: ", join ", " skipped, ")"] end) in
       cli_do (IoPrint (append (json_text (JObj [("edits", JList (edits_items edits)), ("note", JStr (trim note))])) newline))
         (fun _ => NDone tt)
-  | [] => cli_fail "the checkout's edits came back malformed"
   end).
 
 (** an edits file: a JSON list of strings, each edit's path, old and new *)
@@ -626,8 +1018,11 @@ edits_file (file : string) (k : list string -> nprog unit) : nprog unit :=
 
 cmd_apply_edits (dir file : string) : nprog unit :=
   edits_file file (fun edits =>
-  cli_ask (IoApplyEdits dir edits) (fun a =>
-  if fst a then cli_say "applied" (fun _ => NDone tt) else cli_fail (ans_one a))).
+  nbind (edits_prog (InDir dir) (edit_triples edits)) (fun failed =>
+  match failed with
+  | None => cli_say "applied" (fun _ => NDone tt)
+  | Some why => cli_fail why
+  end)).
 
 (** how `pantheon check` says the failure is the edits' (they don't apply):
     any other failing exit is this node's (node.soma reads them so) *)
@@ -636,12 +1031,11 @@ check_node_failed : string := "3".
 
 cmd_check (repo head file out : string) : nprog unit :=
   edits_file file (fun edits =>
-  cli_ask (IoCheckTree repo head out edits) (fun a =>
-  match fst a, ans_list a with
-  | true, [tree] => cli_do (IoPrint tree) (fun _ => NDone tt)
-  | false, ["bid", e] => cli_do (IoPrint e) (fun _ => cli_do (IoExit check_bid_failed) (fun _ => NDone tt))
-  | _, ["node", e] => cli_do (IoPrint e) (fun _ => cli_do (IoExit check_node_failed) (fun _ => NDone tt))
-  | _, _ => cli_do (IoPrint "node problem: the check came back malformed") (fun _ => cli_do (IoExit check_node_failed) (fun _ => NDone tt))
+  nbind (check_tree_prog repo head out edits) (fun r =>
+  match r with
+  | TreeMade tree => cli_do (IoPrint tree) (fun _ => NDone tt)
+  | TreeBid e => cli_do (IoPrint e) (fun _ => cli_do (IoExit check_bid_failed) (fun _ => NDone tt))
+  | TreeNode e => cli_do (IoPrint e) (fun _ => cli_do (IoExit check_node_failed) (fun _ => NDone tt))
   end)).
 
 (** ---- the commands ---- *)

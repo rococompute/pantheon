@@ -2,8 +2,10 @@
 
 Pantheon's decisions are Soma (`node.soma` and what it imports), and so is
 the node's kernel (`node_kernel.soma`: its tables, peer links, signatures,
-files and select); what is left of the program around them is `shell.ml`,
-about 1,130 lines of hand-written OCaml (it was about 1,600)
+files and select) and the edits machinery (`cli.soma`: applying edits,
+reading a checkout's changes as edits, a bid's tree); what is left of the
+program around them is `shell.ml`, about 910 lines of hand-written OCaml
+(it was about 1,600)
 that `shell.definition` declares to Soma as four assumptions (`sha256`,
 `hash_list`, `decode_tx`, `run`). The goal: as much of `shell.ml` as can be
 is Soma, extracted with the rest, and OCaml is left only as thin bindings to
@@ -267,7 +269,7 @@ limit, CI and checks and their jobs, reply files, the inbox) is shell.ml's
 in the binary, and the node's service's in the unikernel: with none, a
 check is reported and comes to nothing, the checkouts are at their genesis
 commits, the model has no limit, and there are no jobs, reply files or
-inbox. The commands' operations (`IoSay` ... `IoCheckTree`) are shell.ml's
+inbox. The commands' operations (`IoSay` ... `IoGitEnv`) are shell.ml's
 (the unikernel prints, writes named files, and answers false to the rest:
 it makes no keys and runs no git).
 
@@ -277,9 +279,8 @@ The commands are node programs too (`cli.soma`): `init`, `keygen`,
 key.json, chain.json and public.json with the hash chain's tip, the
 genesis's bytes and every check on them, written through a small JSON
 value that prints as Yojson.Safe does) and do their I/O through the
-operations above, which `node_io` answers with no node (`cli_open` only
-hands the edits operations Soma's helpers). `main.soma`'s `dispatch` runs
-them with `run_shell`; `pantheon node` is `run_node`. The `cmd_*` and
+operations above, which `node_io` answers with no node, under the handle
+"cli". `main.soma`'s `dispatch` runs them with `run_shell`; `pantheon node` is `run_node`. The `cmd_*` and
 `read_plan` bindings are gone. A genesis is the same bytes either way:
 the old binary and the new one, given the same parts, write the same
 genesis.json. Two cases that crashed the old binary now say why:
@@ -344,6 +345,49 @@ the e2e `future-nonce` flood (600 transactions, each signed and resent)
 froze the node that sent it. The kernel keeps the lines it signed since
 the last resend and those the last resend sent, so a resend signs
 nothing new.
+
+## The edits machinery
+
+An edit is a path, the old text and the new (docs/DESIGN.md). What edits
+do is Soma's, in `cli.soma`, for all three of their uses:
+
+- **Applying edits** (`edits_prog`): each edit's plan from the shell's
+  look at its path (`edit_plan_of`: unsafe, through a symlink, a
+  directory, nothing to delete, no such file, or read it and replace the
+  one place its old text appears, `edit_apply`), then the write or the
+  removal; the first that can't be made stops them, with why. A merge
+  runs it on a governed repository's checkout (`InRepo`: the node's
+  `IoMerge*` operations), `pantheon apply-edits` and `pantheon check` in a
+  directory (`InDir`: `IoPathProbe`, `IoReadText`, `IoPathWrite`,
+  `IoPathRemove`). The shell keeps one `path_probe`, `path_write` and
+  `path_remove` for both.
+- **A bid's tree** (`check_tree_prog`, `pantheon check`): the checkout must
+  be at the market's head tree; a shared clone, the edits applied, `git
+  add -A -f` and `git write-tree`. Whose a failure is (the bid's: its edits
+  don't apply; or this node's: its checkout or git) is decided here.
+- **A checkout's changes as edits** (`checkout_edits_prog`, `pantheon
+  edits`, for a model with tools): HEAD's commit read from the ref files
+  alone (`head_commit_prog`: the checkout's `.git`, a `gitdir:` file, or
+  `PANTHEON_GITDIR`; `commondir`; loose refs, then `packed-refs`), a
+  snapshot repository in a new temporary directory with an empty config
+  and the checkout's objects as alternates, `ls-tree` and `ls-files
+  --others --exclude-standard` for the paths, then each path looked at
+  (`scan_path_prog`): left out under any `.git`, skipped when unsafe, not a
+  regular file, through a symlink, binary or new and empty; otherwise
+  hashed into the snapshot (`hash-object -w --no-filters`), and a changed
+  file staged there (`update-index --cacheinfo`) and read as one edit per
+  hunk of git's diff (`diff_hunks`, `hunk_edits_of`) when replaying them
+  gives the new text, else one whole-file write. No git command runs on
+  the model's repository, so no config there can run anything.
+
+The shell does the file and git work, with no node: `IoPathStat` (a
+path's kind, its last part not followed, and its owner's execute bit),
+`IoTempDir`, `IoRemoveTree` (in the background) and `IoGitEnv` (git with
+the snapshot's environment entries first). `test/edits.sh` checks the
+three uses, including the hostile `.git` and `PANTHEON_GITDIR` configs,
+and `test/check-*.sh` the check. `pantheon edits` on a 250-file checkout
+takes about 2.4 s, most of it one `git hash-object` process a file, as
+before.
 
 ## The node as a unikernel
 
@@ -1037,17 +1081,19 @@ separate work; this status does not mark `.plan`.
   a diverged checkout; `merge_edit_plan` and `merge_edit_apply` (Soma's
   `edit_once`) decide each edit; `merge_tree_check` compares the committed
   tree with the attested one. The shell only resets, probes, reads, writes,
-  removes, commits and records. `apply_edits` stays in shell.ml for
-  `check` and `apply-edits`.
+  removes, commits and records. (Since then `check` and `apply-edits`
+  apply edits with the same program: see "The edits machinery".)
 
-- The helper callbacks (step 3) are one typed `shell_helpers` record in
+- The helper callbacks (step 3) were one typed `shell_helpers` record in
   `util.soma`. `node_open` receives it once; the binding transports its three
   remaining fields as a product (`pack_helpers`), since `.definition`
   accepts products but not Soma record types. `shell.ml` unpacks it into a
   named OCaml record and threads it through edit and command callers.
   `edit_once` serves edit application/diff replay, `contains` serves URL
   resolution and CI error classification, and `shell_safe_path` serves path
-  checks. `util.proof` checks all three packed callbacks on pure inputs.
+  checks. `util.proof` checked all three packed callbacks on pure inputs.
+  With the edits machinery in Soma, no OCaml calls them: the record and
+  `cli_open` are gone, and `node_open` takes only the setup.
   Prompt expansion calls `replace_all` directly in Soma; plan filtering
   calls `plan_open` directly there too.
 

@@ -73,6 +73,10 @@ Fixpoint smap_find {A : Type} (k : string) (m : smap A) : option A :=
 
 smap_mem {A : Type} (k : string) (m : smap A) : bool := match smap_find k m with Some _ => true | None => false end.
 
+(** the keys, in order, before [acc] *)
+Fixpoint smap_keys_onto {A : Type} (m : smap A) (acc : list string) : list string :=
+  match m with SLeaf => acc | SNode l k _ r _ => smap_keys_onto l (k :: smap_keys_onto r acc) end.
+
 Fixpoint smap_size {A : Type} (m : smap A) : nat :=
   match m with SLeaf => 0 | SNode l _ _ r _ => S (smap_size l + smap_size r) end.
 
@@ -256,9 +260,23 @@ Inductive node_op :=
 | IoClone (url dir commit : string)
 | IoSpawnNode (log : string) (args : list string)
 | IoAwaitNodes (pids : list string)
-| IoCheckoutEdits (dir : string)
-| IoApplyEdits (dir : string) (edits : list string)
-| IoCheckTree (repo head out : string) (edits : list string)
+(** the edits machinery's file and git work (cli.soma's edits_prog,
+    checkout_edits_prog and check_tree_prog decide; they need no node): a
+    path's kind, without following its last part ([kind, exec]: "file",
+    "dir", "symlink", "other" or "none", then "true" when its owner may
+    run it); a path in a directory, looked at as a merge's
+    [IoMergeProbe] does ([kind]: "symlink" when a part of it is one, else
+    "dir", "file" or "none"); writing it, keeping its mode, and removing it
+    ([why] it failed, "" if it didn't); a new temporary directory; removing
+    a directory's tree, later; git with the environment's entries [extra]
+    first (git's output, and whether it succeeded) *)
+| IoPathStat (path : string)
+| IoPathProbe (dir path : string)
+| IoPathWrite (dir path text : string)
+| IoPathRemove (dir path : string)
+| IoTempDir (prefix : string)
+| IoRemoveTree (path : string)
+| IoGitEnv (dir : string) (extra args : list string)
 (** the consensus snapshot (node.soma's snapshot_text): saved atomically
     and synced before any vote it holds is sent; consensus.state's text,
     absent when there is none *)
@@ -433,9 +451,13 @@ io_wire (op : node_op) : list string :=
   | IoClone url dir commit => ["clone", url, dir, commit]
   | IoSpawnNode log args => "spawn_node" :: log :: args
   | IoAwaitNodes pids => "await_nodes" :: pids
-  | IoCheckoutEdits dir => ["checkout_edits", dir]
-  | IoApplyEdits dir edits => "apply_edits" :: dir :: edits
-  | IoCheckTree repo head out edits => "check_tree" :: repo :: head :: out :: edits
+  | IoPathStat path => ["path_stat", path]
+  | IoPathProbe dir path => ["path_probe", dir, path]
+  | IoPathWrite dir path text => ["path_write", dir, path, text]
+  | IoPathRemove dir path => ["path_remove", dir, path]
+  | IoTempDir prefix => ["temp_dir", prefix]
+  | IoRemoveTree path => ["remove_tree", path]
+  | IoGitEnv dir extra args => "git_env" :: dir :: resend_fields extra ++ ("alternate" :: args)
   | IoSnapshotSave text => ["snapshot_save", text]
   | IoSnapshotLoad => ["snapshot_load"]
   | IoServeListen address port => ["serve_listen", address, port]
@@ -571,9 +593,17 @@ io_of_wire (w : list string) : option node_op :=
   | ["clone", url, dir, commit] => Some (IoClone url dir commit)
   | "spawn_node" :: log :: args => Some (IoSpawnNode log args)
   | "await_nodes" :: pids => Some (IoAwaitNodes pids)
-  | ["checkout_edits", dir] => Some (IoCheckoutEdits dir)
-  | "apply_edits" :: dir :: edits => Some (IoApplyEdits dir edits)
-  | "check_tree" :: repo :: head :: out :: edits => Some (IoCheckTree repo head out edits)
+  | ["path_stat", path] => Some (IoPathStat path)
+  | ["path_probe", dir, path] => Some (IoPathProbe dir path)
+  | ["path_write", dir, path, text] => Some (IoPathWrite dir path text)
+  | ["path_remove", dir, path] => Some (IoPathRemove dir path)
+  | ["temp_dir", prefix] => Some (IoTempDir prefix)
+  | ["remove_tree", path] => Some (IoRemoveTree path)
+  | "git_env" :: dir :: rest =>
+      match resend_parts rest with
+      | Some (extra, args) => Some (IoGitEnv dir extra args)
+      | None => None
+      end
   | ["snapshot_save", text] => Some (IoSnapshotSave text)
   | ["snapshot_load"] => Some IoSnapshotLoad
   | ["serve_listen", address, port] => Some (IoServeListen address port)
