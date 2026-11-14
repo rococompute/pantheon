@@ -13,11 +13,12 @@ node.soma  step : obj -> list string -> obj * list (list string)
 node_kernel.soma   the node's kernel: tables, peer links, signatures, files, the select
 node_host.soma   the kernel's host work: a merge's git, the model's limit, jobs, checks and CI
 cli.soma   the commands, the node's setup, and the edits machinery
-shell.ml   the kernel's primitives on the host: sockets, files, git, processes
+node_net.soma   the binary's network: links, buffers, the select, the service's socket
+shell.ml   the host's primitives: sockets by name, files, git, processes
 ```
 
-The kernel is the same program in the binary and in the unikernel: shell.ml carries out
-its primitives for the binary, Sandbox for the unikernel (docs/SHELL-IN-SOMA.md, "One
+The kernel is the same program in the binary and in the unikernel: node_net.soma over
+shell.ml's sockets carries out its primitives for the binary, Sandbox for the unikernel (docs/SHELL-IN-SOMA.md, "One
 kernel, two runners").
 
 Events and outputs are lists of strings, because those cross Soma's OCaml boundary.

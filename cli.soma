@@ -1066,12 +1066,12 @@ a patch request also gets a scratch checkout in $PANTHEON_WORKTREE: see scripts/
 
 
 (** ---- the node's setup (pantheon node) ----
-    What [node_open] needed decided before it builds the node's runtime
-    (its tables, sockets and jobs, still the shell's): the home as an
+    What the node needs decided before its kernel starts
+    (node_kernel.soma's kernel_world; node_net.soma takes the home): the home as an
     absolute path, kept private; genesis.json, key.json and chain.json
     read and checked; the node's flags; the governed repositories checked
     out and checked against the genesis's trees; and which already carry
-    a merge. [node_setup] gives it all to [node_open] as frames: the
+    a merge. [node_setup] gives it all to the runner as frames: the
     settings, this node's key, its excluded repositories, the repositories
     it can't check, the per-repository CI commands, the agents, the
     repositories, those still at genesis, then the boot events. *)

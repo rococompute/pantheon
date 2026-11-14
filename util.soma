@@ -212,6 +212,11 @@ secret_char (c : ascii) : bool :=
 
 ends (p s : string) : bool := (slen p <=? slen s) && seq (substr s (slen s - slen p) (slen p)) p.
 
+hcat (l : list string) : string := Stdlib.Strings.String.concat "" l.
+
+(** [dir] and [p] joined as OCaml's Filename.concat joins them *)
+hjoin (dir p : string) : string := if ends "/" dir then hcat [dir, p] else hcat [dir, "/", p].
+
 redacted : string := "[redacted]".
 
 key_word (w : string) : bool :=

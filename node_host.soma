@@ -79,12 +79,7 @@ host_start : host_state :=
      hs_held := []; hs_probing := false; hs_inbox := PrimFloat.zero;
      hs_jobs := []; hs_ended := []; hs_ci_busy := false; hs_ci_waiting := []; hs_events := [] |}.
 
-hcat (l : list string) : string := Stdlib.Strings.String.concat "" l.
-
 hnl : string := Stdlib.Strings.String.String (Ascii.ascii_of_nat 10) Stdlib.Strings.String.EmptyString.
-
-(** [dir] and [p] joined as OCaml's Filename.concat joins them *)
-hjoin (dir p : string) : string := if ends "/" dir then hcat [dir, p] else hcat [dir, "/", p].
 
 (** a governed repository's checkout: HOME/repos/NAME *)
 hrepo_dir (hw : hworld) (r : string) : string := hjoin (hjoin (hw_home hw) "repos") r.

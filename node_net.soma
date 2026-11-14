@@ -1,0 +1,274 @@
+(** The binary's network and files (docs/SHELL-IN-SOMA.md, "One kernel,
+    two runners"): what the binary's runner (node_shell.soma) does with the
+    kernel's primitives and the service's socket, as the unikernel's does
+    with Sandbox (node_sandbox.soma). The kernel hands over a listener, a
+    mailbox, dials, sends and closes ([IoNet*]) and the node's named files
+    ([IoFile*]); the service asks for its listener, its next request and
+    its replies ([IoServe*]). Here they're kept and carried out over the
+    host's sockets as the shell has them ([IoSock*]: a descriptor's name,
+    listen, dial, select, accept, read, write, close) and paths ([IoReadText],
+    [IoSave], [IoAppendSynced]). What it keeps: the node's home, the
+    listener, the links (one a peer opened, read as it comes; one the
+    kernel dialed, written through a buffer the select drains), and the
+    service's listener and clients with the bytes each sent. *)
+From Stdlib Require Import NArith.BinNat.
+Import util nodeio.
+Require Import Soma.Wire.
+
+(** a link: its descriptor, whether the kernel dialed it, whether it is
+    still connecting, and the bytes waiting to go (a dialed one's) *)
+Record nlink := { l_fd : string; l_dialed : bool; l_connecting : bool; l_obuf : string }.
+
+(** a service client: its descriptor and what it sent past its last whole
+    request *)
+Record nclient := { c_fd : string; c_buf : string }.
+
+(** the links and clients newest first, as they're added *)
+Record net_state := {
+  ns_home : string;
+  ns_listener : option string;
+  ns_links : list nlink;
+  ns_serve : option string;
+  ns_clients : list nclient }.
+
+net_start (home : string) : net_state :=
+  {| ns_home := home; ns_listener := None; ns_links := []; ns_serve := None; ns_clients := [] |}.
+
+net_has (ids : list string) (id : string) : bool := existsb (nio_eq id) ids.
+
+option_list {A : Type} (o : option A) : list A := match o with Some a => [a] | None => [] end.
+
+(** ---- links ---- *)
+
+net_find (s : net_state) (id : string) : option nlink := find (fun l => nio_eq (l_fd l) id) (ns_links s).
+
+net_put (s : net_state) (l : nlink) : net_state :=
+  {| s with ns_links := map (fun x => if nio_eq (l_fd x) (l_fd l) then l else x) (ns_links s) |}.
+
+net_add (s : net_state) (fd : string) (dialed connecting : bool) : net_state :=
+  {| s with ns_links := {| l_fd := fd; l_dialed := dialed; l_connecting := connecting; l_obuf := "" |} :: ns_links s |}.
+
+net_drop (s : net_state) (id : string) : nprog net_state :=
+  nbind (nask (IoSockClose id)) (fun _ =>
+  NDone {| s with ns_links := filter (fun l => negb (nio_eq (l_fd l) id)) (ns_links s) |}).
+
+net_listen (s : net_state) (host port : string) : nprog (nanswer * net_state) :=
+  nbind (nask (IoSockListen host port "16")) (fun a =>
+  if fst a then NDone (ans_ok, {| s with ns_listener := Some (ans_one a) |}) else NDone (a, s)).
+
+(** a dial doesn't wait for the other side: a link still connecting is
+    written once the select says it can be *)
+net_connect (s : net_state) (host port : string) : nprog (nanswer * net_state) :=
+  nbind (nask (IoSockDial host port)) (fun a =>
+  match ans_found a with
+  | Some [fd, how] => NDone (ans_data true [fd], net_add s fd true (nio_eq how "connecting"))
+  | _ => NDone (ans_flag false, s)
+  end).
+
+(** only a dialed link is written to (the kernel sends on its links to its
+    peers); its bytes wait in its buffer, 64 MiB at most: a peer that
+    reads nothing doesn't take the node's memory *)
+net_send (s : net_state) (id data : string) : nanswer * net_state :=
+  match net_find s id with
+  | Some l =>
+      if l_dialed l then
+        (ans_ok, if slen (l_obuf l) <? num "67108864" then net_put s {| l with l_obuf := append (l_obuf l) data |} else s)
+      else (ans_flag false, s)
+  | None => (ans_flag false, s)
+  end.
+
+net_close (s : net_state) (id : string) : nprog (nanswer * net_state) :=
+  match net_find s id with
+  | Some _ => nbind (net_drop s id) (fun s' => NDone (ans_ok, s'))
+  | None => NDone (ans_ok, s)
+  end.
+
+(** ---- the mailbox: one select ---- *)
+
+(** a link the select found ready: a dialed one connected (or failed to)
+    or written to, a peer's read *)
+net_ready_link (r w : list string) (l : nlink) (s : net_state) : nprog (net_state * list (list string)) :=
+  let closed := fun (s : net_state) => nbind (net_drop s (l_fd l)) (fun s' => NDone (s', [["closed", l_fd l]])) in
+  if l_dialed l then
+    if net_has w (l_fd l) then
+      if l_connecting l then
+        nbind (nask (IoSockError (l_fd l))) (fun e =>
+        let s := net_put s {| l with l_connecting := false |} in
+        if fst e then closed s else NDone (s, []))
+      else
+        nbind (nask (IoSockWrite (l_fd l) (l_obuf l))) (fun a =>
+        match ans_list a with
+        | ["wrote", k] => NDone (net_put s {| l with l_obuf := drop_str (num k) (l_obuf l) |}, [])
+        | ["again"] => NDone (s, [])
+        | _ => closed s
+        end)
+    else NDone (s, [])
+  else if net_has r (l_fd l) then
+    nbind (nask (IoSockRead (l_fd l))) (fun a =>
+    match ans_list a with
+    | ["bytes", data] => NDone (s, [["bytes", l_fd l, data]])
+    | ["again"] => NDone (s, [])
+    | _ => closed s
+    end)
+  else NDone (s, []).
+
+Fixpoint net_ready_links (r w : list string) (ls : list nlink) (s : net_state) (evs : list (list string))
+    : nprog (net_state * list (list string)) :=
+  match ls with
+  | [] => NDone (s, evs)
+  | l :: rest => nbind (net_ready_link r w l s) (fun p => net_ready_links r w rest (fst p) (evs ++ snd p))
+  end.
+
+(** what the select found: a new connection (one a turn), then each link *)
+net_after_select (s : net_state) (r w : list string) : nprog (nanswer * net_state) :=
+  nbind (match ns_listener s with
+         | Some lfd =>
+             if net_has r lfd then
+               nbind (nask (IoSockAccept lfd "true")) (fun a =>
+               match ans_found a with
+               | Some [c, host] => NDone (net_add s c false false, [["opened", c, host]])
+               | _ => NDone (s, [])   (* out of descriptors, or the peer gave up *)
+               end)
+             else NDone (s, [])
+         | None => NDone (s, [])
+         end) (fun p =>
+  nbind (net_ready_links r w (ns_links (fst p)) (fst p) (snd p)) (fun q =>
+  NDone (ans_data true (nio_frame_lists (snd q)), fst q))).
+
+(** One select: new connections, what peers' connections sent and their
+    ends, dialed links connected or written to, waiting [ms] at most; a
+    process's output wakes it too (the host's events read it). A failed
+    select (a descriptor past FD_SETSIZE, EBADF) waits a moment and goes
+    round again rather than ending the node. *)
+net_mailbox (s : net_state) (ms : string) : nprog (nanswer * net_state) :=
+  let reads := option_list (ns_listener s) ++ map l_fd (filter (fun l => negb (l_dialed l)) (ns_links s)) in
+  let writes := map l_fd (filter (fun l => l_dialed l && (l_connecting l || negb (slen (l_obuf l) =? 0))) (ns_links s)) in
+  nbind (nask (IoSockSelect ms "true" reads writes)) (fun a =>
+  match ans_found a with
+  | Some ready =>
+      match nio_lists ready with
+      | [r, w] => net_after_select s r w
+      | _ => net_after_select s [] []
+      end
+  | None =>
+      nbind (nexec (IoLog (hcat ["select failed (", ans_one a, "): ", show (length (ns_links s)), " connections"]))) (fun _ =>
+      nbind (nask (IoSockSelect "200" "false" [] [])) (fun _ => net_after_select s [] []))
+  end).
+
+(** ---- the service's socket ----
+    Whole requests from its clients, a frame of frames each (Soma.Wire's
+    frame: four bytes of length, most significant first, then the bytes;
+    the image sends and receives them with Sandbox, which exports Wire),
+    and answers framed the same way. *)
+
+(** the longest request or frame in one (a file a merge writes goes in
+    one): 1 GiB, past which a client is dropped *)
+serve_limit : N := 1073741824%N.
+
+(** the first client with a whole request, that request (its descriptor,
+    then its fields) taken out of its buffer *)
+serve_take (s : net_state) : option (list string * net_state) :=
+  match find (fun c => match take_frame serve_limit (c_buf c) with Whole _ _ => true | _ => false end) (ns_clients s) with
+  | Some c =>
+      match take_frame serve_limit (c_buf c) with
+      | Whole data rest =>
+          Some (c_fd c :: fst (split_frames serve_limit data),
+                {| s with ns_clients := map (fun x => if nio_eq (c_fd x) (c_fd c) then {| c_fd := c_fd c; c_buf := rest |} else x) (ns_clients s) |})
+      | _ => None
+      end
+  | None => None
+  end.
+
+serve_drop (s : net_state) (id : string) : nprog net_state :=
+  nbind (nask (IoSockClose id)) (fun _ =>
+  NDone {| s with ns_clients := filter (fun c => negb (nio_eq (c_fd c) id)) (ns_clients s) |}).
+
+serve_listen (s : net_state) (host port : string) : nprog (nanswer * net_state) :=
+  nbind (nask (IoSockListen host port "8")) (fun a =>
+  if fst a then NDone (ans_ok, {| s with ns_serve := Some (ans_one a) |}) else NDone (ans_flag false, s)).
+
+(** a descriptor the select found ready: the listener (a new client) or a
+    client's bytes *)
+serve_ready_fd (s : net_state) (fd : string) : nprog net_state :=
+  if match ns_serve s with Some l => nio_eq l fd | None => false end then
+    nbind (nask (IoSockAccept fd "false")) (fun a =>
+    match ans_found a with
+    | Some (c :: _) => NDone {| s with ns_clients := {| c_fd := c; c_buf := "" |} :: ns_clients s |}
+    | _ => NDone s
+    end)
+  else
+    match find (fun c => nio_eq (c_fd c) fd) (ns_clients s) with
+    | None => NDone s
+    | Some c =>
+        nbind (nask (IoSockRead fd)) (fun a =>
+        match ans_list a with
+        | ["bytes", data] =>
+            let b := append (c_buf c) data in
+            match take_frame serve_limit b with
+            | Oversized => serve_drop s fd
+            | _ => NDone {| s with ns_clients := map (fun x => if nio_eq (c_fd x) fd then {| c_fd := fd; c_buf := b |} else x) (ns_clients s) |}
+            end
+        | _ => serve_drop s fd
+        end)
+    end.
+
+Fixpoint serve_ready (s : net_state) (fds : list string) : nprog net_state :=
+  match fds with
+  | [] => NDone s
+  | fd :: rest => nbind (serve_ready_fd s fd) (fun s' => serve_ready s' rest)
+  end.
+
+(** the next whole request, waiting [wait] seconds at most for one *)
+serve_next (s : net_state) (wait : string) : nprog (nanswer * net_state) :=
+  match serve_take s with
+  | Some (req, s') => NDone (ans_data true req, s')
+  | None =>
+      let fds := option_list (ns_serve s) ++ map c_fd (ns_clients s) in
+      nbind (nask (IoSockSelect (show (num wait * 1000)) "false" fds [])) (fun a =>
+      let r := if fst a then hd [] (nio_lists (ans_list a)) else [] in
+      nbind (serve_ready s r) (fun s' =>
+      NDone (match serve_take s' with Some (req, s'') => (ans_data true req, s'') | None => (ans_flag false, s') end)))
+  end.
+
+(** all of [data] written (a client's socket blocks), each write at least
+    a byte; false when the client is gone *)
+Fixpoint put_all (fuel : nat) (fd data : string) : nprog bool :=
+  match fuel with
+  | 0 => NDone true
+  | Succ f =>
+      if slen data =? 0 then NDone true
+      else
+        nbind (nask (IoSockWrite fd data)) (fun a =>
+        match ans_list a with
+        | ["wrote", k] => put_all f fd (drop_str (num k) data)
+        | _ => NDone false
+        end)
+  end.
+
+serve_reply (s : net_state) (id : string) (fields : list string) : nprog (nanswer * net_state) :=
+  match find (fun c => nio_eq (c_fd c) id) (ns_clients s) with
+  | None => NDone (ans_ok, s)
+  | Some _ =>
+      let data := frame (hcat (map frame fields)) in
+      nbind (put_all (slen data + 1) id data) (fun ok =>
+      if ok then NDone (ans_ok, s) else nbind (serve_drop s id) (fun s' => NDone (ans_ok, s')))
+  end.
+
+(** ---- the runner's layer ----
+    What it carries out itself; anything else goes to the shell as it is. *)
+net_op (s : net_state) (op : node_op) : option (nprog (nanswer * net_state)) :=
+  let file := fun name => hjoin (ns_home s) name in
+  match op with
+  | IoNetListen host port => Some (net_listen s host port)
+  | IoNetMailbox ms => Some (net_mailbox s ms)
+  | IoNetConnect host port _ => Some (net_connect s host port)
+  | IoNetSend conn data => Some (NDone (net_send s conn data))
+  | IoNetClose conn => Some (net_close s conn)
+  | IoFileRead name => Some (nbind (nask (IoReadText (file name))) (fun a => NDone (a, s)))
+  | IoFileWrite name durable text => Some (nbind (nask (IoSave (file name) durable text)) (fun a => NDone (a, s)))
+  | IoFileAppend name text => Some (nbind (nask (IoAppendSynced (file name) text)) (fun a => NDone (a, s)))
+  | IoServeListen host port => Some (serve_listen s host port)
+  | IoServeNext wait => Some (serve_next s wait)
+  | IoServeReply conn found stamp fields => Some (serve_reply s conn (found :: stamp :: fields))
+  | _ => None
+  end.

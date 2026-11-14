@@ -5,8 +5,9 @@ the node's kernel (`node_kernel.soma`: its tables, peer links, signatures,
 files and select), the host's work it asks for (`node_host.soma`: a
 merge's git, the model's budget and limit, jobs, checks and CI) and the
 edits machinery (`cli.soma`: applying edits, reading a checkout's changes
-as edits, a bid's tree); what is left of the program around them is
-`shell.ml`, about 630 lines of hand-written OCaml (it was about 1,600)
+as edits, a bid's tree), and the binary's network (`node_net.soma`: its
+links, buffers, select and the service's socket); what is left of the program around them is
+`shell.ml`, about 450 lines of hand-written OCaml (it was about 1,600)
 that `shell.definition` declares to Soma as four assumptions (`sha256`,
 `hash_list`, `decode_tx`, `run`). The goal: as much of `shell.ml` as can be
 is Soma, extracted with the rest, and OCaml is left only as thin bindings to
@@ -225,9 +226,10 @@ the kernel's eight primitives (nodeio.soma's `IoNetListen`,
 `IoFileWrite`, `IoFileAppend`: Sandbox's own, by name) and of the
 operations it hands on as they are (logging, the clock, a time of day,
 refusing to start, and the host's work: nodeio.soma's `service_op`).
-Two runners carry that out: the binary's, `run_shell` through shell.ml
-(node_shell.soma's `run_node`), whose sockets, files and select are the
-host's; and the unikernel's, `run_image` with Sandbox
+Two runners carry that out: the binary's, `run_net` through shell.ml
+(node_shell.soma's `run_node`), whose network and named files are
+node_net.soma's over the host's sockets by name ("The binary's network"
+below); and the unikernel's, `run_image` with Sandbox
 (node_sandbox.soma's `run_node_image_at`), which asks the node's service
 for the host's work.
 
@@ -250,7 +252,7 @@ select (`IoEvents`) is the runner's mailbox (what came in on
 connections: an offer, bytes, an end), then the host's events (its
 jobs'), then the queue, drained.
 
-| primitive | binary (shell.ml) | unikernel (node_sandbox.soma) |
+| primitive | binary (node_net.soma, over shell.ml's sockets) | unikernel (node_sandbox.soma) |
 |---|---|---|
 | `IoNetListen address port` | bind and listen (not found: why) | `listen_mailbox port` |
 | `IoNetMailbox ms` | one select on the listener, peers' connections, dialed links with bytes to write, and the host's jobs (whose output wakes it) | Sandbox's `mailbox` (a fifth of a second at most with a service: a job's output there doesn't wake it) |
@@ -349,6 +351,54 @@ the e2e `future-nonce` flood (600 transactions, each signed and resent)
 froze the node that sent it. The kernel keeps the lines it signed since
 the last resend and those the last resend sent, so a resend signs
 nothing new.
+
+### The binary's network
+
+The kernel's network and named files, and the service's socket, are Soma
+in the binary too: `node_net.soma`, the binary runner's layer
+(`net_op`, which node_shell.soma's `run_net` asks first, as the kernel
+asks `host_op`), with its state (`net_state`) handed from one operation
+to the next and from one turn to the next. It keeps the node's home, the
+listener, the links (a peer's, read as it comes; one the kernel dialed,
+with the bytes waiting to go, 64 MiB at most, and whether it is still
+connecting) and the service's listener and clients with the bytes each
+sent past its last whole request. A mailbox is one select over the
+listener, peers' links, dialed links with bytes to write or still
+connecting, and the processes (whose output wakes it); then a new
+connection (one a turn), then each link in turn: a dial's outcome
+checked, a dialed link written to as far as it takes, a peer's bytes
+read. A failed select is logged with the number of connections and
+waits a fifth of a second. The node's named files are paths in its home
+(`IoReadText`, `IoSave`, `IoAppendSynced`). The service's requests and
+answers are frames of frames, `Soma.Wire`'s `frame` and `take_frame`
+(Soma's, which Sandbox exports and the image sends and receives with):
+a request is taken whole from a client's bytes, one over 1 GiB drops
+the client, and an answer is written out whole (a client's socket
+blocks).
+
+What it asks the shell for: a socket by name (`IoSockListen`,
+`IoSockDial`, which doesn't wait, `IoSockSelect` of names to read and
+to write, `IoSockAccept`, `IoSockRead` of 64 KiB at most, giving bytes,
+"again" or "closed", `IoSockWrite`, giving what it wrote, "again" or
+"failed", `IoSockError`, a dial's outcome, and `IoSockClose`), a file
+written whole or appended (`IoSave`, `IoAppendSynced`) and
+`IoNoSigpipe` (a write to a closed connection is an error, not the end
+of the process). shell.ml keeps a table of descriptors by name, and
+nothing of the node: `node_open` and its handles are gone (node_io's
+handle argument is a name nothing reads). This was shell.ml's largest
+part, about 175 lines of links, buffers, the mailbox's select and the
+service's framing; there it is now about 90 lines of socket calls.
+
+The service frames with the functions the image uses, and they are
+proved: what is kept never holds a whole frame, and the frames don't
+depend on how TCP cut the bytes (Wire.v's `split_frames_kept` and
+`receive_frames_chunking`, of what runs: `take_frame_eq`). For that,
+Soma gained `Soma.Wire` (Sandbox's lines and frames, which any program
+can import without becoming a unikernel; `take_frame` and `split_at` by
+offset, proved equal to the character-at-a-time ones), and a program
+that extracts `nat` as `int` now gets String's length, get and
+substring as OCaml's, as an image does (main.soma no longer says so
+itself).
 
 ## The edits machinery
 

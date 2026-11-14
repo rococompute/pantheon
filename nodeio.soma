@@ -288,6 +288,20 @@ Inductive node_op :=
 | IoProcKill (job : string)
 | IoRun (prog : string) (args : list string)
 | IoTempFile (prefix suffix text : string)
+(** the binary runner's (node_net.soma): the host's sockets by name and
+    the node's files by path, which carry out the kernel's [IoNet*] and
+    [IoFile*] and the service's [IoServe*] there *)
+| IoSockListen (host port backlog : string)
+| IoSockDial (host port : string)
+| IoSockSelect (ms procs : string) (reads writes : list string)
+| IoSockAccept (fd nonblock : string)
+| IoSockRead (fd : string)
+| IoSockWrite (fd data : string)
+| IoSockError (fd : string)
+| IoSockClose (fd : string)
+| IoSave (path durable text : string)
+| IoAppendSynced (path text : string)
+| IoNoSigpipe
 (** the consensus snapshot (node.soma's snapshot_text): saved atomically
     and synced before any vote it holds is sent; consensus.state's text,
     absent when there is none *)
@@ -472,6 +486,17 @@ io_wire (op : node_op) : list string :=
   | IoProcKill job => ["proc_kill", job]
   | IoRun prog args => "run" :: prog :: args
   | IoTempFile prefix suffix text => ["temp_file", prefix, suffix, text]
+  | IoSockListen host port backlog => ["sock_listen", host, port, backlog]
+  | IoSockDial host port => ["sock_dial", host, port]
+  | IoSockSelect ms procs reads writes => "sock_select" :: ms :: procs :: resend_fields reads ++ ("alternate" :: writes)
+  | IoSockAccept fd nonblock => ["sock_accept", fd, nonblock]
+  | IoSockRead fd => ["sock_read", fd]
+  | IoSockWrite fd data => ["sock_write", fd, data]
+  | IoSockError fd => ["sock_error", fd]
+  | IoSockClose fd => ["sock_close", fd]
+  | IoSave path durable text => ["save", path, durable, text]
+  | IoAppendSynced path text => ["append_synced", path, text]
+  | IoNoSigpipe => ["no_sigpipe"]
   | IoSnapshotSave text => ["snapshot_save", text]
   | IoSnapshotLoad => ["snapshot_load"]
   | IoServeListen address port => ["serve_listen", address, port]
@@ -625,6 +650,21 @@ io_of_wire (w : list string) : option node_op :=
   | ["proc_kill", job] => Some (IoProcKill job)
   | "run" :: prog :: args => Some (IoRun prog args)
   | ["temp_file", prefix, suffix, text] => Some (IoTempFile prefix suffix text)
+  | ["sock_listen", host, port, backlog] => Some (IoSockListen host port backlog)
+  | ["sock_dial", host, port] => Some (IoSockDial host port)
+  | "sock_select" :: ms :: procs :: rest =>
+      match resend_parts rest with
+      | Some (reads, writes) => Some (IoSockSelect ms procs reads writes)
+      | None => None
+      end
+  | ["sock_accept", fd, nonblock] => Some (IoSockAccept fd nonblock)
+  | ["sock_read", fd] => Some (IoSockRead fd)
+  | ["sock_write", fd, data] => Some (IoSockWrite fd data)
+  | ["sock_error", fd] => Some (IoSockError fd)
+  | ["sock_close", fd] => Some (IoSockClose fd)
+  | ["save", path, durable, text] => Some (IoSave path durable text)
+  | ["append_synced", path, text] => Some (IoAppendSynced path text)
+  | ["no_sigpipe"] => Some IoNoSigpipe
   | ["snapshot_save", text] => Some (IoSnapshotSave text)
   | ["snapshot_load"] => Some IoSnapshotLoad
   | ["serve_listen", address, port] => Some (IoServeListen address port)

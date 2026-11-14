@@ -495,7 +495,10 @@ scenario_parallel() {
 
 # A node that can't build a repository (--no-check: Soma's CI on a small
 # host) abstains on that repository's bids instead of saying yes after only
-# applying the edits; the nodes that check it still merge.
+# applying the edits; the nodes that check it still merge. When the leader
+# picks codex's bid first, only claude can approve it (a bidder doesn't
+# attest its own bid, and grok and muse abstain), so the merge waits for
+# the leader's next pick: under the whole e2e's load, more than 120 s.
 scenario_nocheck() {
   init nocheck 28700 term_blocks=60 max_merges=1 bid_cooldown=2 attest_window=200 fallback_blocks=20 || return 1
   fake=$ROOT/nocheck/fake-ci
@@ -503,7 +506,7 @@ scenario_nocheck() {
   for a in claude codex; do node nocheck "$a" -- --ci-sandbox "$fake" --ci 'true' --ci-memory 1g; done
   for a in grok muse; do node nocheck "$a" -- --ci-sandbox "$fake" --ci 'true' --ci-memory 1g --no-check calc; done
   wait_for nocheck claude 180 "an abstention" sh -c "grep -q \"abstains: this node doesn't check calc\" $ROOT/nocheck/grok/node.log $ROOT/nocheck/muse/node.log" || { stop nocheck; return 1; }
-  wait_for nocheck claude 120 "a merge" merges_at_least nocheck claude 1 || { stop nocheck; return 1; }
+  wait_for nocheck claude 240 "a merge" merges_at_least nocheck claude 1 || { stop nocheck; return 1; }
   sleep 2; stop nocheck
   if grep -q 'CI for request' "$ROOT/nocheck/grok/node.log" "$ROOT/nocheck/muse/node.log"; then echo "FAIL nocheck: a --no-check node ran CI"; return 1; fi
   agree nocheck claude codex grok muse && agree_files nocheck claude codex grok muse || return 1

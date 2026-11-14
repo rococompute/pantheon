@@ -271,121 +271,9 @@ let proc_events () =
     (List.rev !finished);
   List.rev !evs
 
-(* ---------- the network ----------
-   The kernel's primitives (node_kernel.soma), as Sandbox has them: a
-   listener, connections a peer opened (read as they come) and connections
-   the kernel dialed (written through a buffer the select drains; a peer's
-   address is resolved at each dial, so a replaced machine with the same
-   VPN name is found again). Admission, line caps and buffered bytes are
-   the kernel's. *)
-
-let resolve host port =
-  match Unix.getaddrinfo host port [ Unix.AI_FAMILY Unix.PF_INET; Unix.AI_SOCKTYPE Unix.SOCK_STREAM ] with
-  | a :: _ -> Some a.Unix.ai_addr
-  | [] | (exception _) -> None
-
-(* a listening socket on HOST:PORT, or why not *)
-let listen_on host port backlog =
-  match resolve host port with
-  | None -> Error ("can't resolve " ^ host)
-  | Some a ->
-      let fd = Unix.socket ~cloexec:true PF_INET SOCK_STREAM 0 in
-      (try Unix.setsockopt fd SO_REUSEADDR true; Unix.bind fd a; Unix.listen fd backlog; Ok fd
-       with e -> close_all [ fd ]; Error (Printexc.to_string e))
-
-type link = { lid : string; lfd : Unix.file_descr; dialed : bool; mutable connecting : bool; obuf : Buffer.t }
-
-(* the primitives' state: the node's home, where its named files are, the
-   listener and the connections *)
-type net = { home : string; mutable listener : Unix.file_descr option; mutable links : link list; mutable counter : int }
-
-let net_name n = n.counter <- n.counter + 1; string_of_int n.counter
-let net_find n id = List.find_opt (fun l -> l.lid = id) n.links
-let net_drop n l = close_all [ l.lfd ]; n.links <- List.filter (fun x -> x != l) n.links
-let net_add n fd ~dialed ~connecting = let id = net_name n in
-  n.links <- { lid = id; lfd = fd; dialed; connecting; obuf = Buffer.create (if dialed then 4096 else 16) } :: n.links; id
-
-let net_listen n host port =
-  match listen_on host port 16 with
-  | Ok fd -> n.listener <- Some fd; ans_ok
-  | Error why -> (false, (0., [ why ]))
-
-(* a dial doesn't wait for the other side: a link still connecting is
-   written once the select says it can be *)
-let net_connect n host port =
-  match resolve host port with
-  | None -> ans_flag false
-  | Some a ->
-      let fd = Unix.socket ~cloexec:true PF_INET SOCK_STREAM 0 in
-      Unix.set_nonblock fd;
-      (match Unix.connect fd a with
-       | () -> ans_data [ net_add n fd ~dialed:true ~connecting:false ]
-       | exception Unix.Unix_error ((EINPROGRESS | EWOULDBLOCK | EAGAIN), _, _) -> ans_data [ net_add n fd ~dialed:true ~connecting:true ]
-       | exception _ -> close_all [ fd ]; ans_flag false)
-
-(* only a dialed link is written to (the kernel sends on its links to its
-   peers); its bytes wait in its buffer, 64 MiB at most: a peer that reads
-   nothing doesn't take the node's memory *)
-let net_send n id data =
-  match net_find n id with
-  | Some l when l.dialed -> if Buffer.length l.obuf < 64 * 1024 * 1024 then Buffer.add_string l.obuf data; ans_ok
-  | _ -> ans_flag false
-
-(* One select: new connections, what peers' connections sent and their
-   ends, dialed links connected or written to, waiting [ms] at most; a
-   process's output wakes it too (the host's events read it). A failed
-   select (a descriptor past FD_SETSIZE, EBADF) waits a moment and goes
-   round again rather than ending the node. *)
-let net_mailbox n ms =
-  let reads = Option.to_list n.listener @ List.filter_map (fun l -> if l.dialed then None else Some l.lfd) n.links @ proc_fds () in
-  let writes = List.filter_map (fun l -> if l.dialed && (l.connecting || Buffer.length l.obuf > 0) then Some l.lfd else None) n.links in
-  let r, w, _ = try Unix.select reads writes [] (float_of_string ms /. 1000.) with
-    | Unix.Unix_error (EINTR, _, _) -> ([], [], [])
-    | Unix.Unix_error (e, _, _) -> say "select failed (%s): %d connections" (Unix.error_message e) (List.length n.links); Unix.sleepf 0.2; ([], [], []) in
-  let evs = ref [] in
-  let add e = evs := e :: !evs in
-  let close l = net_drop n l; add [ "closed"; l.lid ] in
-  (match n.listener with
-   | Some lfd when List.mem lfd r ->
-       (match Unix.accept ~cloexec:true lfd with
-        | exception Unix.Unix_error _ -> ()   (* out of descriptors, or the peer gave up *)
-        | c, addr ->
-            Unix.set_nonblock c;
-            let host = match addr with Unix.ADDR_INET (a, _) -> Unix.string_of_inet_addr a | _ -> "" in
-            add [ "opened"; net_add n c ~dialed:false ~connecting:false; host ])
-   | _ -> ());
-  let buf = Bytes.create 65536 in
-  List.iter (fun l ->
-      if l.dialed then begin
-        if List.mem l.lfd w then
-          if l.connecting then (l.connecting <- false; if Unix.getsockopt_error l.lfd <> None then close l)
-          else
-            let s = Buffer.contents l.obuf in
-            match Unix.write_substring l.lfd s 0 (String.length s) with
-            | k -> Buffer.clear l.obuf; Buffer.add_string l.obuf (String.sub s k (String.length s - k))
-            | exception Unix.Unix_error ((EAGAIN | EWOULDBLOCK), _, _) -> ()
-            | exception _ -> close l
-      end
-      else if List.mem l.lfd r then
-        match Unix.read l.lfd buf 0 65536 with
-        | 0 -> close l
-        | k -> add [ "bytes"; l.lid; Bytes.sub_string buf 0 k ]
-        | exception Unix.Unix_error ((EAGAIN | EWOULDBLOCK), _, _) -> ()
-        | exception _ -> close l)
-    n.links;
-  List.rev !evs
-
-(* lists of lists on one wire (nodeio.soma's nio_frame_lists / nio_lists),
-   and a wire's environment entries, then the arguments as they are *)
+(* lists of lists on one wire (nodeio.soma's nio_frame_lists), and a
+   wire's fields, then the rest as it is (nodeio.soma's resend_parts) *)
 let frame_lists ls = List.concat_map (fun l -> List.concat_map (fun v -> [ "field"; v ]) l @ [ "alternate" ]) ls
-let unframe_lists parts =
-  let rec go cur acc = function
-    | "field" :: v :: rest -> go (v :: cur) acc rest
-    | "alternate" :: rest -> go [] (List.rev cur :: acc) rest
-    | [] -> List.rev acc
-    | _ -> fail "malformed list frame"
-  in
-  go [] [] parts
 let fields_then_args parts =
   let rec go acc = function
     | "field" :: v :: rest -> go (v :: acc) rest
@@ -393,72 +281,91 @@ let fields_then_args parts =
     | _ -> None in
   go [] parts
 
-(* ---------- the node's service ----------
-   Its socket (node.soma's service_tick_prog decides): whole requests from
-   its clients, a frame of frames each (Sandbox's frame: four bytes of
-   length, then the bytes), and answers framed the same way. *)
+(* ---------- sockets ----------
+   The host's sockets, by name (node_net.soma keeps the node's listener,
+   links and buffers, and the service's clients, and decides what each
+   select's answer becomes): listen, dial without waiting, one select,
+   accept, read, write, a dial's outcome, close. *)
 
-let frame s =
-  let n = String.length s in
-  String.init 4 (fun i -> Char.chr ((n lsr (8 * (3 - i))) land 255)) ^ s
-let frame_length s at = (Char.code s.[at] lsl 24) lor (Char.code s.[at + 1] lsl 16) lor (Char.code s.[at + 2] lsl 8) lor Char.code s.[at + 3]
-let unframes s =
-  let rec go at acc =
-    if at + 4 > String.length s then List.rev acc
-    else
-      let n = frame_length s at in
-      if at + 4 + n > String.length s then List.rev acc else go (at + 4 + n) (String.sub s (at + 4) n :: acc)
-  in
-  go 0 []
+let resolve host port =
+  match Unix.getaddrinfo host port [ Unix.AI_FAMILY Unix.PF_INET; Unix.AI_SOCKTYPE Unix.SOCK_STREAM ] with
+  | a :: _ -> Some a.Unix.ai_addr
+  | [] | (exception _) -> None
 
-type serve_client = { sid : string; sfd : Unix.file_descr; sbuf : Buffer.t }
-let serve_listener = ref None
-let serve_clients : serve_client list ref = ref []
-let serve_counter = ref 0
-let serve_listen host port =
-  match listen_on host port 8 with Ok fd -> serve_listener := Some fd; true | Error _ -> false
-let serve_drop c = close_all [ c.sfd ]; serve_clients := List.filter (fun x -> x.sid <> c.sid) !serve_clients
-(* a whole request a client sent, taken out of its buffer *)
-let serve_take () =
-  List.find_map (fun c ->
-      let s = Buffer.contents c.sbuf in
-      if String.length s < 4 || String.length s < 4 + frame_length s 0 then None
-      else begin
-        let n = frame_length s 0 in
-        Buffer.clear c.sbuf; Buffer.add_string c.sbuf (String.sub s (4 + n) (String.length s - 4 - n));
-        Some (c.sid :: unframes (String.sub s 4 n))
-      end)
-    !serve_clients
-let serve_next wait =
-  match serve_take () with
-  | Some r -> Some r
-  | None ->
-      let fds = Option.to_list !serve_listener @ List.map (fun c -> c.sfd) !serve_clients in
-      let r, _, _ = try Unix.select fds [] [] wait with Unix.Unix_error _ -> ([], [], []) in
-      let buf = Bytes.create 65536 in
-      List.iter (fun fd ->
-          if Some fd = !serve_listener then
-            (match Unix.accept ~cloexec:true fd with
-             | c, _ -> incr serve_counter;
-                 serve_clients := { sid = string_of_int !serve_counter; sfd = c; sbuf = Buffer.create 4096 } :: !serve_clients
-             | exception Unix.Unix_error _ -> ())
-          else
-            match List.find_opt (fun c -> c.sfd = fd) !serve_clients with
-            | None -> ()
-            | Some c ->
-                (match Unix.read fd buf 0 65536 with
-                 | 0 -> serve_drop c
-                 | n -> Buffer.add_subbytes c.sbuf buf 0 n
-                 | exception _ -> serve_drop c))
-        r;
-      serve_take ()
-let serve_reply sid fields =
-  match List.find_opt (fun c -> c.sid = sid) !serve_clients with
-  | None -> ()
-  | Some c ->
-      let data = frame (String.concat "" (List.map frame fields)) in
-      let rec put at = if at < String.length data then put (at + Unix.write_substring c.sfd data at (String.length data - at)) in
-      (try put 0 with _ -> serve_drop c)
+let socks : (string, Unix.file_descr) Hashtbl.t = Hashtbl.create 64
+let sock_counter = ref 0
+let sock_add fd = incr sock_counter; let id = string_of_int !sock_counter in Hashtbl.replace socks id fd; id
+let sock_find id = Hashtbl.find_opt socks id
+
+(* a listening socket on HOST:PORT: [its name], or not found and why *)
+let sock_listen host port backlog =
+  match resolve host port with
+  | None -> (false, (0., [ "can't resolve " ^ host ]))
+  | Some a ->
+      let fd = Unix.socket ~cloexec:true PF_INET SOCK_STREAM 0 in
+      (try Unix.setsockopt fd SO_REUSEADDR true; Unix.bind fd a; Unix.listen fd backlog; ans_data [ sock_add fd ]
+       with e -> close_all [ fd ]; (false, (0., [ Printexc.to_string e ])))
+
+(* a dial that doesn't wait: [its name, "connected" or "connecting"] *)
+let sock_dial host port =
+  match resolve host port with
+  | None -> ans_flag false
+  | Some a ->
+      let fd = Unix.socket ~cloexec:true PF_INET SOCK_STREAM 0 in
+      Unix.set_nonblock fd;
+      (match Unix.connect fd a with
+       | () -> ans_data [ sock_add fd; "connected" ]
+       | exception Unix.Unix_error ((EINPROGRESS | EWOULDBLOCK | EAGAIN), _, _) -> ans_data [ sock_add fd; "connecting" ]
+       | exception _ -> close_all [ fd ]; ans_flag false)
+
+(* the named sockets ready to read and to write, within [ms], framed; with
+   [procs], a process's output wakes it too. Interrupted: none ready; failed
+   (a descriptor past FD_SETSIZE, EBADF): not found, and why *)
+let sock_select ms procs reads writes =
+  let named ids = List.filter_map (fun id -> Option.map (fun fd -> (id, fd)) (sock_find id)) ids in
+  let r = named reads and w = named writes in
+  let extra = if procs then proc_fds () else [] in
+  match Unix.select (List.map snd r @ extra) (List.map snd w) [] (float_of_string ms /. 1000.) with
+  | rr, ww, _ ->
+      let ready l got = List.filter_map (fun (id, fd) -> if List.mem fd got then Some id else None) l in
+      ans_data (frame_lists [ ready r rr; ready w ww ])
+  | exception Unix.Unix_error (EINTR, _, _) -> ans_data (frame_lists [ []; [] ])
+  | exception Unix.Unix_error (e, _, _) -> (false, (0., [ Unix.error_message e ]))
+
+(* a connection the listener has: [its name, the peer's address] *)
+let sock_accept id nonblock =
+  match Option.map (Unix.accept ~cloexec:true) (sock_find id) with
+  | Some (c, addr) ->
+      if nonblock then Unix.set_nonblock c;
+      ans_data [ sock_add c; (match addr with Unix.ADDR_INET (a, _) -> Unix.string_of_inet_addr a | _ -> "") ]
+  | None | (exception Unix.Unix_error _) -> ans_flag false   (* out of descriptors, or the peer gave up *)
+
+(* ["bytes", DATA] (64 KiB at most), ["again"] (nothing yet), or ["closed"] *)
+let sock_buf = Bytes.create 65536
+let sock_read id =
+  match sock_find id with
+  | None -> ans_data [ "closed" ]
+  | Some fd ->
+      (match Unix.read fd sock_buf 0 65536 with
+       | 0 -> ans_data [ "closed" ]
+       | k -> ans_data [ "bytes"; Bytes.sub_string sock_buf 0 k ]
+       | exception Unix.Unix_error ((EAGAIN | EWOULDBLOCK), _, _) -> ans_data [ "again" ]
+       | exception _ -> ans_data [ "closed" ])
+
+(* ["wrote", COUNT], ["again"] (the socket's buffer is full), or ["failed"] *)
+let sock_write id data =
+  match sock_find id with
+  | None -> ans_data [ "failed" ]
+  | Some fd ->
+      (match Unix.write_substring fd data 0 (String.length data) with
+       | k -> ans_data [ "wrote"; string_of_int k ]
+       | exception Unix.Unix_error ((EAGAIN | EWOULDBLOCK), _, _) -> ans_data [ "again" ]
+       | exception _ -> ans_data [ "failed" ])
+
+(* found when a dial failed *)
+let sock_error id = ans_flag (match sock_find id with Some fd -> Unix.getsockopt_error fd <> None | None -> true)
+
+let sock_close id = Option.iter (fun fd -> close_all [ fd ]; Hashtbl.remove socks id) (sock_find id)
 
 (* ---------- node_io ---------- *)
 
@@ -468,27 +375,10 @@ let print_text s = print_string s
 let argv () = Array.to_list Sys.argv |> List.tl
 let rec forever f s = forever f (f s)
 
-(* A node's handle names its primitives' state (the network's, from its
-   home): node_open builds it, the net_* and file_* operations reach it. *)
-let nets : (string, net) Hashtbl.t = Hashtbl.create 4
-let net_counter = ref 0
-
-let node_io_net n op =
-  let file name = Filename.concat n.home name in
-  match op with
-  | [ "net_listen"; host; port ] -> net_listen n host port
-  | [ "net_mailbox"; ms ] -> ans_data (frame_lists (net_mailbox n ms))
-  | [ "net_connect"; host; port; _ ] -> net_connect n host port
-  | [ "net_send"; conn; data ] -> net_send n conn data
-  | [ "net_close"; conn ] -> Option.iter (net_drop n) (net_find n conn); ans_ok
-  | [ "file_read"; name ] -> ans_found (read_text (file name))
-  | [ "file_write"; name; durable; text ] -> write_file ~sync:(durable = "true") (file name) text; ans_ok
-  | [ "file_append"; name; text ] -> append_synced (file name) text; ans_ok
-  | _ -> fail "unknown node operation %s" (String.concat " " op)
-
 (* One operation in its wire form (this match is nodeio.soma's io_of_wire
-   for the shell's); those after the host's need a node's handle. *)
-let node_io id op =
+   for the shell's). The handle is a node's name from before its network
+   was node_net.soma's; nothing here needs it. *)
+let node_io _ op =
   let run_out (ok, out) = (ok, (0., [ out ])) in
   match op with
   (* the clock, the log, the commands' I/O (cli.soma) *)
@@ -520,10 +410,21 @@ let node_io id op =
       Sys.set_signal Sys.sigterm (Sys.Signal_handle stop);
       List.iter (fun p -> ignore (Unix.waitpid [] p)) pids;
       ans_ok
-  (* the service's socket *)
-  | [ "serve_listen"; host; port ] -> ans_flag (serve_listen host port)
-  | [ "serve_next"; wait ] -> (match serve_next (float_of_string wait) with Some r -> ans_data r | None -> ans_flag false)
-  | "serve_reply" :: sid :: fields -> serve_reply sid fields; ans_ok
+  (* the binary runner's (node_net.soma): sockets and the node's files *)
+  | [ "sock_listen"; host; port; backlog ] -> sock_listen host port (int_of_string backlog)
+  | [ "sock_dial"; host; port ] -> sock_dial host port
+  | "sock_select" :: ms :: procs :: rest ->
+      (match fields_then_args rest with
+       | Some (reads, writes) -> sock_select ms (procs = "true") reads writes
+       | None -> (false, (0., [ "sock_select came malformed" ])))
+  | [ "sock_accept"; id; nonblock ] -> sock_accept id (nonblock = "true")
+  | [ "sock_read"; id ] -> sock_read id
+  | [ "sock_write"; id; data ] -> sock_write id data
+  | [ "sock_error"; id ] -> sock_error id
+  | [ "sock_close"; id ] -> sock_close id; ans_ok
+  | [ "save"; path; durable; text ] -> write_file ~sync:(durable = "true") path text; ans_ok
+  | [ "append_synced"; path; text ] -> append_synced path text; ans_ok
+  | [ "no_sigpipe" ] -> Sys.set_signal Sys.sigpipe Sys.Signal_ignore; ans_ok
   (* the host's (nodeio.soma's service_op) *)
   | "git" :: dir :: args -> run_out (git dir args)
   | "git_env" :: dir :: stdin :: rest ->
@@ -550,15 +451,4 @@ let node_io id op =
        | None -> (false, (0., [ "proc_start came malformed" ])))
   | [ "proc_kill"; jid ] -> proc_kill jid; ans_ok
   | [ "events"; _ ] -> ans_data (frame_lists (proc_events ()))
-  | _ -> node_io_net (try Hashtbl.find nets id with Not_found -> fail "unknown node handle %s" id) op
-
-(* A node's handle, from what cli.soma's node_setup read, checked and
-   decided (framed; node_kernel.soma's kernel_world reads the rest): the
-   shell needs only the home, where the node's named files are. *)
-let node_open config =
-  Sys.set_signal Sys.sigpipe Sys.Signal_ignore;
-  let home = match unframe_lists config with (home :: _) :: _ -> home | _ -> fail "the node's setup came back malformed" in
-  let id = string_of_int !net_counter in
-  incr net_counter;
-  Hashtbl.replace nets id { home; listener = None; links = []; counter = 0 };
-  id
+  | _ -> fail "unknown node operation %s" (String.concat " " op)

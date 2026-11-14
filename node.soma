@@ -186,8 +186,8 @@ step (n : node_state) (ev : list string) : node_state * list (list string) :=
   end.
 
 (** ---- Step 2 (docs/SHELL-IN-SOMA.md): the node loop in Soma ----
-    The loop holds the state and drives [step]; shell.ml only binds
-    [node_open] (I/O setup), startup data, [events] (one select turn),
+    The loop holds the state and drives [step]; shell.ml bound
+    [node_open] (I/O setup; gone: node_net.soma), startup data, [events] (one select turn),
     smaller output bindings (every output case is decided in Soma),
     the snapshot ([IoSnapshotSave]), [note_refused] and [forever]. An effect is a field list: ["perform"; output...],
     ["save_snapshot"], ["sign"; vote...] or ["refuse"; raw]. [order_effects] is pure: it takes
