@@ -5,10 +5,10 @@ the node's kernel (`node_kernel.soma`: its tables, peer links, signatures,
 files and select), the host's work it asks for (`node_host.soma`: a
 merge's git, the model's budget and limit, jobs, checks and CI) and the
 edits machinery (`cli.soma`: applying edits, reading a checkout's changes
-as edits, a bid's tree), and the binary's network and jobs
+as edits, a bid's tree), the binary's network and jobs
 (`node_net.soma`: its links, buffers, select, the service's socket and
-the process table); what is left of the program around them is
-`shell.ml`, about 410 lines of hand-written OCaml (it was about 1,600)
+the process table) and its git and programs (`node_git.soma`); what is left of the program around them is
+`shell.ml`, about 395 lines of hand-written OCaml (it was about 1,600)
 that `shell.definition` declares to Soma as four assumptions (`argv`,
 `print_lines`, `node_io`, `forever`), with the crypto main.soma extracts
 to Cryptokit. The goal: as much of `shell.ml` as can be
@@ -273,7 +273,7 @@ in the binary, and the node's service's in the unikernel: with none, a
 check is reported and comes to nothing, the checkouts are at their genesis
 commits, the model has no limit, and there are no jobs, reply files or
 inbox. The commands' operations (`IoPrint` ... `IoGitEnv`) are shell.ml's
-(the unikernel prints, writes named files, and answers false to the rest:
+and node_git.soma's (the unikernel prints, writes named files, and answers false to the rest:
 it makes no keys and runs no git).
 
 The commands are node programs too (`cli.soma`): `init`, `keygen`,
@@ -420,6 +420,27 @@ that extracts `nat` as `int` now gets String's length, get and
 substring as OCaml's, as an image does (main.soma no longer says so
 itself).
 
+### Git and programs
+
+Git, a clone and a program run to its end are Soma in the binary too:
+`node_git.soma`, a layer with no state that both of the binary's runners
+ask (node_shell.soma's `shell_answer`, for `run_shell` and for what
+`run_net` doesn't carry out itself), whoever asked for the operation:
+the commands, the host's work, or an image through its service. `IoGit`
+and `IoGitEnv` are git for a checkout Pantheon owns: the extra
+environment entries first, then `GIT_CONFIG_NOSYSTEM=1`,
+`GIT_CONFIG_GLOBAL=/dev/null` and `GIT_TERMINAL_PROMPT=0`, then the
+process's environment without any of git's; `-C` the checkout and `-c`
+for no hooks, no signing, no line-ending or mode or symlink guesses.
+`IoClone` clones with the user's own config (credentials for a private
+repository) but never a prompt, then checks the commit out as above.
+`IoRun` runs a program with the user's environment. Each is the
+environment read (`IoEnvEntries`) and one `IoExec`: a program run to its
+end with exactly the environment it is given and a standard input (none
+for ""), giving whether it succeeded and its output. shell.ml's git,
+clone and run, about 25 lines of environments and arguments, are gone;
+it keeps `capture`, which `IoExec` is.
+
 ## The edits machinery
 
 An edit is a path, the old text and the new (docs/DESIGN.md). What edits
@@ -499,12 +520,11 @@ are the runner's (the shell for the binary, the service for an image).
   its queue are the kernel's, as are a CI run's script (`ci_wrap`) and its
   Docker or sandbox command line.
 
-The shell keeps the primitives: `IoGit` and `IoGitEnv` (git with no user
-or system config, no hooks, no signing; `IoGitEnv` with extra environment
-entries and a standard input), the path operations, `IoTempDir`,
-`IoTempFile` (a new private file with its text), `IoRemoveTree`, `IoRun`
-(a program run to its end, with the user's environment: `rm`, `chmod`,
-`docker rm`) and the processes (`IoSpawn`, `IoWaitPid`, `IoKillPid`),
+The shell keeps the primitives: the path operations, `IoTempDir`,
+`IoTempFile` (a new private file with its text), `IoRemoveTree`, `IoExec`
+(a program run to its end with the environment it is given: git, a
+clone and `IoRun`'s `rm`, `chmod` and `docker rm` are node_git.soma's
+over it, above, "Git and programs") and the processes (`IoSpawn`, `IoWaitPid`, `IoKillPid`),
 whose table and events are node_net.soma's (above, "The binary's
 network").
 

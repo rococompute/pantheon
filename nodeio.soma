@@ -298,6 +298,7 @@ Inductive node_op :=
 | IoSpawn (prog stdin cwd : string) (env args : list string)
 | IoWaitPid (pid : string)
 | IoKillPid (pid : string)
+| IoExec (prog stdin : string) (env args : list string)
 (** the consensus snapshot (node.soma's snapshot_text): saved atomically
     and synced before any vote it holds is sent; consensus.state's text,
     absent when there is none *)
@@ -493,6 +494,7 @@ io_wire (op : node_op) : list string :=
   | IoSpawn prog stdin cwd env args => "spawn" :: prog :: stdin :: cwd :: resend_fields env ++ ("alternate" :: args)
   | IoWaitPid pid => ["wait_pid", pid]
   | IoKillPid pid => ["kill_pid", pid]
+  | IoExec prog stdin env args => "exec" :: prog :: stdin :: resend_fields env ++ ("alternate" :: args)
   | IoSnapshotSave text => ["snapshot_save", text]
   | IoSnapshotLoad => ["snapshot_load"]
   | IoServeListen address port => ["serve_listen", address, port]
@@ -665,6 +667,11 @@ io_of_wire (w : list string) : option node_op :=
       end
   | ["wait_pid", pid] => Some (IoWaitPid pid)
   | ["kill_pid", pid] => Some (IoKillPid pid)
+  | "exec" :: prog :: stdin :: rest =>
+      match resend_parts rest with
+      | Some (env, args) => Some (IoExec prog stdin env args)
+      | None => None
+      end
   | ["snapshot_save", text] => Some (IoSnapshotSave text)
   | ["snapshot_load"] => Some IoSnapshotLoad
   | ["serve_listen", address, port] => Some (IoServeListen address port)

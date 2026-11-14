@@ -3,19 +3,38 @@
     [pantheon node]'s loop: the node's kernel (node_kernel.soma), whose
     network and named files are node_net.soma's here over the host's
     sockets and paths, as the unikernel's runner carries them out with
-    Sandbox (node_sandbox.soma). Nothing else of the node calls the shell:
+    Sandbox (node_sandbox.soma), and whose git and programs are
+    node_git.soma's over the shell's. Nothing else of the node calls the shell:
     node.soma, cli.soma and what they import are Soma over the node's
     operations. *)
-Import util shell nodeio node node_kernel node_net cli.
+Import util shell nodeio node node_kernel node_net node_git cli.
 
-(** The binary's interpreter of a node program: each operation through
-    [node_io], in its wire form, in order, each answer handed to the rest
-    of the program. A unikernel runs the same programs with Sandbox's
-    ([run_image]). Every operation the binary does goes through here. *)
+(** The shell's primitives: each operation through [node_io], in its wire
+    form, in order, each answer handed to the rest of the program. Every
+    operation the binary does goes through here. *)
+Fixpoint run_prims {A : Type} (p : nprog A) : A :=
+  match p with
+  | NDone a => a
+  | NStep op k => run_prims (k (node_io (io_wire op)))
+  end.
+
+(** One operation as the binary carries it out: git and programs as
+    node_git.soma runs them ([git_op]) over the shell's primitives, the
+    rest by the shell *)
+shell_answer (op : node_op) : nanswer :=
+  match git_op op with
+  | Some q => run_prims q
+  | None => node_io (io_wire op)
+  end.
+
+(** The binary's interpreter of a node program: each operation carried
+    out in order ([shell_answer]), each answer handed to the rest of the
+    program. A unikernel runs the same programs with Sandbox's
+    ([run_image]). *)
 Fixpoint run_shell {A : Type} (p : nprog A) : A :=
   match p with
   | NDone a => a
-  | NStep op k => run_shell (k (node_io (io_wire op)))
+  | NStep op k => run_shell (k (shell_answer op))
   end.
 
 (** A node's or the service's program: the network's, the named files'
@@ -27,7 +46,7 @@ Fixpoint run_net {A : Type} (s : net_state) (p : nprog A) : A * net_state :=
   | NStep op k =>
       match net_op s op with
       | Some q => let r := run_shell q in run_net (snd r) (k (fst r))
-      | None => run_net s (k (node_io (io_wire op)))
+      | None => run_net s (k (shell_answer op))
       end
   end.
 

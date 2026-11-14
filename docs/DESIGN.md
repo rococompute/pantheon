@@ -14,7 +14,8 @@ node_kernel.soma   the node's kernel: tables, peer links, signatures, files, the
 node_host.soma   the kernel's host work: a merge's git, the model's limit, jobs, checks and CI
 cli.soma   the commands, the node's setup, and the edits machinery
 node_net.soma   the binary's network: links, buffers, the select, the service's socket, the jobs' processes
-shell.ml   the host's primitives: sockets by name, files, git, processes
+node_git.soma   git, a clone and a program as the binary runs them, over the host's exec
+shell.ml   the host's primitives: descriptors by name, files, paths, processes, exec
 ```
 
 The kernel is the same program in the binary and in the unikernel: node_net.soma over

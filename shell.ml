@@ -1,19 +1,23 @@
 (* The shell: the host's side of a Pantheon node and of the commands. Soma
    decides everything (node.soma, node_kernel.soma, node_host.soma,
-   cli.soma); this carries out primitives, one operation at a time in
-   node_io's wire form (nodeio.soma's io_wire), and decides nothing:
+   node_net.soma, node_git.soma, cli.soma); this carries out primitives,
+   one operation at a time in node_io's wire form (nodeio.soma's io_wire),
+   and decides nothing:
 
-   - the binary runner's (node_net.soma): sockets by name and the node's
-     files written whole or appended, with the clock and the log;
+   - the binary runner's (node_net.soma, node_git.soma): descriptors by
+     name, the node's files written whole or appended, processes started,
+     waited for and killed, a program run to its end with the environment
+     it is given, the clock and the log;
    - the host's (nodeio.soma's service_op: what a unikernel asks its
-     service for): git, paths, temporary files, programs and processes;
+     service for): paths, temporary files and the environment;
    - the commands' I/O.
 
    The node's tables, peer links, timers and signatures are the kernel's,
-   and so are its jobs, a merge's git and the model's limit, and the
-   network's links, buffers and frames are node_net.soma's
-   (docs/SHELL-IN-SOMA.md, "One kernel, two runners", "The host's work"
-   and "The binary's network"). Every answer is nodeio.soma's nanswer: (carried out, or the
+   and so are its jobs, a merge's git and the model's limit; the network's
+   links, buffers and frames, the process table and git's environment and
+   flags are the runner's (docs/SHELL-IN-SOMA.md, "One kernel, two
+   runners", "The host's work", "The binary's network" and "Git and
+   programs"). Every answer is nodeio.soma's nanswer: (carried out, or the
    boolean read, (a number, data)). *)
 
 let fail fmt = Printf.ksprintf (fun s -> prerr_endline ("error: " ^ s); exit 1) fmt
@@ -152,7 +156,7 @@ let path_write dir p text =
 
 let path_remove dir p = attempt (fun () -> Sys.remove (Filename.concat dir p))
 
-(* ---------- programs and git ---------- *)
+(* ---------- programs ---------- *)
 
 (* a program's standard input: /dev/null for "", else [text] in a temporary
    file, opened and then removed (so no pipe can fill up while its output
@@ -180,8 +184,9 @@ let start ?cwd prog stdin env args =
   | exception e -> back (); close_all [ r; w; ifd; devnull ]; Error (Printexc.to_string e)
   | pid -> back (); close_all [ w; ifd; devnull ]; Ok (pid, r)
 
-(* run a program to its end: whether it succeeded, and its output *)
-let capture ?(env = Unix.environment ()) ?(stdin = "") prog args =
+(* run a program to its end with exactly [env]: whether it succeeded, and
+   its output (node_git.soma makes git's and the commands' environments) *)
+let capture env stdin prog args =
   match start prog stdin env args with
   | Error e -> (false, e)
   | Ok (pid, r) ->
@@ -190,23 +195,6 @@ let capture ?(env = Unix.environment ()) ?(stdin = "") prog args =
       close_in ic;
       let _, st = Unix.waitpid [] pid in
       (st = Unix.WEXITED 0, out)
-
-(* git for a checkout Pantheon owns: no user or system config, no hooks, no
-   signing, so every node does exactly the same thing; [extra] environment
-   entries first *)
-let git ?(extra = []) ?(stdin = "") dir args =
-  let env =
-    extra @ [ "GIT_CONFIG_NOSYSTEM=1"; "GIT_CONFIG_GLOBAL=/dev/null"; "GIT_TERMINAL_PROMPT=0" ]
-    @ List.filter (fun kv -> not (String.starts_with ~prefix:"GIT_" kv)) (Array.to_list (Unix.environment ())) in
-  capture ~env:(Array.of_list env) ~stdin "git"
-    ("-C" :: dir :: "-c" :: "core.hooksPath=/dev/null" :: "-c" :: "commit.gpgsign=false" :: "-c" :: "core.autocrlf=false"
-     :: "-c" :: "core.fileMode=true" :: "-c" :: "core.symlinks=true" :: args)
-
-(* a clone from anywhere git can fetch: here the user's own git config
-   applies, for credentials to a private repository *)
-let clone url dir commit =
-  fst (capture ~env:(Array.append [| "GIT_TERMINAL_PROMPT=0" |] (Unix.environment ())) "git" [ "clone"; "--quiet"; url; dir ])
-  && fst (git dir [ "checkout"; "-q"; "--detach"; commit ])
 
 (* the host's descriptors by name: sockets, and the pipes processes write
    their output on *)
@@ -355,7 +343,6 @@ let node_io op =
   | [ "make_dirs"; path ] -> mkdir_p path; ans_ok
   | [ "new_key"; bits ] -> ans_data (new_key (int_of_string bits))
   | [ "random_hex"; count ] -> ans_data [ random_hex (int_of_string count) ]
-  | [ "clone"; url; dir; commit ] -> ans_flag (clone url dir commit)
   | "spawn_node" :: log :: args ->
       let fd = Unix.openfile log [ O_WRONLY; O_CREAT; O_APPEND ] 0o644 in
       let pid = Unix.create_process self_exe (Array.of_list (self_exe :: args)) Unix.stdin fd fd in
@@ -368,8 +355,9 @@ let node_io op =
       Sys.set_signal Sys.sigterm (Sys.Signal_handle stop);
       List.iter (fun p -> ignore (Unix.waitpid [] p)) pids;
       ans_ok
-  (* the binary runner's (node_net.soma): descriptors, the node's files (a
-     file written whole is the commands' too) and processes *)
+  (* the binary runner's (node_net.soma, node_git.soma): descriptors, the
+     node's files (a file written whole is the commands' too), processes
+     and programs run to their end *)
   | [ "sock_listen"; host; port; backlog ] -> sock_listen host port (int_of_string backlog)
   | [ "sock_dial"; host; port ] -> sock_dial host port
   | "sock_select" :: ms :: rest ->
@@ -390,12 +378,11 @@ let node_io op =
        | None -> (false, (0., [ "spawn came malformed" ])))
   | [ "wait_pid"; pid ] -> wait_pid (int_of_string pid)
   | [ "kill_pid"; pid ] -> (try Unix.kill (int_of_string pid) Sys.sigkill with _ -> ()); ans_ok
-  (* the host's (nodeio.soma's service_op) *)
-  | "git" :: dir :: args -> run_out (git dir args)
-  | "git_env" :: dir :: stdin :: rest ->
+  | "exec" :: prog :: stdin :: rest ->
       (match fields_then_args rest with
-       | Some (extra, args) -> run_out (git ~extra ~stdin dir args)
-       | None -> (false, (0., [ "git_env came malformed" ])))
+       | Some (env, args) -> run_out (capture (Array.of_list env) stdin prog args)
+       | None -> (false, (0., [ "exec came malformed" ])))
+  (* the host's (nodeio.soma's service_op) *)
   | [ "path_stat"; path ] -> ans_data (path_stat path)
   | [ "path_probe"; dir; path ] -> ans_data [ path_probe dir path ]
   | [ "path_write"; dir; path; text ] -> ans_data [ path_write dir path text ]
@@ -408,5 +395,4 @@ let node_io op =
   | [ "dir_entries"; path ] -> ans_data (if Sys.file_exists path then Array.to_list (Sys.readdir path) else [])
   | [ "self_exe" ] -> ans_data [ self_exe ]
   | [ "env_entries" ] -> ans_data (Array.to_list (Unix.environment ()))
-  | "run" :: prog :: args -> run_out (capture prog args)
   | _ -> fail "unknown node operation %s" (String.concat " " op)

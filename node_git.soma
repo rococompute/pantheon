@@ -1,0 +1,49 @@
+(** Git and programs as the binary runs them (docs/SHELL-IN-SOMA.md, "The
+    binary's network", "Git and programs"): what the binary's runners
+    (node_shell.soma's [run_shell] for the commands, [run_net] for a node
+    and the service) do with [IoGit], [IoGitEnv], [IoClone] and [IoRun],
+    whoever asked for them (cli.soma, node_host.soma, or an image through
+    its service). Each is the environment read ([IoEnvEntries]) and one
+    program run to its end with exactly the environment given ([IoExec]:
+    whether it succeeded, and its output). Nothing is kept between them. *)
+Import util nodeio.
+
+(** git for a checkout Pantheon owns: no user or system config, no hooks,
+    no signing, so every node does exactly the same thing; [extra]
+    environment entries first, then the fixed ones, then the process's own
+    without any of git's *)
+git_env (extra env : list string) : list string :=
+  extra ++ ["GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_TERMINAL_PROMPT=0"]
+        ++ filter (fun kv => negb (starts "GIT_" kv)) env.
+
+git_args (dir : string) (args : list string) : list string :=
+  "-C" :: dir :: "-c" :: "core.hooksPath=/dev/null" :: "-c" :: "commit.gpgsign=false" :: "-c" :: "core.autocrlf=false"
+  :: "-c" :: "core.fileMode=true" :: "-c" :: "core.symlinks=true" :: args.
+
+(** git in [dir], [stdin] its standard input ("": none) *)
+git_prog (dir stdin : string) (extra args : list string) : nprog nanswer :=
+  nbind (nask IoEnvEntries) (fun e => nask (IoExec "git" stdin (git_env extra (ans_list e)) (git_args dir args))).
+
+(** a clone from anywhere git can fetch, then its commit checked out: the
+    clone with the user's own git config, for credentials to a private
+    repository, but never a prompt *)
+clone_prog (url dir commit : string) : nprog nanswer :=
+  nbind (nask IoEnvEntries) (fun e =>
+  nbind (nask (IoExec "git" "" ("GIT_TERMINAL_PROMPT=0" :: ans_list e) ["clone", "--quiet", url, dir])) (fun a =>
+  if fst a then nbind (git_prog dir "" [] ["checkout", "-q", "--detach", commit]) (fun b => NDone (ans_flag (fst b)))
+  else NDone (ans_flag false))).
+
+(** a program run to its end with the user's environment *)
+run_prog (prog : string) (args : list string) : nprog nanswer :=
+  nbind (nask IoEnvEntries) (fun e => nask (IoExec prog "" (ans_list e) args)).
+
+(** what the runners carry out this way; anything else goes to the shell
+    as it is *)
+git_op (op : node_op) : option (nprog nanswer) :=
+  match op with
+  | IoGit dir args => Some (git_prog dir "" [] args)
+  | IoGitEnv dir stdin extra args => Some (git_prog dir stdin extra args)
+  | IoClone url dir commit => Some (clone_prog url dir commit)
+  | IoRun prog args => Some (run_prog prog args)
+  | _ => None
+  end.

@@ -53,7 +53,10 @@ print_lines : list string -> unit.
     environment, STDIN its standard input from a file: found, [its pid,
     the name of the pipe its output comes on]; not found, [why it couldn't
     start]), "wait_pid" PID ([HOW, VALUE]: exit, signal or stop, and its
-    number) and "kill_pid" PID; "log" TEXT, "clock", "local_time" STAMP,
+    number), "kill_pid" PID and "exec" PROG STDIN ("field" ENTRY)...
+    "alternate" ARGS... (PROG run to its end with exactly that environment
+    and STDIN its standard input, "" for none: [its output], found when it
+    succeeded; node_git.soma's git, clone and programs); "log" TEXT, "clock", "local_time" STAMP,
     "fail" MESSAGE (refusing to start: the message on stderr, exit 1), and
     nodeio.soma's service_op operations below. *)
 (** The answer is nodeio.soma's nanswer: (carried out or the boolean
@@ -70,9 +73,9 @@ forever : forall {A : Type}, (A -> A) -> A -> unit.
     PATH (removed, if it's there), "self_exe", "env_entries", "random_hex"
     COUNT.
     The jobs' processes (IoProcStart, IoProcKill and IoEvents) are
-    node_net.soma's, over "spawn", "wait_pid" and "kill_pid"; "run" PROG
-    ARGS... (run to its end with the user's environment: [its output],
-    found when it succeeded); "temp_file" PREFIX SUFFIX TEXT (a new private
+    node_net.soma's, over "spawn", "wait_pid" and "kill_pid"; a program
+    run to its end with the user's environment (IoRun) is node_git.soma's,
+    over "env_entries" and "exec"; "temp_file" PREFIX SUFFIX TEXT (a new private
     file with TEXT in it: [path]). What a job is for, its limit, what goes
     with it and what its end becomes are node_host.soma's. *)
 (** A job's buffered read chunks, in order, are the node's: Soma's
@@ -88,8 +91,8 @@ forever : forall {A : Type}, (A -> A) -> A -> unit.
     reads, writes and closes sockets, as the kernel's primitives. *)
 
 (** A decided merge's checkout work is the kernel's (node_host.soma, over
-    "git", "git_env" and the path operations below); node.soma's
-    merge_prog decides it. *)
+    git and the path operations below); node.soma's merge_prog decides
+    it. *)
 
 (** The edits machinery's work is node_io operations that need no node
     (nodeio.soma's IoPathStat ... IoGitEnv; cli.soma's edits_prog,
@@ -98,8 +101,7 @@ forever : forall {A : Type}, (A -> A) -> A -> unit.
     [kind: "symlink", "dir", "file" or "none"], "path_write" DIR PATH TEXT
     (keeping the mode) and
     "path_remove" DIR PATH ["" or what went wrong], "temp_dir" PREFIX
-    [path], "remove_tree" PATH (later, in the background), "git" DIR
-    ARGS... and "git_env" DIR STDIN ("field" ENTRY)... "alternate" ARGS...
-    (git with no user or system config, no hooks and no signing; with
-    those environment entries first and STDIN its standard input, "" for
-    none: [its output], found when it succeeded). *)
+    [path] and "remove_tree" PATH (later, in the background). Git (IoGit,
+    IoGitEnv: no user or system config, no hooks and no signing; extra
+    environment entries first and a standard input) and a clone (IoClone)
+    are node_git.soma's, over "env_entries" and "exec". *)
