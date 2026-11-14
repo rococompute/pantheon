@@ -426,12 +426,12 @@ kernel_listen_prog (w : kworld) (s : nio_kernel) : nprog bool :=
     step), giving the node's state and the kernel's for the loop's turns
     (node.soma's [node_tick_prog], each run by [kernel_run] from the state
     the last left). *)
-kernel_boot_prog (h : string) (w : kworld) (s : nio_kernel) : nprog (option (node_state * nio_kernel)) :=
+kernel_boot_prog (w : kworld) (s : nio_kernel) : nprog (option (node_state * nio_kernel)) :=
   nbind (kernel_listen_prog w s) (fun listening =>
   if listening then
-    nbind (kernel_run w (boot_snapshot_prog h) s) (fun r =>
+    nbind (kernel_run w boot_snapshot_prog s) (fun r =>
     NDone (match fst r with Some st => Some (st, snd r) | None => None end))
   else NDone None).
 
-kernel_tick_prog (h : string) (w : kworld) (p : node_state * nio_kernel) : nprog (node_state * nio_kernel) :=
-  nbind (kernel_run w (node_tick_prog h (fst p)) (snd p)) (fun r => NDone (fst r, snd r)).
+kernel_tick_prog (w : kworld) (p : node_state * nio_kernel) : nprog (node_state * nio_kernel) :=
+  nbind (kernel_run w (node_tick_prog (fst p)) (snd p)) (fun r => NDone (fst r, snd r)).

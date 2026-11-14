@@ -198,9 +198,7 @@ released requests, dialing and resending, the inbox's poll, the overdue
 jobs and due timers, one select (`IoEvents`) and what its events become
 (`run_event_prog`: a peer line's identity, refusal and signature checks,
 connection admission, CI results, the inbox's transactions, each step's
-effects carried by `carry_all_prog`). The consensus snapshot is the one
-effect still a binding (a Soma value, not text: Soma's "storage" item), so
-the tick takes the node's handle for that alone. Startup is a program
+effects carried by `carry_all_prog`). Startup is a program
 too (`boot_prog`): signed.log read back (`restore_signed_prog`; refusing
 to start, `IoFail`, when it has votes and there is no snapshot), the boot
 events expanded (`boot_expand_prog`) and replayed (`run_boot_prog`, each
@@ -272,7 +270,7 @@ limit, CI and checks and their jobs, reply files, the inbox) is shell.ml's
 in the binary, and the node's service's in the unikernel: with none, a
 check is reported and comes to nothing, the checkouts are at their genesis
 commits, the model has no limit, and there are no jobs, reply files or
-inbox. The commands' operations (`IoSay` ... `IoGitEnv`) are shell.ml's
+inbox. The commands' operations (`IoPrint` ... `IoGitEnv`) are shell.ml's
 (the unikernel prints, writes named files, and answers false to the rest:
 it makes no keys and runs no git).
 
@@ -282,8 +280,7 @@ The commands are node programs too (`cli.soma`): `init`, `keygen`,
 key.json, chain.json and public.json with the hash chain's tip, the
 genesis's bytes and every check on them, written through a small JSON
 value that prints as Yojson.Safe does) and do their I/O through the
-operations above, which `node_io` answers with no node, under the handle
-"cli". `main.soma`'s `dispatch` runs them with `run_shell`; `pantheon node` is `run_node`. The `cmd_*` and
+operations above, which `node_io` answers with no node. `main.soma`'s `dispatch` runs them with `run_shell`; `pantheon node` is `run_node`. The `cmd_*` and
 `read_plan` bindings are gone. A genesis is the same bytes either way:
 the old binary and the new one, given the same parts, write the same
 genesis.json. Two cases that crashed the old binary now say why:
@@ -384,8 +381,8 @@ to write, `IoSockAccept`, `IoSockRead` of 64 KiB at most, giving bytes,
 written whole or appended (`IoSave`, `IoAppendSynced`) and
 `IoNoSigpipe` (a write to a closed connection is an error, not the end
 of the process). shell.ml keeps a table of descriptors by name, and
-nothing of the node: `node_open` and its handles are gone (node_io's
-handle argument is a name nothing reads). This was shell.ml's largest
+nothing of the node: `node_open` and its handles are gone, and so is
+node_io's handle argument (`node_io : list string -> nanswer`). This was shell.ml's largest
 part, about 175 lines of links, buffers, the mailbox's select and the
 service's framing; there it is now about 90 lines of socket calls.
 

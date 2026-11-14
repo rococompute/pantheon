@@ -12,10 +12,10 @@ Import util shell nodeio node node_kernel node_net cli.
     [node_io], in its wire form, in order, each answer handed to the rest
     of the program. A unikernel runs the same programs with Sandbox's
     ([run_image]). Every operation the binary does goes through here. *)
-Fixpoint run_shell {A : Type} (h : node_t) (p : nprog A) : A :=
+Fixpoint run_shell {A : Type} (p : nprog A) : A :=
   match p with
   | NDone a => a
-  | NStep op k => run_shell h (k (node_io h (io_wire op)))
+  | NStep op k => run_shell (k (node_io (io_wire op)))
   end.
 
 (** A node's or the service's program: the network's, the named files'
@@ -26,14 +26,14 @@ Fixpoint run_net {A : Type} (s : net_state) (p : nprog A) : A * net_state :=
   | NDone a => (a, s)
   | NStep op k =>
       match net_op s op with
-      | Some q => let r := run_shell "" q in run_net (snd r) (k (fst r))
-      | None => run_net s (k (node_io "" (io_wire op)))
+      | Some q => let r := run_shell q in run_net (snd r) (k (fst r))
+      | None => run_net s (k (node_io (io_wire op)))
       end
   end.
 
 (** The boot events, expanded (tests read them) *)
-boot_expand (h : node_t) (evs : list (list string)) : list (list string) :=
-  run_shell h (boot_expand_prog evs).
+boot_expand (evs : list (list string)) : list (list string) :=
+  run_shell (boot_expand_prog evs).
 
 (** the network's state, from the node's home (what node_setup decided:
     its first row's first field) *)
@@ -48,15 +48,15 @@ no_sigpipe {A : Type} (p : nprog A) : nprog A := nbind (nexec IoNoSigpipe) (fun 
     the network's state from it, then the kernel: listening, startup and
     the loop's turns, each from the state the last left *)
 run_node (home : string) (flags : list string) : unit :=
-  match run_shell "" (node_setup home flags) with
+  match run_shell (node_setup home flags) with
   | Some config =>
       match kernel_world config with
       | Some w =>
-          match run_net (net_open config) (no_sigpipe (kernel_boot_prog "" w (kernel_start (w_identity w) config))) with
-          | (Some p, s) => forever (fun ps => run_net (snd ps) (kernel_tick_prog "" w (fst ps))) (p, s)
+          match run_net (net_open config) (no_sigpipe (kernel_boot_prog w (kernel_start (w_identity w) config))) with
+          | (Some p, s) => forever (fun ps => run_net (snd ps) (kernel_tick_prog w (fst ps))) (p, s)
           | (None, _) => tt
           end
-      | None => run_shell "" (nbind (nask (IoFail "the node's setup came back malformed")) (fun _ => NDone tt))
+      | None => run_shell (nbind (nask (IoFail "the node's setup came back malformed")) (fun _ => NDone tt))
       end
   | None => tt
   end.
@@ -65,7 +65,7 @@ run_node (home : string) (flags : list string) : unit :=
     [pantheon node] makes it, then the requests of the node's unikernel
     answered (node.soma's [service_tick_prog]) *)
 run_service (home addr : string) (flags : list string) : unit :=
-  match run_shell "" (node_setup home flags) with
+  match run_shell (node_setup home flags) with
   | Some config =>
       match run_net (net_open config) (no_sigpipe (service_start_prog addr)) with
       | (true, s) =>

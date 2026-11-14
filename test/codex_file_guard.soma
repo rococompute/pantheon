@@ -23,10 +23,10 @@ Extract Inlined Constant Stdlib.Strings.String.substring =>
 check (label : string) (ok : bool) : string := append (if ok then "ok " else "FAIL ") label.
 (** the reply file read and removed by node_io's path operations, which
     need no node *)
-codex_file_reply (text path : string) : string := run_shell "" (codex_file_prog text path).
+codex_file_reply (text path : string) : string := run_shell (codex_file_prog text path).
 
 file_path (key : string) : string :=
-  match env_value key (snd (snd (node_io "cli" ["env_entries"]))) with Some path => path | None => "" end.
+  match env_value key (snd (snd (node_io ["env_entries"]))) with Some path => path | None => "" end.
 
 main := print_lines [
   check "failure wins" (seq (codex_reply_of "!failed" (fun _ => Some "stale")) "!failed"),

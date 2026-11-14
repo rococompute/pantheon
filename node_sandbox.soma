@@ -136,7 +136,7 @@ ialone (w : img_world) (op : node_op) : io nanswer :=
   | IoDiscardFile _ => ret ans_ok
   | IoReadText path => got <- read_file path ;;
       ret (match got with Some t => ans_data true [t] | None => ans_data false [] end)
-  | IoWriteFile path text => write_file path text ;; ret ans_ok
+  | IoSave path _ text => write_file path text ;; ret ans_ok
   | IoFileExists path => got <- read_file path ;; ret (ans_flag (match got with Some _ => true | None => false end))
   | _ => ret (ans_flag false)
   end.
@@ -165,7 +165,7 @@ iop (w : img_world) (s : img_state) (op : node_op) : io (nanswer * img_state) :=
       ret (match got with Some t => ans_data true [t] | None => ans_data false [] end, s)
   | IoFileWrite name _ text => write_file name text ;; ret (ans_ok, s)
   | IoFileAppend name text => append_file name text ;; ret (ans_ok, s)
-  | IoLog text | IoSay text | IoPrint text => print text ;; ret (ans_ok, s)
+  | IoLog text | IoPrint text => print text ;; ret (ans_ok, s)
   | IoClock => ms <- monotonic_ms ;; ret (ans_time (iseconds ms), s)
   | IoLocalTime stamp => ret (ans_data true [stamp], s)
   | IoFail message => print message ;; ret (ans_flag false, s)
@@ -203,12 +203,12 @@ run_node_image_at (config : list (list string)) (service : string) : io unit :=
   | None => print "the node's setup came back malformed, or this node is not one of the genesis's agents"
   | Some w =>
       let iw := img_world_of config service in
-      r <- run_image iw (kernel_boot_prog "" w (kernel_start (w_identity w) config))
+      r <- run_image iw (kernel_boot_prog w (kernel_start (w_identity w) config))
              {| i_service := None; i_service_retry := 0%N |} ;;
       match fst r with
       | Some p =>
           Sandbox.iterate (fun (q : prod (prod node_state nio_kernel) img_state) =>
-            r' <- run_image iw (kernel_tick_prog "" w (fst q)) (snd q) ;; ret (fst r', snd r'))
+            r' <- run_image iw (kernel_tick_prog w (fst q)) (snd q) ;; ret (fst r', snd r'))
             (p, snd r)
       | None => print "the node did not start"
       end

@@ -904,11 +904,10 @@ Proof.
     | height | | | slot | slot | height | nonce fields | | | | | stamp |
     repo | repo | repo path | repo path | repo path text | repo path |
     repo version tree bid task bidder spec | | id kind prompt ctx |
-    id kind raw prompt ctx clean launch env | repo | | | | | repo | repo path |
+    id kind raw prompt ctx clean launch env | repo | | | | repo | repo path |
     until reason backoff | backoff | | | probing requests | job result | id out tree ci | path | path |
     raw | | raw | who | | | | stamp | path | | | timers | | | wait |
-    | | height txs | | slot vid fields | message |
-    text | text | code | path | path text | path mode | path | | bits | count | dir args |
+    | | height txs | | slot vid fields | message | text | code | path | path mode | path | | bits | count | dir args |
     url dir commit | log args | pids | path | dir path | dir path text | dir path | prefix | path | dir stdin extra args | prog stdin cwd env args | job | prog args | prefix suffix text | host port backlog | host port | ms procs reads writes | fd nonblock | fd | fd data | fd | fd | path durable text | path text | | text | | address port | wait | conn found stamp fields |
     address port | ms | address port ms | conn data | conn | name | name durable text | name text ];
     try reflexivity.
@@ -1285,7 +1284,7 @@ llm_answers (calls : string) (op : node_op) : nanswer :=
   | IoLlmBudget => (true,(0%float,[calls, "3"]))
   | IoClock => (true,(5%float,[]))
   | IoLimitInfo => (true,(0%float,["claude", "0", ""]))
-  | IoToken => (true,(0%float,["T"]))
+  | IoRandomHex _ => (true,(0%float,["T"]))
   | IoEnvEntries => (true,(0%float,["A=1", "PANTHEON_HOME=/x"]))
   | IoLlmStart _ _ _ _ _ _ _ _ => (false,(0%float,[]))
   | _ => (true,(0%float,[]))
@@ -1299,7 +1298,7 @@ Proof. reflexivity. Qed.
 Example llm_asked_trace :
   ntrace (llm_answers "1") (llm_prog "7" "ask" "p" []) =
   [IoLlmBudget, IoClock, IoLimitInfo, IoLog (llm_ask_text "claude" "ask" "7" "1" "3"),
-   IoToken, IoLimitInfo, IoEnvEntries,
+   IoRandomHex "8", IoLimitInfo, IoEnvEntries,
    IoLlmStart "7" "ask" "p" "p" [] [] (backend_launch "claude") ["A=1"]].
 Proof. reflexivity. Qed.
 
@@ -1333,14 +1332,14 @@ Proof. intros ans H. unfold poll_inbox_prog. cbn -[inbox_poll_due ans_float]. re
 (** A fresh node (no signed.log, no snapshot, nothing to replay) reads
     signed.log, then its boot events, then how many blocks it replayed:
     no refusal, no replay log line before the start step. *)
-Example fresh_boot_reads : forall h,
+Example fresh_boot_reads :
   firstn 3 (ntrace (fun op => match op with
                               | IoSignedText => (true,(0%float,[""]))
                               | IoReplayCount => (true,(0%float,["0"]))
                               | _ => (true,(0%float,[]))
-                              end) (boot_prog h None)) =
+                              end) (boot_prog None)) =
   [IoSignedText, IoBootEvents, IoReplayCount].
-Proof. intros h. reflexivity. Qed.
+Proof. reflexivity. Qed.
 
 Theorem remember_peer_is_served_operation : forall who first now,
   action_prog (RememberPeer who first now) =

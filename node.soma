@@ -196,8 +196,6 @@ step (n : node_state) (ev : list string) : node_state * list (list string) :=
     the snapshot when consensus changed, then the rest. A transaction [step] refused leaves the pool unchanged and is
     remembered; an accepted one enters the pool. *)
 
-node_t : Type := string.
-
 Fixpoint eq_strs (a b : list string) : bool :=
   match a, b with
   | [], [] => true
@@ -1601,7 +1599,7 @@ tool_made (a : nanswer) : (string * string) * bool :=
     prompt assembled, and for a cmd: patch its tool checkout, then the
     process started; each an operation, in the order the bindings were. *)
 llm_call_prog (id kind prompt : string) (ctx : list string) : nprog bool :=
-  nbind (nask IoToken) (fun tok =>
+  nbind (nask (IoRandomHex "8")) (fun tok =>
   let token := ans_one tok in
   nbind (nask IoLimitInfo) (fun limit =>
   let backend := hd "" (ans_list limit) in
@@ -1740,7 +1738,7 @@ sign_prog (fields : list string) : nprog bool :=
 (** Effects return whether they were carried out, and the loop keeps the
     new state only when they were: a unit result would be a cast the
     extraction can erase, and with it the call. *)
-carry_effect_prog (h : node_t) (snap : consensus_state) (eff : list string) : nprog bool :=
+carry_effect_prog (snap : consensus_state) (eff : list string) : nprog bool :=
   match eff with
   | "perform" :: out => output_prog out
   | ["save_snapshot"] => nexec (IoSnapshotSave (snapshot_text snap))
@@ -1749,10 +1747,10 @@ carry_effect_prog (h : node_t) (snap : consensus_state) (eff : list string) : np
   | _ => NDone true
   end.
 
-Fixpoint carry_all_prog (h : node_t) (snap : consensus_state) (effs : list (list string)) : nprog bool :=
+Fixpoint carry_all_prog (snap : consensus_state) (effs : list (list string)) : nprog bool :=
   match effs with
   | [] => NDone true
-  | e :: rest => nand (carry_effect_prog h snap e) (fun _ => carry_all_prog h snap rest)
+  | e :: rest => nand (carry_effect_prog snap e) (fun _ => carry_all_prog snap rest)
   end.
 
 (** A model request held for a limit, handed back by the shell once the
@@ -2152,14 +2150,14 @@ conns_of (ls : list (list string)) : list (string * float) :=
 
 (** The step an event takes, and its effects carried: the new state only
     when they all were. *)
-step_prog (h : node_t) (st : node_state) (ev : list string) : nprog node_state :=
+step_prog (st : node_state) (ev : list string) : nprog node_state :=
   let (s, outs) := step st ev in
-  nbind (carry_all_prog h (cons s) (order_effects ev st s outs)) (fun ok => NDone (if ok then s else st)).
+  nbind (carry_all_prog (cons s) (order_effects ev st s outs)) (fun ok => NDone (if ok then s else st)).
 
 kept (st : node_state) (ok : bool) : node_state := if ok then st else with_live st (live st).
 
 (** One event, as a node program. *)
-run_event_prog (h : node_t) (st : node_state) (ev : list string) : nprog node_state :=
+run_event_prog (st : node_state) (ev : list string) : nprog node_state :=
   nbind (match ev with ["peer_raw", raw] => peer_raw_prog raw | _ => NDone ev end) (fun ev =>
   match ev with
   | [] => NDone st
@@ -2168,7 +2166,7 @@ run_event_prog (h : node_t) (st : node_state) (ev : list string) : nprog node_st
   | "peer_line" :: self :: refused :: from :: sig :: fields =>
       if line_dropped self refused then NDone st
       else nbind (nask (IoPeerKey from)) (fun key =>
-           if nio_line_verify (ans_list key) from sig fields then step_prog h st (line_event from fields) else NDone st)
+           if nio_line_verify (ans_list key) from sig fields then step_prog st (line_event from fields) else NDone st)
   | "conn_offer" :: oid :: host :: hosts =>
       let d := conn_offer_decision host hosts in
       nbind (match d with
@@ -2184,7 +2182,7 @@ run_event_prog (h : node_t) (st : node_state) (ev : list string) : nprog node_st
       nbind (ci_done_prog id tree memory runner t) (fun ok => NDone (kept st ok))
   | ["inbox_file", path, content] =>
       match inbox_tx (json_tokens content) with
-      | Some fields => step_prog h st ("local_tx" :: fields)
+      | Some fields => step_prog st ("local_tx" :: fields)
       | None => nbind (nexec (IoLog (append "ignoring malformed " path))) (fun ok => NDone (kept st ok))
       end
   | ["peer_bytes", cid, chunk] =>
@@ -2201,13 +2199,13 @@ run_event_prog (h : node_t) (st : node_state) (ev : list string) : nprog node_st
                                 (num job_output_limit) (num job_keep_text) in
       let st := job_remember st id kept_out in
       if over then nbind (nexec (IoJobFlood id)) (fun ok => NDone (kept st ok)) else NDone st
-  | _ => step_prog h st ev
+  | _ => step_prog st ev
   end).
 
-Fixpoint run_events_prog (h : node_t) (st : node_state) (evs : list (list string)) : nprog node_state :=
+Fixpoint run_events_prog (st : node_state) (evs : list (list string)) : nprog node_state :=
   match evs with
   | [] => NDone st
-  | ev :: rest => nbind (run_event_prog h st ev) (fun st => run_events_prog h st rest)
+  | ev :: rest => nbind (run_event_prog st ev) (fun st => run_events_prog st rest)
   end.
 
 (** After a limit's wait, held model requests go back: one first while the
@@ -2472,11 +2470,10 @@ clock_arm_prog : nprog bool :=
 (** A turn of the event loop, as one node program: released requests
     first; then dial, resend and the inbox, then deadlines and due timers,
     then one select, and what its events become. The binary runs it with
-    [run_shell]; only the snapshot is still a binding, so it takes the
-    node's handle for that alone. *)
-node_tick_prog (h : node_t) (st : node_state) : nprog node_state :=
+    [run_shell], an image with Sandbox's [run_image]. *)
+node_tick_prog (st : node_state) : nprog node_state :=
   nbind release_prog (fun released =>
-  nbind (run_events_prog h st released) (fun st =>
+  nbind (run_events_prog st released) (fun st =>
   nbind (nexec IoPollPrep) (fun prepped =>
   if negb prepped then NDone st else
   nbind poll_inbox_prog (fun polled =>
@@ -2489,7 +2486,7 @@ node_tick_prog (h : node_t) (st : node_state) : nprog node_state :=
   let wait := select_wait (ans_float turn) (fst empty) (timers_of (nio_lists (ans_list timers))) in
   nbind (nask (IoEvents (float_wire wait))) (fun got =>
   nbind (job_outputs_prog st (nio_lists (ans_list got))) (fun r =>
-  let (st, evs) := r in run_events_prog h st evs)))))))))).
+  let (st, evs) := r in run_events_prog st evs)))))))))).
 
 (** Replay has no consensus snapshot effects, just as before: a restored
     snapshot is checked against the fully replayed height before start. *)
@@ -2566,9 +2563,9 @@ startup_effects (outs : list (list string)) : list (list string) :=
   sign_effects outs ++ [["save_snapshot"]] ++
   map (fun out => "perform" :: out) (filter (fun out => negb (is_decided out)) outs).
 
-start_node_prog (h : node_t) (st : node_state) : nprog node_state :=
+start_node_prog (st : node_state) : nprog node_state :=
   let (s, outs) := step st ["start"] in
-  nbind (carry_all_prog h (cons s) (startup_effects outs)) (fun ok => NDone (if ok then s else st)).
+  nbind (carry_all_prog (cons s) (startup_effects outs)) (fun ok => NDone (if ok then s else st)).
 
 (** Started again, the node sends what it signed at its height again and
     keeps it in resend memory, as when it first sent it. Resend memory
@@ -2840,7 +2837,7 @@ Fixpoint boot_expand_prog (evs : list (list string)) : nprog (list (list string)
     step carried, and the votes signed at its height sent again
     ([resume_signed_prog]). None: the node doesn't start. [snap] is the snapshot
     read back ([boot_snapshot_prog]). *)
-boot_prog (h : node_t) (snap : option consensus_state) : nprog (option node_state) :=
+boot_prog (snap : option consensus_state) : nprog (option node_state) :=
   nbind (nask IoSignedText) (fun signed =>
   nbind (restore_signed_prog (log_lines (ans_one signed)) false) (fun r =>
   let (restored, found) := r in
@@ -2855,7 +2852,7 @@ boot_prog (h : node_t) (snap : option consensus_state) : nprog (option node_stat
     nbind (if seq n "0" then NDone true else nexec (IoLog (append "replayed " (append n " blocks from disk")))) (fun logged =>
     let st := match snap with Some c => restore_cons st c | None => st end in
     if logged then
-      nbind (start_node_prog h st) (fun st =>
+      nbind (start_node_prog st) (fun st =>
       nbind (resume_signed_prog st) (fun _ => NDone (Some st)))
     else NDone None)))))
   else NDone None))).
@@ -2863,13 +2860,13 @@ boot_prog (h : node_t) (snap : option consensus_state) : nprog (option node_stat
 
 (** the snapshot read back, then startup: no consensus.state is a node
     that never voted; one Soma can't read refuses to start *)
-boot_snapshot_prog (h : node_t) : nprog (option node_state) :=
+boot_snapshot_prog : nprog (option node_state) :=
   nbind (nask IoSnapshotLoad) (fun a =>
   match ans_found_one a with
-  | None => boot_prog h None
+  | None => boot_prog None
   | Some t =>
       match snapshot_of t with
-      | Some c => boot_prog h (Some c)
+      | Some c => boot_prog (Some c)
       | None => nbind (nexec (IoFail snapshot_malformed_text)) (fun _ => NDone None)
       end
   end).

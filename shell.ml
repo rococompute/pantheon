@@ -3,16 +3,17 @@
    cli.soma); this carries out primitives, one operation at a time in
    node_io's wire form (nodeio.soma's io_wire), and decides nothing:
 
-   - the kernel's (net_* and file_*: Sandbox's, on sockets and the node's
-     named files), with the clock and the log;
+   - the binary runner's (node_net.soma): sockets by name and the node's
+     files written whole or appended, with the clock and the log;
    - the host's (nodeio.soma's service_op: what a unikernel asks its
      service for): git, paths, temporary files, programs and processes;
-   - the service's socket and the commands' I/O.
+   - the commands' I/O.
 
    The node's tables, peer links, timers and signatures are the kernel's,
-   and so are its jobs, a merge's git and the model's limit
-   (docs/SHELL-IN-SOMA.md, "One kernel, two runners" and "The host's
-   work"). Every answer is nodeio.soma's nanswer: (carried out, or the
+   and so are its jobs, a merge's git and the model's limit, and the
+   network's links, buffers and frames are node_net.soma's
+   (docs/SHELL-IN-SOMA.md, "One kernel, two runners", "The host's work"
+   and "The binary's network"). Every answer is nodeio.soma's nanswer: (carried out, or the
    boolean read, (a number, data)). *)
 
 let fail fmt = Printf.ksprintf (fun s -> prerr_endline ("error: " ^ s); exit 1) fmt
@@ -60,17 +61,19 @@ let new_key bits =
 
 (* ---------- files ---------- *)
 
-let read_file p = In_channel.with_open_bin p In_channel.input_all
-let read_text p = try Some (read_file p) with _ -> None
+let read_text p = try Some (In_channel.with_open_bin p In_channel.input_all) with _ -> None
 
-(* whole, through a temporary file renamed into place; [sync]: on disk,
-   file and directory, before the rename is relied on (consensus.state's
-   text, node.soma's snapshot_text, before any vote it holds is sent) *)
+(* whole, through a temporary file renamed into place, keeping the file's
+   mode; [sync]: on disk, file and directory, before the rename is relied on
+   (consensus.state's text, node.soma's snapshot_text, before any vote it
+   holds is sent) *)
 let write_file ?(sync = false) p s =
-  let tmp = p ^ ".tmp" in
+  let tmp = p ^ ".pantheon-tmp" in
+  let mode = try Some (Unix.stat p).st_perm with _ -> None in
   Out_channel.with_open_bin tmp (fun oc ->
       output_string oc s;
       if sync then (flush oc; Unix.fsync (Unix.descr_of_out_channel oc)));
+  Option.iter (Unix.chmod tmp) mode;
   Unix.rename tmp p;
   if sync then begin
     let fd = Unix.openfile (Filename.dirname p) [ Unix.O_RDONLY ] 0 in
@@ -140,18 +143,12 @@ let path_probe dir p =
     else "none"
   with _ -> "symlink"
 
-(* "" when it worked, else what went wrong; a write keeps the file's mode *)
+(* "" when it worked, else what went wrong *)
 let attempt f = try f (); "" with e -> Printexc.to_string e
 
 let path_write dir p text =
   let f = Filename.concat dir p in
-  attempt (fun () ->
-      mkdir_p (Filename.dirname f);
-      let mode = try Some (Unix.stat f).st_perm with _ -> None in
-      let tmp = f ^ ".pantheon-tmp" in
-      Out_channel.with_open_bin tmp (fun oc -> output_string oc text);
-      Option.iter (Unix.chmod tmp) mode;
-      Unix.rename tmp f)
+  attempt (fun () -> mkdir_p (Filename.dirname f); write_file f text)
 
 let path_remove dir p = attempt (fun () -> Sys.remove (Filename.concat dir p))
 
@@ -160,8 +157,7 @@ let path_remove dir p = attempt (fun () -> Sys.remove (Filename.concat dir p))
 (* a program's standard input: [text] in a temporary file, opened and then
    removed (so no pipe can fill up while its output is read) *)
 let stdin_fd text =
-  let f = Filename.temp_file "pantheon-in" ".txt" in
-  Out_channel.with_open_bin f (fun oc -> output_string oc text);
+  let f = temp_file "pantheon-in" ".txt" text in
   let fd = Unix.openfile f [ O_RDONLY; O_CLOEXEC ] 0 in
   (try Sys.remove f with _ -> ());
   fd
@@ -369,21 +365,19 @@ let sock_close id = Option.iter (fun fd -> close_all [ fd ]; Hashtbl.remove sock
 
 (* ---------- node_io ---------- *)
 
-(* test programs print their checks with these *)
+(* test programs print their checks with this *)
 let print_lines xs = List.iter print_endline xs
-let print_text s = print_string s
 let argv () = Array.to_list Sys.argv |> List.tl
 let rec forever f s = forever f (f s)
 
 (* One operation in its wire form (this match is nodeio.soma's io_of_wire
-   for the shell's). The handle is a node's name from before its network
-   was node_net.soma's; nothing here needs it. *)
-let node_io _ op =
+   for the shell's) *)
+let node_io op =
   let run_out (ok, out) = (ok, (0., [ out ])) in
   match op with
   (* the clock, the log, the commands' I/O (cli.soma) *)
   | [ "clock" ] -> (true, (Unix.gettimeofday (), []))
-  | [ ("log" | "say"); text ] -> say "%s" text; ans_ok
+  | [ "log"; text ] -> say "%s" text; ans_ok
   | [ "local_time"; stamp ] ->
       let tm = Unix.localtime (float_of_string stamp) in
       ans_data [ Printf.sprintf "%02d:%02d" tm.Unix.tm_hour tm.Unix.tm_min ]
@@ -392,7 +386,6 @@ let node_io _ op =
   | [ "exit"; code ] -> exit (int_of_string code)
   | [ "cwd" ] -> ans_data [ Sys.getcwd () ]
   | [ "file_exists"; path ] -> ans_flag (Sys.file_exists path)
-  | [ "write_file"; path; text ] -> write_file path text; ans_ok
   | [ "chmod"; path; mode ] -> ans_flag (try Unix.chmod path (int_of_string ("0o" ^ mode)); true with _ -> false)
   | [ "make_dirs"; path ] -> mkdir_p path; ans_ok
   | [ "new_key"; bits ] -> ans_data (new_key (int_of_string bits))
@@ -410,7 +403,8 @@ let node_io _ op =
       Sys.set_signal Sys.sigterm (Sys.Signal_handle stop);
       List.iter (fun p -> ignore (Unix.waitpid [] p)) pids;
       ans_ok
-  (* the binary runner's (node_net.soma): sockets and the node's files *)
+  (* the binary runner's (node_net.soma): sockets and the node's files (a
+     file written whole is the commands' too) *)
   | [ "sock_listen"; host; port; backlog ] -> sock_listen host port (int_of_string backlog)
   | [ "sock_dial"; host; port ] -> sock_dial host port
   | "sock_select" :: ms :: procs :: rest ->
@@ -443,7 +437,6 @@ let node_io _ op =
   | [ "dir_entries"; path ] -> ans_data (if Sys.file_exists path then Array.to_list (Sys.readdir path) else [])
   | [ "self_exe" ] -> ans_data [ self_exe ]
   | [ "env_entries" ] -> ans_data (Array.to_list (Unix.environment ()))
-  | [ "token" ] -> ans_data [ random_hex 8 ]
   | "run" :: prog :: args -> run_out (capture prog args)
   | "proc_start" :: prog :: stdin :: cwd :: rest ->
       (match fields_then_args rest with

@@ -171,7 +171,7 @@ Inductive node_op :=
     process (found: the raw output event at once, as when it couldn't
     start; not found: it runs); a cmd: patch's tool checkout ([worktree,
     git directory, "true" or "false"]); the node's own binary; the
-    environment; a fresh fence token; the governed repositories; a
+    environment; the governed repositories; a
     checkout's git ls-files; a file at a checkout's head (found or not) *)
 | IoLlmBudget
 | IoLlmHold (id kind prompt : string) (ctx : list string)
@@ -179,7 +179,6 @@ Inductive node_op :=
 | IoToolCheckout (repo : string)
 | IoSelfExe
 | IoEnvEntries
-| IoToken
 | IoRepoNames
 | IoLsFiles (repo : string)
 | IoHeadFile (repo path : string)
@@ -238,18 +237,15 @@ Inductive node_op :=
 | IoSignedText
 | IoSignedRestore (slot vid : string) (fields : list string)
 | IoFail (message : string)
-(** the commands' I/O (cli.soma): the timestamped line `say` prints, plain
-    output, an exit status; files and directories; this directory; a new
-    RSA key (e = 65537: [size, n, e, d, p, q, dp, dq, qinv], hex) and random
-    bytes as hex; git in a checkout (its output), a clone at a
-    commit; starting nodes and waiting for them; and the edits machinery,
-    still OCaml's (a checkout's edits, applying edits, the tree a bid's
-    edits give) *)
-| IoSay (text : string)
+(** the commands' I/O (cli.soma; their timestamped lines are [IoLog]'s and
+    the files they write [IoSave]'s): plain output, an exit status; files
+    and directories; this directory; a new RSA key (e = 65537: [size, n, e,
+    d, p, q, dp, dq, qinv], hex) and random bytes as hex (a job's fence
+    token is 8 of them); git in a checkout (its output), a clone at a
+    commit; starting nodes and waiting for them *)
 | IoPrint (text : string)
 | IoExit (code : string)
 | IoFileExists (path : string)
-| IoWriteFile (path text : string)
 | IoChmod (path mode : string)
 | IoMakeDirs (path : string)
 | IoCwd
@@ -290,7 +286,8 @@ Inductive node_op :=
 | IoTempFile (prefix suffix text : string)
 (** the binary runner's (node_net.soma): the host's sockets by name and
     the node's files by path, which carry out the kernel's [IoNet*] and
-    [IoFile*] and the service's [IoServe*] there *)
+    [IoFile*] and the service's [IoServe*] there (a file written whole,
+    [IoSave], is the commands' too) *)
 | IoSockListen (host port backlog : string)
 | IoSockDial (host port : string)
 | IoSockSelect (ms procs : string) (reads writes : list string)
@@ -427,7 +424,6 @@ io_wire (op : node_op) : list string :=
   | IoToolCheckout repo => ["tool_checkout", repo]
   | IoSelfExe => ["self_exe"]
   | IoEnvEntries => ["env_entries"]
-  | IoToken => ["token"]
   | IoRepoNames => ["repo_names"]
   | IoLsFiles repo => ["ls_files", repo]
   | IoHeadFile repo path => ["head_file", repo, path]
@@ -461,11 +457,9 @@ io_wire (op : node_op) : list string :=
   | IoSignedText => ["signed_text"]
   | IoSignedRestore slot vid fields => "signed_restore" :: slot :: vid :: fields
   | IoFail message => ["fail", message]
-  | IoSay text => ["say", text]
   | IoPrint text => ["print", text]
   | IoExit code => ["exit", code]
   | IoFileExists path => ["file_exists", path]
-  | IoWriteFile path text => ["write_file", path, text]
   | IoChmod path mode => ["chmod", path, mode]
   | IoMakeDirs path => ["make_dirs", path]
   | IoCwd => ["cwd"]
@@ -583,7 +577,6 @@ io_of_wire (w : list string) : option node_op :=
   | ["tool_checkout", repo] => Some (IoToolCheckout repo)
   | ["self_exe"] => Some IoSelfExe
   | ["env_entries"] => Some IoEnvEntries
-  | ["token"] => Some IoToken
   | ["repo_names"] => Some IoRepoNames
   | ["ls_files", repo] => Some (IoLsFiles repo)
   | ["head_file", repo, path] => Some (IoHeadFile repo path)
@@ -617,11 +610,9 @@ io_of_wire (w : list string) : option node_op :=
   | ["signed_text"] => Some IoSignedText
   | "signed_restore" :: slot :: vid :: fields => Some (IoSignedRestore slot vid fields)
   | ["fail", message] => Some (IoFail message)
-  | ["say", text] => Some (IoSay text)
   | ["print", text] => Some (IoPrint text)
   | ["exit", code] => Some (IoExit code)
   | ["file_exists", path] => Some (IoFileExists path)
-  | ["write_file", path, text] => Some (IoWriteFile path text)
   | ["chmod", path, mode] => Some (IoChmod path mode)
   | ["make_dirs", path] => Some (IoMakeDirs path)
   | ["cwd"] => Some IoCwd
@@ -694,7 +685,7 @@ service_op (op : node_op) : bool :=
   match op with
   | IoGit _ _ | IoGitEnv _ _ _ _ | IoPathStat _ | IoPathProbe _ _ | IoPathWrite _ _ _ | IoPathRemove _ _
   | IoTempDir _ | IoRemoveTree _ | IoProcStart _ _ _ _ _ | IoProcKill _ | IoRun _ _ | IoTempFile _ _ _
-  | IoSelfExe | IoEnvEntries | IoToken | IoReadText _ | IoDiscardFile _ | IoDirEntries _
+  | IoSelfExe | IoEnvEntries | IoRandomHex _ | IoReadText _ | IoDiscardFile _ | IoDirEntries _
   | IoEvents _ => true
   | _ => false
   end.
@@ -1051,7 +1042,7 @@ Fixpoint nio_lookup {A : Type} (k : string) (l : list (string * A)) : option A :
   match l with [] => None | (x, v) :: rest => if nio_eq x k then Some v else nio_lookup k rest end.
 
 (** What an operation does to the tables, at the clock's [now], as
-    shell.ml's handle does it: a timer is due [ms] milliseconds from now;
+    the kernel does it: a timer is due [ms] milliseconds from now;
     the height drops resend memory below it; the served table and the
     applied versions keep one entry a key. [None]: the operation isn't a
     table's (logging, the clock, storage, peer links, CI, jobs). *)

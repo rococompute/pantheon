@@ -22,18 +22,16 @@ OCaml Library "cryptokit".
 
 (** Process arguments exclude the executable name. Soma chooses the command. *)
 argv : unit -> list string.
-(** Test programs print their checks with these. *)
+(** Test programs print their checks with this. *)
 print_lines : list string -> unit.
-print_text : string -> unit.
-(** The commands are cli.soma's node programs, run through node_io under
-    the handle "cli" (their operations need no node). *)
+(** The commands are cli.soma's node programs, run through node_io
+    (their operations need no node). *)
 
 (** The node loop is Soma (node_shell.soma's run_node, the kernel's boot
     and turns) and so are its network and named files (node_net.soma: the
     listener, the links and their buffers, the service's socket and
     clients, each select's answer), over the host's sockets by name: the
-    rest is node_io operations. The handle node_io takes is a node's name
-    from before its network was Soma's; the shell needs none. *)
+    rest is node_io operations. *)
 (** The node's operations (nodeio.soma's node_op) are the kernel's to
     carry out (node_kernel.soma's kernel_run): the consensus snapshot,
     startup's replay, the block and vote logs, timers, the event queue,
@@ -58,15 +56,16 @@ print_text : string -> unit.
 (** The answer is nodeio.soma's nanswer: (carried out or the boolean
     read, (a number, data)); an effect's is (true, (0, [])); "clock"
     returns (true, now). *)
-node_io : string -> list string -> bool * (float * list string).
+node_io : list string -> bool * (float * list string).
 (** "local_time" STAMP (node_float_wire's text) [HH:MM], for the status
     file; its other facts are the kernel's. *)
 forever : forall {A : Type}, (A -> A) -> A -> unit.
 
 (** The host's primitives (nodeio.soma's service_op: what a unikernel
     asks its service for), which need no node; none decides anything:
-    "dir_entries" PATH, "read_text" PATH (found or not), "discard_file" PATH (removed, if it's
-    there), "self_exe", "env_entries", "token" (a fresh fence token).
+    "dir_entries" PATH, "read_text" PATH (found or not), "discard_file"
+    PATH (removed, if it's there), "self_exe", "env_entries", "random_hex"
+    COUNT.
     Processes: "proc_start" PROG STDIN CWD ("field" ENTRY)... "alternate"
     ARGS... (PROG run from CWD with that environment, STDIN its standard
     input from a file: found, [its name]; not found, [why it couldn't

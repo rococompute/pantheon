@@ -37,12 +37,12 @@ checks : list string := [
   check "a carriage return is a byte of the line, as before"
     (joined (log_lines (append "a" (SCons (ascii_of_nat 13) (append nl "b"))))) (append "a" (SCons (ascii_of_nat 13) "|b")),
   check "blocks.log's bytes become block_log events in order, between their neighbors"
-    (evs_text (boot_expand "0" [["me", "a"],
+    (evs_text (boot_expand [["me", "a"],
       ["block_log_text", append "{""h"":1}" (append nl (append nl (append "{""h"":2}" nl)))],
       ["start"]]))
     "me|a;block_log|{""h"":1};block_log|{""h"":2};start",
   check "an empty blocks.log adds no event"
-    (evs_text (boot_expand "0" [["me", "a"], ["block_log_text", ""]])) "me|a",
+    (evs_text (boot_expand [["me", "a"], ["block_log_text", ""]])) "me|a",
   check "a long log is split whole" (show (length (log_lines big))) "20000"
 ].
 

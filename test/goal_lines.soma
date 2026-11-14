@@ -40,7 +40,7 @@ checks : list string := [
     goals (append "- one" (append cr (append nl "- two"))))
     (append "agent|goal|- one" (append cr ";agent|goal|- two")),
   check "goals sit between the boot events around the file" (
-    evs_text (boot_expand "0" [["agent", "behavior", "honest"],
+    evs_text (boot_expand [["agent", "behavior", "honest"],
       ["goal_text", append "- one" (append nl (append nl (append "- two" nl)))],
       ["agent", "deny", "secret"]]))
     "agent|behavior|honest;agent|goal|- one;agent|goal|- two;agent|deny|secret"

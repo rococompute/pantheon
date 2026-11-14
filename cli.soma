@@ -34,7 +34,7 @@ cli_ask {R : Type} (op : node_op) (rest : nanswer -> nprog R) : nprog R := NStep
     back; a unikernel prints it and stops) *)
 cli_fail {R : Type} `{Stops R} (message : string) : nprog R := NStep (IoFail message) (fun _ => NDone stop).
 
-cli_say {R : Type} (text : string) (rest : unit -> nprog R) : nprog R := cli_do (IoSay text) rest.
+cli_say {R : Type} (text : string) (rest : unit -> nprog R) : nprog R := cli_do (IoLog text) rest.
 
 cli_exists {R : Type} (path : string) (rest : bool -> nprog R) : nprog R :=
   cli_ask (IoFileExists path) (fun a => rest (fst a)).
@@ -244,11 +244,11 @@ make_keys (home name addr : string) (k : string -> nprog unit) : nprog unit :=
   let key := ans_list key in
   cli_ask (IoRandomHex "32") (fun secret =>
   let secret := ans_one secret in
-  let priv f j := cli_do (IoWriteFile (path home f) (json_file j)) (fun _ => cli_do (IoChmod (path home f) "600") (fun _ => NDone tt)) in
+  let priv f j := cli_do (IoSave (path home f) "false" (json_file j)) (fun _ => cli_do (IoChmod (path home f) "600") (fun _ => NDone tt)) in
   nbind (priv "key.json" (JObj [("agent", JStr name), ("key", key_json key true)])) (fun _ =>
   nbind (priv "chain.json" (JObj [("secret", JStr secret)])) (fun _ =>
   let pub := path home "public.json" in
-  cli_do (IoWriteFile pub (json_file (JObj [("name", JStr name), ("addr", JStr addr), ("pubkey", key_json key false),
+  cli_do (IoSave pub "false" (json_file (JObj [("name", JStr name), ("addr", JStr addr), ("pubkey", key_json key false),
                                              ("tip", JStr (iterate chain_len secret))]))) (fun _ =>
   k pub)))))))).
 
@@ -411,7 +411,7 @@ build_genesis (home net : string) (k : unit -> nprog unit) : nprog unit :=
         if differs && has_blocks then
           cli_fail (cat [home, " already runs a different chain (it has blocks). A new genesis is a new chain: use a new home, or remove blocks.log and signed.log on purpose"])
         else
-        cli_do (IoWriteFile gp text) (fun _ =>
+        cli_do (IoSave gp "false" text) (fun _ =>
         cli_say (cat ["wrote ", gp, ": chain ", id, ", genesis hash ", sha256 text, ". Every agent should get the same hash"]) k))) in
       if negb has_key then written tt else
       cli_read_json ours (fun kj =>
@@ -503,7 +503,7 @@ cmd_init (args : list string) : nprog unit :=
     let commit := trim (ans_one commit) in
     if seq commit "" then cli_fail (append p " is not a git checkout with a commit")
     else k (JObj [("name", JStr n), ("url", JStr p), ("commit", JStr commit)]))) (fun repos =>
-  cli_do (IoWriteFile (path net "network.json")
+  cli_do (IoSave (path net "network.json") "false"
             (json_file (JObj [("block_ms", JNum (show (ia_block_ms a))),
                               ("params", JObj (List.map (fun kv => (fst kv, JStr (snd kv))) (ia_params a))),
                               ("repos", JList repos)]))) (fun _ =>
@@ -512,7 +512,7 @@ cmd_init (args : list string) : nprog unit :=
     cli_say (append "making keys for " n) (fun _ =>
     make_keys (path dir n) n (append "127.0.0.1:" (show (ia_port a + i))) (fun pub =>
     cli_read_text pub (append "cannot read " pub) (fun t =>
-    cli_do (IoWriteFile (path (path net "parts") (append n ".json")) t) k)))) (fun _ =>
+    cli_do (IoSave (path (path net "parts") (append n ".json")) "false" t) k)))) (fun _ =>
   cli_each agents_default (fun n k => build_genesis (path dir n) net k) (fun _ =>
   cli_ask IoSelfExe (fun self =>
   cli_say (cat ["made a 4-agent network in ", dir, ". Run it with: ", ans_one self, " up ", dir]) (fun _ => NDone tt)))))))))
@@ -583,7 +583,7 @@ cmd_tx (home : string) (fields : list string) : nprog unit :=
   cli_do (IoMakeDirs d) (fun _ =>
   cli_ask IoClock (fun now =>
   let name := append (stamp_text (float_text (PrimFloat.mul (ans_float now) 1000000%float))) ".json" in
-  cli_do (IoWriteFile (path d name) (nio_json_strings fields)) (fun _ =>
+  cli_do (IoSave (path d name) "false" (nio_json_strings fields)) (fun _ =>
   cli_say (cat ["queued for ", basename home, "'s agent: ", join " " fields, " (it signs and sends it next; see `pantheon status ", home, "`)"])
     (fun _ => NDone tt)))).
 
@@ -980,10 +980,10 @@ checkout_edits_prog (dir : string) : nprog scan_result :=
           ("-c" :: "core.fsmonitor=false" :: append "--git-dir=" snap_git :: append "--work-tree=" abs :: args) in
       cli_do (IoMakeDirs info) (fun _ =>
       cli_do (IoMakeDirs (path_join snap_git "refs")) (fun _ =>
-      cli_do (IoWriteFile (path_join snap_git "config") "") (fun _ =>
-      cli_do (IoWriteFile (path_join snap_git "HEAD") (append head newline)) (fun _ =>
-      cli_do (IoWriteFile (path_join info "alternates") (append (path_join common "objects") newline)) (fun _ =>
-      cli_do (IoWriteFile empty "") (fun _ =>
+      cli_do (IoSave (path_join snap_git "config") "false" "") (fun _ =>
+      cli_do (IoSave (path_join snap_git "HEAD") "false" (append head newline)) (fun _ =>
+      cli_do (IoSave (path_join info "alternates") "false" (append (path_join common "objects") newline)) (fun _ =>
+      cli_do (IoSave empty "false" "") (fun _ =>
       nbind (scan_checkout_prog g abs dir) (fun r =>
       cli_do (IoRemoveTree snap) (fun _ => NDone r)))))))))
   end)))).
@@ -1294,7 +1294,7 @@ cmd_image (home file : string) (flags : list string) : nprog unit :=
   match config with
   | None => NDone tt
   | Some c =>
-      cli_ask (IoWriteFile file (image_text home service c)) (fun a =>
+      cli_ask (IoSave file "false" (image_text home service c)) (fun a =>
       if fst a then cli_say (cat ["wrote ", file, ": soma build it to make the node's image"]) (fun _ => NDone tt)
       else cli_fail (cat ["cannot write ", file]))
   end).
