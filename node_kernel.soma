@@ -1,0 +1,424 @@
+(** The node's kernel (U-1; docs/SHELL-IN-SOMA.md, "One kernel, two
+    runners"): what a node keeps between operations and how it carries
+    them out, written once for the binary and the unikernel. A node
+    program's operations ([nprog] over nodeio.soma's [node_op]) become a
+    program of the kernel's primitives ([IoNetListen] ... [IoFileAppend],
+    named after Sandbox's) and the operations it hands on as they are
+    (logging, the clock, and the host's work: git, model calls, CI, jobs,
+    the inbox: nodeio.soma's [service_op]).
+
+    The kernel keeps the tables (nodeio.soma's [nio_tables]: timers, the
+    queue, decided blocks, signed votes, resend memory, ...), the genesis
+    peers and the links it dialed to them, the connections peers opened,
+    when it dials and resends next, the turn's clock, the snapshot last
+    saved and the peer lines it signed. Peer lines are signed with Soma's
+    RSA (nodeio.soma's [nio_wire_line]).
+
+    Two runners carry the primitives out: the binary's, through shell.ml
+    ([run_shell], node_shell.soma), whose sockets, files and select are
+    the host's; and the unikernel's, with Sandbox (node_sandbox.soma),
+    which asks the node's service for the host's work. *)
+Import util nodeio node cli.
+
+(** What the kernel is given, from cli.soma's [node_setup]: the chain's
+    id, this node's key and each agent's public key, the draw (the
+    Byzantine flag, the chain's length, the link secret), the check
+    exclusions in [IoCheckExclusions]'s wire form, this node's name, the
+    boot events before blocks.log's, the backend's name (for the line it
+    logs when it starts), and the address and port it listens on. *)
+Record kworld := {
+  w_chain : string;
+  w_key : nio_key;
+  w_keys : list (string * nio_key);
+  w_draw : list string;
+  w_exclusions : list string;
+  w_identity : string;
+  w_boot : list (list string);
+  w_backend : string;
+  w_listen : string;
+  w_port : string }.
+
+(** A connection a peer opened: its name (the runner's), the host it came
+    from, when it was last read, and the bytes it sent before it was
+    admitted (they are its first [peer_bytes] once it is). *)
+Record nio_link := { l_id : string; l_host : string; l_last : PrimFloat.float; l_held : string }.
+
+(** The kernel's state: the tables; the genesis peers, in order (name,
+    address, port); the links dialed to them, by name; the connections
+    peers opened, offered and not yet admitted, and admitted; when it
+    dials next and when it last resent; the turn's clock reading (taken
+    before a turn, read back for its deadlines, given up by the select);
+    the snapshot text last saved; and the peer lines it signed lately,
+    by their fields (a resend sends the same line again). *)
+Record nio_kernel := {
+  k_tables : nio_tables;
+  k_names : list (string * (string * string));
+  k_peers : list (string * string);
+  k_offers : list nio_link;
+  k_conns : list nio_link;
+  k_next_dial : PrimFloat.float;
+  k_last_resend : PrimFloat.float;
+  k_turn : option PrimFloat.float;
+  k_saved : option string;
+  k_lines : smap string;
+  k_old_lines : smap string }.
+
+kernel_tables (s : nio_kernel) (t : nio_tables) : nio_kernel := {| s with k_tables := t |}.
+
+knewline : string := Stdlib.Strings.String.String (Ascii.ascii_of_nat 10) Stdlib.Strings.String.EmptyString.
+
+kclock : nprog PrimFloat.float := nbind (nask IoClock) (fun a => NDone (ans_float a)).
+
+kfound (a : nanswer) : option string := if fst a then Some (ans_one a) else None.
+
+(** an address's host and port: what comes before and after its last ":" *)
+Fixpoint ksplit_rev (rev_cs acc : list Ascii.ascii) : list Ascii.ascii * list Ascii.ascii :=
+  match rev_cs with
+  | [] => ([], acc)
+  | c :: rest => if Ascii.eqb c (Ascii.ascii_of_nat 58) then (rev_onto rest [], acc) else ksplit_rev rest (c :: acc)
+  end.
+
+kaddr (a : string) : string * string :=
+  let r := ksplit_rev (rev_onto (chars a) []) [] in (of_chars (fst r), of_chars (snd r)).
+
+(** a line's fields as one key: each its length, ":", itself *)
+klines_key (fields : list string) : string :=
+  Stdlib.Strings.String.concat "" (List.map (fun f => cat [nio_count (Stdlib.Strings.String.length f), ":", f]) fields).
+
+(** a line to the peers, signed with this node's key, unless the draw made
+    it a node that signs badly ("bad-sig": 512 zeros, which no key
+    checks); one signed before is sent again as it was *)
+kline (w : kworld) (s : nio_kernel) (fields : list string) : string * nio_kernel :=
+  let key := klines_key fields in
+  match smap_find key (k_lines s) with
+  | Some line => (line, s)
+  | None =>
+      let line := match smap_find key (k_old_lines s) with
+                  | Some line => line
+                  | None =>
+                      if nio_eq (List.hd "" (w_draw w)) "bad-sig"
+                      then nio_wire_line_signed (w_identity w) fields (Stdlib.Strings.String.concat "" (List.repeat "0" 512))
+                      else nio_wire_line (w_chain w) (w_identity w) (w_key w) fields
+                  end in
+      (line, {| s with k_lines := smap_add key line (k_lines s) |})
+  end.
+
+(** a line to a genesis peer, on this node's link to it if there is one; a
+    link the write finds closed is dropped, so the next turn dials again *)
+ksend_to (s : nio_kernel) (who line : string) : nprog nio_kernel :=
+  match List.find (fun p => nio_eq (fst p) who) (k_peers s) with
+  | None => NDone s
+  | Some p =>
+      nbind (nask (IoNetSend (snd p) (Stdlib.Strings.String.append line knewline))) (fun a =>
+      NDone (if fst a then s else {| s with k_peers := List.filter (fun q => negb (nio_eq (fst q) who)) (k_peers s) |}))
+  end.
+
+Fixpoint ksend_names (s : nio_kernel) (names : list string) (line : string) : nprog nio_kernel :=
+  match names with
+  | [] => NDone s
+  | n :: rest => nbind (ksend_to s n line) (fun s' => ksend_names s' rest line)
+  end.
+
+kpeer_names (s : nio_kernel) : list string := List.map fst (k_names s).
+
+ksend_fields (w : kworld) (s : nio_kernel) (names : list string) (fields : list string) : nprog nio_kernel :=
+  let r := kline w s fields in ksend_names (snd r) names (fst r).
+
+Fixpoint keach {A : Type} (f : nio_kernel -> A -> nprog nio_kernel) (s : nio_kernel) (l : list A) : nprog nio_kernel :=
+  match l with [] => NDone s | x :: rest => nbind (f s x) (fun s' => keach f s' rest) end.
+
+(** dial each genesis peer this node has no link to: the runner doesn't
+    wait for the other side (the binary's connect returns at once; the
+    unikernel's gives up after 300 ms), so a peer that doesn't answer
+    doesn't hold up the loop *)
+Fixpoint kdial (s : nio_kernel) (names : list (string * (string * string))) : nprog nio_kernel :=
+  match names with
+  | [] => NDone s
+  | (n, (host, port)) :: rest =>
+      if List.existsb (fun p => nio_eq (fst p) n) (k_peers s) then kdial s rest
+      else
+        nbind (nask (IoNetConnect host port "300")) (fun a =>
+        match kfound a with
+        | Some c => kdial {| s with k_peers := k_peers s ++ [(n, c)] |} rest
+        | None => kdial s rest
+        end)
+  end.
+
+(** a recorded broadcast resent as recorded: "each" sends the first peer
+    [fields] and the others [alternate]; "all" sends everyone [fields] *)
+kresend (w : kworld) (s : nio_kernel) (r : string * (string * (list string * list string))) : nprog nio_kernel :=
+  let '(_, (kind, (fields, alt))) := r in
+  match kpeer_names s with
+  | [] => NDone s
+  | first :: others =>
+      if nio_eq kind "each" then nbind (ksend_fields w s [first] fields) (fun s' => ksend_fields w s' others alt)
+      else if nio_eq kind "all" then ksend_fields w s (first :: others) fields
+      else NDone s
+  end.
+
+(** Before a turn: the turn's clock reading; dial the peers it has no link
+    to, at most once a second; every 2 seconds resend this height's
+    recorded messages, oldest first, and the node's transactions of the
+    last 2 minutes (not when it is drawn silent), newest first. Links
+    drop, and the protocol needs every message to arrive eventually. *)
+kpoll_prep (w : kworld) (s : nio_kernel) : nprog nio_kernel :=
+  nbind kclock (fun now =>
+  let s := {| s with k_turn := Some now |} in
+  nbind (if PrimFloat.leb (k_next_dial s) now
+         then nbind (kdial s (k_names s)) (fun s' => NDone {| s' with k_next_dial := PrimFloat.add now PrimFloat.one |})
+         else NDone s) (fun s =>
+  if PrimFloat.ltb (PrimFloat.add (k_last_resend s) (nio_small 2)) now then
+    let s := {| s with k_last_resend := now; k_lines := SLeaf; k_old_lines := k_lines s |} in
+    nbind (keach (kresend w) s (List.rev (t_mine (k_tables s)))) (fun s =>
+    let txs := List.filter (fun t => PrimFloat.ltb (PrimFloat.sub now (fst t)) (nio_small 120)) (t_txs (k_tables s)) in
+    let s := kernel_tables s (nio_with_txs (k_tables s) txs) in
+    nbind (if nio_eq (List.hd "" (w_draw w)) "silent" then NDone s
+           else keach (fun s t => ksend_fields w s (kpeer_names s) ["tx", snd t]) s txs) (fun s =>
+    NDone {| s with k_old_lines := SLeaf |}))
+  else NDone s)).
+
+kwithout (id : string) (l : list nio_link) : list nio_link :=
+  List.filter (fun x => negb (nio_eq (l_id x) id)) l.
+
+kqueue (s : nio_kernel) (ev : list string) : nio_kernel :=
+  kernel_tables s (nio_with_queue (k_tables s) (t_queue (k_tables s) ++ [ev])).
+
+kis (id : string) (l : list nio_link) : bool := List.existsb (fun x => nio_eq (l_id x) id) l.
+
+(** What the runner saw on a connection, as the node's events: an offer
+    (its host, and the hosts of the connections held, for Soma's
+    admission), the bytes an admitted one read, its end. Bytes from one not
+    yet admitted wait for its admission. A link this node dialed that
+    ended is dropped, so the next turn dials again. *)
+ktake_mail (now : PrimFloat.float) (s : nio_kernel) (e : list string) : nio_kernel :=
+  match e with
+  | ["opened", id, host] =>
+      kqueue {| s with k_offers := k_offers s ++ [{| l_id := id; l_host := host; l_last := now; l_held := "" |}] |}
+        ("conn_offer" :: id :: host :: List.map l_host (k_conns s))
+  | ["bytes", id, data] =>
+      if kis id (k_conns s) then
+        kqueue {| s with k_conns := List.map (fun l => if nio_eq (l_id l) id then {| l with l_last := now |} else l) (k_conns s) |}
+          ["peer_bytes", id, data]
+      else {| s with k_offers := List.map (fun l => if nio_eq (l_id l) id then {| l with l_held := Stdlib.Strings.String.append (l_held l) data |} else l) (k_offers s) |}
+  | ["closed", id] =>
+      if kis id (k_conns s) then kqueue {| s with k_conns := kwithout id (k_conns s) |} ["peer_closed", id]
+      else {| s with k_offers := kwithout id (k_offers s);
+                     k_peers := List.filter (fun p => negb (nio_eq (snd p) id)) (k_peers s) |}
+  | _ => s
+  end.
+
+(** An offer carried out as Soma decided ([conn_admit_plan]): refused, it
+    is closed; admitted ("new"), or admitted in place of the connection
+    [target] ("evict", which is closed), it is read from now on, and what
+    it sent while it waited is its first read. *)
+kadmit (now : PrimFloat.float) (s : nio_kernel) (offer mode target : string) : nprog nio_kernel :=
+  match List.find (fun l => nio_eq (l_id l) offer) (k_offers s) with
+  | None => NDone s
+  | Some o =>
+      let s := {| s with k_offers := kwithout offer (k_offers s) |} in
+      if nio_eq mode "refuse" then nbind (nask (IoNetClose offer)) (fun _ => NDone s)
+      else
+        nbind (if nio_eq mode "evict" && kis target (k_conns s)
+               then nbind (nask (IoNetClose target)) (fun _ => NDone {| s with k_conns := kwithout target (k_conns s) |})
+               else NDone s) (fun s =>
+        let s := {| s with k_conns := k_conns s ++ [{| o with l_last := now; l_held := "" |}] |} in
+        NDone (if nio_eq (l_held o) "" then s else kqueue s ["peer_bytes", offer, l_held o]))
+  end.
+
+(** a select's wait, in [float_wire]'s seconds, as milliseconds: at most a
+    second, so the loop looks again at least that often *)
+kwait_ms (wait : string) : string :=
+  let t := float_text (PrimFloat.mul (float_of_digits wait) (nio_small 1000)) in
+  if starts "-" t || seq t "nan" || seq t "inf" then "0"
+  else nio_count (Nat.min 1000 (num t)).
+
+(** the tables' answer to an operation, at [now] *)
+kstores (now : PrimFloat.float) (s : nio_kernel) (op : node_op) : nanswer * nio_kernel :=
+  match nio_store_op now (k_tables s) op with
+  | Some (answer, t) => (answer, kernel_tables s t)
+  | None => (ans_flag false, s)
+  end.
+
+kfile_text (a : nanswer) : string := if fst a then ans_one a else "".
+
+kpass (s : nio_kernel) (op : node_op) : nprog (nanswer * nio_kernel) :=
+  nbind (nask op) (fun a => NDone (a, s)).
+
+(** One operation, as the kernel carries it out: the answer the binary's
+    shell gave it before the kernel was its own, and the new state. Peer
+    sends go on the links this node dialed; the select is the runner's
+    mailbox, then the host's events (its jobs'), then the queue, drained;
+    connections are admitted and closed as Soma decided; decided blocks,
+    signed votes, the snapshot and the status are the node's named files;
+    the draw, signing a transaction, the check exclusions and the keys are
+    the world's; the tables and stores are nodeio.soma's. Everything else
+    (logging, the clock, the host's work) is handed on as it is. *)
+kernel_op (w : kworld) (s : nio_kernel) (op : node_op) : nprog (nanswer * nio_kernel) :=
+  match op with
+  | IoStore height txs =>
+      nbind (nask (IoFileAppend "blocks.log" (Stdlib.Strings.String.append (nio_block_line height txs) knewline))) (fun _ =>
+      NDone (kstores PrimFloat.zero s op))
+  | IoSignVote slot vid fields =>
+      nbind (nask (IoFileAppend "signed.log" (Stdlib.Strings.String.append (nio_vote_line slot vid fields) knewline))) (fun _ =>
+      NDone (kstores PrimFloat.zero s op))
+  | IoTimer _ _ | IoTrackTx _ => nbind kclock (fun now => NDone (kstores now s op))
+  | IoSnapshotSave text =>
+      match k_saved s with
+      | Some t => if nio_eq t text then NDone (ans_ok, s) else
+          nbind (nask (IoFileWrite "consensus.state" "true" text)) (fun _ => NDone (ans_ok, {| s with k_saved := Some text |}))
+      | None => nbind (nask (IoFileWrite "consensus.state" "true" text)) (fun _ => NDone (ans_ok, {| s with k_saved := Some text |}))
+      end
+  | IoSnapshotLoad =>
+      nbind (nask (IoFileRead "consensus.state")) (fun a =>
+      NDone (if fst a then ans_data true [ans_one a] else ans_data false [], s))
+  | IoWriteStatus text => nbind (nask (IoFileWrite "status.txt" "false" text)) (fun _ => NDone (ans_ok, s))
+  | IoBootEvents =>
+      nbind (nask (IoFileRead "blocks.log")) (fun a =>
+      NDone (ans_data true (nio_frame_lists (w_boot w ++ [["block_log_text", kfile_text a]])), s))
+  | IoSignedText => nbind (nask (IoFileRead "signed.log")) (fun a => NDone (ans_data true [kfile_text a], s))
+  | IoDraw => NDone (ans_data true (w_draw w), s)
+  | IoPeerCount => NDone (ans_data true [nio_count (List.length (k_names s))], s)
+  | IoEncodeTx nonce fields => NDone (ans_data true [nio_encode_tx (w_chain w) (w_identity w) (w_key w) nonce fields], s)
+  | IoCheckExclusions => NDone (ans_data true (w_exclusions w), s)
+  | IoIdentity => NDone (ans_data true [w_identity w], s)
+  | IoPeerKey who =>
+      NDone (match List.find (fun p => nio_eq (fst p) who) (w_keys w) with
+             | Some p => ans_data true [w_chain w, nio_count (nk_bytes (snd p)),
+                                        Crypto.hex_of_bytes (nk_n (snd p)), Crypto.hex_of_bytes (nk_e (snd p))]
+             | None => ans_data false []
+             end, s)
+  | IoSendAll fields => nbind (ksend_fields w s (kpeer_names s) fields) (fun s' => NDone (ans_ok, s'))
+  | IoSendPeer index fields =>
+      nbind (ksend_fields w s (List.firstn 1 (List.skipn (num index) (kpeer_names s))) fields) (fun s' => NDone (ans_ok, s'))
+  | IoPeerSend who fields =>
+      nbind (ksend_fields w s (List.filter (fun n => nio_eq n who) (kpeer_names s)) fields) (fun s' => NDone (ans_ok, s'))
+  | IoPeerExists who => NDone (ans_flag (List.existsb (fun n => nio_eq n who) (kpeer_names s)), s)
+  | IoConns => NDone (ans_data true (nio_frame_lists (List.map (fun l => [l_id l, float_wire (l_last l)]) (k_conns s))), s)
+  | IoPollPrep => nbind (kpoll_prep w s) (fun s' => NDone (ans_ok, s'))
+  | IoTurnNow =>
+      match k_turn s with
+      | Some t => NDone (ans_time t, s)
+      | None => nbind kclock (fun now => NDone (ans_time now, {| s with k_turn := Some now |}))
+      end
+  | IoTimers =>
+      NDone (ans_data true (nio_frame_lists (List.map (fun p => float_wire (fst p) :: snd p) (t_timers (k_tables s)))), s)
+  | IoEvents wait =>
+      nbind (match k_turn s with Some t => NDone t | None => kclock end) (fun now =>
+      let s := {| s with k_turn := None |} in
+      nbind (nask (IoNetMailbox (match t_queue (k_tables s) with [] => kwait_ms wait | _ => "0" end))) (fun got =>
+      let s := List.fold_left (ktake_mail now) (nio_lists (ans_list got)) s in
+      nbind (nask (IoEvents "0")) (fun host =>
+      let t := k_tables s in
+      let s := kernel_tables s (nio_with_queue t (t_queue t ++ nio_lists (ans_list host))) in
+      NDone (kstores now s (IoEvents wait)))))
+  | IoConnAdmit offer mode target =>
+      nbind kclock (fun now => nbind (kadmit now s offer mode target) (fun s' => NDone (ans_ok, s')))
+  | IoConnClose cid =>
+      if kis cid (k_conns s)
+      then nbind (nask (IoNetClose cid)) (fun _ => NDone (ans_ok, {| s with k_conns := kwithout cid (k_conns s) |}))
+      else NDone (ans_ok, s)
+  | _ =>
+      if service_op op then kpass s op
+      else match nio_store_op PrimFloat.zero (k_tables s) op with
+           | Some (answer, t) => NDone (answer, kernel_tables s t)
+           | None => kpass s op
+           end
+  end.
+
+(** A node program, run by the kernel: each operation in order, each
+    answer handed to the rest. What it gives is a program of the kernel's
+    primitives and the operations it hands on, which a runner carries out. *)
+Fixpoint kernel_run {A : Type} (w : kworld) (p : nprog A) (s : nio_kernel) : nprog (A * nio_kernel) :=
+  match p with
+  | NDone a => NDone (a, s)
+  | NStep op k => nbind (kernel_op w s op) (fun r => kernel_run w (k (fst r)) (snd r))
+  end.
+
+(** ---- From the node's setup ----
+    What cli.soma's [node_setup] decided for a node's home (the settings,
+    this node's key, its excluded repositories, those it can't check, CI
+    commands, the agents, the repositories, those still at genesis, then
+    the boot events), made the kernel's world and its first state. *)
+khex (s : string) : list PrimInt63.int :=
+  match Crypto.bytes_of_hex s with Some l => l | None => [] end.
+
+kkey_of_hex (size : string) (n e p q dp dq qinv : string) : nio_key :=
+  {| nk_bytes := num size / 8; nk_n := khex n; nk_e := khex e; nk_p := khex p;
+     nk_q := khex q; nk_dp := khex dp; nk_dq := khex dq; nk_qinv := khex qinv |}.
+
+Fixpoint kfives (l : list string) : list (string * nio_key) :=
+  match l with
+  | name :: _ :: size :: n :: e :: rest => (name, kkey_of_hex size n e "" "" "" "" "") :: kfives rest
+  | _ => []
+  end.
+
+(** the agents' addresses, by name, from the setup's agents (name,
+    address, key size, n, e) *)
+Fixpoint kagent_addrs (l : list string) : list (string * (string * string)) :=
+  match l with
+  | name :: addr :: _ :: _ :: _ :: rest => (name, kaddr addr) :: kagent_addrs rest
+  | _ => []
+  end.
+
+kconfig_agents (config : list (list string)) : list (string * (string * string)) :=
+  match config with _ :: _ :: _ :: _ :: _ :: agents :: _ => kagent_addrs agents | _ => [] end.
+
+kernel_world (config : list (list string)) : option kworld :=
+  match config with
+  | settings :: key :: excluded :: no_check :: _ :: agents :: _ :: _ :: boot =>
+      match settings, key with
+      | [_, me, secret, chain, byz, backend, listen, _, _, _, _, _], [size, n, e, _, p, q, dp, dq, qinv] =>
+          match List.find (fun a => nio_eq (fst a) me) (kconfig_agents config) with
+          | Some a =>
+              Some {| w_chain := chain; w_key := kkey_of_hex size n e p q dp dq qinv;
+                      w_keys := kfives agents;
+                      w_draw := [byz, show chain_len, secret];
+                      w_exclusions := flat_map (fun d => ["field", d]) no_check ++ "alternate" :: excluded;
+                      w_identity := me;
+                      w_boot := boot;
+                      w_backend := backend;
+                      w_listen := listen;
+                      w_port := snd (snd a) |}
+          | None => None
+          end
+      | _, _ => None
+      end
+  | _ => None
+  end.
+
+(** the tables a node starts with (each repository still at genesis at
+    version 0), and its genesis peers: the agents but itself, in order *)
+kernel_start (me : string) (config : list (list string)) : nio_kernel :=
+  let at_genesis := match config with _ :: _ :: _ :: _ :: _ :: _ :: _ :: g :: _ => g | _ => [] end in
+  {| k_tables := {| nio_empty with t_applied := map (fun r => (r, "0")) at_genesis |};
+     k_names := List.filter (fun a => negb (nio_eq (fst a) me)) (kconfig_agents config);
+     k_peers := []; k_offers := []; k_conns := []; k_next_dial := PrimFloat.zero; k_last_resend := PrimFloat.zero;
+     k_turn := None; k_saved := None; k_lines := SLeaf; k_old_lines := SLeaf |}.
+
+(** Listening on this node's address and port, before anything else: the
+    line it logs says where, its peers and its backend; a port it can't
+    have is a refusal to start (another node is likely running there). *)
+kernel_listen_prog (w : kworld) (s : nio_kernel) : nprog bool :=
+  nbind (nask (IoNetListen (w_listen w) (w_port w))) (fun a =>
+  if fst a then
+    nbind (nask (IoLog (cat [w_identity w, " listening; port ", w_port w, "; peers ",
+                             Stdlib.Strings.String.concat ", " (kpeer_names s), "; backend ", w_backend w]))) (fun _ =>
+    NDone true)
+  else
+    nbind (nask (IoFail (cat ["can't listen on ", w_listen w, ":", w_port w, " (", ans_one a,
+                              "): is another node running here?"]))) (fun _ => NDone false)).
+
+(** A node from its setup, started: listening, then startup (the snapshot
+    read back, the boot events replayed with blocks.log's, the start
+    step), giving the node's state and the kernel's for the loop's turns
+    (node.soma's [node_tick_prog], each run by [kernel_run] from the state
+    the last left). *)
+kernel_boot_prog (h : string) (w : kworld) (s : nio_kernel) : nprog (option (node_state * nio_kernel)) :=
+  nbind (kernel_listen_prog w s) (fun listening =>
+  if listening then
+    nbind (kernel_run w (boot_snapshot_prog h) s) (fun r =>
+    NDone (match fst r with Some st => Some (st, snd r) | None => None end))
+  else NDone None).
+
+kernel_tick_prog (h : string) (w : kworld) (p : node_state * nio_kernel) : nprog (node_state * nio_kernel) :=
+  nbind (kernel_run w (node_tick_prog h (fst p)) (snd p)) (fun r => NDone (fst r, snd r)).

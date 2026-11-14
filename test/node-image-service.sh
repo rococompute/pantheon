@@ -100,7 +100,7 @@ opam exec --switch="$SWITCH" -- solo5-vmnet -- solo5-hvt --mem=512 --block:stora
   "$hvt" --ipv4="$ip/24" --ipv4-gateway="$gw" > "$t/boot.log" 2>&1 &
 pids="$pids $!"
 n=0
-until grep -q 'muse listening on port' "$t/boot.log"; do
+until grep -q 'muse listening; port' "$t/boot.log"; do
   sleep 1; n=$((n + 1)); [ $n -lt 30 ] || { tail -20 "$t/boot.log"; echo 'FAIL the image did not start'; exit 1; }
 done
 for a in claude codex grok; do

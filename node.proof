@@ -909,7 +909,8 @@ Proof.
     raw | | raw | who | | | | stamp | path | path | | | timers | | | wait |
     | | height txs | | slot vid fields | message |
     text | text | code | path | path text | path mode | path | | bits | count | dir args |
-    url dir commit | log args | pids | dir | dir edits | repo head out edits | text | | address port | wait | conn found stamp fields ];
+    url dir commit | log args | pids | dir | dir edits | repo head out edits | text | | address port | wait | conn found stamp fields |
+    address port | ms | address port ms | conn data | conn | name | name durable text | name text ];
     try reflexivity.
   - change (match resend_parts (resend_fields fields ++ ("alternate" :: alternate)) with
     | Some (original, alt) => Some (IoRememberBroadcast height kind original alt)

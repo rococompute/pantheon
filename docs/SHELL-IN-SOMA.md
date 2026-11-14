@@ -1,7 +1,9 @@
 # Moving the shell into Soma
 
-Pantheon's decisions are Soma (`node.soma` and what it imports), but the
-program around them is `shell.ml`, about 1,600 lines of hand-written OCaml
+Pantheon's decisions are Soma (`node.soma` and what it imports), and so is
+the node's kernel (`node_kernel.soma`: its tables, peer links, signatures,
+files and select); what is left of the program around them is `shell.ml`,
+about 1,130 lines of hand-written OCaml (it was about 1,600)
 that `shell.definition` declares to Soma as four assumptions (`sha256`,
 `hash_list`, `decode_tx`, `run`). The goal: as much of `shell.ml` as can be
 is Soma, extracted with the rest, and OCaml is left only as thin bindings to
@@ -210,71 +212,64 @@ runtime.
 The resend write uses tagged `field`/value pairs followed by `alternate`
 and the untouched second list. Values may themselves contain either tag.
 Resend reads and the native table remain unchanged.
-`node_sandbox.soma` is that interpreter for a unikernel: `run_kernel`
-runs the same programs with `Sandbox.io` (Soma's links, millisecond clock
-and named-file storage), keeping the same file bytes and tables as the
-binary: `nodeio.soma`'s pure part has the lines blocks.log and signed.log
-get (Yojson's, byte for byte) and what each table operation does
-(`nio_table_op`), and `test/node-sandbox.sh` checks both (`soma run` on the
-pure part, `soma build --no-image` on a unikernel that runs a node
-program). Signing and checking signatures are Soma's (Soma.Crypto's
-RSA and SHA-256): `nodeio.soma`'s `nio_encode_tx`, `nio_wire_line` and
-`nio_line_verify` make and check the binary's lines byte for byte, which
-the test checks against lines shell.ml signed with a Cryptokit key, so the
-world gives only the chain's id and the keys (`w_chain`, `w_key`,
-`w_keys`). What Sandbox doesn't give yet is the program's to supply, in
-`nio_world` (with no service: see "The node's service"): starting a CI check (`w_check`), the epoch's draw
-(`w_draw`), the check
-exclusions (`w_exclusions`), the checkouts' heads (`w_heads`), the model
-backend (`w_backend`), a time of day (`w_local_time`) and a merge's git
-work (`w_git`), a model call's and its outcome's (`w_llm`) and CI's
-start (`w_ci`), this node's name (`w_identity`), a time as text (`w_float_text`) and the image's boot events (`w_boot`).
-Decided blocks and signed votes are kept in
-memory beside their files, as the binary keeps them (`nio_store_op`).
-Each operation:
+### One kernel, two runners
 
-| `node_op` | binary (shell.ml) | unikernel (node_sandbox.soma) |
+What a node keeps between operations, and how it carries them out, is
+Soma, written once: `node_kernel.soma`'s kernel, which the binary and the
+unikernel both run. `kernel_run` turns a node program into a program of
+the kernel's eight primitives (nodeio.soma's `IoNetListen`,
+`IoNetMailbox`, `IoNetConnect`, `IoNetSend`, `IoNetClose`, `IoFileRead`,
+`IoFileWrite`, `IoFileAppend`: Sandbox's own, by name) and of the
+operations it hands on as they are (logging, the clock, a time of day,
+refusing to start, and the host's work: nodeio.soma's `service_op`).
+Two runners carry that out: the binary's, `run_shell` through shell.ml
+(node_shell.soma's `run_node`), whose sockets, files and select are the
+host's; and the unikernel's, `run_image` with Sandbox
+(node_sandbox.soma's `run_node_image_at`), which asks the node's service
+for the host's work.
+
+The kernel keeps the tables (nodeio.soma's `nio_tables`: timers, the
+queue, decided blocks and signed votes by key in AVL maps, resend
+memory, served catch-ups, refused transactions, applied versions and
+divergences), the genesis peers and the links it dialed to them, the
+connections peers opened (offered, then admitted, evicted or refused as
+node.soma decides), when it dials (once a second) and resends (every 2
+seconds), the turn's clock reading, the snapshot text last saved (one
+that hasn't changed isn't written again) and the peer lines it signed
+since the last resend and at it, by their fields (a resend sends the
+same lines again, so a line is signed once). It signs peer lines and
+transactions with Soma's RSA (`nio_wire_line`, `nio_encode_tx`; the
+"bad-sig" draw's line has 512 zeros), and writes blocks.log and
+signed.log with the lines nodeio.soma's pure part makes (Yojson's, byte
+for byte; `test/node-sandbox.sh` checks them with `soma run`, and builds
+a unikernel that runs a node program with `soma build --no-image`). A
+select (`IoEvents`) is the runner's mailbox (what came in on
+connections: an offer, bytes, an end), then the host's events (its
+jobs'), then the queue, drained.
+
+| primitive | binary (shell.ml) | unikernel (node_sandbox.soma) |
 |---|---|---|
-| `IoLog text` | a line on stdout with the time | `print` (without the time of day) |
-| `IoTimer ms event` | a timer list checked each select turn | the tables' timer list, due `ms` after the monotonic clock |
-| `IoQueue event` | the event queue the next turn drains | the tables' queue |
-| `IoSendAll fields`, `IoSendPeer index fields`, `IoPeerSend peer fields` | sign, frame and buffer on the peer's TCP link | `send_line` on the peer's link (Soma's links), the binary's line signed with Soma's RSA (`nio_wire_line`) |
-| `IoPeerExists who`, `IoNonceFlooded`, `IoIsDiverged repo` | read peer membership, nonce-flood flag, divergence flag; first result component is the boolean value | the genesis peers' names; the tables |
-| `IoServedAt who first`, `IoMarkServed who first timestamp` | read/replace the catch-up served table; `(present, timestamp)` result and lossless `%.17g` timestamp transport | the tables' served table; the timestamp read back from its text within rounding (`nio_decimal`) |
-| `IoClock` | `Unix.gettimeofday`, returned as the second of `(true, now)` | `monotonic_ms`, in seconds: since boot, not the time of day, so a model's reset time (a wall-clock time) can't be compared with it yet |
-| `IoStore height txs`, `IoSetHeight height`, `IoWriteStatus text` | append the block to blocks.log, note the height (dropping old resends), write status.txt | `append_file "blocks.log"` with the binary's line; the tables' height and resend memory; `write_file "status.txt"` |
-| `IoSignVote slot vid fields` | note the vote and append it, synced, to signed.log | `append_file "signed.log"` with the binary's line (Sandbox's writes return after the device write) |
-| `IoTrackTx raw`, `IoMarkNonceFlood` | the own-transaction retry table (stamped with the time), the flood flag | the tables |
-| `IoRememberBroadcast height kind fields alternate` | prepend both message variants to resend memory | the tables' resend memory |
-| `IoMergeApplied repo v`, `IoMergeDiverged repo entry` | the applied-version table, the divergence list | the tables |
-| `IoCheck id repo head edits` | the CI job: a fresh clone, the edits, the CI command as a process; its result comes back as a `check_result` event | the node's service (`service_op`); with none, `w_check` |
-| `IoBlock height`, `IoHeight`, `IoSignedVote slot`, `IoSignedBody slot`, `IoSignedAt height` | the decided-block and signed-vote tables beside blocks.log and signed.log, the height; absent is `false`; every message signed at a height, framed | the stores (`nio_store_op`), filled by `IoStore` and `IoSignVote` |
-| `IoPeerCount` | the genesis peers, counted | the genesis peers, counted |
-| `IoDraw`, `IoEncodeTx nonce fields`, `IoCheckExclusions` | the epoch's draw (Byzantine flag, chain length, link secret); a transaction signed with the node's key; the fields this node won't check, `field`-tagged, then `alternate` and the excluded alternates | `w_draw`, `nio_encode_tx` (Soma's RSA), `w_exclusions` |
-| `IoCheckoutHeads`, `IoDivergences` | `git rev-parse --short HEAD` in each checkout; the divergence list (pairs, flattened) | the heads, the node's service's (`w_heads`, the genesis commits, with none); the tables' divergences |
-| `IoLimitInfo`, `IoLocalTime stamp` | the model limit (until, backend, held requests, reason); `Unix.localtime` as HH:MM | the limit, the node's service's (no limit and `w_backend`, with none); `w_local_time` |
-| `IoAppliedVersion repo` | the applied-version table (absent: a repository this node doesn't have) | the tables' applied versions |
-| `IoMergeReset`, `IoMergeProbe`, `IoMergeRead`, `IoMergeWrite`, `IoMergeRemove`, `IoMergeCommit` | git in the checkout: hard reset and clean, a path's kind, read, write keeping the mode, remove, commit with the merge's message (its tree and short id) | the node's service (`service_op`); with none, `w_git` |
-| `IoRepoNames`, `IoLsFiles repo`, `IoHeadFile repo path` | the governed repositories; `git ls-files`; `git show HEAD:path` (absent when it fails) | the node's service (`service_op`); with none, `w_git` |
-| `IoLlmBudget`, `IoLlmHold id kind prompt ctx`, `IoLlmStart ...`, `IoToolCheckout repo`, `IoSelfExe`, `IoEnvEntries`, `IoToken` | the call count (bumped) and budget; hold a request until the limit is over; start the model process (its output event at once when it couldn't start); a cmd: patch's checkout; the node's binary; the environment; a random fence token | the node's service (`service_op`); with none, `w_llm` |
-| `IoLimitSet`, `IoLimitClear`, `IoReleaseState`, `IoHeldRequests`, `IoHeldStore`, `IoJobComplete` | the model limit's state and backoff; the held requests; a finished job resumed with its outcome (its callback's events) | the node's service (`service_op`); with none, `w_llm` |
-| `IoCiLaunch id out tree ci` | CI started for a tree (events an immediate failure queued) | the node's service (`service_op`); with none, `w_ci` |
-| `IoReadText path`, `IoDiscardFile path` | a file read; removed if it's there (no node needed) | the node's service's (the host's files: a model's reply); with none, `read_file` and nothing |
-| `IoRefuse raw`, `IoSeenRefused raw` | the refused-transaction set | the stores' refused list |
-| `IoIdentity`, `IoPeerKey who` | this node's name; a genesis agent's key and the chain id (`key_wire`), which node.soma checks a peer line's signature with (`nio_line_verify`, Soma's RSA) | `w_identity`; the key from `w_keys` |
-| `IoConns`, `IoPollPrep` | live connections and their last reads; sample the turn clock, dial and resend | the admitted connections and their last reads; dial (`connect_within`, 300 ms) and resend (`nio_poll_prep`) |
-| `IoInboxState`, `IoInboxStamp`, `IoDirEntries`, `IoRemoveFile` | the inbox's last poll and directory; note a poll; list a directory; remove a file | the node's service's (the inbox on the host); with none, an empty inbox |
-| `IoTurnNow`, `IoTimers`, `IoSetTimers`, `IoJobs`, `IoQueueEmpty` | the turn's clock, the timer list read and replaced, the running jobs, the queue | the monotonic clock; the tables' timers (as text by `w_float_text`); the node's service's jobs (none without one); the tables' queue |
-| `IoEvents wait` | one select, waiting at most `wait` seconds | Sandbox's `mailbox` (waiting at most `wait` when nothing is queued): a connection offered, its bytes, its end, as the binary's events; then the events the node's service's jobs gave; then the queue, drained |
-| `IoBootEvents`, `IoReplayCount`, `IoRememberBlock h txs` | genesis, this node, the backend, applied versions and blocks.log's text; the replayed count; a replayed block kept for catch-up | `w_boot` then blocks.log's named file; the stores' blocks |
-| `IoSignedText`, `IoSignedRestore slot vid fields`, `IoFail message` | signed.log's bytes; a vote read back; refusing to start (stderr, exit 1) | signed.log's named file; the stores' signed table; printed, answered false |
-| `IoConnAdmit`, `IoConnClose`, `IoJobFlood`, `IoJobExpire` | admit, refuse or close a socket; kill a job's process | admit an offered connection (its held bytes its first read), refuse or close one (Sandbox's `close`); jobs are the node's service's (nothing without one) |
-| `IoSay`, `IoPrint`, `IoExit`, `IoFileExists`, `IoWriteFile`, `IoChmod`, `IoMakeDirs`, `IoCwd` | the commands' output (`say`'s timestamped line, plain text, an exit status) and files | printed; Sandbox's named files; the rest answered false |
-| `IoNewKey bits`, `IoRandomHex count`, `IoGit dir args`, `IoClone url dir commit` | a new RSA key (e = 65537) as hex; random bytes; git in a checkout (its output); a clone at a commit | answered false: a unikernel makes no keys and runs no git |
-| `IoSpawnNode log args`, `IoAwaitNodes pids` | `up`'s nodes: one started logging to its node.log; waiting for them, stopping them on SIGINT or SIGTERM | answered false |
-| `IoCheckoutEdits dir`, `IoApplyEdits dir edits`, `IoCheckTree repo head out edits` | the edits machinery, still OCaml's: a checkout's edits, applying edits, the tree a bid's edits give | answered false |
-| `IoSnapshotSave text`, `IoSnapshotLoad` | consensus.state, written atomically and synced (skipped when unchanged); its text, absent when there is none | the named file consensus.state |
-| `IoServeListen address port`, `IoServeNext wait`, `IoServeReply conn found stamp fields` | the node's service (`pantheon service`): listen; the next whole request (its connection, the token, an operation's wire form); its answer, framed | answered false: the service is the binary's |
+| `IoNetListen address port` | bind and listen (not found: why) | `listen_mailbox port` |
+| `IoNetMailbox ms` | one select on the listener, peers' connections, dialed links with bytes to write, and the host's jobs (whose output wakes it) | Sandbox's `mailbox` (a fifth of a second at most with a service: a job's output there doesn't wake it) |
+| `IoNetConnect host port ms` | a non-blocking connect (a name is resolved at each dial) | `connect_within`, giving up after `ms` |
+| `IoNetSend conn data` | buffered (64 MiB at most), written when the select says it can be | `send` |
+| `IoNetClose conn` | close | `close` |
+| `IoFileRead name`, `IoFileWrite name durable text`, `IoFileAppend name text` | the file in the node's home; written atomically, synced when durable; appended in one write, synced | the named file on the storage device |
+
+The operations the kernel hands on: `IoLog` is a line with the time in the
+binary, `print` in the unikernel; `IoClock` is `Unix.gettimeofday` in the
+binary, Sandbox's monotonic clock in the unikernel (since boot, not the
+time of day, so a model's reset time can't be compared with it yet), and
+`IoLocalTime` is `Unix.localtime` or the stamp as it is; `IoFail` exits 1
+with the message in the binary, and is printed in the unikernel. The
+host's work (`service_op`: git in the checkouts, model calls and their
+limit, CI and checks and their jobs, reply files, the inbox) is shell.ml's
+in the binary, and the node's service's in the unikernel: with none, a
+check is reported and comes to nothing, the checkouts are at their genesis
+commits, the model has no limit, and there are no jobs, reply files or
+inbox. The commands' operations (`IoSay` ... `IoCheckTree`) are shell.ml's
+(the unikernel prints, writes named files, and answers false to the rest:
+it makes no keys and runs no git).
 
 The commands are node programs too (`cli.soma`): `init`, `keygen`,
 `genesis`, `up`, `status`, `tx`, `plan`, `edits`, `apply-edits` and
@@ -334,13 +329,21 @@ Every signature is checked by Soma, in the binary as in the unikernel:
 a transaction's in `decode_tx` (`nio_tx_verify`, with the agent's key from
 the market's own table, filled by the boot events `["chain", id]` and
 `["key", agent, size, n, e]` that `node_setup` gives) and a peer line's in node.soma
-(`nio_line_verify`, with the sender's key from `IoPeerKey`). The shell
-only hands over keys (`key_wire`: the chain id, the size in bytes, n and e
-as hex). Keys are made with e = 65537 (`make_keys`), which Soma checks in
-about 1.6 ms. A genesis made before has Cryptokit's random 2048-bit public
-exponents, which take about 90 ms each: such a network still works, slowly,
-and wants a new genesis. Signing stays Cryptokit's (`encode_tx`, `wire`):
-the unikernel signs with Soma's RSA, about 12 ms a signature.
+(`nio_line_verify`, with the sender's key from `IoPeerKey`, which the
+kernel reads from the setup). Keys are made with e = 65537 (`make_keys`),
+which Soma checks in about 1.6 ms. A genesis made before has Cryptokit's
+random 2048-bit public exponents, which take about 90 ms each: such a
+network still works, slowly, and wants a new genesis.
+
+Signing is Soma's too, in the kernel (`nio_sign`, through `nio_wire_line`
+and `nio_encode_tx`): about 12 ms a signature with a 2048-bit key in the
+unikernel. The binary extracts `nio_sign` to Cryptokit's (main.soma,
+`Shell.rsa_sign_bytes`), as it does SHA-256: PKCS#1 v1.5 is
+deterministic, so it is the same signature, in about 1 ms. With Soma's,
+the e2e `future-nonce` flood (600 transactions, each signed and resent)
+froze the node that sent it. The kernel keeps the lines it signed since
+the last resend and those the last resend sent, so a resend signs
+nothing new.
 
 ## The node as a unikernel
 
@@ -358,7 +361,7 @@ imports `shell`.
 `pantheon image HOME FILE` runs a node's setup (`node_setup`, as `pantheon
 node HOME` does) and writes FILE: a Soma program that requires Sandbox,
 with the setup's framed data as a list of strings, whose `main` is
-node_sandbox.soma's `run_node_image`. `soma build FILE` (with
+node_sandbox.soma's `run_node_image_at` (the kernel, run with Sandbox). `soma build FILE` (with
 `SOMA_MIRAGE_SWITCH` naming Soma's MirageOS switch) makes the image, and
 `solo5-vmnet -- solo5-hvt --block:storage=DISK -- IMAGE --ipv4=IP/24
 --ipv4-gateway=GW` boots it on the Mac's vmnet network at the address
@@ -370,19 +373,17 @@ consensus.state) are named files on the storage device, so a reboot on
 the same disk restarts the node as the binary's restart does: it reads its
 votes back and won't sign against them.
 
-Its peer links are the binary's. It dials each genesis peer it has no
-link to, at most once a second (Sandbox's `connect_within`, giving up
-after 300 ms, so a peer that doesn't answer doesn't hold up the loop),
-and writes its signed lines there; every 2 seconds it resends what the
-height recorded and its recent transactions (`nio_poll_prep`, the
-binary's `prep_turn`). What peers' connections do comes in through
-Sandbox's mailbox (`listen_mailbox`, `mailbox`: a select over the
-connections, waiting as long as the binary's select would): a connection
-opened is a `conn_offer` event, which Soma admits, refuses or makes room
-for (`IoConnAdmit`), its bytes `peer_bytes` (held until it is admitted,
-as the binary doesn't read it before), its end `peer_closed`. So the
-same node.soma code splits the lines, checks their signatures and
-decides.
+Its peer links are the binary's, being the same kernel's. It dials each
+genesis peer it has no link to, at most once a second (Sandbox's
+`connect_within`, giving up after 300 ms, so a peer that doesn't answer
+doesn't hold up the loop), and writes its signed lines there; every 2
+seconds it resends what the height recorded and its recent transactions
+(`kpoll_prep`). What peers' connections do comes in through Sandbox's
+mailbox (`listen_mailbox`, `mailbox`): a connection opened is a
+`conn_offer` event, which Soma admits, refuses or makes room for
+(`IoConnAdmit`), its bytes `peer_bytes` (held until it is admitted), its
+end `peer_closed`. So the same node.soma code splits the lines, checks
+their signatures and decides.
 
 `test/node-image.sh` makes a network of four, the image's address on
 the vmnet network and the binaries' on the host's side of it, and runs
@@ -442,11 +443,11 @@ state), CI and checks (`IoCiLaunch`, `IoCheck`), the jobs they run
 (`IoJobs`, `IoJobFlood`, `IoJobExpire`, `IoJobComplete`), the model's
 reply files and the inbox on the host's disk, and the events those jobs
 give. Everything else is the image's own: its votes, blocks, peers,
-tables and status. The image's interpreter (node_sandbox.soma's
-`nio_kernel_op`) sends a `service_op` operation's wire form (`io_wire`)
-to the service and hands its answer to the program; each select turn
-(`IoEvents`) also asks for the events the service's jobs gave, after the
-mailbox's, waiting a fifth of a second at most when it has a service, as
+tables and status. The kernel hands a `service_op` operation on as it
+is, and the image's runner (node_sandbox.soma's `iop`) sends its wire
+form (`io_wire`) to the service and hands its answer back; each select
+turn (`IoEvents`) also asks for the host's events, which are the events
+the service's jobs gave, after the mailbox's, waiting a fifth of a second at most when it has a service, as
 a job's output doesn't wake the mailbox. The service keeps those events
 until the image takes them, as many as fit in one answer, and leaves
 out its own listener's (which no peer dials: the image is the node on

@@ -112,7 +112,7 @@ boot() {
   image=$!
   pids="$pids $image"
   n=0
-  until grep -q 'muse listening on port' "$t/boot$1.log"; do
+  until grep -q 'muse listening; port' "$t/boot$1.log"; do
     sleep 1; n=$((n + 1))
     [ $n -lt 30 ] || { tail -20 "$t/boot$1.log"; echo "FAIL the image did not start"; exit 1; }
   done

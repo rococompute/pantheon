@@ -1,10 +1,10 @@
-(* The shell: everything Pantheon does that isn't a decision. Soma's node.soma
-   decides; this runs it. Sockets, timers, keys and signatures, the block log,
-   model processes and the commands' I/O are here. Soma decides
-   (node.soma, and cli.soma for the commands).
-
-   Every peer message and every transaction is signed with RSA (PKCS#1 v1.5,
-   SHA-256: what cryptokit, in Soma's OCaml switch, can do). *)
+(* The shell: the host's side of a Pantheon node and of the commands. Soma
+   decides everything (node.soma, node_kernel.soma, cli.soma); this
+   carries out the kernel's primitives (sockets and named files), the
+   clock, and the host's work: model processes, git, CI and checks, the
+   inbox and reply files, the service's socket. The node's tables, peer
+   links, timers and signatures are the kernel's (docs/SHELL-IN-SOMA.md,
+   "One kernel, two runners"). *)
 
 let fail fmt = Printf.ksprintf (fun s -> prerr_endline ("error: " ^ s); exit 1) fmt
 let say fmt = Printf.ksprintf (fun s -> Printf.printf "%s %s\n%!" (string_of_float (Unix.gettimeofday ())) s) fmt
@@ -19,6 +19,11 @@ let sha256 s = hex (sha256_raw s)
 (* length-prefixed, so ["ab"; "c"] and ["a"; "bc"] differ *)
 let hash_list l = sha256 (String.concat "" (List.map (fun x -> string_of_int (String.length x) ^ ":" ^ x) l))
 
+(* Signatures are Soma's (nodeio.soma's nio_sign and nio_verify,
+   Soma.Crypto). The binary runs nio_sign as this, the same function
+   (PKCS#1 v1.5 with SHA-256 is deterministic: the same bytes) in C, about
+   ten times faster than Soma's extracted RSA (main.soma), as it runs
+   sha256. A key's numbers come as their bytes, most significant first. *)
 let digest_info = unhex "3031300d060960864801650304020105000420"
 
 let emsa bits msg =
@@ -26,47 +31,16 @@ let emsa bits msg =
   let t = digest_info ^ sha256_raw msg in
   "\x00\x01" ^ String.make (k - String.length t - 3) '\xff' ^ "\x00" ^ t
 
-let sign (key : Cryptokit.RSA.key) msg = hex (Cryptokit.RSA.sign_CRT key (emsa key.size msg))
+let rsa_sign_bytes bytes n e p q dp dq qinv msg =
+  let s (l : int list) = let a = Array.of_list l in String.init (Array.length a) (fun i -> Char.chr (a.(i) land 255)) in
+  let key = { Cryptokit.RSA.size = bytes * 8; n = s n; e = s e; d = ""; p = s p; q = s q; dp = s dp; dq = s dq; qinv = s qinv } in
+  hex (Cryptokit.RSA.sign_CRT key (emsa key.size msg))
 
-(* signatures are checked by Soma (nodeio's nio_verify, Soma.Crypto),
-   with the keys key_wire gives *)
-
-let key_to_json (k : Cryptokit.RSA.key) ~priv =
-  let f s = `String (hex s) in
-  `Assoc ([ ("size", `Int k.size); ("n", f k.n); ("e", f k.e) ]
-          @ if priv then [ ("d", f k.d); ("p", f k.p); ("q", f k.q); ("dp", f k.dp); ("dq", f k.dq); ("qinv", f k.qinv) ] else [])
 
 let rng = lazy (Cryptokit.Random.device_rng "/dev/urandom")
 let random_hex n = hex (Cryptokit.Random.string (Lazy.force rng) n)
 
-(* ---------- genesis, read by decode_tx: the same on every node ---------- *)
-
-let chain_id = ref ""
-let pubkeys : (string, Cryptokit.RSA.key) Hashtbl.t = Hashtbl.create 8
-let max_tx_bytes = 256 * 1024
-(* the most a job (a model's reply, a CI check) may print: well past any
-   reply a transaction can carry. node.soma's job_output_limit is the
-   same number. *)
-let max_job_output = 16 * max_tx_bytes
-
 let strings_json l = `List (List.map (fun s -> `String s) l)
-let json_strings = function `List l -> List.map (function `String s -> s | _ -> raise Exit) l | _ -> raise Exit
-
-let tx_bytes agent nonce fields =
-  String.concat "\x00" [ "tx"; !chain_id; agent; nonce; Yojson.Safe.to_string (strings_json fields) ]
-
-(* An agent's genesis key, for Soma to check its signatures with (nodeio's
-   nio_key_of_wire): the chain id, the key's size in bytes, n and e as hex;
-   nothing for an agent the genesis doesn't have *)
-let key_wire agent =
-  match Hashtbl.find_opt pubkeys agent with
-  | Some (k : Cryptokit.RSA.key) -> [ !chain_id; string_of_int (k.size / 8); hex k.n; hex k.e ]
-  | None -> []
-
-let encode_tx key agent nonce fields =
-  Yojson.Safe.to_string
-    (`Assoc [ ("agent", `String agent); ("nonce", `String nonce); ("fields", strings_json fields);
-              ("sig", `String (sign key (tx_bytes agent nonce fields))) ])
 
 (* ---------- files ---------- *)
 
@@ -461,20 +435,14 @@ let chain_len = 100_000
 
 let repo_dir home name = Filename.concat (Filename.concat home "repos") name
 
-(* ---------- the node ---------- *)
-
-(* a peer's address is resolved at each connection attempt, so a replaced
-   machine with the same VPN name is found again *)
-type peer = { name : string; addr : string; mutable out : Unix.file_descr option; mutable connecting : bool;
-              obuf : Buffer.t; mutable next_try : float }
-
-type conn = { cid : int; fd : Unix.file_descr; host : string; mutable last : float }
-
-(* inbound connections' caps (16 per host, 64 in all) and a buffered
-   line's longest are Soma's (node.soma admit_decision_of, peer_line_cap) *)
-
-type job = { jid : string; jfd : Unix.file_descr; jpid : int;
-             jdone : string -> unit; jstarted : float; jlimit : float; jclean : unit -> unit }
+(* ---------- the node ----------
+   The node's kernel is Soma (node_kernel.soma): its tables, peer links,
+   signatures, files and select are kept and decided there, the same for
+   the binary and the unikernel. The shell carries out the kernel's
+   primitives on the host (net_* and file_*: Sandbox's, on sockets and
+   files) and the host's work, which a unikernel asks its service for:
+   jobs (model calls, checks, CI), git in the checkouts, the model's limit
+   and the inbox (nodeio.soma's service_op). *)
 
 let split_addr s =
   match String.rindex_opt s ':' with
@@ -493,9 +461,127 @@ let print_lines xs = List.iter print_endline xs
 let print_text s = print_string s
 let argv () = Array.to_list Sys.argv |> List.tl
 
-(* The Soma node loop's handle: node_open registers the closures its setup
-   built, and the loop drives them by this name (docs/SHELL-IN-SOMA.md 2). *)
-type node_handle = { h_events : float -> string list list;
+type job = { jid : string; jfd : Unix.file_descr; jpid : int;
+             jdone : string -> unit; jstarted : float; jlimit : float; jclean : unit -> unit }
+
+(* a connection the kernel names: one a peer opened (read as it comes), or
+   one the kernel dialed (written through a buffer the select drains; a
+   peer's address is resolved at each dial, so a replaced machine with the
+   same VPN name is found again) *)
+type link = { lid : string; lfd : Unix.file_descr; dialed : bool; mutable connecting : bool; obuf : Buffer.t }
+
+(* the primitives' state: the node's home, where its named files are, the
+   listener and the connections *)
+type net = { home : string; mutable listener : Unix.file_descr option; mutable links : link list; mutable counter : int }
+
+let net_listen n address port =
+  match resolve (address ^ ":" ^ port) with
+  | None -> (false, (0., [ "can't resolve " ^ address ]))
+  | Some a ->
+      let fd = Unix.socket ~cloexec:true PF_INET SOCK_STREAM 0 in
+      (try
+         Unix.setsockopt fd SO_REUSEADDR true;
+         Unix.bind fd a;
+         Unix.listen fd 16;
+         n.listener <- Some fd;
+         (true, (0., []))
+       with e -> (try Unix.close fd with _ -> ()); (false, (0., [ Printexc.to_string e ])))
+
+let net_name n = n.counter <- n.counter + 1; string_of_int n.counter
+let net_find n id = List.find_opt (fun l -> l.lid = id) n.links
+let net_drop n l = (try Unix.close l.lfd with _ -> ()); n.links <- List.filter (fun x -> x != l) n.links
+
+(* a dial doesn't wait for the other side: a link still connecting is
+   written once the select says it can be *)
+let net_connect n host port =
+  match resolve (host ^ ":" ^ port) with
+  | None -> (false, (0., []))
+  | Some a ->
+      let fd = Unix.socket ~cloexec:true PF_INET SOCK_STREAM 0 in
+      Unix.set_nonblock fd;
+      let add connecting =
+        let id = net_name n in
+        n.links <- { lid = id; lfd = fd; dialed = true; connecting; obuf = Buffer.create 4096 } :: n.links;
+        (true, (0., [ id ])) in
+      (try Unix.connect fd a; add false with
+       | Unix.Unix_error ((EINPROGRESS | EWOULDBLOCK | EAGAIN), _, _) -> add true
+       | _ -> Unix.close fd; (false, (0., [])))
+
+(* a dialed link's bytes wait in its buffer (64 MiB at most: a peer that
+   reads nothing doesn't take the node's memory) *)
+let net_send n id data =
+  match net_find n id with
+  | Some l when l.dialed -> if Buffer.length l.obuf < 64 * 1024 * 1024 then Buffer.add_string l.obuf data; (true, (0., []))
+  | Some l -> (try ignore (Unix.write_substring l.lfd data 0 (String.length data)); (true, (0., [])) with _ -> (false, (0., [])))
+  | None -> (false, (0., []))
+
+(* One select: new connections, what peers' connections sent and their
+   ends, dialed links connected or written to, waiting [ms] at most; a
+   job's output wakes it too (the host's events read it). A failed select
+   (a descriptor past FD_SETSIZE, EBADF) waits a moment and goes round
+   again rather than ending the node. *)
+let net_mailbox n job_fds ms =
+  let wait = float_of_string ms /. 1000. in
+  let reads = (match n.listener with Some l -> [ l ] | None -> [])
+              @ List.filter_map (fun l -> if l.dialed then None else Some l.lfd) n.links @ job_fds in
+  let writes = List.filter_map (fun l -> if l.dialed && (l.connecting || Buffer.length l.obuf > 0) then Some l.lfd else None) n.links in
+  let r, w, _ = try Unix.select reads writes [] wait with
+    | Unix.Unix_error (EINTR, _, _) -> ([], [], [])
+    | Unix.Unix_error (e, _, _) -> say "select failed (%s): %d connections" (Unix.error_message e) (List.length n.links); Unix.sleepf 0.2; ([], [], []) in
+  let evs = ref [] in
+  let add e = evs := e :: !evs in
+  (match n.listener with
+   | Some lfd when List.mem lfd r ->
+       (match Unix.accept ~cloexec:true lfd with
+        | exception Unix.Unix_error _ -> ()   (* out of descriptors, or the peer gave up *)
+        | c, addr ->
+            Unix.set_nonblock c;
+            let host = match addr with Unix.ADDR_INET (a, _) -> Unix.string_of_inet_addr a | _ -> "" in
+            let id = net_name n in
+            n.links <- { lid = id; lfd = c; dialed = false; connecting = false; obuf = Buffer.create 16 } :: n.links;
+            add [ "opened"; id; host ])
+   | _ -> ());
+  let buf = Bytes.create 65536 in
+  List.iter (fun l ->
+      if l.dialed then begin
+        if List.mem l.lfd w then
+          if l.connecting then begin
+            l.connecting <- false;
+            match Unix.getsockopt_error l.lfd with None -> () | Some _ -> net_drop n l; add [ "closed"; l.lid ]
+          end else begin
+            let s = Buffer.contents l.obuf in
+            match Unix.write_substring l.lfd s 0 (String.length s) with
+            | k -> Buffer.clear l.obuf; Buffer.add_string l.obuf (String.sub s k (String.length s - k))
+            | exception Unix.Unix_error ((EAGAIN | EWOULDBLOCK), _, _) -> ()
+            | exception _ -> net_drop n l; add [ "closed"; l.lid ]
+          end
+      end
+      else if List.mem l.lfd r then
+        match Unix.read l.lfd buf 0 65536 with
+        | 0 -> net_drop n l; add [ "closed"; l.lid ]
+        | k -> add [ "bytes"; l.lid; Bytes.sub_string buf 0 k ]
+        | exception Unix.Unix_error ((EAGAIN | EWOULDBLOCK), _, _) -> ()
+        | exception _ -> net_drop n l; add [ "closed"; l.lid ])
+    n.links;
+  List.rev !evs
+
+(* appended in one write, then to disk: a block or a signed vote survives
+   a crash whole *)
+let append_synced p s =
+  let fd = Unix.openfile p [ Unix.O_WRONLY; Unix.O_APPEND; Unix.O_CREAT ] 0o644 in
+  Fun.protect ~finally:(fun () -> Unix.close fd) (fun () ->
+      let b = Bytes.of_string s in
+      let k = Unix.write fd b 0 (Bytes.length b) in
+      if k <> Bytes.length b then failwith (p ^ ": short write");
+      Unix.fsync fd)
+
+let net_file n name = Filename.concat n.home name
+
+(* The node's handle: node_open builds the host's runtime and the
+   primitives' state, and node_io reaches them by this name. *)
+type node_handle = { h_net : net;
+                     h_job_fds : unit -> Unix.file_descr list;
+                     h_events : unit -> string list list;
                      h_job_complete : string -> string -> string list list;
                      h_job_flood : string -> unit;
                      h_ci_launch : string -> string -> string -> string -> string list list;
@@ -508,87 +594,31 @@ type node_handle = { h_events : float -> string list list;
                      h_repo_names : unit -> string list;
                      h_ls_files : string -> string;
                      h_head_file : string -> string -> string option;
-                     h_conn_admit : string -> string -> string -> unit;
-                     h_conns : unit -> (string * float) list;
-                     h_conn_close : string -> unit;
-                     h_poll_prep : unit -> unit;
                      h_inbox_state : unit -> float * string;
                      h_inbox_stamp : float -> unit;
-                     h_turn_now : unit -> float;
-                     h_timers : unit -> (float * string list) list;
-                     h_set_timers : (float * string list) list -> unit;
                      h_jobs : unit -> (string * (float * (float * bool))) list;
                      h_job_expire : string -> unit;
-                     h_queue_empty : unit -> bool;
-                     h_save : string -> unit; h_refuse : string -> unit; h_boot : string list list; h_snapshot : unit -> string option; h_replayed : unit -> string;
-                     h_remember_block : string -> string list -> bool;
-                     h_timer : string -> string list -> unit; h_log : string -> unit;
-                     h_push : string list -> unit; h_draw : string * (string * string);
-                     h_block : string -> string list option;
-                     h_store : string -> string list -> unit;
-                     h_height : string -> unit;
-                     h_current_height : unit -> string;
-                     h_last_served : string -> string -> float option;
-                     h_mark_served : string -> string -> float -> unit;
-                     h_peer_exists : string -> bool;
-                     h_peer_send : string -> string list -> unit;
                      h_checkout_heads : unit -> (string * string) list;
-                     h_divergences : unit -> (string * string) list;
                      h_limit_info : unit -> float * (string * (string * string));
                      h_release_state : unit -> float * bool;
                      h_held_requests : unit -> (((string * string) * string) * string list) list;
                      h_held_store : (((string * string) * string) * string list) list -> bool -> unit;
-                     h_write_status : string -> unit;
-                     h_encode_tx : string -> string list -> string;
-                     h_track_tx : string -> unit;
-                     h_nonce_flooded : unit -> bool;
-                     h_mark_nonce_flood : unit -> unit;
-                     h_send_all : string list -> unit;
-                     h_signed_vote : string -> string option;
-                     h_signed_body : string -> string list option;
-                     h_signed_at : string -> string list list;
-                     h_signed_text : string;
-                     h_signed_restore : string -> string -> string list -> unit;
-                     h_remember_vote : string -> string -> string list -> unit;
-                     h_remember_broadcast : string -> string -> string list -> string list -> unit;
-                     h_peer_count : unit -> string;
-                     h_send_peer : string -> string list -> unit;
-                     h_check_exclusions : unit -> string list * string list;
                      h_run_check : string -> string -> string -> string list -> unit;
-                     h_identity : string;
-                     h_seen_refused : string -> bool;
-                     h_peer_key : string -> string list;
-                     h_merge_applied : string -> string option;
-                     h_merge_diverged : string -> bool;
                      h_merge_reset : string -> unit;
                      h_merge_probe : string -> string -> string;
                      h_merge_read : string -> string -> string option;
                      h_merge_write : string -> string -> string -> string;
                      h_merge_remove : string -> string -> string;
-                     h_merge_commit : string -> string -> string -> string -> string -> string -> string -> (string * string) option;
-                     h_merge_set_applied : string -> string -> unit;
-                     h_merge_note_diverged : string -> string -> unit }
+                     h_merge_commit : string -> string -> string -> string -> string -> string -> string -> (string * string) option }
 let node_handles : (string, node_handle) Hashtbl.t = Hashtbl.create 4
 let node_counter = ref 0
 let lookup_handle id = try Hashtbl.find node_handles id with Not_found -> fail "unknown node handle %s" id
 let fs_dir_entries path = if Sys.file_exists path then Array.to_list (Sys.readdir path) else []
 let fs_read_text path = try Some (read_file path) with _ -> None
-(* a model call's I/O: node.soma's perform_llm decides and builds the prompt *)
+
 let node_env_entries () = Array.to_list (Unix.environment ())
-(* a model's output: node.soma's reply_fields decides what it becomes.
-   These bindings only report the cap and yojson's value as tokens. Where
-   the braces are (reply_open_at, reply_close_at), the slice, the guards
-   and the key paths are Soma. *)
 let node_float_of_digits s = float_of_string s
 let node_float_text f = Printf.sprintf "%.0f" f
-(* The node's operations (node.soma's node_op, U-1), one at a time in their
-   wire form (node.soma's io_wire; this match is its io_of_wire): the only
-   place the node logs, sets a timer, queues an event, sends on a peer
-   link, stores a block, sets the height, writes the status file, logs a
-   signed vote, tracks its own transaction, marks the nonce flood, starts
-   a CI check, records a merge applied or diverged, or reads the clock. Effects return (true, (0., [])); "clock" returns
-   (true, (Unix.gettimeofday (), [])): nodeio.soma's nanswer. A unikernel would interpret the same
-   operations through Sandbox. *)
 (* lists of lists on one wire (nodeio.soma's nio_frame_lists / nio_lists) *)
 let frame_lists ls = List.concat_map (fun l -> List.concat_map (fun v -> [ "field"; v ]) l @ [ "alternate" ]) ls
 let unframe_lists parts =
@@ -600,60 +630,30 @@ let unframe_lists parts =
   in
   go [] [] parts
 
+(* The kernel's primitives and the host's work, one operation at a time in
+   its wire form (nodeio.soma's io_wire; this match is its io_of_wire for
+   them). The answer is nodeio.soma's nanswer: (carried out, or the
+   boolean read, (a number, data)). *)
 let node_io_handle h op =
   match op with
-  | [ "log"; text ] -> h.h_log text; (true, (0., []))
-  | "timer" :: ms :: ev -> h.h_timer ms ev; (true, (0., []))
-  | "push" :: ev -> h.h_push ev; (true, (0., []))
-  | "send_all" :: fields -> h.h_send_all fields; (true, (0., []))
-  | "send_peer" :: index :: fields -> h.h_send_peer index fields; (true, (0., []))
-  | "peer_send" :: who :: fields -> h.h_peer_send who fields; (true, (0., []))
-  | "store" :: height :: txs -> h.h_store height txs; (true, (0., []))
-  | [ "set_height"; height ] -> h.h_height height; (true, (0., []))
-  | [ "write_status"; text ] -> h.h_write_status text; (true, (0., []))
-  | "sign_vote" :: slot :: vid :: fields -> h.h_remember_vote slot vid fields; (true, (0., []))
-  | [ "track_tx"; raw ] -> h.h_track_tx raw; (true, (0., []))
-  | [ "mark_nonce_flood" ] -> h.h_mark_nonce_flood (); (true, (0., []))
+  | [ "net_listen"; address; port ] -> net_listen h.h_net address port
+  | [ "net_mailbox"; ms ] -> (true, (0., frame_lists (net_mailbox h.h_net (h.h_job_fds ()) ms)))
+  | [ "net_connect"; host; port; _ ] -> net_connect h.h_net host port
+  | [ "net_send"; conn; data ] -> net_send h.h_net conn data
+  | [ "net_close"; conn ] -> (match net_find h.h_net conn with Some l -> net_drop h.h_net l | None -> ()); (true, (0., []))
+  | [ "file_read"; name ] ->
+      (match fs_read_text (net_file h.h_net name) with Some t -> (true, (0., [ t ])) | None -> (false, (0., [])))
+  | [ "file_write"; name; durable; text ] ->
+      (if durable = "true" then write_file_synced else write_file) (net_file h.h_net name) text; (true, (0., []))
+  | [ "file_append"; name; text ] -> append_synced (net_file h.h_net name) text; (true, (0., []))
+  | [ "events"; _ ] -> (true, (0., frame_lists (h.h_events ())))
   | "check" :: req :: r :: head :: edits -> h.h_run_check req r head edits; (true, (0., []))
-  | [ "merge_applied"; r; v ] -> h.h_merge_set_applied r v; (true, (0., []))
-  | [ "merge_diverged"; r; entry ] -> h.h_merge_note_diverged r entry; (true, (0., []))
-  | [ "peer_exists"; who ] -> (h.h_peer_exists who, (0., []))
-  | [ "nonce_flooded" ] -> (h.h_nonce_flooded (), (0., []))
-  | [ "is_diverged"; repo ] -> (h.h_merge_diverged repo, (0., []))
-  | "remember_broadcast" :: height :: kind :: parts ->
-      let rec unpack rev = function
-        | "alternate" :: alternate -> (List.rev rev, alternate)
-        | "field" :: value :: rest -> unpack (value :: rev) rest
-        | _ -> fail "malformed node resend record"
-      in
-      let fields, alternate = unpack [] parts in
-      h.h_remember_broadcast height kind fields alternate; (true, (0., []))
-  | [ "conn_admit"; oid; mode; target ] -> h.h_conn_admit oid mode target; (true, (0., []))
-  | [ "conn_close"; cid ] -> h.h_conn_close cid; (true, (0., []))
   | [ "job_flood"; jid ] -> h.h_job_flood jid; (true, (0., []))
   | [ "job_expire"; jid ] -> h.h_job_expire jid; (true, (0., []))
-  | [ "served_at"; who; first ] ->
-      (match h.h_last_served who first with Some time -> (true, (time, [])) | None -> (false, (0., [])))
-  | [ "mark_served"; who; first; timestamp ] ->
-      h.h_mark_served who first (node_float_of_digits timestamp); (true, (0., []))
-  | [ "draw" ] -> let byz, (limit, secret) = h.h_draw in (true, (0., [ byz; limit; secret ]))
-  | [ "block"; height ] ->
-      (match h.h_block height with Some txs -> (true, (0., txs)) | None -> (false, (0., [])))
-  | [ "height" ] -> (true, (0., [ h.h_current_height () ]))
-  | [ "peer_count" ] -> (true, (0., [ h.h_peer_count () ]))
-  | [ "signed_vote"; slot ] ->
-      (match h.h_signed_vote slot with Some vid -> (true, (0., [ vid ])) | None -> (false, (0., [])))
-  | [ "signed_body"; slot ] ->
-      (match h.h_signed_body slot with Some body -> (true, (0., body)) | None -> (false, (0., [])))
-  | [ "signed_at"; height ] ->
-      (true, (0., List.concat_map (fun body -> List.concat_map (fun f -> [ "field"; f ]) body @ [ "alternate" ])
-                    (h.h_signed_at height)))
-  | "encode_tx" :: nonce :: fields -> (true, (0., [ h.h_encode_tx nonce fields ]))
-  | [ "check_exclusions" ] ->
-      let denied, excluded = h.h_check_exclusions () in
-      (true, (0., List.concat_map (fun d -> [ "field"; d ]) denied @ ("alternate" :: excluded)))
+  | [ "jobs" ] ->
+      (true, (0., frame_lists (List.map (fun (id, (started, (limit, stopped))) ->
+         [ id; Printf.sprintf "%.17g" started; Printf.sprintf "%.17g" limit; string_of_bool stopped ]) (h.h_jobs ()))))
   | [ "checkout_heads" ] -> (true, (0., List.concat_map (fun (r, v) -> [ r; v ]) (h.h_checkout_heads ())))
-  | [ "divergences" ] -> (true, (0., List.concat_map (fun (r, v) -> [ r; v ]) (h.h_divergences ())))
   | [ "limit_info" ] ->
       let until, (backend, (held, reason)) = h.h_limit_info () in (true, (until, [ backend; held; reason ]))
   | [ "llm_budget" ] -> let calls, max = h.h_llm_budget () in (true, (0., [ calls; max ]))
@@ -672,13 +672,10 @@ let node_io_handle h op =
        | None -> (false, (0., [])))
   | [ "tool_checkout"; r ] ->
       let (wt, gd), ok = h.h_tool_checkout r in (true, (0., [ wt; gd; string_of_bool ok ]))
-  | [ "token" ] -> (true, (0., [ random_hex 8 ]))
   | [ "repo_names" ] -> (true, (0., h.h_repo_names ()))
   | [ "ls_files"; r ] -> (true, (0., [ h.h_ls_files r ]))
   | [ "head_file"; r; p ] ->
       (match h.h_head_file r p with Some c -> (true, (0., [ c ])) | None -> (false, (0., [])))
-  | [ "applied_version"; r ] ->
-      (match h.h_merge_applied r with Some v -> (true, (0., [ v ])) | None -> (false, (0., [])))
   | [ "merge_reset"; r ] -> h.h_merge_reset r; (true, (0., []))
   | [ "merge_probe"; r; p ] -> (true, (0., [ h.h_merge_probe r p ]))
   | [ "merge_read"; r; p ] ->
@@ -689,9 +686,6 @@ let node_io_handle h op =
       (match h.h_merge_commit r v tree bid task bidder spec with
        | Some (got, short) -> (true, (0., [ got; short ]))
        | None -> (false, (0., [])))
-  | [ "local_time"; stamp ] ->
-      let tm = Unix.localtime (node_float_of_digits stamp) in
-      (true, (0., [ Printf.sprintf "%02d:%02d" tm.Unix.tm_hour tm.Unix.tm_min ]))
   | [ "limit_set"; until; reason; backoff ] ->
       h.h_limit_set (float_of_string until) reason (float_of_string backoff); (true, (0., []))
   | [ "limit_clear"; backoff ] -> h.h_limit_clear (float_of_string backoff); (true, (0., []))
@@ -704,37 +698,9 @@ let node_io_handle h op =
       h.h_held_store requests (probing = "true"); (true, (0., []))
   | [ "job_complete"; job; result ] -> (true, (0., frame_lists (h.h_job_complete job result)))
   | [ "ci_launch"; req; out; tree; ci ] -> (true, (0., frame_lists (h.h_ci_launch req out tree ci)))
-  | [ "refuse"; raw ] -> h.h_refuse raw; (true, (0., []))
-  | [ "identity" ] -> (true, (0., [ h.h_identity ]))
-  | [ "seen_refused"; raw ] -> (h.h_seen_refused raw, (0., []))
-  | [ "peer_key"; who ] -> let k = h.h_peer_key who in (k <> [], (0., k))
-  | [ "conns" ] -> (true, (0., frame_lists (List.map (fun (c, t) -> [ c; Printf.sprintf "%.17g" t ]) (h.h_conns ()))))
-  | [ "poll_prep" ] -> h.h_poll_prep (); (true, (0., []))
   | [ "inbox_state" ] -> let last, dir = h.h_inbox_state () in (true, (last, [ dir ]))
   | [ "inbox_stamp"; stamp ] -> h.h_inbox_stamp (float_of_string stamp); (true, (0., []))
-  | [ "turn_now" ] -> (true, (h.h_turn_now (), []))
-  | [ "timers" ] ->
-      (true, (0., frame_lists (List.map (fun (d, ev) -> Printf.sprintf "%.17g" d :: ev) (h.h_timers ()))))
-  | "set_timers" :: parts ->
-      h.h_set_timers (List.filter_map (function d :: ev -> Some (float_of_string d, ev) | [] -> None) (unframe_lists parts));
-      (true, (0., []))
-  | [ "jobs" ] ->
-      (true, (0., frame_lists (List.map (fun (id, (started, (limit, stopped))) ->
-         [ id; Printf.sprintf "%.17g" started; Printf.sprintf "%.17g" limit; string_of_bool stopped ]) (h.h_jobs ()))))
-  | [ "queue_empty" ] -> (h.h_queue_empty (), (0., []))
-  | [ "events"; wait ] -> (true, (0., frame_lists (h.h_events (float_of_string wait))))
-  | [ "boot_events" ] -> (true, (0., frame_lists h.h_boot))
-  | [ "replay_count" ] -> (true, (0., [ h.h_replayed () ]))
-  | "remember_block" :: height :: txs -> (h.h_remember_block height txs, (0., []))
-  | [ "signed_text" ] -> (true, (0., [ h.h_signed_text ]))
-  | [ "snapshot_save"; text ] -> h.h_save text; (true, (0., []))
-  | [ "snapshot_load" ] -> (match h.h_snapshot () with Some t -> (true, (0., [ t ])) | None -> (false, (0., [])))
-  | "signed_restore" :: slot :: vid :: fields -> h.h_signed_restore slot vid fields; (true, (0., []))
   | _ -> fail "unknown node operation %s" (String.concat " " op)
-(* The node's service (node.soma's service_tick_prog decides; this only
-   listens, reads whole requests and writes answers). A request and an
-   answer are each a frame (four bytes of length, most significant first,
-   then that many bytes, as Soma's Sandbox.frame) of frames, one a field. *)
 let frame s =
   let n = String.length s in
   String.init 4 (fun i -> Char.chr ((n lsr (8 * (3 - i))) land 255)) ^ s
@@ -813,6 +779,11 @@ let node_io id op =
   | [ "remove_file"; path ] -> Sys.remove path; (true, (0., []))
   | [ "fail"; message ] -> fail "%s" message
   | [ "clock" ] -> (true, (Unix.gettimeofday (), []))
+  | [ "log"; text ] -> say "%s" text; (true, (0., []))
+  | [ "local_time"; stamp ] ->
+      let tm = Unix.localtime (node_float_of_digits stamp) in
+      (true, (0., [ Printf.sprintf "%02d:%02d" tm.Unix.tm_hour tm.Unix.tm_min ]))
+  | [ "token" ] -> (true, (0., [ random_hex 8 ]))
   | [ "self_exe" ] -> (true, (0., [ self_exe ]))
   | [ "serve_listen"; address; port ] -> (serve_listen address port, (0., []))
   | [ "serve_next"; wait ] ->
@@ -858,109 +829,40 @@ let node_io id op =
        | Error (`Bid, e) -> (false, (0., [ "bid"; e ]))
        | Error (`Node, e) -> (false, (0., [ "node"; e ])))
   | _ -> node_io_handle (lookup_handle id) op
-(* Reads/writes and authenticated socket sends; catch-up policy is Soma.
-   The clock is the "clock" arm of node_io. *)
-let node_limit_info id = (lookup_handle id).h_limit_info ()
-(* signed.log's bytes, raw, and noting one vote Soma read from them (without
-   appending it again); Soma's log_lines splits them and signed_log_entry
-   parses each line *)
-(* a startup Soma refuses: the message on stderr, exit 1, as `fail` *)
-(* Node metadata for peer lines. Soma gates the parse, reads the members
-   from node_json_tokens' tokens (node.soma's node_line_parts), and decides
-   whether to verify and which event the fields carry. *)
-(* a decided merge's I/O: node.soma's perform_merge decides *)
 let rec forever f s = forever f (f s)
 
+(* The host's runtime and the primitives' state, from what cli.soma's
+   node_setup read, checked and decided: the settings, this node's key,
+   its excluded repositories, those it can't check, CI commands by
+   repository, the agents, the repositories, those still at genesis, then
+   the boot events (the kernel's: node_kernel.soma's kernel_world). *)
 let node_open packed config =
   let helpers = unpack_helpers packed in
   Sys.set_signal Sys.sigpipe Sys.Signal_ignore;
-  (* what cli.soma's node_setup read, checked and decided: the settings,
-     this node's key, its excluded repositories, those it can't check, CI
-     commands by repository, the agents, the repositories, those still at
-     genesis, then the boot events *)
-  let settings, key_hex, my_excluded, no_check_l, ci_repo_l, agents_l, repos_l, at_genesis, boot =
+  let settings, ci_repo_l, repos_l =
     match unframe_lists config with
-    | s :: k :: ex :: nc :: cr :: ag :: rp :: gs :: boot -> (s, k, ex, nc, cr, ag, rp, gs, boot)
+    | s :: _ :: _ :: _ :: cr :: _ :: rp :: _ -> (s, cr, rp)
     | _ -> fail "the node's setup came back malformed" in
-  let home, me, secret, byz, backend_s, listen_s, ci_s, ci_memory_s, ci_image_s, ci_sandbox_s, max_calls_s =
+  let home, backend_s, ci_s, ci_memory_s, ci_image_s, ci_sandbox_s, max_calls_s =
     match settings with
-    | [ home; me; secret; cid; byz; b; l; ci; mem; img; sbx; mc ] -> chain_id := cid; (home, me, secret, byz, b, l, ci, mem, img, sbx, mc)
+    | [ home; _; _; _; _; b; _; ci; mem; img; sbx; mc ] -> (home, b, ci, mem, img, sbx, mc)
     | _ -> fail "the node's setup came back malformed" in
-  let key : Cryptokit.RSA.key =
-    match key_hex with
-    | [ size; n; e; d; p; q; dp; dq; qinv ] ->
-        { size = int_of_string size; n = unhex n; e = unhex e; d = unhex d; p = unhex p; q = unhex q; dp = unhex dp; dq = unhex dq; qinv = unhex qinv }
-    | _ -> fail "the node's setup came back malformed" in
-  let rec fives = function n :: a :: size :: kn :: ke :: r -> (n, a, size, kn, ke) :: fives r | _ -> [] in
   let rec pairs = function a :: b :: r -> (a, b) :: pairs r | _ -> [] in
-  let agents = fives agents_l in
-  let names = List.map (fun (n, _, _, _, _) -> n) agents in
-  List.iter (fun (n, _, size, kn, ke) ->
-      Hashtbl.replace pubkeys n { Cryptokit.RSA.size = int_of_string size; n = unhex kn; e = unhex ke; d = ""; p = ""; q = ""; dp = ""; dq = ""; qinv = "" })
-    agents;
-  let addr_of_agent n = match List.find_opt (fun (m, _, _, _, _) -> m = n) agents with Some (_, a, _, _, _) -> a | None -> fail "no agent %s" n in
-  let nonce_flood_sent = ref false in
   let backend = ref backend_s and ci_cmd = ref ci_s and ci_repo = ref (pairs ci_repo_l) and ci_image = ref ci_image_s
-  and ci_sandbox = ref ci_sandbox_s and listen = ref listen_s and ci_memory = ref ci_memory_s and no_check = ref no_check_l in
+  and ci_sandbox = ref ci_sandbox_s and ci_memory = ref ci_memory_s in
   let max_calls = ref (int_of_string max_calls_s) and calls = ref 0 in
-  (* state *)
+  (* the host's events: its jobs' output and ends, and their callbacks' *)
   let queue = Queue.create () in
   let push ev = Queue.add ev queue in
-  let height = ref 0 in
-  let mine : (int * (string * string list * string list)) list ref = ref [] in
-  let my_txs : (float * string) list ref = ref [] in
-  let blocks : (int, string list) Hashtbl.t = Hashtbl.create 64 in
-  let served : (string * int, float) Hashtbl.t = Hashtbl.create 64 in
-  let timers : (float * string list) list ref = ref [] in
+  let drain () = let evs = ref [] in while not (Queue.is_empty queue) do evs := Queue.pop queue :: !evs done; List.rev !evs in
   let jobs : job list ref = ref [] in
   let job_counter = ref 0 in
   let finished_jobs : (string, job) Hashtbl.t = Hashtbl.create 8 in
-  let signed_path = Filename.concat home "signed.log" in
-  (* slot -> (value id, the whole vote): "SLOT VID [VOTE-AS-JSON]" per line *)
-  (* filled from signed.log's lines by Soma (node.soma's restore_signed,
-     through signed_log_entry) before replay: the shell only reads the lines *)
-  let signed : (string, string * string list option) Hashtbl.t = Hashtbl.create 64 in
-  let signed_text = file_text signed_path in
-  let blocks_path = Filename.concat home "blocks.log" in
   (* the governed repositories, checked out and checked by node_setup *)
-  let repos = List.map (fun (n, c) -> (n, "", c, "")) (pairs repos_l) in
+  let repos = List.map fst (pairs repos_l) in
   let rdir n = repo_dir home n in
-  (* the version of the last merge applied to a checkout: the merges
-     replayed from blocks.log at startup are already in it; one still at
-     genesis is 0 *)
-  let applied = Hashtbl.create 4 in
-  List.iter (fun n -> Hashtbl.replace applied n 0) at_genesis;
-  let diverged = ref [] in
   let ci_for r = try List.assoc r !ci_repo with Not_found -> !ci_cmd in
-  let peers =
-    List.filter_map (fun n ->
-        if n = me then None
-        else Some { name = n; addr = addr_of_agent n; out = None; connecting = false; obuf = Buffer.create 4096; next_try = 0. })
-      names
-  in
-  let conns : conn list ref = ref [] in
-  let conn_counter = ref 0 in
-  let pending_conns : (int * Unix.file_descr * string) list ref = ref [] in
-  let msg_bytes from fields = String.concat "\x00" [ "msg"; !chain_id; from; Yojson.Safe.to_string (strings_json fields) ] in
-  let wire fields =
-    let sg = if byz = "bad-sig" then String.make 512 '0' else sign key (msg_bytes me fields) in
-    Yojson.Safe.to_string (`Assoc [ ("from", `String me); ("fields", strings_json fields); ("sig", `String sg) ]) ^ "\n"
-  in
-  let send_to p line = if p.out <> None && Buffer.length p.obuf < 64 * 1024 * 1024 then Buffer.add_string p.obuf line in
-  let broadcast_fields fields =
-    if byz = "silent" then ()
-    else
-      let line = wire fields in
-      List.iter (fun p -> send_to p line) peers
-  in
-  (* Resend exactly the messages Soma recorded. The choice of message,
-     including equivocation and silence, was made when they were recorded. *)
-  let resend_recorded kind fields alt =
-    match kind with
-    | "each" -> List.iteri (fun i p -> send_to p (wire (if i = 0 then fields else alt))) peers
-    | "all" -> let line = wire fields in List.iter (fun p -> send_to p line) peers
-    | _ -> ()
-  in
+  let last_inbox = ref 0. in
   (* jobs Soma stopped for running past their time limit (job_should_expire) *)
   let overtime = Hashtbl.create 8 in
   (* jobs stopped for printing more than any reply can be. Soma's job_feed
@@ -1118,75 +1020,6 @@ let node_open packed config =
     if not (git_ok ~extra:who ~stdin:msg dir [ "commit"; "-q"; "--allow-empty"; "--no-verify"; "--cleanup=verbatim"; "-F"; "-" ]) then None
     else Some (git_out dir [ "rev-parse"; "HEAD^{tree}" ], git_out dir [ "rev-parse"; "--short"; "HEAD" ])
   in
-  let debug = (try Sys.getenv "PANTHEON_DEBUG" with Not_found -> "") <> "" in
-  let brief l = String.concat " " (List.map (fun f -> if String.length f > 16 then String.sub f 0 16 else f) (List.filteri (fun i _ -> i < 7) l)) in
-  let checkpoint_path = Filename.concat home "consensus.state" in
-  let saved = ref None in
-  (* Transactions the core refused since the last decided block. Until a block
-     changes the market, the pool only grows, so each stays refused: a peer
-     resending them (docs/SECURITY-REVIEW-2.md P-5) costs a table lookup, not
-     a signature check and a pass through the core. The core gives a refused
-     transaction's state back unchanged, which is how the shell can tell. *)
-  let refused = Hashtbl.create 1024 in
-  (* Setup returns data. Soma runs these events and their outputs, so
-     startup and replay use exactly the same output interpreter as the loop. *)
-  let boot_rev = ref [] in
-  let feed ev = boot_rev := ev :: !boot_rev in
-  (* node_setup's boot events (genesis, this node, the backend, the flags'
-     events, the merges the checkouts carry), then what's on disk *)
-  List.iter feed boot;
-  let replayed = ref 0 in
-  (* the file's bytes: node.soma's log_lines splits them into block_log lines *)
-  feed ["block_log_text"; file_text blocks_path];
-  (* votes with no consensus.state: Soma refuses to start (node.soma's
-     signed_needs_snapshot), after it has read signed.log *)
-  (* sockets *)
-  let _, my_port = split_addr (addr_of_agent me) in
-  let listener = Unix.socket ~cloexec:true PF_INET SOCK_STREAM 0 in
-  Unix.setsockopt listener SO_REUSEADDR true;
-  (match resolve (!listen ^ ":" ^ my_port) with
-   | Some a -> (try Unix.bind listener a with e -> fail "can't listen on %s:%s (%s): is another node running here?" !listen my_port (Printexc.to_string e))
-   | None -> fail "can't resolve --listen %s" !listen);
-  Unix.listen listener 16;
-  say "%s listening; peers %s; backend %s" me (String.concat ", " (List.map (fun p -> p.name) peers)) !backend;
-  let last_rebroadcast = ref 0. and last_inbox = ref 0. in
-  let close_peer p = (match p.out with Some fd -> (try Unix.close fd with _ -> ()) | None -> ()); p.out <- None; p.connecting <- false; Buffer.clear p.obuf in
-  (* One clock reading for dial, resend, the inbox, Soma's deadlines and the
-     select wait. [prep_turn] samples it; Soma reads it back; select consumes it. *)
-  let turn_now = ref 0. in
-  let have_turn_now = ref false in
-  let sample_turn () =
-    let now = Unix.gettimeofday () in
-    turn_now := now;
-    have_turn_now := true;
-    now
-  in
-  let turn_clock () = if !have_turn_now then !turn_now else sample_turn () in
-  let prep_turn () =
-    let now = sample_turn () in
-    (* connect to peers we have no link to *)
-    List.iter (fun p ->
-        if p.out = None && now >= p.next_try then begin
-          p.next_try <- now +. 1.;
-          match resolve p.addr with
-          | None -> ()
-          | Some a ->
-              let fd = Unix.socket ~cloexec:true PF_INET SOCK_STREAM 0 in
-              Unix.set_nonblock fd;
-              (try Unix.connect fd a; p.out <- Some fd
-               with Unix.Unix_error ((EINPROGRESS | EWOULDBLOCK | EAGAIN), _, _) -> p.out <- Some fd; p.connecting <- true
-                  | _ -> Unix.close fd)
-        end)
-      peers;
-    (* every 2s, resend this height's messages and our recent transactions:
-       links drop, and the protocol needs every message to arrive eventually *)
-    if now -. !last_rebroadcast > 2. then begin
-      last_rebroadcast := now;
-      List.iter (fun (_, (kind, fields, alt)) -> resend_recorded kind fields alt) (List.rev !mine);
-      my_txs := List.filter (fun (t, _) -> now -. t < 120.) !my_txs;
-      List.iter (fun (_, raw) -> broadcast_fields [ "tx"; raw ]) !my_txs
-    end
-  in
   (* Soma names the job. The limit stored here is the one the finish report uses. *)
   let expire_job jid =
     match List.find_opt (fun j -> j.jid = jid) !jobs with
@@ -1196,49 +1029,12 @@ let node_open packed config =
         (try Unix.kill j.jpid Sys.sigkill with _ -> ())
     | _ -> ()
   in
-  let collect_events wait =
-    (* Same reading as the deadlines: a peer's last activity, for eviction. *)
-    let now = if !have_turn_now then !turn_now else Unix.gettimeofday () in
-    have_turn_now := false;
-    let reads = listener :: List.map (fun c -> c.fd) !conns @ List.map (fun j -> j.jfd) !jobs in
-    let writes = List.filter_map (fun p -> match p.out with Some fd when p.connecting || Buffer.length p.obuf > 0 -> Some fd | _ -> None) peers in
-    (* a failed select (a descriptor past FD_SETSIZE, EBADF) waits a moment
-       and goes round again rather than ending the node *)
-    let r, w, _ = try Unix.select reads writes [] wait with
-      | Unix.Unix_error (EINTR, _, _) -> ([], [], [])
-      | Unix.Unix_error (e, _, _) -> say "select failed (%s): %d connections" (Unix.error_message e) (List.length !conns); Unix.sleepf 0.2; ([], [], []) in
-    List.iter (fun fd ->
-        if fd = listener then
-          match Unix.accept ~cloexec:true listener with
-          | exception Unix.Unix_error _ -> ()   (* out of descriptors, or the peer gave up *)
-          | c, addr ->
-              let host = match addr with Unix.ADDR_INET (a, _) -> Unix.string_of_inet_addr a | _ -> "" in
-              (* a few connections per address and a few dozen in all, so a
-                 peer with no key can't use up the node's descriptors; when
-                 full, the one quiet longest makes room (a real peer
-                 reconnects) *)
-              let oid = !conn_counter in
-              incr conn_counter;
-              pending_conns := (oid, c, host) :: !pending_conns;
-              (* the hosts of the connections held now: Soma counts them
-                 (node.soma's conn_offer_counts) and decides *)
-              push ("conn_offer" :: string_of_int oid :: host :: List.map (fun x -> x.host) !conns))
-      r;
+  (* the jobs' output and ends since the last look, without waiting *)
+  let collect_events () =
+    let fds = List.map (fun j -> j.jfd) !jobs in
+    let r = if fds = [] then [] else
+      (let r, _, _ = try Unix.select fds [] [] 0. with Unix.Unix_error _ -> ([], [], []) in r) in
     let buf = Bytes.create 65536 in
-    conns := List.filter (fun c ->
-        if not (List.mem c.fd r) then true
-        else
-          match Unix.read c.fd buf 0 65536 with
-          | 0 -> Unix.close c.fd; push [ "peer_closed"; string_of_int c.cid ]; false
-          | n ->
-              c.last <- now;
-              (* Soma splits these bytes into lines (feed_chunks in
-                 node.soma, through this peer_bytes event); the shell
-                 only reads the bytes from the descriptor *)
-              push [ "peer_bytes"; string_of_int c.cid; Bytes.sub_string buf 0 n ]; true
-          | exception Unix.Unix_error ((EAGAIN | EWOULDBLOCK), _, _) -> true
-          | exception _ -> (try Unix.close c.fd with _ -> ()); push [ "peer_closed"; string_of_int c.cid ]; false)
-      !conns;
     (* finished jobs are taken off the list before their callbacks run: a
        callback may start the next job *)
     let finished = ref [] in
@@ -1282,31 +1078,14 @@ let node_open packed config =
         Hashtbl.replace finished_jobs j.jid j;
         push [ "job_finished"; j.jid; tag; value; timeout; flood ])
       (List.rev !finished);
-    List.iter (fun p ->
-        match p.out with
-        | Some fd when List.mem fd w ->
-            if p.connecting then begin
-              p.connecting <- false;
-              match Unix.getsockopt_error fd with None -> () | Some _ -> close_peer p
-            end
-            else begin
-              let s = Buffer.contents p.obuf in
-              match Unix.write_substring fd s 0 (String.length s) with
-              | n -> Buffer.clear p.obuf; Buffer.add_string p.obuf (String.sub s n (String.length s - n))
-              | exception Unix.Unix_error ((EAGAIN | EWOULDBLOCK), _, _) -> ()
-              | exception _ -> close_peer p
-            end
-        | _ -> ())
-      peers;
-    let evs = ref [] in
-    while not (Queue.is_empty queue) do evs := Queue.pop queue :: !evs done;
-    if debug then List.iter (fun ev -> say "event: %s" (brief ev)) (List.rev !evs);
-    List.rev !evs
+    drain ()
   in
   let handle_id = string_of_int !node_counter in
   incr node_counter;
   Hashtbl.replace node_handles handle_id
-    { h_events = collect_events;
+    { h_net = { home; listener = None; links = []; counter = 0 };
+      h_job_fds = (fun () -> List.map (fun j -> j.jfd) !jobs);
+      h_events = collect_events;
       h_job_complete = (fun jid result ->
         match Hashtbl.find_opt finished_jobs jid with
         | None -> []
@@ -1314,9 +1093,7 @@ let node_open packed config =
             Hashtbl.remove finished_jobs jid;
             j.jdone result;
             j.jclean ();
-            let evs = ref [] in
-            while not (Queue.is_empty queue) do evs := Queue.pop queue :: !evs done;
-            List.rev !evs);
+            drain ());
       h_ci_launch = launch_ci;
       h_job_flood = (fun jid ->
         match List.find_opt (fun j -> j.jid = jid) !jobs with
@@ -1336,100 +1113,20 @@ let node_open packed config =
       h_limit_set = (fun until reason backoff ->
         limited_until := until; limit_reason := reason; limit_backoff := backoff; probing := false);
       h_limit_clear = (fun backoff -> limit_backoff := backoff; probing := false);
-      h_repo_names = (fun () -> List.map (fun (n, _, _, _) -> n) repos);
+      h_repo_names = (fun () -> repos);
       h_ls_files = (fun r -> git_out (rdir r) [ "ls-files" ]);
       h_head_file = (fun r p -> let ok, c = git (rdir r) [ "show"; "HEAD:" ^ p ] in if ok then Some c else None);
-      h_save = (fun text -> if !saved <> Some text then (write_file_synced checkpoint_path text; saved := Some text));
-      h_refuse = (fun raw -> if Hashtbl.length refused < 10000 then Hashtbl.replace refused raw ());
-      h_boot = List.rev !boot_rev; h_snapshot = (fun () -> if Sys.file_exists checkpoint_path then Some (read_file checkpoint_path) else None);
-      h_replayed = (fun () -> string_of_int !replayed);
-      h_remember_block = (fun hs txs -> match int_of_string_opt hs with None -> false | Some n -> Hashtbl.replace blocks n txs; replayed := n; true);
-      h_conn_admit = (fun oid mode target ->
-        match List.find_opt (fun (i, _, _) -> string_of_int i = oid) !pending_conns with
-        | None -> ()
-        | Some (_, c, host) ->
-            pending_conns := List.filter (fun (i, _, _) -> string_of_int i <> oid) !pending_conns;
-            (match mode with
-             | "refuse" -> (try Unix.close c with _ -> ())
-             | _ ->
-                 if mode = "evict" then
-                   (match List.find_opt (fun x -> string_of_int x.cid = target) !conns with
-                    | Some old -> (try Unix.close old.fd with _ -> ()); conns := List.filter (fun x -> x != old) !conns
-                    | None -> ());
-                 Unix.set_nonblock c;
-                 let cid = !conn_counter in
-                 incr conn_counter;
-                 conns := { cid; fd = c; host; last = Unix.gettimeofday () } :: !conns));
-      h_conns = (fun () -> List.map (fun x -> (string_of_int x.cid, x.last)) !conns);
-      h_conn_close = (fun cid ->
-        match List.find_opt (fun x -> string_of_int x.cid = cid) !conns with
-        | Some x -> (try Unix.close x.fd with _ -> ()); conns := List.filter (fun y -> y != x) !conns
-        | None -> ());
-      h_poll_prep = prep_turn;
       h_inbox_state = (fun () -> (!last_inbox, Filename.concat home "inbox"));
       h_inbox_stamp = (fun now -> last_inbox := now);
-      h_turn_now = turn_clock;
-      h_timers = (fun () -> !timers);
-      h_set_timers = (fun ts -> timers := ts);
       h_jobs = (fun () -> List.map (fun j -> (j.jid, (j.jstarted, (j.jlimit, Hashtbl.mem overtime j.jpid)))) !jobs);
       h_job_expire = expire_job;
-      h_queue_empty = (fun () -> Queue.is_empty queue);
-      h_timer = (fun ms ev -> timers := (Unix.gettimeofday () +. float_of_string ms /. 1000., ev) :: !timers);
-      h_log = (fun text -> say "%s" text); h_push = push;
-      h_draw = (byz, (string_of_int chain_len, secret));
-      h_block = (fun h -> Hashtbl.find_opt blocks (int_of_string h));
-      h_store = (fun h txs -> let h = int_of_string h in
-        Hashtbl.replace blocks h txs;
-        append_line_synced blocks_path (Yojson.Safe.to_string (`Assoc [ ("h", `Int h); ("txs", strings_json txs) ])));
-      h_height = (fun h -> let h = int_of_string h in
-        height := h;
-        mine := List.filter (fun (mh, _) -> mh >= h) !mine);
-      h_current_height = (fun () -> string_of_int !height);
-      h_last_served = (fun who h -> Hashtbl.find_opt served (who, int_of_string h));
-      h_mark_served = (fun who h now -> Hashtbl.replace served (who, int_of_string h) now);
-      h_peer_exists = (fun who -> List.exists (fun p -> p.name = who) peers);
-      h_peer_send = (fun who fields -> List.iter (fun p -> if p.name = who then send_to p (wire fields)) peers);
-      h_checkout_heads = (fun () -> List.map (fun (n, _, _, _) -> (n, git_out (rdir n) [ "rev-parse"; "--short"; "HEAD" ])) repos);
-      h_divergences = (fun () -> !diverged);
+      h_checkout_heads = (fun () -> List.map (fun n -> (n, git_out (rdir n) [ "rev-parse"; "--short"; "HEAD" ])) repos);
       h_limit_info = (fun () -> (!limited_until, (!backend, (string_of_int (List.length !held), !limit_reason))));
       (* Storage only: Soma chooses the queue, flag and oldest-first events. *)
       h_release_state = (fun () -> (!limit_backoff, !probing));
       h_held_requests = (fun () -> !held);
       h_held_store = (fun requests probe -> held := requests; probing := probe);
-      h_write_status = (fun text -> write_file (Filename.concat home "status.txt") text);
-      h_encode_tx = encode_tx key me;
-      h_track_tx = (fun raw -> my_txs := (Unix.gettimeofday (), raw) :: !my_txs);
-      h_nonce_flooded = (fun () -> !nonce_flood_sent);
-      h_mark_nonce_flood = (fun () -> nonce_flood_sent := true);
-      h_send_all = (fun fields -> let line = wire fields in List.iter (fun p -> send_to p line) peers);
-      h_signed_vote = (fun slot -> Option.map fst (Hashtbl.find_opt signed slot));
-      h_signed_body = (fun slot -> match Hashtbl.find_opt signed slot with Some (_, body) -> body | None -> None);
-      h_signed_at = (fun height ->
-        Hashtbl.fold (fun slot (_, body) acc ->
-            match String.split_on_char '/' slot, body with
-            | [ _; h; _ ], Some b when h = height -> (slot, b) :: acc
-            | _ -> acc)
-          signed []
-        |> List.sort compare |> List.map snd);
-      h_signed_text = signed_text;
-      h_signed_restore = (fun slot vid fields -> Hashtbl.replace signed slot (vid, Some fields));
-      h_remember_vote = (fun slot vid fields ->
-        Hashtbl.replace signed slot (vid, Some fields);
-        append_line_synced signed_path (slot ^ " " ^ vid ^ " " ^ Yojson.Safe.to_string (strings_json fields)));
-      h_remember_broadcast = (fun height kind fields alt ->
-        mine := (int_of_string height, (kind, fields, alt)) :: !mine);
-      h_peer_count = (fun () -> string_of_int (List.length peers));
-      h_send_peer = (fun index fields ->
-        match List.nth_opt peers (int_of_string index) with
-        | Some p -> send_to p (wire fields)
-        | None -> ());
-      h_identity = me;
-      h_seen_refused = (fun raw -> Hashtbl.mem refused raw);
-      h_peer_key = key_wire;
-      h_check_exclusions = (fun () -> (!no_check, my_excluded));
       h_run_check = run_check;
-      h_merge_applied = (fun r -> Option.map string_of_int (Hashtbl.find_opt applied r));
-      h_merge_diverged = (fun r -> List.mem_assoc r !diverged);
       h_merge_reset = (fun r ->
         let dir = rdir r in
         ignore (git dir [ "reset"; "-q"; "--hard"; "HEAD" ]);
@@ -1448,8 +1145,5 @@ let node_open packed config =
         let f = Filename.concat (rdir r) p in
         try mkdir_p (Filename.dirname f); write_keep_mode f text; "" with e -> Printexc.to_string e);
       h_merge_remove = (fun r p -> try Sys.remove (Filename.concat (rdir r) p); "" with e -> Printexc.to_string e);
-      h_merge_commit = merge_commit;
-      h_merge_set_applied = (fun r v -> Hashtbl.replace applied r (int_of_string v));
-      h_merge_note_diverged = (fun r entry -> diverged := (r, entry) :: !diverged) };
+      h_merge_commit = merge_commit };
   handle_id
-

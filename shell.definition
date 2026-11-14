@@ -1,7 +1,11 @@
-(** What Soma takes the shell to be. shell.ml does all the I/O: sockets,
-    timers, keys, signatures, disk and model processes. The Soma files decide
-    everything, and the kernel never computes these, so to a proof each is an
-    assumption: soma explore lists them. *)
+(** What Soma takes the shell to be. shell.ml does the host's I/O: the
+    kernel's eight primitives (node_kernel.soma: listen, wait for the
+    mailbox, connect, send, close; read, write and append a named file),
+    the clock, model processes, git, CI and the commands' I/O. The Soma
+    files decide everything, including the node's tables, peer links,
+    timers and signatures (node_kernel.soma), and Rocq's kernel never
+    computes these, so to a proof each is an assumption: soma explore
+    lists them. *)
 OCaml Library "cryptokit".
 OCaml Library "yojson".
 
@@ -26,13 +30,15 @@ print_text : string -> unit.
     helpers, as node_open does, and names the handle they run under. *)
 cli_open : (((string -> string -> string -> option string) * (string -> string -> bool)) * (string -> bool)) -> string.
 
-(** The node loop is Soma (node.soma's run_node): the shell binds only the
-    handle's runtime, built from what cli.soma's node_setup decided (framed:
-    the settings, the key, exclusions, CI, agents, repositories, then the
-    boot events), and the endless repetition; the rest is node_io
-    operations. The handle is a string naming the shell's side of the node. Existing Soma
-    helpers are passed once as util.soma's shell_helpers record, packed as a
-    product (edit_once, contains, shell_safe_path) at the binding boundary. *)
+(** The node loop is Soma (node_shell.soma's run_node, the kernel's boot
+    and turns): the shell binds only the handle, built from what cli.soma's
+    node_setup decided (framed: the settings, the key, exclusions, CI,
+    agents, repositories, then the boot events; the shell reads the
+    settings, CI and repositories), and the endless repetition; the rest
+    is node_io operations. The handle is a string naming the shell's side
+    of the node. Existing Soma helpers are passed once as util.soma's
+    shell_helpers record, packed as a product (edit_once, contains,
+    shell_safe_path) at the binding boundary. *)
 node_open : (((string -> string -> string -> option string) * (string -> string -> bool)) * (string -> bool)) -> list string -> string.
 (** The node's service (node.soma's service_tick_prog, node_shell.soma's
     run_service) is node_io operations too: "serve_listen" HOST PORT,
@@ -40,66 +46,37 @@ node_open : (((string -> string -> string -> option string) * (string -> string 
     fields), "serve_reply" CONN FIELDS... (the answer, framed as a request
     is: a frame of frames, Sandbox's). The shell listens, reads and writes;
     Soma checks the token, which operations it answers, and runs them. *)
-(** The consensus snapshot is node_io operations: "snapshot_save" TEXT and
-    "snapshot_load" (node.soma's snapshot_text and snapshot_of). *)
-(** Startup is data, interpreted by Soma before entering the event loop
-    (node.soma's boot_prog), through node_io: "boot_events" (framed:
-    "field" VALUE... "alternate", per event), "replay_count",
-    "remember_block" H TXS... (a replayed block remembered for catch-up,
-    not appended again; Soma parsed the line and checked it is the next
-    height), "signed_text" (signed.log's bytes, "" when there is none),
-    "signed_restore" SLOT VID FIELDS... (a vote read back, not appended
-    again) and "fail" MESSAGE (refusing to start: the message on stderr,
-    exit 1; it needs no node). *)
-(** The node's operations (node.soma's node_op, U-1), carried out: one
-    operation in its wire form (node.soma's io_wire): "log" TEXT, "timer"
-    MS EVENT..., "push" EVENT..., "send_all" FIELDS..., "send_peer" INDEX
-    FIELDS..., "peer_send" PEER FIELDS..., "store" HEIGHT TXS...,
-    "set_height" H, "write_status" TEXT, "sign_vote" SLOT VID FIELDS...,
-    "track_tx" RAW, "mark_nonce_flood", "check" ID REPO HEAD EDITS...,
-    "merge_applied" REPO V, "merge_diverged" REPO ENTRY, "clock",
-    "remember_broadcast" HEIGHT KIND ("field" VALUE)... "alternate" ALT... .
-    "served_at" WHO FIRST returns (present, exact timestamp), with (false,0)
-    for missing. "mark_served" WHO FIRST TIMESTAMP uses node_float_wire's
-    lossless decimal text and returns (true,0).
-    The tagged prefix frames two arbitrary lists without a count. The only
-    way the node logs, sets a timer, queues an event, sends on a peer link,
-    does those writes, starts a CI check, or reads the clock. An effect returns (true, 0); "clock" returns (true, now),
-    the same gettimeofday value the node used to read directly. The answer
-    is nodeio.soma's nanswer: (carried out or the boolean read, (a number,
-    data)); an effect's is (true, (0, [])). *)
-(** Boolean reads peer_exists WHO, nonce_flooded and is_diverged REPO return
-    (value, 0): false is a table value, not an interpreter failure. *)
+(** The node's operations (nodeio.soma's node_op) are the kernel's to
+    carry out (node_kernel.soma's kernel_run): the consensus snapshot,
+    startup's replay, the block and vote logs, timers, the event queue,
+    peer links, signing, the draw and the tables. It hands the shell, in
+    node_io's wire form (nodeio.soma's io_wire), only its primitives and
+    the host's work:
+    "net_listen" ADDRESS PORT, "net_mailbox" MS (what the peers'
+    connections did within MS: ["opened", CONN, HOST], ["bytes", CONN,
+    DATA], ["closed", CONN], framed), "net_connect" ADDRESS PORT MS (the
+    connection's name, or not found), "net_send" CONN DATA (a flag: still
+    open), "net_close" CONN, "file_read" NAME (found or not), "file_write"
+    NAME DURABLE TEXT (DURABLE "true": synced and renamed into place) and
+    "file_append" NAME TEXT (synced); "log" TEXT, "clock", "local_time"
+    STAMP, "fail" MESSAGE (refusing to start: the message on stderr, exit
+    1), "events" "0" (the host's own events: jobs' output, CI, the inbox),
+    and nodeio.soma's service_op operations below. *)
+(** The answer is nodeio.soma's nanswer: (carried out or the boolean
+    read, (a number, data)); an effect's is (true, (0, [])); "clock"
+    returns (true, now). *)
 node_io : string -> list string -> bool * (float * list string).
-(** The data reads are node_io operations too (nodeio.soma's IoDraw,
-    IoBlock, IoHeight, IoPeerCount, IoSignedVote, IoSignedBody,
-    IoSignedAt, IoEncodeTx, IoCheckExclusions): "draw" answers [byz, limit, secret],
-    "block" H the stored block's transactions (found or not), "height"
-    and "peer_count" one decimal, "signed_vote" SLOT the value id and
-    "signed_body" SLOT the message signed there (found or not),
-    "signed_at" H every message signed at height H, each framed as
-    "field" VALUE... "alternate",
-    "encode_tx" NONCE FIELDS the transaction signed with the node's key,
-    "check_exclusions" the --no-check names then the scope's, framed as
-    "field" NAME... "alternate" NAME... . The status file's facts too:
-    "checkout_heads" and "divergences" answer pairs flattened (REPO
-    VALUE...), "limit_info" (the time the limit lasts until, [backend,
-    held, reason]), "local_time" STAMP (node_float_wire's text) [HH:MM]. *)
+(** The status file's facts are host reads: "checkout_heads" and
+    "divergences" answer pairs flattened (REPO VALUE...), "limit_info"
+    (the time the limit lasts until, [backend, held, reason]),
+    "local_time" STAMP (node_float_wire's text) [HH:MM]. *)
 forever : forall {A : Type}, (A -> A) -> A -> unit.
 
-(** Metadata reads. The clock and the height are node_io operations.
-    Soma chooses whether and which catch-up blocks to send. *)
-(** The event loop's own I/O is node_io operations too (nodeio.soma's
-    IoRefuse ... IoEvents; node.soma's node_tick_prog decides): "refuse"
-    RAW, "identity", "seen_refused" RAW, "verify_line" FROM SIG FIELDS...
-    (a flag: the signature checks), "conns" ([conn, last read] framed:
-    "field" VALUE... "alternate", per connection), "poll_prep" (sample the
-    turn clock, dial and resend), "inbox_state" (the last poll, [dir]),
-    "inbox_stamp" STAMP, "dir_entries" PATH and "remove_file" PATH (need
-    no node; errors propagate), "turn_now", "timers" ([deadline,
-    event...], framed) and "set_timers" (the same), "jobs" ([id, started,
-    limit, stopped], framed), "queue_empty" (a flag) and "events" WAIT
-    (one select; the events, framed). Times go as node_float_wire's text. *)
+(** The event loop's host reads (node.soma's node_tick_prog decides):
+    "inbox_state" (the last poll, [dir]), "inbox_stamp" STAMP,
+    "dir_entries" PATH and "remove_file" PATH (need no node; errors
+    propagate), "jobs" ([id, started, limit, stopped], framed). Times go
+    as node_float_wire's text. *)
 
 (** What a model's output becomes, and the held requests, are node_io
     operations (nodeio.soma's IoLimitSet ... IoDiscardFile; node.soma's
@@ -145,18 +122,11 @@ node_env_entries : unit -> list string.
     signals the process once (node.soma job_feed). Reading the bytes stays
     here. *)
 
-(** Connection admission and the buffered-line cap are Soma's
-    (node.soma admit_decision_of, buffer_over; the per-host and total
-    counts are conn_offer_counts, over the hosts the shell lists in the
-    conn_offer event): an offered socket the
-    shell is holding, admitted in the mode Soma names (closing the
-    named connection when evicting, node.soma conn_admit_plan), the
-    live connections and their last-activity times, and closing one.
-    The line byte cap is Soma's too (node.soma peer_line_cap, from
-    tx_byte_cap). The shell only accepts, reads and closes sockets. *)
-(** A connection's buffered read chunks live in Soma's node state:
-    the shell only reads the bytes, Soma splits them into lines
-    (node.soma feed_chunks) and keeps what is left. *)
+(** Connection admission, the buffered-line cap and a connection's
+    buffered bytes are Soma's (node.soma admit_decision_of, conn_admit_plan,
+    peer_line_cap, feed_chunks; node_kernel.soma keeps the live
+    connections and their last-activity times). The shell only accepts,
+    reads, writes and closes sockets, as the kernel's primitives. *)
 
 (** A decided merge's I/O is node_io operations (nodeio.soma's
     IoAppliedVersion ... IoMergeCommit; node.soma's merge_prog decides):

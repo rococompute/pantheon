@@ -10,8 +10,13 @@ node.soma  step : obj -> list string -> obj * list (list string)
              ├── consensus.soma   Tendermint
              ├── market.soma      the market's rules, applied to each decided block
              └── agent.soma       this node's agent: what to do after each block
-shell.ml   events in (messages, timers, model replies), outputs done (send, sign, write)
+node_kernel.soma   the node's kernel: tables, peer links, signatures, files, the select
+shell.ml   the kernel's primitives on the host (sockets, files), and processes: git, model calls, CI
 ```
+
+The kernel is the same program in the binary and in the unikernel: shell.ml carries out
+its primitives for the binary, Sandbox for the unikernel (docs/SHELL-IN-SOMA.md, "One
+kernel, two runners").
 
 Events and outputs are lists of strings, because those cross Soma's OCaml boundary.
 Numbers don't cross it yet. The shell contributes three functions the state machines

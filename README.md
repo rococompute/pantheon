@@ -185,7 +185,9 @@ escape hatch, where static types are given up, and every assumption.
 | `agent.soma` | Each agent's wrapper: duties, prompts, policy, the scripted backend |
 | `node.soma` | Consensus, market and agent together: the one `step` the shell runs |
 | `util.soma` | Helpers, and `obj`, the loosely typed record the state machines use |
-| `shell.ml`, `shell.definition` | The I/O, and what Soma takes it to be |
+| `nodeio.soma`, `node_kernel.soma` | The node's operations, and its kernel: tables, peer links, signatures, files, the select |
+| `node_shell.soma`, `node_sandbox.soma` | The kernel run by the binary (through shell.ml) and by a unikernel (with Sandbox) |
+| `shell.ml`, `shell.definition` | The kernel's primitives on the host, processes (git, model calls, CI), and what Soma takes them to be |
 | `*.proof` | What is proved so far |
 | `test/e2e.sh`, `test/edits.sh` | The scenarios, and the edit engine |
 | `install.sh` | The one-line install: Soma if it's missing, then Pantheon |

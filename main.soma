@@ -18,7 +18,7 @@ Extract Inlined Constant Stdlib.Strings.String.get =>
   "(fun n s -> if n < String.length s then Some (String.unsafe_get s n) else None)".
 Extract Inlined Constant Stdlib.Strings.String.substring =>
   "(fun n m s -> let l = String.length s in if n >= l then """" else String.sub s n (min m (l - n)))".
-(** The stores' maps (nodeio.soma's NSM) order keys by [String.compare]:
+(** The stores' maps (nodeio.soma's smap) order keys by [String.compare]:
     OCaml's comparison of strings is the same order, byte by byte, without
     taking the strings apart a character at a time. *)
 Extract Inlined Constant Stdlib.Strings.String.compare =>
@@ -30,6 +30,12 @@ Extract Inlined Constant Stdlib.Strings.String.compare =>
     (test/nio_tables.soma checks the two agree). *)
 Extract Constant util.sha256 => "Shell.sha256".
 Extract Constant util.hash_list => "Shell.hash_list".
+(** So is signing (nodeio.soma's nio_sign, Soma's RSA, about 12 ms a
+    signature): Cryptokit's PKCS#1 v1.5 signature with the same key is
+    the same bytes, about ten times faster. A node signs each peer line
+    and transaction it sends. *)
+Extract Constant nodeio.nio_sign =>
+  "(fun k m -> Shell.rsa_sign_bytes k.nk_bytes (Obj.magic k.nk_n) (Obj.magic k.nk_e) (Obj.magic k.nk_p) (Obj.magic k.nk_q) (Obj.magic k.nk_dp) (Obj.magic k.nk_dq) (Obj.magic k.nk_qinv) m)".
 
 (** Every command but [node] and [service] is a node program (cli.soma),
     run through the shell's node_io; [node] is node.soma's loop, [service]

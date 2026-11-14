@@ -7,3 +7,4 @@
 # images and their sources made by test/node-image.sh (pantheon image)
 *.hvt
 /test/node_image_*
+/test/.node_image_*.aux

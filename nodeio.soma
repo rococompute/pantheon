@@ -5,14 +5,76 @@
     with Sandbox (node_sandbox.soma). *)
 From Corelib Require PrimFloat.
 From Corelib Require PrimInt63.
-From Stdlib Require FSets.FMapAVL Structures.OrderedTypeEx.
 Require Crypto.
 
-(** Maps by a string key: balanced trees in the order of [String.compare]
-    (the binary runs it as OCaml's string comparison, the same order). The
+(** Maps by a string key: AVL trees in the order of [String.compare] (the
+    binary runs it as OCaml's string comparison, the same order). The
     node's stores are as long as its chain, so a list would cost a scan of
-    every block on each one stored, and on each one replayed at startup. *)
-Module NSM := FMapAVL.Make Structures.OrderedTypeEx.String_as_OT.
+    every block on each one stored, and on each one replayed at startup.
+    Their own, not Stdlib's FMapAVL, whose names (height, cons, ...) made
+    extraction rename the node's own record fields. *)
+Inductive smap (A : Type) : Type :=
+| SLeaf
+| SNode (l : smap A) (k : string) (v : A) (r : smap A) (h : nat).
+Arguments SLeaf {A}.
+Arguments SNode {A} l k v r h.
+
+smap_h {A : Type} (m : smap A) : nat := match m with SLeaf => 0 | SNode _ _ _ _ h => h end.
+
+smap_node {A : Type} (l : smap A) (k : string) (v : A) (r : smap A) : smap A :=
+  SNode l k v r (S (Nat.max (smap_h l) (smap_h r))).
+
+(** one rotation, or two, when one side is more than one taller *)
+smap_balance {A : Type} (l : smap A) (k : string) (v : A) (r : smap A) : smap A :=
+  let hl := smap_h l in let hr := smap_h r in
+  if Nat.ltb (S hr) hl then
+    match l with
+    | SNode ll lk lv lr _ =>
+        if Nat.leb (smap_h lr) (smap_h ll) then smap_node ll lk lv (smap_node lr k v r)
+        else match lr with
+             | SNode lrl lrk lrv lrr _ => smap_node (smap_node ll lk lv lrl) lrk lrv (smap_node lrr k v r)
+             | SLeaf => smap_node l k v r
+             end
+    | SLeaf => smap_node l k v r
+    end
+  else if Nat.ltb (S hl) hr then
+    match r with
+    | SNode rl rk rv rr _ =>
+        if Nat.leb (smap_h rl) (smap_h rr) then smap_node (smap_node l k v rl) rk rv rr
+        else match rl with
+             | SNode rll rlk rlv rlr _ => smap_node (smap_node l k v rll) rlk rlv (smap_node rlr rk rv rr)
+             | SLeaf => smap_node l k v r
+             end
+    | SLeaf => smap_node l k v r
+    end
+  else smap_node l k v r.
+
+Fixpoint smap_add {A : Type} (k : string) (v : A) (m : smap A) : smap A :=
+  match m with
+  | SLeaf => SNode SLeaf k v SLeaf 1
+  | SNode l k' v' r h =>
+      match Stdlib.Strings.String.compare k k' with
+      | Lt => smap_balance (smap_add k v l) k' v' r
+      | Gt => smap_balance l k' v' (smap_add k v r)
+      | Eq => SNode l k v r h
+      end
+  end.
+
+Fixpoint smap_find {A : Type} (k : string) (m : smap A) : option A :=
+  match m with
+  | SLeaf => None
+  | SNode l k' v r _ =>
+      match Stdlib.Strings.String.compare k k' with
+      | Lt => smap_find k l
+      | Gt => smap_find k r
+      | Eq => Some v
+      end
+  end.
+
+smap_mem {A : Type} (k : string) (m : smap A) : bool := match smap_find k m with Some _ => true | None => false end.
+
+Fixpoint smap_size {A : Type} (m : smap A) : nat :=
+  match m with SLeaf => 0 | SNode l _ _ r _ => S (smap_size l + smap_size r) end.
 
 (** ---- U-1: the node's I/O as one interface (docs/SHELL-IN-SOMA.md,
     "Two directions, and the unikernel") ----
@@ -209,7 +271,28 @@ Inductive node_op :=
     connection, as found, the float's text and its data *)
 | IoServeListen (address port : string)
 | IoServeNext (wait : string)
-| IoServeReply (conn found stamp : string) (fields : list string).
+| IoServeReply (conn found stamp : string) (fields : list string)
+(** the kernel's primitives (node_kernel.soma): what it asks of whatever
+    runs it, named after Sandbox's own, which the unikernel does them
+    with and shell.ml does them with for the binary. Listening on an
+    address and port (not found: why, in its data); what came in on the
+    connections since the last look, waiting [ms] milliseconds at most
+    when nothing has (framed: ["opened", CONN, HOST], ["bytes", CONN,
+    DATA], ["closed", CONN]); a connection opened (found: its name; it
+    doesn't wait for the other side, giving up after [ms] if it must
+    wait); bytes written on one (not found: it is closed); closing one;
+    and the node's named files ([name] in its home, or the unikernel's
+    storage device): read (found or not), written whole (synced to disk
+    before the answer when [durable] is "true") and appended to (synced:
+    blocks.log and signed.log must survive a crash whole) *)
+| IoNetListen (address port : string)
+| IoNetMailbox (ms : string)
+| IoNetConnect (address port ms : string)
+| IoNetSend (conn data : string)
+| IoNetClose (conn : string)
+| IoFileRead (name : string)
+| IoFileWrite (name durable text : string)
+| IoFileAppend (name text : string).
 
 (** Two arbitrary lists on one wire: tagged field/value pairs, then the
     alternate-list marker. A marker occurring as a value is never a tag.
@@ -358,6 +441,14 @@ io_wire (op : node_op) : list string :=
   | IoServeListen address port => ["serve_listen", address, port]
   | IoServeNext wait => ["serve_next", wait]
   | IoServeReply conn found stamp fields => "serve_reply" :: conn :: found :: stamp :: fields
+  | IoNetListen address port => ["net_listen", address, port]
+  | IoNetMailbox ms => ["net_mailbox", ms]
+  | IoNetConnect address port ms => ["net_connect", address, port, ms]
+  | IoNetSend conn data => ["net_send", conn, data]
+  | IoNetClose conn => ["net_close", conn]
+  | IoFileRead name => ["file_read", name]
+  | IoFileWrite name durable text => ["file_write", name, durable, text]
+  | IoFileAppend name text => ["file_append", name, text]
   end.
 
 io_of_wire (w : list string) : option node_op :=
@@ -488,6 +579,14 @@ io_of_wire (w : list string) : option node_op :=
   | ["serve_listen", address, port] => Some (IoServeListen address port)
   | ["serve_next", wait] => Some (IoServeNext wait)
   | "serve_reply" :: conn :: found :: stamp :: fields => Some (IoServeReply conn found stamp fields)
+  | ["net_listen", address, port] => Some (IoNetListen address port)
+  | ["net_mailbox", ms] => Some (IoNetMailbox ms)
+  | ["net_connect", address, port, ms] => Some (IoNetConnect address port ms)
+  | ["net_send", conn, data] => Some (IoNetSend conn data)
+  | ["net_close", conn] => Some (IoNetClose conn)
+  | ["file_read", name] => Some (IoFileRead name)
+  | ["file_write", name, durable, text] => Some (IoFileWrite name durable text)
+  | ["file_append", name, text] => Some (IoFileAppend name text)
   | _ => None
   end.
 
@@ -690,9 +789,12 @@ nio_encode_tx (chain agent : string) (k : nio_key) (nonce : string) (fields : li
 (** a peer link's line for a message, as [wire] (which ends it with a
     newline, as Sandbox's [send_line] does): who, the fields and the
     signature of its bytes *)
-nio_wire_line (chain me : string) (k : nio_key) (fields : list string) : string :=
+nio_wire_line_signed (me : string) (fields : list string) (sg : string) : string :=
   Stdlib.Strings.String.concat "" ["{""from"":", nio_json_string me, ",""fields"":", nio_json_strings fields,
-    ",""sig"":", nio_json_string (nio_sign k (nio_msg_bytes chain me fields)), "}"].
+    ",""sig"":", nio_json_string sg, "}"].
+
+nio_wire_line (chain me : string) (k : nio_key) (fields : list string) : string :=
+  nio_wire_line_signed me fields (nio_sign k (nio_msg_bytes chain me fields)).
 
 (** The tables an interpreter keeps for the operations: timers (when, in
     the clock's seconds, and the event), events queued for the loop, the
@@ -702,21 +804,21 @@ nio_wire_line (chain me : string) (k : nio_key) (fields : list string) : string 
 Record nio_tables := {
   t_timers : list (PrimFloat.float * list string);
   t_queue : list (list string);
-  t_served : NSM.t PrimFloat.float;
+  t_served : smap PrimFloat.float;
   t_flood : bool;
   t_diverged : list (string * string);
   t_applied : list (string * string);
   t_mine : list (string * (string * (list string * list string)));
   t_txs : list (PrimFloat.float * string);
   t_height : string;
-  t_blocks : NSM.t (list string);
-  t_signed : NSM.t (list (string * (string * list string)));
-  t_refused : nat * NSM.t unit }.
+  t_blocks : smap (list string);
+  t_signed : smap (list (string * (string * list string)));
+  t_refused : nat * smap unit }.
 
 nio_empty : nio_tables :=
-  {| t_timers := []; t_queue := []; t_served := NSM.empty _; t_flood := false; t_diverged := [];
-     t_applied := []; t_mine := []; t_txs := []; t_height := "0"; t_blocks := NSM.empty _;
-     t_signed := NSM.empty _; t_refused := (0, NSM.empty _) |}.
+  {| t_timers := []; t_queue := []; t_served := SLeaf; t_flood := false; t_diverged := [];
+     t_applied := []; t_mine := []; t_txs := []; t_height := "0"; t_blocks := SLeaf;
+     t_signed := SLeaf; t_refused := (0, SLeaf) |}.
 
 nio_eq (a b : string) : bool := Stdlib.Strings.String.eqb a b.
 
@@ -811,7 +913,7 @@ nio_with_queue (t : nio_tables) (v : list (list string)) : nio_tables :=
   {| t_timers := t_timers t; t_queue := v; t_served := t_served t; t_flood := t_flood t;
      t_diverged := t_diverged t; t_applied := t_applied t; t_mine := t_mine t; t_txs := t_txs t;
      t_height := t_height t; t_blocks := t_blocks t; t_signed := t_signed t; t_refused := t_refused t |}.
-nio_with_served (t : nio_tables) (v : NSM.t PrimFloat.float) : nio_tables :=
+nio_with_served (t : nio_tables) (v : smap PrimFloat.float) : nio_tables :=
   {| t_timers := t_timers t; t_queue := t_queue t; t_served := v; t_flood := t_flood t;
      t_diverged := t_diverged t; t_applied := t_applied t; t_mine := t_mine t; t_txs := t_txs t;
      t_height := t_height t; t_blocks := t_blocks t; t_signed := t_signed t; t_refused := t_refused t |}.
@@ -840,7 +942,7 @@ nio_with_height (t : nio_tables) (v : string) : nio_tables :=
      t_diverged := t_diverged t; t_applied := t_applied t; t_mine := t_mine t; t_txs := t_txs t;
      t_height := v; t_blocks := t_blocks t; t_signed := t_signed t; t_refused := t_refused t |}.
 
-nio_with_refused (t : nio_tables) (v : nat * NSM.t unit) : nio_tables :=
+nio_with_refused (t : nio_tables) (v : nat * smap unit) : nio_tables :=
   {| t_timers := t_timers t; t_queue := t_queue t; t_served := t_served t; t_flood := t_flood t;
      t_diverged := t_diverged t; t_applied := t_applied t; t_mine := t_mine t; t_txs := t_txs t;
      t_height := t_height t; t_blocks := t_blocks t; t_signed := t_signed t; t_refused := v |}.
@@ -892,20 +994,20 @@ nio_table_op (now : PrimFloat.float) (t : nio_tables) (op : node_op)
       end
   | IoRememberBroadcast h kind fields alt => Some (nio_ok, nio_with_mine t ((h, (kind, (fields, alt))) :: t_mine t))
   | IoServedAt who first =>
-      match NSM.find (nio_served_key who first) (t_served t) with
+      match smap_find (nio_served_key who first) (t_served t) with
       | Some time => Some (ans_time time, t)
       | None => Some (ans_flag false, t)
       end
   | IoMarkServed who first stamp =>
-      Some (nio_ok, nio_with_served t (NSM.add (nio_served_key who first) (nio_num stamp) (t_served t)))
+      Some (nio_ok, nio_with_served t (smap_add (nio_served_key who first) (nio_num stamp) (t_served t)))
   | _ => None
   end.
 
-nio_with_blocks (t : nio_tables) (v : NSM.t (list string)) : nio_tables :=
+nio_with_blocks (t : nio_tables) (v : smap (list string)) : nio_tables :=
   {| t_timers := t_timers t; t_queue := t_queue t; t_served := t_served t; t_flood := t_flood t;
      t_diverged := t_diverged t; t_applied := t_applied t; t_mine := t_mine t; t_txs := t_txs t;
      t_height := t_height t; t_blocks := v; t_signed := t_signed t; t_refused := t_refused t |}.
-nio_with_signed (t : nio_tables) (v : NSM.t (list (string * (string * list string)))) : nio_tables :=
+nio_with_signed (t : nio_tables) (v : smap (list (string * (string * list string)))) : nio_tables :=
   {| t_timers := t_timers t; t_queue := t_queue t; t_served := t_served t; t_flood := t_flood t;
      t_diverged := t_diverged t; t_applied := t_applied t; t_mine := t_mine t; t_txs := t_txs t;
      t_height := t_height t; t_blocks := t_blocks t; t_signed := v; t_refused := t_refused t |}.
@@ -933,14 +1035,14 @@ nio_slot_height (slot : string) : string :=
   Stdlib.Strings.String.string_of_list_ascii (nio_upto_slash (nio_after_slash (Stdlib.Strings.String.list_ascii_of_string slot))).
 
 (** the votes signed at a height, by slot, newest first: one a slot *)
-nio_sign_slot (slot vid : string) (fields : list string) (m : NSM.t (list (string * (string * list string))))
-    : NSM.t (list (string * (string * list string))) :=
+nio_sign_slot (slot vid : string) (fields : list string) (m : smap (list (string * (string * list string))))
+    : smap (list (string * (string * list string))) :=
   let h := nio_slot_height slot in
-  let here := match NSM.find h m with Some l => l | None => [] end in
-  NSM.add h ((slot, (vid, fields)) :: List.filter (fun v => negb (nio_eq (fst v) slot)) here) m.
+  let here := match smap_find h m with Some l => l | None => [] end in
+  smap_add h ((slot, (vid, fields)) :: List.filter (fun v => negb (nio_eq (fst v) slot)) here) m.
 
-nio_signed_find (slot : string) (m : NSM.t (list (string * (string * list string)))) : option (string * list string) :=
-  match NSM.find (nio_slot_height slot) m with Some l => nio_lookup slot l | None => None end.
+nio_signed_find (slot : string) (m : smap (list (string * (string * list string)))) : option (string * list string) :=
+  match smap_find (nio_slot_height slot) m with Some l => nio_lookup slot l | None => None end.
 
 (** The stores the binary keeps in memory beside its files: decided blocks
     by height (what catch-up and [IoBlock] read) and the vote signed at
@@ -950,10 +1052,10 @@ nio_signed_find (slot : string) (m : NSM.t (list (string * (string * list string
     its links' lines come through their listen handlers). *)
 nio_store_op (now : PrimFloat.float) (t : nio_tables) (op : node_op) : option (nanswer * nio_tables) :=
   match op with
-  | IoStore h txs => Some (ans_ok, nio_with_blocks t (NSM.add h txs (t_blocks t)))
+  | IoStore h txs => Some (ans_ok, nio_with_blocks t (smap_add h txs (t_blocks t)))
   | IoSignVote slot vid fields => Some (ans_ok, nio_with_signed t (nio_sign_slot slot vid fields (t_signed t)))
   | IoBlock h =>
-      match NSM.find h (t_blocks t) with
+      match smap_find h (t_blocks t) with
       | Some txs => Some (ans_data true txs, t)
       | None => Some (ans_data false [], t)
       end
@@ -970,16 +1072,16 @@ nio_store_op (now : PrimFloat.float) (t : nio_tables) (op : node_op) : option (n
       end
   | IoSignedAt h =>
       Some (ans_data true (nio_frame_lists (List.map (fun v => snd (snd v))
-        (List.rev (match NSM.find h (t_signed t) with Some l => l | None => [] end)))), t)
-  | IoRememberBlock h txs => Some (ans_ok, nio_with_blocks t (NSM.add h txs (t_blocks t)))
+        (List.rev (match smap_find h (t_signed t) with Some l => l | None => [] end)))), t)
+  | IoRememberBlock h txs => Some (ans_ok, nio_with_blocks t (smap_add h txs (t_blocks t)))
   | IoSignedRestore slot vid fields => Some (ans_ok, nio_with_signed t (nio_sign_slot slot vid fields (t_signed t)))
-  | IoReplayCount => Some (ans_data true [nio_count (NSM.cardinal (t_blocks t))], t)
+  | IoReplayCount => Some (ans_data true [nio_count (smap_size (t_blocks t))], t)
   (* at most 10000 kept, as the binary kept them *)
   | IoRefuse raw =>
       let (n, m) := t_refused t in
-      if NSM.mem raw m || Nat.leb 10000 n then Some (ans_ok, t)
-      else Some (ans_ok, nio_with_refused t (S n, NSM.add raw tt m))
-  | IoSeenRefused raw => Some (ans_flag (NSM.mem raw (snd (t_refused t))), t)
+      if smap_mem raw m || Nat.leb 10000 n then Some (ans_ok, t)
+      else Some (ans_ok, nio_with_refused t (S n, smap_add raw tt m))
+  | IoSeenRefused raw => Some (ans_flag (smap_mem raw (snd (t_refused t))), t)
   | IoQueueEmpty => Some (ans_flag (match t_queue t with [] => true | _ => false end), t)
   | IoEvents _ => Some (ans_data true (nio_frame_lists (t_queue t)), nio_with_queue t [])
   | IoSetTimers ts =>
