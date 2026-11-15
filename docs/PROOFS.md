@@ -52,6 +52,12 @@ commands need not do so. Trusted toolchains and build-cache provenance matter.
 | `rule_keeps_precommit_step` | A rule preserving height and round preserves step 2; excludes restart and other transitions. |
 | `same_round_steps_keep_precommit` | The defined same-round rule closure preserves step 2; not arbitrary execution traces. |
 | `one_precommit_per_round` | After one precommit, the specified same-round rule trace cannot emit another; not a global safety or crash-recovery theorem. |
+| `filter_negb_length`, `forallb_false_witness` | List helpers: a filter and its complement add up to the list; a false `forallb` has a witness. |
+| `common_members` | Two duplicate-free lists inside a roster share at least as many members as their lengths exceed the roster's. |
+| `member_outside` | A duplicate-free list longer than the faulty list has a member outside it. |
+| `quorums_share_an_honest_member` | Two quorums of one roster's members (duplicate-free) share a validator outside any list of at most f faulty ones: the set intersection `quorums_intersect_in_an_honest_node`'s arithmetic stands for. |
+| `precommitter_has_precommit`, `precommitters_on_roster` | A certificate name has a precommit in the log at this height, round and value; when the log holds only the roster's messages, every name is on the roster. |
+| `same_round_decisions_agree` | Two nodes on one roster at one height, logging only the roster's messages, with at most f faulty validators: when both decide and their decisions' proposals are of one round, they decide one `vid`, or a validator outside the faulty ones has a precommit for each of the two values in that round, one in each log, which `one_precommit_per_round` rules out for an honest node. Premises: that a logged precommit is its sender's (the node checks signatures before the log; not modelled) and a collision-free hash for one value per `vid`. Decisions in different rounds (locks carried across rounds) are not covered. |
 
 ### core/market.proof
 
@@ -223,9 +229,10 @@ Besides the commands' parsing and JSON examples:
 ## Remaining work
 
 - Type the consensus, market and agent states and remove gradual escape hatches.
-- Prove global consensus agreement across authenticated nodes and restart traces.
-  The local lock and precommit results above do not establish this. The
-  snapshot's round trip is proved
+- Prove agreement across rounds (a lock carried from round to round) and
+  through authenticated ingestion. `same_round_decisions_agree` covers
+  decisions on proposals of one round, given that logged precommits are
+  their senders'. The snapshot's round trip is proved
   (`snapshot_text_reads_back`); that a restarted node then acts on it is
   tested (`test/restart_lock.soma`, `test/e2e.sh`), not proved.
 - Prove tree agreement through vote admission, settlement and shell application.

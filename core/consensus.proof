@@ -920,3 +920,128 @@ Example resume_timers_of_a_round :
   resume_timers {| me := "a"; nodes := ["a", "b", "c", "d"]; height := 4; round := 0; step := 2;
     lockr := 1; lockv := []; validr := 1; validv := []; log := []; once := ["lock0"]; block_ms := 200 |} = [].
 Proof. repeat split; reflexivity. Qed.
+
+(** ---- Agreement within one round ----
+    Two nodes on one roster that decide at one height on a proposal of
+    one round decide the same value, or some validator outside the
+    faulty ones (at most f of them) precommitted both values in that
+    round, as an honest node never does ([one_precommit_per_round]).
+    Signatures tie a logged precommit to its sender: the node checks each
+    message's signature before it reaches the log (runtime/node.soma),
+    which is not modelled here. A decision names its proposal's [vid];
+    the value is the same when the hash is collision-free. *)
+
+Lemma filter_negb_length : forall (A : Type) (f : A -> bool) (l : list A),
+  length (filter f l) + length (filter (fun x => negb (f x)) l) = length l.
+Proof. intros A f l. induction l as [|x l IH]; cbn; [reflexivity|]. destruct (f x); cbn; lia. Qed.
+
+(** Two duplicate-free lists inside a roster share at least as many
+    members as their lengths exceed the roster's. *)
+Lemma common_members : forall (R A B : list string),
+  NoDup A -> NoDup B -> incl A R -> incl B R ->
+  length A + length B <= length R + length (filter (fun x => mem x B) A).
+Proof.
+  intros R A B HA HB HAR HBR.
+  pose proof (filter_negb_length _ (fun x => mem x B) A) as Hs.
+  assert (Hd : NoDup (filter (fun x => negb (mem x B)) A ++ B)).
+  { apply NoDup_app; [apply NoDup_filter; exact HA|exact HB|].
+    intros a Ha Hb. apply filter_In in Ha as [_ Ha]. apply mem_In in Hb. rewrite Hb in Ha. discriminate Ha. }
+  assert (Hi : incl (filter (fun x => negb (mem x B)) A ++ B) R).
+  { apply incl_app; [|exact HBR]. intros a Ha. apply HAR. apply filter_In in Ha as [Ha _]. exact Ha. }
+  pose proof (NoDup_incl_length Hd Hi) as Hl. rewrite length_app in Hl. lia.
+Qed.
+
+Lemma forallb_false_witness : forall (A : Type) (f : A -> bool) (l : list A),
+  forallb f l = false -> exists x, In x l /\ f x = false.
+Proof.
+  intros A f l. induction l as [|a l IH]; cbn; [discriminate|].
+  destruct (f a) eqn:Fa; cbn.
+  - intro H. destruct (IH H) as (x & Hx & Fx). exists x. split; [right; exact Hx|exact Fx].
+  - intros _. exists a. split; [left; reflexivity|exact Fa].
+Qed.
+
+(** more members than faulty ones: one of them isn't faulty *)
+Lemma member_outside : forall (I byz : list string),
+  NoDup I -> length byz < length I -> exists x, In x I /\ ~ In x byz.
+Proof.
+  intros I byz HI Hlen. destruct (forallb (fun x => mem x byz) I) eqn:E.
+  - exfalso. assert (Hi : incl I byz).
+    { intros x Hx. apply mem_In. rewrite forallb_forall in E. exact (E x Hx). }
+    pose proof (NoDup_incl_length HI Hi). lia.
+  - destruct (forallb_false_witness _ _ _ E) as (x & Hx & Fx). exists x. split; [exact Hx|].
+    intro Hb. apply mem_In in Hb. rewrite Hb in Fx. discriminate Fx.
+Qed.
+
+(** Two quorums of one roster share a validator outside any f of them. *)
+Theorem quorums_share_an_honest_member : forall c (A B byz : list string),
+  1 <= length (nodes c) -> NoDup A -> NoDup B -> incl A (nodes c) -> incl B (nodes c) ->
+  quorum c <= length A -> quorum c <= length B -> length byz <= faulty c ->
+  exists x, In x A /\ In x B /\ ~ In x byz.
+Proof.
+  intros c A B byz Hn HA HB HAR HBR HqA HqB Hbyz.
+  pose proof (quorums_intersect_in_an_honest_node c Hn) as Hq.
+  pose proof (common_members (nodes c) A B HA HB HAR HBR) as Hc.
+  assert (Hlen : length byz < length (filter (fun x => mem x B) A)) by (unfold weak in Hq; lia).
+  destruct (member_outside _ byz (NoDup_filter _ HA) Hlen) as (x & Hx & Hnb).
+  apply filter_In in Hx as [HxA HxB]. apply mem_In in HxB.
+  exists x. split; [exact HxA|split; [exact HxB|exact Hnb]].
+Qed.
+
+(** a precommitter has a precommit in the log, at this height, round and value *)
+Lemma precommitter_has_precommit : forall c r id x,
+  In x (precommitters c r id) ->
+  exists m, In m (log c) /\ frm m = x /\ kd m = Precommit /\ mh m = height c /\ mr m = r /\ vid m = id.
+Proof.
+  intros c r id x H. unfold precommitters in H. apply nodup_s_In, in_map_iff in H as (m & Hx & Hm).
+  apply filter_In in Hm as [Hm Hp].
+  apply andb_split in Hp as [Hp Hid]. apply andb_split in Hp as [Hp Hr]. apply andb_split in Hp as [Hk Hh].
+  exists m. split; [exact Hm|]. split; [exact Hx|].
+  split; [destruct (kd m); first [reflexivity|discriminate Hk]|].
+  split; [apply Nat.eqb_eq; exact Hh|]. split; [apply Nat.eqb_eq; exact Hr|].
+  apply Stdlib.Strings.String.eqb_eq. exact Hid.
+Qed.
+
+Lemma precommitters_on_roster : forall c r id,
+  (forall m, In m (log c) -> In (frm m) (nodes c)) -> incl (precommitters c r id) (nodes c).
+Proof.
+  intros c r id Hlog x Hx. destruct (precommitter_has_precommit c r id x Hx) as (m & Hm & <- & _).
+  exact (Hlog m Hm).
+Qed.
+
+(** Two nodes on one roster, at one height, each logging only the
+    roster's messages, with at most f validators faulty: when each
+    decides, and their decisions' proposals are of one round, then they
+    decide one value, or a validator outside the faulty ones has a
+    precommit in each log, at that height and round, for each of the two
+    values. *)
+Theorem same_round_decisions_agree :
+  forall (c1 c2 : consensus_state) valid1 valid2 c1' o1 c2' o2 (byz : list string),
+    nodes c1 = nodes c2 -> height c1 = height c2 -> 1 <= length (nodes c1) ->
+    (forall m, In m (log c1) -> In (frm m) (nodes c1)) ->
+    (forall m, In m (log c2) -> In (frm m) (nodes c2)) ->
+    length byz <= faulty c1 ->
+    r_decide c1 valid1 = Some (c1', o1) -> r_decide c2 valid2 = Some (c2', o2) ->
+    exists p1 p2,
+      (c1', o1) = decide c1 (value p1) /\ (c2', o2) = decide c2 (value p2) /\
+      (mr p1 = mr p2 ->
+       vid p1 = vid p2 \/
+       exists x m1 m2, ~ In x byz /\ vid p1 <> vid p2 /\
+         In m1 (log c1) /\ In m2 (log c2) /\ frm m1 = x /\ frm m2 = x /\
+         kd m1 = Precommit /\ kd m2 = Precommit /\
+         mh m1 = height c1 /\ mh m2 = height c1 /\ mr m1 = mr p1 /\ mr m2 = mr p1 /\
+         vid m1 = vid p1 /\ vid m2 = vid p2).
+Proof.
+  intros c1 c2 valid1 valid2 c1' o1 c2' o2 byz Hnodes Hheight Hn Hlog1 Hlog2 Hbyz Hd1 Hd2.
+  destruct (decision_has_precommitter_certificate c1 valid1 c1' o1 Hd1) as (p1 & _ & _ & Hc1 & Hnd1 & Hq1).
+  destruct (decision_has_precommitter_certificate c2 valid2 c2' o2 Hd2) as (p2 & _ & _ & Hc2 & Hnd2 & Hq2).
+  exists p1, p2. split; [exact Hc1|]. split; [exact Hc2|]. intro Hr.
+  destruct (Stdlib.Strings.String.eqb_spec (vid p1) (vid p2)) as [Heq|Hne]; [left; exact Heq|right].
+  assert (Hquorum : quorum c2 = quorum c1) by (unfold quorum, faulty; rewrite Hnodes; reflexivity).
+  rewrite Hquorum in Hq2.
+  pose proof (precommitters_on_roster c1 (mr p1) (vid p1) Hlog1) as Hi1.
+  pose proof (precommitters_on_roster c2 (mr p2) (vid p2) Hlog2) as Hi2. rewrite <- Hnodes in Hi2.
+  destruct (quorums_share_an_honest_member c1 _ _ byz Hn Hnd1 Hnd2 Hi1 Hi2 Hq1 Hq2 Hbyz) as (x & Hx1 & Hx2 & Hnb).
+  destruct (precommitter_has_precommit _ _ _ _ Hx1) as (m1 & Hm1 & Hf1 & Hk1 & Hh1 & Hr1 & Hv1).
+  destruct (precommitter_has_precommit _ _ _ _ Hx2) as (m2 & Hm2 & Hf2 & Hk2 & Hh2 & Hr2 & Hv2).
+  exists x, m1, m2. repeat split; try assumption; congruence.
+Qed.
