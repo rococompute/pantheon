@@ -1,10 +1,12 @@
 #!/bin/sh
-# A Pantheon network as a cmux workspace: one pane per agent. Each pane runs
-# the agent's node in a tab and, for an agent with a diplomat, the diplomat's
-# session (Claude Code, codex, the Cursor CLI, Muse) in a second tab, working
-# the node's inbox. The workspace's sidebar shows each node's height, term
-# and leader. A watchdog nudges a diplomat that stopped working its inbox,
-# and notifies you when one waits on a person (an approval, a question).
+# A Pantheon network as a cmux workspace: the market's plan on the left half
+# (the goal, each repository's .plan with its marks, the tasks; it follows
+# the chain), and on the right a tab per agent: its diplomat's session
+# (Claude Code, codex, the Cursor CLI, Muse) working its node's inbox, or,
+# for an agent without one, its node. The workspace's sidebar shows each
+# node's height, term and leader. A watchdog nudges a diplomat that stopped
+# working its inbox, and notifies you when one waits on a person (an
+# approval, a question).
 # Run it on a Mac with cmux; it follows integrations/herdr's plan.
 #
 #   pantheon-cmux up NET [options] [-- NODE ARGS...]
@@ -14,7 +16,9 @@
 #       --diplomats "A B"          these agents answer through an interactive session (default: none)
 #       --backends A=B,...         the other agents' backends, as for `pantheon up` (default: scripted)
 #       --yolo                     start the diplomats' CLIs with their approvals off (read "Isolation")
-#   pantheon-cmux status NET       the sidebar's loop (up starts it in the first pane's "status" tab)
+#       --layout plan|grid         plan (default): the market's plan on the left half, live, and on the
+#                                  right a tab per agent (its diplomat, else its node); grid: a pane per agent
+#   pantheon-cmux status NET       the sidebar's and the plan's loop (up starts it in a "status" tab)
 #   pantheon-cmux watchdog NET [--check|--once]
 #                                  the watchdog's loop, a pass a minute (up starts it in a "watchdog"
 #                                  tab when there are diplomats); --check: what it sees now, nudging
@@ -156,18 +160,82 @@ PY
   chmod 755 "$d/session.sh"
 }
 
+# a tab in pane P running COMMAND, named NAME, at position INDEX: its id
+tab() {
+  t_s=$(cm --id-format both new-surface --pane "$1" --workspace "$w" --focus false --command "$2" | first_uuid)
+  [ -n "$t_s" ] || die "cmux didn't make the tab $3"
+  cm rename-tab --workspace "$w" --surface "$t_s" "$3" >/dev/null
+  cm reorder-surface --workspace "$w" --surface "$t_s" --index "$4" >/dev/null 2>&1 || true
+  printf '%s' "$t_s"
+}
+
+# The market's plan on the left half (cmux's markdown viewer, on the file
+# the status loop keeps); on the right, one pane: a tab per agent (its
+# diplomat's session, else its node), then the diplomats' nodes, status
+# and the watchdog
+layout_plan() {
+  render_plan
+  cm rename-tab --workspace "$w" --surface "$s1" "$first" >/dev/null
+  if in_list "$first" "$sessions"; then printf '%s\n' "$s1" > "$ST/$first/surface"; else printf '%s\n' "$s1" > "$ST/$first/node-surface"; fi
+  cm markdown open "$ST/plan.md" --workspace "$w" --surface "$s1" --direction left --focus false >/dev/null \
+    || say "cmux didn't open the plan's view: open $ST/plan.md in it by hand"
+  p=$(pane_of "$w" "$s1") k=1
+  for a in $agents; do
+    [ "$a" = "$first" ] && continue
+    s=$(tab "$p" "sh $(q "$(main_of "$a")")" "$a" "$k"); k=$((k + 1))
+    if in_list "$a" "$sessions"; then printf '%s\n' "$s" > "$ST/$a/surface"; else printf '%s\n' "$s" > "$ST/$a/node-surface"; fi
+  done
+  for a in $sessions; do
+    s=$(tab "$p" "sh $(q "$ST/$a/node.sh")" "$a node" "$k"); k=$((k + 1))
+    printf '%s\n' "$s" > "$ST/$a/node-surface"
+  done
+  tab "$p" "sh $(q "$self") status $(q "$NET")" status "$k" >/dev/null; k=$((k + 1))
+  [ -z "$sessions" ] || tab "$p" "sh $(q "$self") watchdog $(q "$NET")" watchdog "$k" >/dev/null
+  # (each new tab is selected as it's made: back to the first agent's)
+  cm reorder-surface --workspace "$w" --surface "$s1" --index 0 --focus true >/dev/null 2>&1 || true
+}
+
+# A pane per agent in a grid of two rows, its node's tab and its diplomat's;
+# status and the watchdog in the first pane
+layout_grid() {
+  cm rename-tab --workspace "$w" --surface "$s1" "$first node" >/dev/null
+  cols=$(( (n + 1) / 2 )) i=1 tops=$s1
+  for a in $agents; do
+    if [ "$i" -gt 1 ]; then
+      if [ "$i" -le "$cols" ]; then from=$(printf '%s\n' $tops | tail -1) dir=right
+      else from=$(printf '%s\n' $tops | sed -n "$((i - cols))p") dir=down; fi
+      s=$(cm --id-format both new-split "$dir" --workspace "$w" --surface "$from" --focus false --command "sh $(q "$ST/$a/node.sh")" | first_uuid)
+      [ -n "$s" ] || die "cmux didn't split a pane for $a"
+      [ "$i" -le "$cols" ] && tops="$tops $s"
+      cm rename-tab --workspace "$w" --surface "$s" "$a node" >/dev/null
+    else s=$s1; fi
+    printf '%s\n' "$s" > "$ST/$a/node-surface"
+    i=$((i + 1))
+  done
+  for a in $sessions; do
+    s=$(tab "$(pane_of "$w" "$(cat "$ST/$a/node-surface")")" "sh $(q "$ST/$a/session.sh")" "$a diplomat" 1)
+    printf '%s\n' "$s" > "$ST/$a/surface"
+  done
+  p1=$(pane_of "$w" "$s1")
+  k=1; in_list "$first" "$sessions" && k=2
+  tab "$p1" "sh $(q "$self") status $(q "$NET")" status "$k" >/dev/null
+  [ -z "$sessions" ] || tab "$p1" "sh $(q "$self") watchdog $(q "$NET")" watchdog "$((k + 1))" >/dev/null
+}
+
 cmd_up() {
   net_arg "${1:-}" up; shift
-  dips="" backends="" yolo=""
+  dips="" backends="" yolo="" layout=plan
   while [ $# -gt 0 ]; do
     case $1 in
       --diplomats) dips=${2:?--diplomats wants agent names}; shift 2 ;;
       --backends) backends=${2:?--backends wants agent=backend,...}; shift 2 ;;
       --yolo) yolo=1; shift ;;
+      --layout) layout=${2:?--layout wants plan or grid}; shift 2 ;;
       --) shift; break ;;
       *) die "unknown option $1 (node arguments go after --)" ;;
     esac
   done
+  case $layout in plan|grid) ;; *) die "--layout $layout: plan (the market's plan beside a tab per agent) or grid (a pane per agent)" ;; esac
   need_cmux; need_pantheon
   agents=$(agents_of "$NET")
   for a in $dips; do in_list "$a" "$(echo $agents)" || die "--diplomats: $a isn't an agent of $NET ($(echo $agents))"; done
@@ -194,8 +262,14 @@ cmd_up() {
   done
   set -- $agents; n=$#; first=$1
   goal=$( [ -n "$goalf" ] && head -1 "$goalf" 2>/dev/null || true)
+  # the goal file, for the plan's view
+  rm -f "$ST/goal"
+  if [ -n "$goalf" ]; then case $goalf in /*) echo "$goalf" ;; *) echo "$from_dir/$goalf" ;; esac > "$ST/goal"; fi
+  # what an agent's tab runs in the plan layout: its diplomat, else its node
+  main_of() { if in_list "$1" "$sessions"; then echo "$ST/$1/session.sh"; else echo "$ST/$1/node.sh"; fi; }
+  if [ "$layout" = plan ]; then start=$(main_of "$first"); else start=$ST/$first/node.sh; fi
   out=$(cm --id-format both new-workspace --name "pantheon: $(basename "$NET")" --description "${goal:-a Pantheon network}" \
-    --cwd "$NET" --command "sh $(q "$ST/$first/node.sh")") || die "cmux couldn't make the workspace: $out"
+    --cwd "$NET" --command "sh $(q "$start")") || die "cmux couldn't make the workspace: $out"
   # new-workspace names it by ref only: its id, for later
   ref=$(printf '%s' "$out" | grep -o 'workspace:[0-9]*' | head -1)
   # (it is listed a moment after it's made)
@@ -210,42 +284,9 @@ for x in json.load(sys.stdin)["workspaces"]:
   [ -n "$w" ] || die "cmux made a workspace but it isn't listed: $out"
   printf '%s\n' "$w" > "$ST/workspace"
   s1=$(cm --json --id-format both list-panes --workspace "$w" | python3 -c 'import json,sys; print(json.load(sys.stdin)["panes"][0]["surface_ids"][0])')
-  cm rename-tab --workspace "$w" --surface "$s1" "$first node" >/dev/null
-  # a grid: the first row across, the second row under it
-  cols=$(( (n + 1) / 2 )) i=1 tops=$s1
-  for a in $agents; do
-    if [ "$i" -gt 1 ]; then
-      if [ "$i" -le "$cols" ]; then from=$(printf '%s\n' $tops | tail -1) dir=right
-      else from=$(printf '%s\n' $tops | sed -n "$((i - cols))p") dir=down; fi
-      s=$(cm --id-format both new-split "$dir" --workspace "$w" --surface "$from" --focus false --command "sh $(q "$ST/$a/node.sh")" | first_uuid)
-      [ -n "$s" ] || die "cmux didn't split a pane for $a"
-      [ "$i" -le "$cols" ] && tops="$tops $s"
-      cm rename-tab --workspace "$w" --surface "$s" "$a node" >/dev/null
-    else s=$s1; fi
-    printf '%s\n' "$s" > "$ST/$a/node-surface"
-    i=$((i + 1))
-  done
-  for a in $sessions; do
-    p=$(pane_of "$w" "$(cat "$ST/$a/node-surface")")
-    s=$(cm --id-format both new-surface --pane "$p" --workspace "$w" --focus false --command "sh $(q "$ST/$a/session.sh")" | first_uuid)
-    [ -n "$s" ] || die "cmux didn't make $a's session tab"
-    printf '%s\n' "$s" > "$ST/$a/surface"
-    cm rename-tab --workspace "$w" --surface "$s" "$a diplomat" >/dev/null
-    cm reorder-surface --workspace "$w" --surface "$s" --index 1 >/dev/null 2>&1 || true
-  done
-  p1=$(pane_of "$w" "$s1")
-  s=$(cm --id-format both new-surface --pane "$p1" --workspace "$w" --focus false --command "sh $(q "$self") status $(q "$NET")" | first_uuid)
-  cm rename-tab --workspace "$w" --surface "$s" "status" >/dev/null
-  # the first pane's tabs in order: its node, its diplomat, status, watchdog
-  k=1; in_list "$first" "$sessions" && k=2
-  cm reorder-surface --workspace "$w" --surface "$s" --index "$k" >/dev/null 2>&1 || true
-  if [ -n "$sessions" ]; then
-    s=$(cm --id-format both new-surface --pane "$p1" --workspace "$w" --focus false --command "sh $(q "$self") watchdog $(q "$NET")" | first_uuid)
-    cm rename-tab --workspace "$w" --surface "$s" "watchdog" >/dev/null
-    cm reorder-surface --workspace "$w" --surface "$s" --index "$((k + 1))" >/dev/null 2>&1 || true
-  fi
-  say "$NET is up in cmux workspace \"pantheon: $(basename "$NET")\" ($w): a pane per agent ($(echo $agents))"
-  [ -z "$sessions" ] || say "diplomats:$sessions, each in its pane's \"diplomat\" tab$([ -n "$yolo" ] && echo ', approvals off' || echo '; answer their approvals there')"
+  if [ "$layout" = plan ]; then layout_plan; else layout_grid; fi
+  say "$NET is up in cmux workspace \"pantheon: $(basename "$NET")\" ($w): $([ "$layout" = plan ] && echo "the market's plan on the left, a tab per agent on the right" || echo "a pane per agent") ($(echo $agents))"
+  [ -z "$sessions" ] || say "diplomats:$sessions, in their agents' tabs$([ -n "$yolo" ] && echo ', approvals off' || echo '; answer their approvals there')"
   say "stop it with: pantheon-cmux down $NET"
 }
 
@@ -255,6 +296,43 @@ status_of() {
   [ -f "$f" ] || { echo "starting"; return 0; }
   if grep -q '^LIMIT' "$f"; then echo "limited: $(grep '^LIMIT' "$f" | head -1 | cut -c7-60)"; return 0; fi
   head -1 "$f" | awk '{ for (i = 1; i < NF; i += 2) v[$i] = $(i + 1); printf "h%s t%s · leader %s", v["height"], v["term"], v["leader"] }'
+}
+
+# The market as markdown, for the plan's view: the chain, the goal, each
+# repository's .plan at the market's head (a node's checkout: every node has
+# the same commits) with its marks, and the tasks. Written only when it
+# changed, so the view doesn't redraw for nothing.
+render_plan() {
+  a1=$(agents_of "$NET" | head -1) f=$NET/$a1/status.txt
+  {
+    printf '# The market: %s\n\n' "$(basename "$NET")"
+    printf '**%s**' "$(status_of "$a1")"
+    [ -f "$f" ] && printf ' · as %s sees it, %s' "$a1" "$(date -r "$f" '+%H:%M:%S' 2>/dev/null || true)"
+    printf '\n\n'
+    g=$(cat "$ST/goal" 2>/dev/null || true)
+    if [ -n "$g" ] && [ -f "$g" ]; then printf '## Goal\n\n'; cat "$g"; printf '\n'; fi
+    for r in "$NET/$a1"/repos/*/; do
+      # at the node's head (its checkout follows it), else as the file is
+      plan=$(git -C "$r" show HEAD:.plan 2>/dev/null || cat "$r/.plan" 2>/dev/null) || continue
+      [ -n "$plan" ] || continue
+      printf '## Plan: %s\n\n' "$(basename "$r")"
+      # .plan: "# " comments, a date per day, an item a line: "+ " or "* " done, "- " dropped
+      awk '/^#/ || /^[ \t]*$/ { next }
+           /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]/ { printf "%s### %s\n\n", (days++ ? "\n" : ""), $0; next }
+           /^[+*] / { printf "- [x] %s\n", substr($0, 3); next }
+           /^- / { printf "- ~~%s~~\n", substr($0, 3); next }
+           { printf "- [ ] %s\n", $0 }' <<EOF
+$plan
+EOF
+      printf '\n'
+    done
+    if [ -f "$f" ] && grep -q '^task ' "$f"; then
+      printf '## Tasks\n\n'
+      grep '^task ' "$f" | tail -20 | sed 's/^task \([0-9]*\) \[\([a-z]*\)\] /- **#\1** `\2` /'
+      printf '\n'
+    fi
+  } > "$ST/plan.md.tmp"
+  if cmp -s "$ST/plan.md.tmp" "$ST/plan.md"; then rm -f "$ST/plan.md.tmp"; else mv "$ST/plan.md.tmp" "$ST/plan.md"; fi
 }
 
 cmd_status() {
@@ -269,6 +347,7 @@ cmd_status() {
       # keyed pantheon.AGENT: cmux keeps some agents' names (codex, grok) for its own
       cm set-status "pantheon.$a" "$line" --workspace "$w" >/dev/null 2>&1 || true
     done
+    render_plan
     sleep 10
   done
 }

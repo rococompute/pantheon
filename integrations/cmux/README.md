@@ -3,18 +3,23 @@
 `pantheon-cmux` runs a network (a directory made by `pantheon init`) as one
 [cmux](https://cmux.com) workspace on a Mac.
 
-- **Panes:** each agent gets a pane. Its node runs there in the foreground,
-  and its output also goes to `NET/AGENT/node.log`.
-- **Diplomats:** an agent with a diplomat gets a second tab in its pane,
-  running the CLI of its provider (Claude Code, codex, the Cursor CLI, or
-  Muse), which works the node's inbox.
+- **Left half: the market's plan.** A live markdown view of
+  `NET/.cmux/plan.md`, which the status loop rewrites when the chain moves:
+  the chain's height, term and leader, the goal, each repository's `.plan`
+  at the market's head (done items checked, dropped ones struck through),
+  and the tasks with their state.
+- **Right half: a tab per agent.** An agent with a diplomat gets its
+  diplomat's session there: the CLI of its provider (Claude Code, codex, the
+  Cursor CLI, or Muse), working the node's inbox. An agent without one gets
+  its node. After the agents come each diplomat's node (`AGENT node`),
+  `status` and `watchdog`. A node's output also goes to `NET/AGENT/node.log`.
 - **Sidebar:** shows each node's height, term and leader.
 - **Watchdog:** nudges a diplomat that stopped working its inbox, and sends
   you a notification when one waits on you.
 
 ```
-pantheon-cmux up NET [--diplomats "A B"] [--backends A=B,...] [--yolo] [-- NODE ARGS...]
-pantheon-cmux status NET          # the sidebar's loop (up starts it)
+pantheon-cmux up NET [--diplomats "A B"] [--backends A=B,...] [--yolo] [--layout plan|grid] [-- NODE ARGS...]
+pantheon-cmux status NET          # the sidebar's and the plan's loop (up starts it)
 pantheon-cmux watchdog NET [--check|--once]
 pantheon-cmux down NET            # close the workspace: nodes and sessions stop
 ```
@@ -32,21 +37,28 @@ printf -- '- add a sub command\n' > .net/goal.txt
 integrations/cmux/pantheon-cmux up .net -- --goal .net/goal.txt --bid-window 8
 ```
 
-That gives a workspace named "pantheon: .net" with four panes. Each pane has
-a `AGENT node` tab, and the first pane also has `status` (the sidebar's
-loop). The sidebar shows `pantheon.AGENT  hN tN · leader X`. Close it all
-with `integrations/cmux/pantheon-cmux down .net`.
+That gives a workspace named "pantheon: .net": the plan on the left, and on
+the right the tabs `claude`, `codex`, `grok`, `muse` (their nodes) and
+`status` (the sidebar's and the plan's loop). The sidebar shows
+`pantheon.AGENT  hN tN · leader X`. Close it all with
+`integrations/cmux/pantheon-cmux down .net`.
 
 To make one agent a diplomat, add `--diplomats claude`. Claude's node then
-asks through `NET/.cmux/claude/inbox`, and a `claude diplomat` tab starts
-Claude Code. That tab is told to read `NET/.cmux/claude/desk/instructions.md`
-(from `integrations/cmux/diplomat.md`). A `watchdog` tab joins `status`.
+asks through `NET/.cmux/claude/inbox`, the `claude` tab starts Claude Code,
+and Claude's node moves to a `claude node` tab. Claude Code is told to read
+`NET/.cmux/claude/desk/instructions.md` (from `integrations/cmux/diplomat.md`).
+A `watchdog` tab joins `status`.
+
+`--layout grid` gives the earlier layout instead: a pane per agent in a grid
+of two rows, each with an `AGENT node` tab and, for a diplomat, an
+`AGENT diplomat` tab, and no plan view.
 
 ## What it keeps
 
 All its state is in `NET/.cmux/`:
 
 - `workspace`: the workspace's id.
+- `plan.md`: what the plan view shows. `goal` holds the goal file's path.
 - `AGENT/node.sh`: the node's command. It runs from the directory `up` ran
   in, so relative `--goal` paths work as they do for `pantheon up`.
 - `AGENT/node-surface`, `AGENT/surface`: the node's tab and the diplomat's
@@ -96,8 +108,11 @@ Other limits:
 
 - One machine only: every node of `NET` runs here. A network spread across
   machines (docs/NETWORK.md) would need a workspace per machine.
-- The panes are a grid of two rows, which gets crowded beyond about eight
-  agents.
+- The plan view shows a `.plan` as committed at the head of one node's
+  checkout (the first agent's): an uncommitted edit there doesn't show, and
+  the node cleans it away on its next merge. To change the plan, commit it
+  the way the market does (docs/PLAN.md).
+- With `--layout grid`, the panes get crowded beyond about eight agents.
 - `up` refuses while any of `NET`'s nodes run outside cmux, for example
   after `pantheon up`.
 - Its nodes stop with their terminals. `down` waits up to 10 seconds, then

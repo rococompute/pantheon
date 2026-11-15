@@ -1,9 +1,10 @@
 # Integrations: a network in a terminal multiplexer
 
 Each integration runs a Pantheon network inside a terminal multiplexer, with
-one workspace per network. Every agent gets a pane: its node runs there, and
-if the agent has a diplomat, the diplomat's interactive session runs there
-too. A diplomat is a coding agent's CLI working its node's inbox
+one workspace per network. Every agent gets a place there (a pane, or in
+cmux's default layout a tab beside the market's plan): its node runs there,
+and if the agent has a diplomat, the diplomat's interactive session runs
+there too. A diplomat is a coding agent's CLI working its node's inbox
 (`scripts/pantheon-inbox`, fed by `scripts/bidder-inbox.sh`).
 
 | Folder | Where it runs | Status |

@@ -1,7 +1,9 @@
 #!/bin/sh
 # integrations/cmux/pantheon-cmux against a stub of cmux's CLI (no cmux, no
-# Mac needed): up makes one workspace with a pane per agent, a diplomat's tab
-# and inbox wired to its node's backend, the status and watchdog tabs; it
+# Mac needed): up makes one workspace with the market's plan on the left (the
+# goal, a .plan with its marks, the tasks) and a tab per agent on the right,
+# or with --layout grid a pane per agent; a diplomat's tab and inbox are wired
+# to its node's backend; the status and watchdog tabs; it
 # refuses a second up and a network whose nodes run outside it; the sidebar's
 # line is read from status.txt; the watchdog nudges a diplomat idle for two
 # passes, and leaves alone one that waits on a person (notified once) or is
@@ -63,21 +65,48 @@ export STUB_DIR="$t" CMUX="$t/bin/cmux" PANTHEON=/bin/true DIPLOMAT_CLI="echo di
 # a network: four agents with a key and a genesis
 for a in claude codex grok muse; do mkdir -p "$t/net/$a"; echo '{}' > "$t/net/$a/key.json"; echo '{}' > "$t/net/$a/genesis.json"; done
 printf -- '- add a sub command\n' > "$t/goal.txt"
+# a repository's .plan in a node's checkout (not a git repository here: read as the file is)
+mkdir -p "$t/net/claude/repos/calc"
+printf '# a note\n\n2026-11-15\n* add a sub command\nadd a mul command\n- add a pow command\n' > "$t/net/claude/repos/calc/.plan"
+printf 'height 7  term 1  leader codex\ntask 1 [closed] calc: - add a sub command\ntask 2 [open] calc: - add a mul command\n' > "$t/net/claude/status.txt"
 pc=$here/integrations/cmux/pantheon-cmux
 
+# the plan layout (the default)
 ( cd "$t" && sh "$pc" up net --diplomats "claude" --backends codex=cmd:/x/bid.sh -- --goal goal.txt --bid-window 8 ) > "$t/out" || fail "up"
 grep -q 'is up in cmux workspace "pantheon: net"' "$t/out" || fail "up's summary: $(cat "$t/out")"
+grep -q "the market's plan on the left" "$t/out" || fail "up names its layout: $(cat "$t/out")"
 n=$(grep -c '^new-workspace' "$t/ledger" || true); [ "$n" = 1 ] || fail "one workspace, not $n"
-n=$(grep -c '^new-split' "$t/ledger" || true); [ "$n" = 3 ] || fail "a pane per agent: 3 splits, not $n"
+n=$(grep -c '^new-split' "$t/ledger" || true); [ "$n" = 0 ] || fail "the plan layout splits only for the plan: $n splits"
 grep -q -- "--name pantheon: net" "$t/ledger" || fail "the workspace's name"
 grep -q -- "--description - add a sub command" "$t/ledger" || fail "the goal's first line as its description"
+grep -q "^new-workspace .*--command sh '$t/net/.cmux/claude/session.sh'" "$t/ledger" || fail "the first tab is claude's diplomat"
+grep -q "^markdown open $t/net/.cmux/plan.md --workspace .* --direction left" "$t/ledger" || fail "the plan's view on the left"
 for a in claude codex grok muse; do
-  grep -q "rename-tab .* $a node" "$t/ledger" || fail "$a's node tab"
+  grep -q "rename-tab .* $a\$" "$t/ledger" || fail "$a's tab"
   [ -x "$t/net/.cmux/$a/node.sh" ] || fail "$a's node script"
 done
-grep -q "rename-tab .* claude diplomat" "$t/ledger" || fail "claude's diplomat tab"
-! grep -q "codex diplomat" "$t/ledger" || fail "codex has no diplomat"
+grep -q "^new-surface .*--command sh '$t/net/.cmux/codex/node.sh'" "$t/ledger" || fail "codex's tab runs its node"
+grep -q "rename-tab .* claude node" "$t/ledger" || fail "claude's node tab"
+! grep -q "codex node" "$t/ledger" || fail "codex's node is its agent's tab"
 grep -q "rename-tab .* status" "$t/ledger" && grep -q "rename-tab .* watchdog" "$t/ledger" || fail "status and watchdog tabs"
+n=$(grep -c '^new-surface' "$t/ledger" || true); [ "$n" = 6 ] || fail "6 tabs beside the first (3 agents, claude's node, status, watchdog), not $n"
+# the plan: goal, the .plan's marks, the tasks
+pm=$t/net/.cmux/plan.md
+grep -q '^# The market: net' "$pm" || fail "plan's title: $(cat "$pm")"
+grep -q '^\*\*h7 t1 · leader codex\*\*' "$pm" || fail "plan's chain line: $(cat "$pm")"
+grep -q '^## Goal' "$pm" && grep -q '^- add a sub command' "$pm" || fail "plan's goal"
+grep -q '^## Plan: calc' "$pm" || fail "plan's repository"
+grep -q '^### 2026-11-15' "$pm" || fail "plan's day"
+grep -q '^- \[x\] add a sub command' "$pm" || fail "plan's done item"
+grep -q '^- \[ \] add a mul command' "$pm" || fail "plan's open item"
+grep -q '^- ~~add a pow command~~' "$pm" || fail "plan's dropped item"
+! grep -q 'a note' "$pm" || fail "plan shows a # note"
+grep -q '^- \*\*#2\*\* `open` calc: - add a mul command' "$pm" || fail "plan's tasks: $(cat "$pm")"
+# unchanged, it isn't rewritten (the view doesn't redraw for nothing)
+touch -t 202001010000 "$pm"
+( sed -n '/^status_of()/,/^}/p; /^render_plan()/,/^}/p' "$pc"; sed -n '/^agents_of()/,/^}/p' "$pc" ) > "$t/fn.sh"
+( NET=$t/net ST=$t/net/.cmux; . "$t/fn.sh"; render_plan )
+[ -z "$(find "$pm" -newer "$t/goal.txt")" ] || fail "an unchanged plan was rewritten"
 # the node scripts: run from where up ran, each with its backend and the node arguments
 grep -q "^cd '$t'" "$t/net/.cmux/claude/node.sh" || fail "a node runs from where up ran"
 grep -q -- "--backend 'cmd:$t/net/.cmux/claude/backend.sh' '--goal' 'goal.txt' '--bid-window' '8'" "$t/net/.cmux/claude/node.sh" || fail "claude's node uses its diplomat's backend"
@@ -125,4 +154,15 @@ sh "$pc" watchdog "$t/net" --check | grep -q "watchdog: claude idle" || fail "--
 sh "$pc" down "$t/net" > "$t/out3"
 grep -q "^close-workspace --force --workspace " "$t/ledger" || fail "down closes the workspace"
 [ ! -e "$t/net/.cmux/workspace" ] || fail "down forgets the workspace"
-echo "PASS pantheon-cmux: a network as a cmux workspace, its sidebar, watchdog and down"
+
+# the grid layout: a pane per agent, each node's tab and a diplomat's
+: > "$t/ledger"
+( cd "$t" && sh "$pc" up net --layout grid --diplomats "claude" -- --goal goal.txt ) > "$t/out" || fail "up --layout grid"
+n=$(grep -c '^new-split' "$t/ledger" || true); [ "$n" = 3 ] || fail "a pane per agent: 3 splits, not $n"
+! grep -q '^markdown' "$t/ledger" || fail "the grid has no plan's view"
+for a in claude codex grok muse; do grep -q "rename-tab .* $a node" "$t/ledger" || fail "$a's node tab (grid)"; done
+grep -q "rename-tab .* claude diplomat" "$t/ledger" || fail "claude's diplomat tab (grid)"
+if sh "$pc" up "$t/net" --layout tiles > "$t/out4" 2>&1; then fail "--layout tiles"; fi
+grep -q -- "--layout tiles: plan" "$t/out4" || fail "--layout tiles refused: $(cat "$t/out4")"
+sh "$pc" down "$t/net" > /dev/null
+echo "PASS pantheon-cmux: a network as a cmux workspace (the plan beside a tab per agent, or a grid), its sidebar, watchdog and down"
