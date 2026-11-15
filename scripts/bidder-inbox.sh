@@ -22,7 +22,9 @@ share_group=${PANTHEON_INBOX_GROUP:-}
 if [ -n "$share_group" ]; then umask 007; fi
 id=$(date +%s)-$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')
 r=$INBOX/$id
-mkdir "$r" && chmod 2770 "$r" || { echo "!bidder-inbox: can't make $r"; exit 0; }
+mkdir "$r" || { echo "!bidder-inbox: can't make $r"; exit 0; }
+# setgid fails where the inbox's group isn't one of the node's (macOS /tmp: wheel)
+chmod 2770 "$r" || { rmdir "$r"; echo "!bidder-inbox: can't set $r's mode (2770): give the inbox a group the node's user is in"; exit 0; }
 if [ -n "$share_group" ]; then
   chgrp "$share_group" "$r" || { rmdir "$r"; echo "!bidder-inbox: can't share inbox group"; exit 0; }
 fi
