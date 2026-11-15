@@ -1,0 +1,175 @@
+(** What is proved about the agent (core/agent.soma): its policy before
+    it signs. Each theorem here is checked whenever core/agent.soma is
+    built. *)
+
+(** ---- the agent's fields ---- *)
+
+Lemma getf_setf_other : forall (o : obj) (k q : string) (v : Any),
+  seq q k = false -> getf (setf o k v) q = getf o q.
+Proof.
+  intros o k q v H. induction o as [|[key value] rest IH].
+  - change ((if seq q k then v else unk) = unk). rewrite H. reflexivity.
+  - change (getf (if seq k key then (k, v) :: rest else (key, value) :: setf rest k v) q =
+      (if seq q key then value else getf rest q)).
+    destruct (seq k key) eqn:E.
+    + change ((if seq q k then v else getf rest q) = (if seq q key then value else getf rest q)).
+      unfold seq in E. apply Stdlib.Strings.String.eqb_eq in E. subst key. rewrite H. reflexivity.
+    + change ((if seq q key then value else getf (setf rest k v) q) =
+        (if seq q key then value else getf rest q)).
+      rewrite IH. reflexivity.
+Qed.
+
+Lemma getf_setf_same : forall (o : obj) (k : string) (v : Any), getf (setf o k v) k = v.
+Proof.
+  intros o k v. induction o as [|[key value] rest IH].
+  - change ((if seq k k then v else unk) = v). unfold seq. rewrite Stdlib.Strings.String.eqb_refl. reflexivity.
+  - change (getf (if seq k key then (k, v) :: rest else (key, value) :: setf rest k v) k = v).
+    destruct (seq k key) eqn:E.
+    + change ((if seq k k then v else getf rest k) = v). unfold seq. rewrite Stdlib.Strings.String.eqb_refl. reflexivity.
+    + change ((if seq k key then value else getf (setf rest k v) k) = v). rewrite E. exact IH.
+Qed.
+
+(** what attest_duty's bookkeeping changes: the queue, the requests and
+    what it asked; never the agent's name, its attempts or its denied paths *)
+Definition keeps_own (a a' : obj) : Prop :=
+  forall f, seq f "queue" = false -> seq f "nreq" = false -> seq f "reqs" = false -> seq f "asked" = false ->
+    getf a' f = getf a f.
+
+Lemma note_asked_keeps : forall a key, keeps_own a (note_asked a key).
+Proof. intros a key f _ _ _ H. unfold note_asked. apply getf_setf_other. exact H. Qed.
+
+Lemma enqueue_keeps : forall a a0 tx, keeps_own a a0 -> keeps_own a (enqueue a0 tx).
+Proof.
+  intros a a0 tx H f Hq Hn Hr Ha. unfold enqueue.
+  destruct (existsb _ _); [|rewrite getf_setf_other by exact Hq]; exact (H f Hq Hn Hr Ha).
+Qed.
+
+Lemma check_req_keeps : forall a a0 m k b t, keeps_own a a0 -> keeps_own a (fst (check_req a0 m k b t)).
+Proof.
+  intros a a0 m k b t H f Hq Hn Hr Ha. unfold check_req. cbn [fst].
+  rewrite getf_setf_other by exact Hr. rewrite getf_setf_other by exact Hn. exact (H f Hq Hn Hr Ha).
+Qed.
+
+Lemma asked_note_asked : forall a key, mem key (asked (note_asked a key)) = true.
+Proof.
+  intros a key. unfold asked, note_asked. rewrite getf_setf_same. cbn.
+  unfold seq. rewrite Stdlib.Strings.String.eqb_refl. reflexivity.
+Qed.
+
+Lemma asked_enqueue : forall a tx key, mem key (asked a) = true -> mem key (asked (enqueue a tx)) = true.
+Proof.
+  intros a tx key H. unfold enqueue. destruct (existsb _ _); [exact H|].
+  unfold asked in *. rewrite getf_setf_other by reflexivity. exact H.
+Qed.
+
+Lemma asked_check_req : forall a m k b t key, mem key (asked a) = true -> mem key (asked (fst (check_req a m k b t))) = true.
+Proof.
+  intros a m k b t key H. unfold check_req, asked in *. cbn [fst].
+  rewrite !getf_setf_other by reflexivity. exact H.
+Qed.
+
+(** ---- attest_duty ---- *)
+
+(** It never attests a merge it proposed, a bid that is its own, or a merge
+    it has a vote on already. *)
+Theorem attest_duty_never_attests_its_own_or_twice : forall a m p b,
+  pending m = Some p -> bid_by m (pbid p) = Some b ->
+  seq (pby p) (me a) = true \/ seq (bidder b) (me a) = true \/ existsb (fun v => seq (fst v) (me a)) (pvotes p) = true ->
+  attest_duty a m = (a, []).
+Proof.
+  intros a m p b Hp Hb H. unfold attest_duty. rewrite Hp, Hb.
+  destruct H as [H|[H|H]]; rewrite H; rewrite ?Bool.orb_true_r, ?Bool.orb_true_l; reflexivity.
+Qed.
+
+(** A bid that breaks the policy (too many files, a denied path) gets a no
+    vote, queued, with no check and no model asked. *)
+Theorem violation_attests_no_without_the_model : forall a m p b,
+  pending m = Some p -> bid_by m (pbid p) = Some b -> violation a m b <> "" ->
+  snd (attest_duty a m) = [] /\
+  (fst (attest_duty a m) = a \/
+   exists key, fst (attest_duty a m) = enqueue (note_asked a key) ["attest", show (bidn b), "no"]).
+Proof.
+  intros a m p b Hp Hb Hv. unfold attest_duty. rewrite Hp, Hb.
+  destruct (_ || _ || _ || _); [split; [reflexivity|left; reflexivity]|].
+  match goal with |- context [if (3 <=? ?n) || negb (ask_once a ?k) then _ else _] =>
+    destruct ((3 <=? n) || negb (ask_once a k)); [split; [reflexivity|left; reflexivity]|] end.
+  assert (Hdeny : forall key, violation (note_asked a key) m b = violation a m b).
+  { intro key. unfold violation, deny. rewrite getf_setf_other by reflexivity. reflexivity. }
+  rewrite Hdeny. assert (Hs : seq (violation a m b) "" = false) by (apply Stdlib.Strings.String.eqb_neq; exact Hv).
+  rewrite Hs. cbn [negb]. split; [reflexivity|right; eexists; reflexivity].
+Qed.
+
+(** Asked once: an agent that has done its attest duty for a merge has
+    nothing more to do for it, until a model call fails (which counts an
+    attempt) or the merge is proposed again (a new key). *)
+Theorem attest_duty_asks_once : forall a m,
+  attest_duty (fst (attest_duty a m)) m = (fst (attest_duty a m), []).
+Proof.
+  intros a m. remember (attest_duty a m) as r eqn:Hr. unfold attest_duty in Hr.
+  destruct (pending m) as [p|] eqn:Hp;
+    [|subst r; cbn [fst]; unfold attest_duty; rewrite Hp; reflexivity].
+  destruct (bid_by m (pbid p)) as [b|] eqn:Hb;
+    [|subst r; cbn [fst]; unfold attest_duty; rewrite Hp, Hb; reflexivity].
+  destruct (_ || _ || _ || _) eqn:Hc;
+    [subst r; cbn [fst]; unfold attest_duty; rewrite Hp, Hb, Hc; reflexivity|].
+  set (key := append (attest_key m (show (bidn b))) (append "." (show (get_or 0 (attest_key m (show (bidn b))) (attempts a))))) in *.
+  destruct ((3 <=? get_or 0 (attest_key m (show (bidn b))) (attempts a)) || negb (ask_once a key)) eqn:Ha;
+    [subst r; cbn [fst]; unfold attest_duty; rewrite Hp, Hb, Hc; fold key; rewrite Ha; reflexivity|].
+  (* it acted: what it did kept its name and attempts, and noted the key *)
+  assert (Hagain : forall a1, keeps_own a a1 -> mem key (asked a1) = true -> attest_duty a1 m = (a1, [])).
+  { intros a1 Hk Hm.
+    assert (Hme : me a1 = me a) by (unfold me; f_equal; apply Hk; reflexivity).
+    assert (Hat : attempts a1 = attempts a) by (unfold attempts; f_equal; apply Hk; reflexivity).
+    unfold attest_duty. rewrite Hp, Hb, Hme, Hc, Hat. fold key.
+    unfold ask_once. rewrite Hm, Bool.orb_true_r. reflexivity. }
+  subst r. destruct (negb (seq (violation (note_asked a key) m b) "")); cbn [fst]; apply Hagain;
+    [apply enqueue_keeps, note_asked_keeps|apply asked_enqueue, asked_note_asked
+    |apply check_req_keeps, note_asked_keeps|apply asked_check_req, asked_note_asked].
+Qed.
+
+(** ---- flush: one transaction in flight ---- *)
+
+Lemma release_inflight_me : forall a m, me (release_inflight a m) = me a.
+Proof.
+  intros a m. unfold release_inflight. destruct (_ && _); [|reflexivity].
+  unfold me. rewrite !getf_setf_other by reflexivity. reflexivity.
+Qed.
+
+(** what a submission flush sends says: nothing was in flight, and now the
+    transaction it sends is, at the next nonce *)
+Definition submits_next (a0 : obj) (n : nat) (r : obj * list (list string)) : Prop :=
+  forall x, In x (snd r) -> nth 0 x "" = "submit" ->
+    inflight a0 = 0 /\ inflight (fst r) = n + 1 /\ x = "submit" :: show (n + 1) :: inflight_tx (fst r).
+
+Lemma flush_submits_next : forall a m,
+  submits_next (release_inflight a m) (nonce_of m (me (release_inflight a m))) (flush a m).
+Proof.
+  intros a m. unfold flush. cbv zeta.
+  destruct (queue (release_inflight a m)) as [|tx rest]; [intros x []|].
+  repeat match goal with |- context [match ?x with _ => _ end] => is_var x; destruct x end.
+  (* each of the match's branches: a merge's or a mark's check, or a submission *)
+  all: repeat match goal with
+       | |- submits_next _ _ (if ?e then _ else _) => destruct e eqn:?
+       | |- submits_next _ _ (match ?e with _ => _ end) => destruct e eqn:?
+       end.
+  all: unfold submits_next, check_req; intros x Hx Hs; cbn [snd fst In] in Hx.
+  all: try contradiction.
+  all: destruct Hx as [<-|[]]; cbn in Hs; try discriminate Hs.
+  all: split; [apply Nat.eqb_eq; assumption|].
+  all: unfold inflight, inflight_tx; cbn [fst]; rewrite getf_setf_same.
+  all: rewrite !getf_setf_other by reflexivity; rewrite getf_setf_same; split; reflexivity.
+Qed.
+
+(** One transaction in flight at a time, at the next nonce: when flush
+    sends a transaction, none was in flight (after those that landed or
+    timed out are released), and the one it sends is recorded in flight,
+    at the agent's next nonce on the chain. *)
+Theorem flush_one_in_flight : forall a m x,
+  In x (snd (flush a m)) -> nth 0 x "" = "submit" ->
+  inflight (release_inflight a m) = 0 /\
+  inflight (fst (flush a m)) = nonce_of m (me a) + 1 /\
+  x = "submit" :: show (nonce_of m (me a) + 1) :: inflight_tx (fst (flush a m)).
+Proof.
+  intros a m x Hx Hs. pose proof (flush_submits_next a m x Hx Hs) as H.
+  rewrite release_inflight_me in H. exact H.
+Qed.

@@ -2,7 +2,7 @@
 
 `soma build main.soma` checks the proof files. This inventory includes every
 Theorem, Lemma, Corollary and Example in `core/consensus.proof` and `core/market.proof`
-(and the main statements of `runtime/node.proof`'s vote and snapshot sections, `runtime/node_service.proof`, `runtime/node_path.proof`, `runtime/node_file.proof`, `runtime/node_git.proof` and `app/cli.proof`, below),
+(and the main statements of `core/agent.proof`, `runtime/node.proof`'s vote and snapshot sections, `runtime/node_service.proof`, `runtime/node_path.proof`, `runtime/node_file.proof`, `runtime/node_git.proof` and `app/cli.proof`, below),
 with its exact source name. These are statements about the pure definitions,
 not proofs of Soma.Host's primitives (the host's I/O), extraction to machine integers, cryptography,
 OS isolation, or deployed end-to-end safety. Soma.Host's I/O is trusted,
@@ -150,6 +150,23 @@ meets it. That the bytes on disk are the bytes written is Soma.Host's.
 | `snapshot_parse_reads_text`, `snapshot_text_reads_back` | The snapshot's text parses as its state, and `snapshot_of`'s re-check passes. |
 | `new_consensus_fits` | A new chain's state meets `snapshot_fits`. |
 
+### core/agent.proof
+
+The agent's policy before it signs an attestation (core/agent.soma's
+`attest_duty`), and its one transaction in flight (`flush`). Statements about the pure duty, over the market's view the
+node gives it; the model's answer and the checks' results are not modelled.
+
+| Name | Checked statement |
+|---|---|
+| `getf_setf_other`, `getf_setf_same` | A field set reads back; other fields are unchanged. |
+| `keeps_own`, `note_asked_keeps`, `enqueue_keeps`, `check_req_keeps` | What the duty's bookkeeping changes (the queue, the requests, what it asked) leaves the agent's name, attempts and denied paths as they were. |
+| `asked_note_asked`, `asked_enqueue`, `asked_check_req` | A key noted as asked stays asked through queueing and a check request. |
+| `attest_duty_never_attests_its_own_or_twice` | No attestation, check or model call for a merge it proposed, for its own bid, or for a merge it has a vote on. |
+| `violation_attests_no_without_the_model` | A bid that breaks the policy (too many files, a denied path) gets at most a queued "attest no", and no check or model call. |
+| `attest_duty_asks_once` | After the duty has run for a merge, running it again does nothing, until a failed model call counts an attempt or the merge is proposed again. |
+| `release_inflight_me`, `submits_next`, `flush_submits_next` | Releasing what landed keeps the agent's name; each branch of `flush`'s queue match (a merge's or a mark's check, or a submission) meets `submits_next`. |
+| `flush_one_in_flight` | When `flush` sends a transaction, none was in flight (after those that landed or sat 30 blocks are released), the one sent is recorded in flight, and it is at the agent's next nonce on the chain. That the chain accepts it at that nonce is the market's. |
+
 ### runtime/node_service.proof
 
 What the node's service carries out for an image (runtime/node_service.soma;
@@ -237,7 +254,10 @@ Besides the commands' parsing and JSON examples:
   tested (`test/restart_lock.soma`, `test/e2e.sh`), not proved.
 - Prove tree agreement through vote admission, settlement and shell application.
   Approval arithmetic and the finalize-origin result are only parts of this.
-- Prove exact conflict clearing, rotation fairness and policy before signing.
+- Prove exact conflict clearing and rotation fairness. Of the agent's policy
+  before signing, `attest_duty` and `flush` are proved (core/agent.proof);
+  the leader's merge and approval paths (`lead`) and what a model's answer
+  becomes (`on_answer`) are not.
 - Use dependent types to represent validated paths and edits.
 
 Keep proofs beside their programs, reduce assumptions reported by `soma explore`,
