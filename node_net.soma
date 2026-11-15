@@ -9,14 +9,16 @@
     listen, dial, select, accept, read, write, close) and paths ([IoReadText],
     [IoSave], [IoAppendSynced]). The host's work starts, stops and looks
     at its jobs' processes ([IoProcStart], [IoProcKill], [IoEvents]), which
-    are kept here too, over the host's processes ([IoSpawn]: one started
-    with its output on a pipe named among the descriptors; [IoWaitPid],
+    are kept here too, over the host's processes ([IoSpawn], through
+    node_git.soma's [spawn_fed]: one started with its output on a pipe
+    named among the descriptors and its input, if any, in a temporary
+    file; [IoWaitPid],
     [IoKillPid]). What it keeps: the node's home, the listener, the links
     (one a peer opened, read as it comes; one the kernel dialed, written
     through a buffer the select drains), the service's listener and
     clients with the bytes each sent, and the processes. *)
 From Stdlib Require Import NArith.BinNat.
-Import util nodeio.
+Import util nodeio node_git.
 Require Import Soma.Wire.
 
 (** a link: its descriptor, whether the kernel dialed it, whether it is
@@ -277,7 +279,7 @@ serve_reply (s : net_state) (id : string) (fields : list string) : nprog (nanswe
 
 (** started: [the job's name], or not found and why *)
 net_proc_start (s : net_state) (prog stdin cwd : string) (env args : list string) : nprog (nanswer * net_state) :=
-  nbind (nask (IoSpawn prog stdin cwd env args)) (fun a =>
+  nbind (spawn_fed prog stdin cwd env args) (fun a =>
   match ans_found a with
   | Some [pid, fd] =>
       let job := show (ns_jobs s) in

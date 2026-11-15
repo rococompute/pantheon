@@ -1,5 +1,6 @@
 (** Git and programs as the binary runs them (node_git.soma), whatever the
-    host's processes answer: a program run to its end leaves nothing
+    host's processes answer: a program's input goes in a file made for
+    it and removed right after the start; a program run to its end leaves nothing
     behind (its pipe read only, then closed, then the process waited
     for); one that couldn't start runs nothing more; it succeeded only
     when the process exited with 0; and git runs only as "git", with the
@@ -29,39 +30,86 @@ Proof.
   - exists 1. reflexivity.
 Qed.
 
+(** ---- a program's input ---- *)
+
+(** no input: the start alone, from /dev/null *)
+Theorem spawn_fed_none : forall prog cwd env args,
+  spawn_fed prog "" cwd env args = nask (IoSpawn prog "" cwd env args).
+Proof. reflexivity. Qed.
+
+(** input, its file made: the text put in it, the start (only when the
+    put worked) from that file, and the file removed, whatever the start
+    answered *)
+Theorem spawn_fed_removes_its_file : forall ans prog stdin cwd env args,
+  stdin <> "" -> fst (ans (IoTempNew "pantheon-in" ".txt")) = true ->
+  let f := ans_one (ans (IoTempNew "pantheon-in" ".txt")) in
+  ntrace ans (spawn_fed prog stdin cwd env args) =
+    IoTempNew "pantheon-in" ".txt" :: IoFilePut f stdin "false" ::
+    (if fst (ans (IoFilePut f stdin "false")) then [IoSpawn prog f cwd env args] else []) ++ [IoRemoveFile f].
+Proof.
+  intros ans prog stdin cwd env args Hs Ht f. unfold spawn_fed.
+  destruct (seq stdin "") eqn:E; [apply Stdlib.Strings.String.eqb_eq in E; contradiction |].
+  cbn [nbind nask ntrace]. rewrite Ht. cbn [negb nbind nask ntrace]. fold f.
+  destruct (fst (ans (IoFilePut f stdin "false"))); reflexivity.
+Qed.
+
+(** what starting with input does: the start, a temporary file made,
+    the input put in it, a file removed, nothing else *)
+Lemma spawn_fed_ops : forall ans prog stdin cwd env args op,
+  In op (ntrace ans (spawn_fed prog stdin cwd env args)) ->
+  (exists f, op = IoSpawn prog f cwd env args) \/ op = IoTempNew "pantheon-in" ".txt" \/
+  (exists f, op = IoFilePut f stdin "false" \/ op = IoRemoveFile f).
+Proof.
+  intros ans prog stdin cwd env args op H. unfold spawn_fed in H.
+  destruct (seq stdin ""); cbn [nbind nask ntrace] in H.
+  - destruct H as [H | []]. left. exists "". symmetry. exact H.
+  - destruct H as [H | H]; [right; left; symmetry; exact H |].
+    destruct (fst (ans (IoTempNew "pantheon-in" ".txt"))); cbn [negb ntrace] in H; [| destruct H].
+    set (f := ans_one (ans (IoTempNew "pantheon-in" ".txt"))) in H.
+    destruct H as [H | H]; [right; right; exists f; left; symmetry; exact H |].
+    destruct (fst (ans (IoFilePut f stdin "false"))); cbn [nbind nask ntrace] in H.
+    + destruct H as [H | [H | []]]; [left; exists f | right; right; exists f; right]; symmetry; exact H.
+    + destruct H as [H | []]. right; right. exists f. right. symmetry. exact H.
+Qed.
+
+(** ---- a program run to its end ---- *)
+
 (** one that started leaves nothing behind: its start, reads of its pipe,
     the pipe closed, the process waited for, and nothing else *)
 Theorem exec_leaves_nothing : forall fuel ans prog stdin env args pid pipe,
-  fst (ans (IoSpawn prog stdin "" env args)) = true ->
-  ans_list (ans (IoSpawn prog stdin "" env args)) = [pid, pipe] ->
+  fst (nresult ans (spawn_fed prog stdin "" env args)) = true ->
+  ans_list (nresult ans (spawn_fed prog stdin "" env args)) = [pid, pipe] ->
   exists n, ntrace ans (exec_go fuel prog stdin env args) =
-    IoSpawn prog stdin "" env args :: repeat (IoSockRead pipe) n ++ [IoSockClose pipe, IoWaitPid pid].
+    ntrace ans (spawn_fed prog stdin "" env args) ++ repeat (IoSockRead pipe) n ++ [IoSockClose pipe, IoWaitPid pid].
 Proof.
-  intros fuel ans prog stdin env args pid pipe Hf Hl. unfold exec_go. cbn [nbind nask ntrace].
+  intros fuel ans prog stdin env args pid pipe Hf Hl. unfold exec_go. rewrite ntrace_nbind. cbv beta.
   rewrite Hf, Hl. rewrite ntrace_nbind. destruct (read_out_reads fuel ans pipe []) as [n Hn].
   exists n. rewrite Hn. reflexivity.
 Qed.
 
 (** one that couldn't start: nothing more, not found, and why *)
 Theorem exec_failed_start_ends : forall fuel ans prog stdin env args,
-  fst (ans (IoSpawn prog stdin "" env args)) = false ->
-  ntrace ans (exec_go fuel prog stdin env args) = [IoSpawn prog stdin "" env args] /\
-  nresult ans (exec_go fuel prog stdin env args) = ans_data false [ans_one (ans (IoSpawn prog stdin "" env args))].
-Proof. intros fuel ans prog stdin env args Hf. unfold exec_go. cbn [nbind nask ntrace nresult]. rewrite Hf. split; reflexivity. Qed.
+  fst (nresult ans (spawn_fed prog stdin "" env args)) = false ->
+  ntrace ans (exec_go fuel prog stdin env args) = ntrace ans (spawn_fed prog stdin "" env args) /\
+  nresult ans (exec_go fuel prog stdin env args) = ans_data false [ans_one (nresult ans (spawn_fed prog stdin "" env args))].
+Proof.
+  intros fuel ans prog stdin env args Hf. unfold exec_go. rewrite ntrace_nbind, nresult_nbind. cbv beta.
+  rewrite Hf. split; [apply app_nil_r | reflexivity].
+Qed.
 
 (** it succeeded only when it started and its wait said it exited with 0 *)
 Theorem exec_ok_only_on_exit_0 : forall fuel ans prog stdin env args,
   fst (nresult ans (exec_go fuel prog stdin env args)) = true ->
-  exists pid pipe, fst (ans (IoSpawn prog stdin "" env args)) = true /\
-    ans_list (ans (IoSpawn prog stdin "" env args)) = [pid, pipe] /\
+  exists pid pipe, fst (nresult ans (spawn_fed prog stdin "" env args)) = true /\
+    ans_list (nresult ans (spawn_fed prog stdin "" env args)) = [pid, pipe] /\
     ans_list (ans (IoWaitPid pid)) = ["exit", "0"].
 Proof.
-  intros fuel ans prog stdin env args H. unfold exec_go in H. cbn [nbind nask nresult] in H.
-  destruct (fst (ans (IoSpawn prog stdin "" env args))) eqn:Hf; [| discriminate H].
-  destruct (ans_list (ans (IoSpawn prog stdin "" env args))) as [| pid [| pipe [| x rest]]] eqn:Hl; try discriminate H.
+  intros fuel ans prog stdin env args H. unfold exec_go in H. rewrite nresult_nbind in H. cbv beta in H.
+  destruct (fst (nresult ans (spawn_fed prog stdin "" env args))) eqn:Hf; [| discriminate H].
+  destruct (ans_list (nresult ans (spawn_fed prog stdin "" env args))) as [| pid [| pipe [| x rest]]] eqn:Hl; try (cbn in H; discriminate H).
   exists pid, pipe. split; [reflexivity | split; [reflexivity |]].
-  rewrite nresult_nbind in H. cbn [nresult] in H. unfold exited_ok in H. cbn [fst ans_data] in H.
-  destruct (ans_list (ans (IoWaitPid pid))) as [| how [| c [| y more]]]; try discriminate H.
+  rewrite nresult_nbind in H. cbn [nbind nask nresult] in H. unfold exited_ok in H. cbn [fst ans_data] in H.
+  destruct (ans_list (ans (IoWaitPid pid))) as [| how [| c [| y more]]]; try (cbn in H; discriminate H).
   apply Bool.andb_true_iff in H as [H1 H2].
   apply Stdlib.Strings.String.eqb_eq in H1, H2. subst. reflexivity.
 Qed.
@@ -81,22 +129,31 @@ Proof.
 Qed.
 
 (** git runs only as "git", from where the binary is, with the fixed
-    config flags and that environment; the rest of it is reading its
-    pipe, closing it and waiting *)
+    config flags and that environment, its input (if any) from a file
+    made for it and removed; the rest of it is reading its pipe, closing
+    it and waiting *)
 Theorem git_runs_only_git : forall ans dir stdin extra args op,
   In op (ntrace ans (git_prog dir stdin extra args)) ->
   op = IoEnvEntries \/
-  op = IoSpawn "git" stdin "" (git_env extra (ans_list (ans IoEnvEntries))) (git_args dir args) \/
-  (exists x, op = IoSockRead x \/ op = IoSockClose x \/ op = IoWaitPid x).
+  (exists f, op = IoSpawn "git" f "" (git_env extra (ans_list (ans IoEnvEntries))) (git_args dir args)) \/
+  op = IoTempNew "pantheon-in" ".txt" \/
+  (exists x, op = IoFilePut x stdin "false" \/ op = IoRemoveFile x \/
+             op = IoSockRead x \/ op = IoSockClose x \/ op = IoWaitPid x).
 Proof.
   intros ans dir stdin extra args op H. unfold git_prog, exec_prog in H. cbn [nbind nask ntrace] in H.
-  destruct H as [H | H]; [left; symmetry; exact H |]. unfold exec_go in H. cbn [nbind nask ntrace] in H.
-  destruct H as [H | H]; [right; left; symmetry; exact H |]. right; right.
-  set (s := ans (IoSpawn "git" stdin "" (git_env extra (ans_list (ans IoEnvEntries))) (git_args dir args))) in H.
-  destruct (fst s); [| destruct H].
-  destruct (ans_list s) as [| pid [| pipe [| x rest]]]; [destruct H | destruct H | | destruct H].
+  destruct H as [H | H]; [left; symmetry; exact H |]. unfold exec_go in H.
   rewrite ntrace_nbind in H. apply List.in_app_or in H as [H | H].
-  - destruct (read_out_reads exec_fuel ans pipe []) as [n Hn]. rewrite Hn in H. apply List.repeat_spec in H.
-    exists pipe. left. exact H.
-  - cbn [ntrace] in H. destruct H as [H | [H | []]]; [exists pipe; right; left | exists pid; right; right]; symmetry; exact H.
+  - apply spawn_fed_ops in H as [[f H] | [H | [x [H | H]]]].
+    + right; left. exists f. exact H.
+    + right; right; left. exact H.
+    + right; right; right. exists x. left. exact H.
+    + right; right; right. exists x. right; left. exact H.
+  - right; right; right. cbv beta in H.
+    set (s := nresult ans (spawn_fed "git" stdin "" (git_env extra (ans_list (ans IoEnvEntries))) (git_args dir args))) in H.
+    destruct (fst s); [| destruct H].
+    destruct (ans_list s) as [| pid [| pipe [| x rest]]]; [destruct H | destruct H | | destruct H].
+    rewrite ntrace_nbind in H. apply List.in_app_or in H as [H | H].
+    + destruct (read_out_reads exec_fuel ans pipe []) as [n Hn]. rewrite Hn in H. apply List.repeat_spec in H.
+      exists pipe. right; right; left. exact H.
+    + cbn [ntrace] in H. destruct H as [H | [H | []]]; [exists pipe; right; right; right; left | exists pid; right; right; right; right]; symmetry; exact H.
 Qed.

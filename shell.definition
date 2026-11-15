@@ -58,13 +58,19 @@ print_lines : list string -> unit.
     tree in the background, rm -rf -- PATH, with these),
     "append_synced" PATH TEXT, "no_sigpipe", "spawn" PROG STDIN CWD
     ("field" ENTRY)... "alternate" ARGS... (PROG run from CWD, "" for
-    where the binary is, with that environment, STDIN its standard input
-    from a file: found, [its pid, the name of the pipe its output comes
+    where the binary is, with that environment, its standard input from
+    the file STDIN, "" for none (node_git.soma's spawn_fed makes the file
+    and removes it after the start): found, [its pid, the name of the pipe its output comes
     on]; not found, [why it couldn't start]), "wait_pid" PID ([HOW,
     VALUE]: exit, signal or stop, and its number) and "kill_pid" PID
     (node_net.soma's jobs; node_git.soma runs a program to its end with
     them: git, a clone and programs); "log" TEXT, "clock", "local_time" STAMP,
-    "fail" MESSAGE (refusing to start: the message on stderr, exit 1), and
+    "fail" MESSAGE (refusing to start: the message on stderr, exit 1),
+    "start_logged" PROG LOG ARGS... (PROG started with its output and
+    errors appended to LOG: [its pid]; `pantheon up`'s nodes),
+    "stop_on_signal" PIDS... (from then on, an interrupt or a terminate
+    terminates those processes and ends the command with 0; cli.soma's
+    up_wait then waits for each with "wait_pid"), and
     nodeio.soma's service_op operations below. *)
 (** The answer is nodeio.soma's nanswer: (carried out or the boolean
     read, (a number, data)); an effect's is (true, (0, [])); "clock"

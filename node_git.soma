@@ -6,7 +6,8 @@
     its service). Each is the environment read ([IoEnvEntries]) and one
     program run to its end with exactly the environment given
     ([exec_prog]: whether it succeeded, and its output), over the host's
-    processes: one started with its output on a pipe ([IoSpawn]), the
+    processes: one started with its output on a pipe ([IoSpawn]; its
+    input, when there is any, in a temporary file: [spawn_fed]), the
     pipe read and closed ([IoSockRead], [IoSockClose]) and the process
     waited for ([IoWaitPid]). Nothing is kept between them. *)
 Import util nodeio.
@@ -30,6 +31,22 @@ Fixpoint read_out (fuel : nat) (pipe : string) (acc : list string) : nprog (list
 (** a wait's answer: the process exited with 0 *)
 exited_ok (w : nanswer) : bool := match ans_list w with [how, c] => seq how "exit" && seq c "0" | _ => false end.
 
+(** [prog] started from [cwd] ("": where the binary is) with [env],
+    [stdin] its standard input: "" is none; other text is put in a new
+    private temporary file, which the process opens as it starts and
+    which is removed right after, whatever the start answered, so nothing
+    is left behind and no pipe can fill up while its output is read. The
+    start's answer ([its pid, its output's pipe]), or not found and why
+    (the file's, when it couldn't be made or written). *)
+spawn_fed (prog stdin cwd : string) (env args : list string) : nprog nanswer :=
+  if seq stdin "" then nask (IoSpawn prog "" cwd env args) else
+  nbind (nask (IoTempNew "pantheon-in" ".txt")) (fun t =>
+  if negb (fst t) then NDone t else
+  let f := ans_one t in
+  nbind (nask (IoFilePut f stdin "false")) (fun w =>
+  nbind (if fst w then nask (IoSpawn prog f cwd env args) else NDone w) (fun s =>
+  nbind (nask (IoRemoveFile f)) (fun _ => NDone s)))).
+
 (** [prog] run to its end with exactly [env], [stdin] its standard input
     ("": none), from where the binary is: started with its output on a
     pipe (its errors discarded), the pipe read until it closes, then
@@ -38,7 +55,7 @@ exited_ok (w : nanswer) : bool := match ans_list w with [how, c] => seq how "exi
     goes on writing, so the wait can't hang on it). Found when it exited
     with 0, and its output; one that couldn't start: not found, and why. *)
 exec_go (fuel : nat) (prog stdin : string) (env args : list string) : nprog nanswer :=
-  nbind (nask (IoSpawn prog stdin "" env args)) (fun s =>
+  nbind (spawn_fed prog stdin "" env args) (fun s =>
   match fst s, ans_list s with
   | true, [pid, pipe] =>
       nbind (read_out fuel pipe []) (fun out =>

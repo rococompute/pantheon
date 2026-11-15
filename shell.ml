@@ -141,56 +141,34 @@ let path_stat f =
       [ kind; string_of_bool (st.st_perm land 0o100 <> 0) ]
   | exception _ -> [ "none"; "false" ]
 
-
-(* ---------- programs ---------- *)
-
-(* a program's standard input: /dev/null for "", else [text] in a temporary
-   file, opened and then removed (so no pipe can fill up while its output
-   is read) *)
-let stdin_fd text =
-  if text = "" then Unix.openfile "/dev/null" [ O_RDONLY; O_CLOEXEC ] 0
-  else begin
-    let f = Filename.temp_file "pantheon-in" ".txt" in
-    Out_channel.with_open_bin f (fun oc -> output_string oc text);
-    let fd = Unix.openfile f [ O_RDONLY; O_CLOEXEC ] 0 in
-    (try Sys.remove f with _ -> ());
-    fd
-  end
-
-let close_all = List.iter (fun fd -> try Unix.close fd with _ -> ())
-
-(* PROG started (from [cwd], if given) with [env] and [stdin], its output on
-   a pipe and its errors discarded: its pid and the pipe, or why not *)
-let start ?cwd prog stdin env args =
-  let ifd = stdin_fd stdin in
-  let r, w = Unix.pipe ~cloexec:true () in
-  let devnull = Unix.openfile "/dev/null" [ O_WRONLY; O_CLOEXEC ] 0 in
-  let old = Sys.getcwd () in
-  let back () = if cwd <> None then (try Sys.chdir old with _ -> ()) in
-  match Option.iter Sys.chdir cwd; Unix.create_process_env prog (Array.of_list (prog :: args)) env ifd w devnull with
-  | exception e -> back (); close_all [ r; w; ifd; devnull ]; Error (Printexc.to_string e)
-  | pid -> back (); close_all [ w; ifd; devnull ]; Ok (pid, r)
-
 (* the host's descriptors by name: sockets, and the pipes processes write
    their output on *)
 let socks : (string, Unix.file_descr) Hashtbl.t = Hashtbl.create 64
 let sock_counter = ref 0
 let sock_add fd = incr sock_counter; let id = string_of_int !sock_counter in Hashtbl.replace socks id fd; id
 let sock_find id = Hashtbl.find_opt socks id
+let close_all = List.iter (fun fd -> try Unix.close fd with _ -> ())
 
 (* ---------- processes ----------
    The jobs are node_net.soma's (their names, the kills, what the output
    and ends become): a process here is started with its output on a pipe
    named among the sockets, waited for, killed. *)
 
-(* PROG run from [cwd] ("": where the binary is) with [env], [stdin] its
-   standard input from a file: [its pid, its output's pipe], or not found
-   and why (node_net.soma's jobs, node_git.soma's programs run to their
-   end) *)
+(* PROG run from [cwd] ("": where the binary is) with [env], its standard
+   input the file [stdin] ("": /dev/null), its output on a pipe and its
+   errors discarded: [its pid, its output's pipe], or not found and why
+   (node_git.soma's spawn_fed makes and removes the input's file) *)
 let spawn prog stdin cwd env args =
-  match start ?cwd:(if cwd = "" then None else Some cwd) prog stdin (Array.of_list env) args with
-  | Ok (pid, r) -> ans_data [ string_of_int pid; sock_add r ]
-  | Error e -> ans_why e
+  match Unix.openfile (if stdin = "" then "/dev/null" else stdin) [ O_RDONLY; O_CLOEXEC ] 0 with
+  | exception e -> ans_exn e
+  | ifd ->
+      let r, w = Unix.pipe ~cloexec:true () in
+      let devnull = Unix.openfile "/dev/null" [ O_WRONLY; O_CLOEXEC ] 0 in
+      let old = Sys.getcwd () in
+      let back () = if cwd <> "" then (try Sys.chdir old with _ -> ()) in
+      match if cwd <> "" then Sys.chdir cwd; Unix.create_process_env prog (Array.of_list (prog :: args)) (Array.of_list env) ifd w devnull with
+      | exception e -> back (); close_all [ r; w; ifd; devnull ]; ans_exn e
+      | pid -> back (); close_all [ w; ifd; devnull ]; ans_data [ string_of_int pid; sock_add r ]
 
 (* a process's end, waited for: [how, value] (exit, signal or stop, the wait
    status's facts), or not found and why *)
@@ -322,18 +300,17 @@ let node_io op =
   | [ "chmod"; path; mode ] -> ans_flag (try Unix.chmod path (int_of_string ("0o" ^ mode)); true with _ -> false)
   | [ "new_key"; bits ] -> ans_data (new_key (int_of_string bits))
   | [ "random_hex"; count ] -> ans_data [ random_hex (int_of_string count) ]
-  | "spawn_node" :: log :: args ->
-      let fd = Unix.openfile log [ O_WRONLY; O_CREAT; O_APPEND ] 0o644 in
-      let pid = Unix.create_process self_exe (Array.of_list (self_exe :: args)) Unix.stdin fd fd in
-      Unix.close fd;
-      ans_data [ string_of_int pid ]
-  | "await_nodes" :: pids ->
-      let pids = List.map int_of_string pids in
-      let stop _ = List.iter (fun p -> try Unix.kill p Sys.sigterm with _ -> ()) pids; exit 0 in
-      Sys.set_signal Sys.sigint (Sys.Signal_handle stop);
-      Sys.set_signal Sys.sigterm (Sys.Signal_handle stop);
-      List.iter (fun p -> ignore (Unix.waitpid [] p)) pids;
-      ans_ok
+  | "start_logged" :: prog :: log :: args ->
+      attempt (fun () ->
+          let fd = Unix.openfile log [ O_WRONLY; O_CREAT; O_APPEND; O_CLOEXEC ] 0o644 in
+          Fun.protect ~finally:(fun () -> Unix.close fd) (fun () ->
+              [ string_of_int (Unix.create_process prog (Array.of_list (prog :: args)) Unix.stdin fd fd) ]))
+  | "stop_on_signal" :: pids ->
+      attempt (fun () ->
+          let pids = List.map int_of_string pids in
+          let stop _ = List.iter (fun p -> try Unix.kill p Sys.sigterm with _ -> ()) pids; exit 0 in
+          List.iter (fun sg -> Sys.set_signal sg (Sys.Signal_handle stop)) [ Sys.sigint; Sys.sigterm ];
+          [])
   (* the binary runner's (node_net.soma, node_git.soma): descriptors, the
      node's files (a file written whole is the commands' too) and
      processes *)

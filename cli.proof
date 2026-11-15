@@ -104,3 +104,12 @@ Proof. repeat split; reflexivity. Qed.
 Example image_strings_quote :
   soma_strings ["a""b", ""] = "[""a""""b"", """"]".
 Proof. reflexivity. Qed.
+
+(** [up] waits for exactly the nodes it started, in order, and only after
+    an interrupt or a terminate is set to stop them all *)
+Theorem up_waits_for_what_it_started : forall ans pids,
+  ntrace ans (up_wait pids) = IoStopOnSignal pids :: map IoWaitPid pids.
+Proof.
+  intros ans pids. unfold up_wait, cli_do. cbn [ntrace]. f_equal.
+  induction pids as [| p r IH]; cbn; [reflexivity | f_equal; exact IH].
+Qed.

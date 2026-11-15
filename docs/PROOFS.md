@@ -2,7 +2,7 @@
 
 `soma build main.soma` checks the proof files. This inventory includes every
 Theorem, Lemma, Corollary and Example in `consensus.proof` and `market.proof`
-(and the main statements of `node_service.proof`, `node_path.proof`, `node_file.proof` and `node_git.proof`, below),
+(and the main statements of `node_service.proof`, `node_path.proof`, `node_file.proof`, `node_git.proof` and `cli.proof`, below),
 with its exact source name. These are statements about the pure definitions,
 not proofs of the OCaml shell, extraction to machine integers, cryptography,
 OS isolation, or deployed end-to-end safety. Shell hashes, decoding, signatures
@@ -163,11 +163,22 @@ program's output, and what the program does, are the host's.
 | Name | What it says, and its limit |
 |---|---|
 | `read_out_reads` | Reading a program's output only reads its pipe. |
-| `exec_leaves_nothing` | A program that started: its start, reads of its pipe, the pipe closed, then the process waited for, nothing else. |
+| `spawn_fed_none` | A program with no input is started alone, from /dev/null. |
+| `spawn_fed_removes_its_file` | Input made into a temporary file: the text put in it, the start (only when the put worked) from that file, then the file removed, whatever the start answered. That the host removes it is the host's. |
+| `spawn_fed_ops` | Starting a program with input does nothing but the start, a temporary file made, the input put in it and a file removed. |
+| `exec_leaves_nothing` | A program that started: its start (with its input's file), reads of its pipe, the pipe closed, then the process waited for, nothing else. |
 | `exec_failed_start_ends` | A program that couldn't start runs nothing more and answers not found, with why. |
 | `exec_ok_only_on_exit_0` | It answers success only when it started and its wait said it exited with 0. |
 | `git_env_keeps_host_git_out` | Git's environment holds the entries asked for, the fixed three, and the host's without any `GIT_` one. |
-| `git_runs_only_git` | Git starts only "git", from where the binary is, with the fixed config flags and that environment; the rest is its pipe and its wait. |
+| `git_runs_only_git` | Git starts only "git", from where the binary is, with the fixed config flags and that environment; the rest is its input's file, its pipe and its wait. |
+
+### cli.proof
+
+Besides the commands' parsing and JSON examples:
+
+| Name | What it says, and its limit |
+|---|---|
+| `up_waits_for_what_it_started` | `pantheon up` sets the stop on an interrupt or a terminate for the nodes it started, then waits for exactly those, in order. That the shell's handler terminates them is the shell's. |
 
 ## Remaining work
 

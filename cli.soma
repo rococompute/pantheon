@@ -527,6 +527,12 @@ Fixpoint with_keys (dir : string) (names : list string) (k : list string -> npro
   | a :: r => cli_exists (path (path dir a) "key.json") (fun has => with_keys dir r (fun rest => k (if has then a :: rest else rest)))
   end.
 
+(** the nodes [up] started, run until each ends, waited for in turn; an
+    interrupt or a terminate first terminates them all, then ends the
+    command with 0 *)
+up_wait (pids : list string) : nprog unit :=
+  cli_do (IoStopOnSignal pids) (fun _ => cli_each pids (fun p k => cli_do (IoWaitPid p) k) (fun _ => NDone tt)).
+
 cmd_up (dir : string) (rest : list string) : nprog unit :=
   match up_args rest [] [] with
   | inr e => cli_fail e
@@ -540,9 +546,10 @@ cmd_up (dir : string) (rest : list string) : nprog unit :=
     cli_exists (path home "genesis.json") (fun has =>
     if negb has then cli_fail (cat [dir, " has no network: run `pantheon init ", dir, "` first"]) else
     let b := match lookup a backends with Some b => b | None => "scripted" end in
-    cli_ask (IoSpawnNode (path home "node.log") (["node", home, "--backend", b] ++ pass)) (fun pid => k (ans_one pid)))) (fun pids =>
+    cli_ask (IoStartLogged (ans_one self) (path home "node.log") (["node", home, "--backend", b] ++ pass)) (fun pid =>
+    if fst pid then k (ans_one pid) else cli_fail (cat ["can't start ", a, "'s node: ", ans_one pid])))) (fun pids =>
   cli_say (cat ["running 4 nodes; logs in ", dir, "/<agent>/node.log; watch with: ", ans_one self, " status ", dir, "/claude"]) (fun _ =>
-  cli_do (IoAwaitNodes pids) (fun _ => NDone tt))))))
+  up_wait pids)))))
   end.
 
 (** ---- status, tx, plan ---- *)

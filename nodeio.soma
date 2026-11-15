@@ -238,7 +238,9 @@ Inductive node_op :=
     and directories; this directory; a new RSA key (e = 65537: [size, n, e,
     d, p, q, dp, dq, qinv], hex) and random bytes as hex (a job's fence
     token is 8 of them); git in a checkout (its output), a clone at a
-    commit; starting nodes and waiting for them *)
+    commit; a program started with its output and errors appended to a
+    log (its pid), and, on an interrupt or a terminate, those processes
+    terminated and the command ended with 0 *)
 | IoPrint (text : string)
 | IoExit (code : string)
 | IoFileExists (path : string)
@@ -249,8 +251,8 @@ Inductive node_op :=
 | IoRandomHex (count : string)
 | IoGit (dir : string) (args : list string)
 | IoClone (url dir commit : string)
-| IoSpawnNode (log : string) (args : list string)
-| IoAwaitNodes (pids : list string)
+| IoStartLogged (prog log : string) (args : list string)
+| IoStopOnSignal (pids : list string)
 (** the edits machinery's file and git work (cli.soma's edits_prog,
     checkout_edits_prog and check_tree_prog decide; they need no node): a
     path's kind, without following its last part ([kind, exec]: "file",
@@ -482,8 +484,8 @@ io_wire (op : node_op) : list string :=
   | IoRandomHex count => ["random_hex", count]
   | IoGit dir args => "git" :: dir :: args
   | IoClone url dir commit => ["clone", url, dir, commit]
-  | IoSpawnNode log args => "spawn_node" :: log :: args
-  | IoAwaitNodes pids => "await_nodes" :: pids
+  | IoStartLogged prog log args => "start_logged" :: prog :: log :: args
+  | IoStopOnSignal pids => "stop_on_signal" :: pids
   | IoPathStat path => ["path_stat", path]
   | IoPathProbe dir path => ["path_probe", dir, path]
   | IoPathWrite dir path text => ["path_write", dir, path, text]
@@ -646,8 +648,8 @@ io_of_wire (w : list string) : option node_op :=
   | ["random_hex", count] => Some (IoRandomHex count)
   | "git" :: dir :: args => Some (IoGit dir args)
   | ["clone", url, dir, commit] => Some (IoClone url dir commit)
-  | "spawn_node" :: log :: args => Some (IoSpawnNode log args)
-  | "await_nodes" :: pids => Some (IoAwaitNodes pids)
+  | "start_logged" :: prog :: log :: args => Some (IoStartLogged prog log args)
+  | "stop_on_signal" :: pids => Some (IoStopOnSignal pids)
   | ["path_stat", path] => Some (IoPathStat path)
   | ["path_probe", dir, path] => Some (IoPathProbe dir path)
   | ["path_write", dir, path, text] => Some (IoPathWrite dir path text)

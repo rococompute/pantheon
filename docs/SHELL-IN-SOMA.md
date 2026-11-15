@@ -287,7 +287,15 @@ operations above, which `node_io` answers with no node. `main.soma`'s `dispatch`
 the old binary and the new one, given the same parts, write the same
 genesis.json. Two cases that crashed the old binary now say why:
 `up` on a directory with no agents, and an edits file that isn't a JSON
-list of strings. One known difference: a float in network.json's params
+list of strings. `up`'s launcher is Soma too: each node is the binary's
+own path (`IoSelfExe`) started with its output appended to its log
+(`IoStartLogged`; one that can't start ends the command with why), and
+`up_wait` asks the shell to stop them all on an interrupt or a
+terminate (`IoStopOnSignal`), then waits for each in turn (`IoWaitPid`);
+cli.proof's `up_waits_for_what_it_started` says it waits for exactly
+the nodes it started, after the stop is set. The shell's `spawn_node`
+and `await_nodes`, which chose the program and did the waiting, are
+gone. One known difference: a float in network.json's params
 is written as the integer the node reads it as (Yojson kept its digits).
 
 The consensus snapshot is Soma's text (node.soma's `snapshot_text`):
@@ -441,14 +449,23 @@ exactly the environment it is given and a standard input (none for "")
 Soma, over the processes node_net.soma's jobs use: the program started
 with its output on a pipe (`IoSpawn`, from where the binary is), the
 pipe read until it closes (`read_out`), closed, then the program waited
-for (`IoWaitPid`); found only when it exited with 0. A pipe is closed
+for (`IoWaitPid`); found only when it exited with 0. Its standard
+input, when it has one (a merge's commit message), is Soma's as well
+(`spawn_fed`, which node_net.soma's jobs use too): the text put in a new
+private temporary file (`IoTempNew`, `IoFilePut`), the program started
+reading from it, and the file removed right after the start, whatever
+the start answered. shell.ml's spawn only opens the file it is named
+(`""` for /dev/null), where it used to make, fill and remove one itself
+(`stdin_fd`), and a file it can't open is now an answer, not found and
+why, where the old one's exception ended the binary. A pipe is closed
 before the wait even if the reads run out, so a program that writes
 forever can't hang it. shell.ml's git, clone and run, about 25 lines of
 environments and arguments, are gone, and so are `capture` and the
 `exec` primitive it was. `pantheon edits` on a 250-file checkout takes
 the same time as with `capture` (7.96 s against 7.95 s, alternating, on
 the laptop). node_git.proof proves, of any answers the processes give:
-`exec_leaves_nothing` (its start, reads of its pipe, the pipe closed,
+`spawn_fed_removes_its_file` (input made into a file: the text put, the
+start only when that worked, then the file removed), `exec_leaves_nothing` (its start, reads of its pipe, the pipe closed,
 the wait, nothing else), `exec_failed_start_ends`,
 `exec_ok_only_on_exit_0`, `git_env_keeps_host_git_out` (none of the
 host's own `GIT_` entries reach git) and `git_runs_only_git` (git is
@@ -593,7 +610,8 @@ are the runner's (the shell for the binary, the service for an image).
 
 The shell keeps the primitives: the path operations, `IoTempDir`,
 `IoTempFile` and `IoRemoveTree` (node_file.soma's, above, "Files") and
-the processes (`IoSpawn`, `IoWaitPid`, `IoKillPid`), whose table and
+the processes (`IoSpawn`, `IoWaitPid`, `IoKillPid`, and `up`'s
+`IoStartLogged` and `IoStopOnSignal`), whose table and
 events are node_net.soma's (above, "The binary's network"); git, a
 clone and `IoRun`'s `rm`, `chmod` and `docker rm` are node_git.soma's
 programs run to their end over the same processes (above, "Git and
