@@ -1421,3 +1421,127 @@ Example service_keeps_job_events_and_batches :
   service_batch 0 [["a"], ["b"]] = ([["a"], ["b"]], []) /\
   service_address "192.168.105.1:39990" = ("192.168.105.1", "39990").
 Proof. repeat split; reflexivity. Qed.
+
+(** ---- Never two votes at one slot ----
+    An honest node signs at most one vote for a kind, height and round (a
+    slot, [broadcast_key]). [sign_prog], which signs a vote ahead of its
+    snapshot, signs only when the signed-vote table has nothing at its
+    slot; and [broadcast_plan], once the slot has a vote, sends that vote
+    again or nothing, never another, and never records another. A node
+    the draw made Byzantine ("equivocate", "double-vote") is the test
+    harness's, not an honest node. *)
+
+(** what an action sends to the peers or records as sent *)
+sends (a : output_action) (g : list string) : Prop :=
+  match a with
+  | SendPeer _ f => g = f
+  | SendEveryone f => g = f
+  | RememberBroadcast _ _ f alt => g = f \/ g = alt
+  | _ => False
+  end.
+
+remembers_vote (a : output_action) : bool := match a with RememberVote _ _ _ => true | _ => false end.
+
+(** an honest node's broadcast goes to every peer, the same message *)
+Lemma honest_mode_is_all : forall fields, broadcast_mode "" fields = "all".
+Proof.
+  intros fields. unfold broadcast_mode.
+  repeat match goal with |- context [match ?x with _ => _ end] => is_var x; destruct x end; reflexivity.
+Qed.
+
+Lemma honest_deliver : forall n f,
+  broadcast_deliver "" n f =
+    match f with _ :: ht :: _ => [RememberBroadcast ht "all" f f] | _ => [] end ++ [SendEveryone f].
+Proof.
+  intros n f. unfold broadcast_deliver. rewrite honest_mode_is_all. cbn [seq].
+  destruct f as [| x [| ht rest]]; reflexivity.
+Qed.
+
+(** what an honest node delivers is its message, and records no vote *)
+Lemma honest_deliver_sends_its_fields : forall n f a g,
+  In a (broadcast_deliver "" n f) -> remembers_vote a = false /\ (sends a g -> g = f).
+Proof.
+  intros n f a g H. rewrite honest_deliver in H.
+  destruct f as [| x [| ht rest]]; cbn in H;
+    repeat (destruct H as [H | H]; [subst a; cbn; split; [reflexivity | intuition] |]); contradiction.
+Qed.
+
+(** The slot's first vote is recorded before it is sent. *)
+Theorem first_vote_at_a_slot_is_recorded : forall n fields k ht r vid,
+  broadcast_plan "" n fields (Some (k, ht, r, vid)) None None =
+    RememberVote (broadcast_key k ht r) vid fields :: broadcast_deliver "" n fields.
+Proof. reflexivity. Qed.
+
+(** Once a slot has a vote, an honest node records no other there, and
+    sends only the vote asked for when it is that same vote, or else the
+    one stored, or nothing (it refuses, and says so). *)
+Theorem honest_node_never_sends_a_second_vote : forall n fields k ht r vid v prior a g,
+  In a (broadcast_plan "" n fields (Some (k, ht, r, vid)) (Some v) prior) ->
+  remembers_vote a = false /\ (sends a g -> (v = vid /\ g = fields) \/ prior = Some g).
+Proof.
+  intros n fields k ht r vid v prior a g H. unfold broadcast_plan in H.
+  destruct (seq v vid) eqn:E; cbn [negb andb seq] in H.
+  - apply Stdlib.Strings.String.eqb_eq in E. subst v.
+    destruct (honest_deliver_sends_its_fields n fields a g H) as [R S].
+    split; [exact R | intro Hs; left; split; [reflexivity | exact (S Hs)]].
+  - destruct prior as [saved |].
+    + destruct H as [H | H]; [subst a; cbn; split; [reflexivity | intuition] |].
+      destruct (honest_deliver_sends_its_fields n saved a g H) as [R S].
+      split; [exact R | intro Hs; right; rewrite (S Hs); reflexivity].
+    + destruct H as [H | H]; [subst a; cbn; split; [reflexivity | intuition] | contradiction].
+Qed.
+
+(** [sign_prog] looks the slot up first, and signs only when it is empty. *)
+Theorem sign_prog_signs_only_an_empty_slot : forall ans fields slot vid f,
+  In (IoSignVote slot vid f) (ntrace ans (sign_prog fields)) ->
+  ans_found_one (ans (IoSignedVote slot)) = None.
+Proof.
+  intros ans fields slot vid f H. unfold sign_prog in H.
+  destruct (broadcast_subject fields) as [[[[k ht] r] v] |]; [| contradiction].
+  cbn [nbind nask ntrace] in H.
+  destruct (ans_found_one (ans (IoSignedVote (broadcast_key k ht r)))) eqn:E; cbn in H.
+  - destruct H as [H | H]; [discriminate H | contradiction].
+  - destruct H as [H | [H | H]]; [discriminate H | | contradiction].
+    injection H as Hs _ _. subst slot. exact E.
+Qed.
+
+(** and what it does, exactly: the look-up, then the signing only when
+    the slot is empty *)
+Theorem sign_prog_trace : forall ans k ht r x vid rest,
+  seq k "done" = false ->
+  let fields := k :: ht :: r :: x :: vid :: rest in
+  let slot := broadcast_key k ht r in
+  ntrace ans (sign_prog fields) =
+    IoSignedVote slot ::
+      match ans_found_one (ans (IoSignedVote slot)) with Some _ => [] | None => [IoSignVote slot vid fields] end.
+Proof.
+  intros ans k ht r x vid rest Hk fields slot. unfold sign_prog, fields. cbn [broadcast_subject]. rewrite Hk.
+  cbn [nbind nask ntrace]. fold slot. destruct (ans_found_one (ans (IoSignedVote slot))); reflexivity.
+Qed.
+
+(** The signed-vote table keeps one vote a slot within a height: the one
+    just signed is the one found, and the other slots keep theirs. *)
+Lemma signed_slot_list_found : forall slot vid (fields : list string) (here : list (string * (string * list string))),
+  nio_lookup slot ((slot, (vid, fields)) :: List.filter (fun v => negb (nio_eq (fst v) slot)) here) = Some (vid, fields).
+Proof. intros. cbn. unfold nio_eq. rewrite Stdlib.Strings.String.eqb_refl. reflexivity. Qed.
+
+Lemma lookup_filter_other : forall slot other (l : list (string * (string * list string))),
+  other <> slot ->
+  nio_lookup other (List.filter (fun v => negb (nio_eq (fst v) slot)) l) = nio_lookup other l.
+Proof.
+  intros slot other l Hne. induction l as [| [x w] rest IH]; [reflexivity |].
+  cbn [List.filter fst]. destruct (nio_eq x slot) eqn:Ex; cbn [negb nio_lookup].
+  - apply Stdlib.Strings.String.eqb_eq in Ex. subst x.
+    assert (Hs : nio_eq slot other = false) by (apply Stdlib.Strings.String.eqb_neq; congruence).
+    rewrite Hs. exact IH.
+  - destruct (nio_eq x other); [reflexivity | exact IH].
+Qed.
+
+Lemma signed_slot_list_others : forall slot other vid (fields : list string) (here : list (string * (string * list string))),
+  other <> slot ->
+  nio_lookup other ((slot, (vid, fields)) :: List.filter (fun v => negb (nio_eq (fst v) slot)) here) = nio_lookup other here.
+Proof.
+  intros slot other vid fields here Hne. cbn [nio_lookup].
+  assert (Hs : nio_eq slot other = false) by (apply Stdlib.Strings.String.eqb_neq; congruence). rewrite Hs.
+  apply lookup_filter_other. exact Hne.
+Qed.

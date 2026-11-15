@@ -104,6 +104,24 @@ commands need not do so. Trusted toolchains and build-cache provenance matter.
 | `second_reveal_for_a_draw_is_refused` | Immediately after acceptance, another reveal from that agent is refused; does not cover a later draw. |
 | `accepted_reveals_for_a_draw_are_equal` | Two alternatives accepted from the same state hash to the same tip; equality requires the explicit unique-preimage premise, not proved SHA-256 injectivity. |
 
+### runtime/node.proof: never two votes at one slot
+
+An honest node signs at most one vote for a kind, height and round (a slot,
+`broadcast_key`): the guard that keeps one node from forging two validators'
+worth of votes (docs/DESIGN.md, "Never signing twice"). Statements about the
+pure plan and program; that the signed-vote table returns what was signed
+is shown within a height's list (the AVL map's find-after-add is not proved).
+
+| Name | Checked statement |
+|---|---|
+| `honest_mode_is_all`, `honest_deliver` | An honest node's broadcast is one message to every peer, recorded as itself. |
+| `honest_deliver_sends_its_fields` | What an honest node delivers sends only its own fields and records no vote. |
+| `first_vote_at_a_slot_is_recorded` | A slot's first vote is recorded (`RememberVote`) before it is sent. |
+| `honest_node_never_sends_a_second_vote` | Once a slot has vote `v`, every action records no vote, and sends only the asked-for message when it is `v`, else the stored message, else nothing. |
+| `sign_prog_signs_only_an_empty_slot` | Whatever the host answers, `sign_prog` signs at a slot only when its look-up found nothing there. |
+| `sign_prog_trace` | `sign_prog` is exactly the slot's look-up, then the signing when it is empty. |
+| `signed_slot_list_found`, `signed_slot_list_others`, `lookup_filter_other` | Within a height, signing a slot makes it found with that vote and leaves the other slots' votes as they were. |
+
 ### runtime/node_service.proof
 
 What the node's service carries out for an image (runtime/node_service.soma;
