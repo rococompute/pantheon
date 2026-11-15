@@ -1,4 +1,4 @@
-(** What cli.soma's pure pieces compute, checked whenever cli.soma is
+(** What app/cli.soma's pure pieces compute, checked whenever app/cli.soma is
     built: paths as OCaml's Filename gives them, the commands' argument
     parsing as the old shell's did it, and JSON as Yojson.Safe prints it. *)
 

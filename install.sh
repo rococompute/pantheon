@@ -61,7 +61,7 @@ fi
 # PANTHEON_DIR, fetched at PANTHEON_REF. Piped into sh, $0 is the shell.
 here=""
 case $0 in *install.sh) here=$(cd "$(dirname "$0")" && pwd) ;; esac
-if [ -n "$here" ] && [ -f "$here/main.soma" ] && [ -f "$here/node_shell.soma" ]; then
+if [ -n "$here" ] && [ -f "$here/main.soma" ] && [ -f "$here/runtime/node_shell.soma" ]; then
   PANTHEON_DIR=$here
   say "building the checkout at $PANTHEON_DIR"
 else

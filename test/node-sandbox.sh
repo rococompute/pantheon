@@ -1,7 +1,7 @@
 #!/bin/sh
-# The node's I/O interpreted by a unikernel (U-1): nodeio.soma's pure part
+# The node's I/O interpreted by a unikernel (U-1): runtime/nodeio.soma's pure part
 # (the lines blocks.log and signed.log get, Yojson's bytes; the tables the
-# operations keep) by soma run, and node_sandbox.soma's Sandbox interpreter
+# operations keep) by soma run, and runtime/node_sandbox.soma's Sandbox interpreter
 # running a node program, by soma build --no-image: the MirageOS project
 # is generated and type-checked, no image is booted (Soma's CI has no
 # solo5; dev/mirage-check.sh in Soma boots images on a Mac).

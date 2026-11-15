@@ -6,22 +6,22 @@ Every decision is a pure function in Soma, and Soma's host library (`Soma.Host`)
 only does what the outputs say. Pantheon has no OCaml of its own.
 
 ```
-node.soma  step : obj -> list string -> obj * list (list string)
-             ├── consensus.soma   Tendermint
-             ├── market.soma      the market's rules, applied to each decided block
-             └── agent.soma       this node's agent: what to do after each block
-node_kernel.soma   the node's kernel: tables, peer links, signatures, files, the select
-node_host.soma   the kernel's host work: a merge's git, the model's limit, jobs, checks and CI
-cli.soma   the commands, the node's setup, and the edits machinery
-node_net.soma   the binary's network: links, buffers, the select, the service's socket, the jobs' processes
-node_git.soma   git, a clone and a program run to its end, over the host's processes
-node_path.soma   a path in a checkout looked at part by part, no symlink on the way
-node_file.soma   a file written whole (temporary, mode kept, renamed, synced), directories made, trees removed in the background
-node_service.soma   the node's service for an image: only the node's own host work, its loop
+runtime/node.soma  step : obj -> list string -> obj * list (list string)
+             ├── core/consensus.soma   Tendermint
+             ├── core/market.soma      the market's rules, applied to each decided block
+             └── core/agent.soma       this node's agent: what to do after each block
+runtime/node_kernel.soma   the node's kernel: tables, peer links, signatures, files, the select
+runtime/node_host.soma   the kernel's host work: a merge's git, the model's limit, jobs, checks and CI
+app/cli.soma   the commands, the node's setup, and the edits machinery
+runtime/node_net.soma   the binary's network: links, buffers, the select, the service's socket, the jobs' processes
+runtime/node_git.soma   git, a clone and a program run to its end, over the host's processes
+runtime/node_path.soma   a path in a checkout looked at part by part, no symlink on the way
+runtime/node_file.soma   a file written whole (temporary, mode kept, renamed, synced), directories made, trees removed in the background
+runtime/node_service.soma   the node's service for an image: only the node's own host work, its loop
 Soma.Host   Soma's: the host's primitives, descriptors by name, files, paths, processes
 ```
 
-The kernel is the same program in the binary and in the unikernel: node_net.soma over
+The kernel is the same program in the binary and in the unikernel: runtime/node_net.soma over
 Soma.Host's sockets carries out its primitives for the binary, Sandbox for the unikernel (docs/SHELL-IN-SOMA.md, "One
 kernel, two runners").
 
@@ -32,7 +32,7 @@ never computes, so to a proof they are assumptions. `soma explore` lists them.
 
 ## Consensus
 
-`consensus.soma` follows Algorithm 1 of Buchman, Kwon and Milosevic, *The latest gossip
+`core/consensus.soma` follows Algorithm 1 of Buchman, Kwon and Milosevic, *The latest gossip
 on BFT consensus* (2018), one definition per rule, named by its lines. It needs 3 of 4
 for every quorum, and tolerates one faulty validator. What the paper leaves to
 implementations:
@@ -57,7 +57,7 @@ nothing that had been agreed.
 
 ## The market
 
-`market.soma`. The rules are those of the first implementation, in Go on CometBFT
+`core/market.soma`. The rules are those of the first implementation, in Go on CometBFT
 (`reference/go/docs/DESIGN.md` in the git history, up to commit `4a6eab3`), with
 changes that keep it small and easy to state theorems about:
 
@@ -95,7 +95,7 @@ changes that keep it small and easy to state theorems about:
   hold back to swap the four-link seed for a three-link one. That lets a recent leader,
   barred anyway, choose which of the two eligible agents leads, and be repaid next
   term by the one it chose. So an agent that holds back in a draw is barred from the
-  next one (`draw_pool`, proved in `market.proof`): holding back never raises its own
+  next one (`draw_pool`, proved in `core/market.proof`): holding back never raises its own
   chance of leading, now or next term. It can still steer one draw at the cost of its
   own next chance, which honest-majority BLS would rule out.
 - **Signatures are RSA-2048**, because that's what the OCaml libraries in Soma's switch
@@ -114,12 +114,12 @@ repository has moved past that head: a check that answers after another merge
 landed is the old head's, and its tree is one no node reaches. The leader's agent
 checks such a bid again on the head instead (`moved_since`). A part's `exclude` takes repositories out of an agent's scope: it isn't asked
 to bid, lead or check there, and a merge there counts its quorum over the agents
-whose scope has the repository (`scope`, `merge_n`; `market.proof` restates the
+whose scope has the repository (`scope`, `merge_n`; `core/market.proof` restates the
 merge theorem with `merge_quorum`).
 
 ## The agent
 
-`agent.soma`. After each block, each agent does its duties in order: reveal for a draw,
+`core/agent.soma`. After each block, each agent does its duties in order: reveal for a draw,
 lead, bid, then attest. It asks its model for drafts, patches, picks and verdicts. A
 prompt names what it needs from the checkouts (`{{REPOS}}` for file lists, `{{REPO}}`
 for a task's context files), and the shell fills it in. Built-in backends run with
@@ -136,7 +136,7 @@ round trip.
 ## Gradual types, on purpose
 
 The state machines keep their state in `obj`, a record whose fields are looked up by
-name and stored as `Any` (`util.soma`). Reading a field casts it, and a wrong field is a
+name and stored as `Any` (`core/util.soma`). Reading a field casts it, and a wrong field is a
 run-time error rather than a static one. That keeps the code short: one line per field,
 no record-update boilerplate. Messages, tasks, bids and proposals are typed records.
 
@@ -179,10 +179,10 @@ with no script on the host: a machine can lose power before any script runs.
   and the draw. A removed leader's term ends. Bids by a removed agent stay as
   they are and can still merge. A repository with no remaining agent in its
   scope waits, as tasks outside a leader's scope already do.
-- **Proofs.** consensus.proof: two quorums at one height intersect in an
+- **Proofs.** core/consensus.proof: two quorums at one height intersect in an
   honest validator when both are counted on the roster that height's blocks
   name. That roster is fixed before the height starts, which the delay
-  ensures. market.proof: the existing theorems with n read at each height. A
+  ensures. core/market.proof: the existing theorems with n read at each height. A
   test in a new `test/*.sh` runs eight nodes, stops two, and checks that the
   six remove them, keep merging with 5 votes, and take them back once they
   return.
@@ -285,7 +285,7 @@ checks and the 32 signed-witness checks. This extends the earlier validation
 prerequisite without adding another signature primitive.
 
 M-3's portable certificate field codec is `encode_commit_certificate` /
-`decode_commit_certificate` in consensus.soma. The `commit-v1` header carries
+`decode_commit_certificate` in core/consensus.soma. The `commit-v1` header carries
 height and round, followed by seven string fields per witness (signer,
 signature, and the five exact signed message fields). It preserves signed
 numeric spelling and signatures without splitting strings on whitespace.

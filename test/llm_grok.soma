@@ -1,7 +1,7 @@
 (** Grok's reply, decided in Soma: choices.0.message.content over the
     yojson binding's tokens, with Yojson.Safe.Util's old semantics. Fixed
     token lists, no node and no binding. *)
-Import util market agent node.
+Import core.util core.market core.agent runtime.node.
 Require Soma.Host.
 
 check (label got expected : string) : string :=

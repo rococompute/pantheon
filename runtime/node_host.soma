@@ -1,6 +1,6 @@
 (** The host's work, in the kernel (U-1; docs/SHELL-IN-SOMA.md, "The
     host's work"): what a node asks of its checkouts, its model and CI,
-    carried out by the kernel (node_kernel.soma) over a few primitives a
+    carried out by the kernel (runtime/node_kernel.soma) over a few primitives a
     runner does: git in a directory ([IoGit], [IoGitEnv]), a path's bytes
     ([IoPathProbe] ... [IoReadText]), temporary files and directories, a
     program run to its end ([IoRun]), and processes started, read and
@@ -11,7 +11,7 @@
     inbox's last poll, and the jobs: what each one's end becomes, what
     goes with it, its time limit, whether the node stopped it, and CI's
     turns. *)
-Import util nodeio.
+Import core.util runtime.nodeio.
 
 (** What the host's work knows from the node's setup: the home (absolute),
     the backend, the governed repositories with their genesis commits, the
@@ -29,7 +29,7 @@ Record hworld := {
   hw_ci_image : string;
   hw_ci_sandbox : string }.
 
-(** what a job's end becomes, given its outcome (node.soma's job_result):
+(** what a job's end becomes, given its outcome (runtime/node.soma's job_result):
     a model's raw output, codex's (its reply file beside it), a check's (a
     tree, or a failure), a CI run's *)
 Inductive job_done :=
@@ -140,7 +140,7 @@ merge_who (date : string) : list string :=
     date from the version, the message on git's standard input (the spec
     in it is the leader's text, which an argument can't carry whole:
     docs/SECURITY-REVIEW-2.md P-17). Its tree and short id, or none when
-    git commit failed; node.soma's perform_merge decides the rest. *)
+    git commit failed; runtime/node.soma's perform_merge decides the rest. *)
 hmerge_commit (dir version tree bid task bidder spec : string) : nprog nanswer :=
   let date := hcat ["@", hdec_add "1700000000" version, " +0000"] in
   let msg := hcat ["Merge bid ", bid, " for task ", task, " by ", bidder, hnl, hnl, spec, hnl, hnl,
@@ -227,7 +227,7 @@ hstart_job (s : host_state) (limit : PrimFloat.float) (prog stdin : string) (arg
     node reads it. Exits other than 0, 124 and 137 (the run's time and
     memory budgets, also the bid's) are 86, the bid's failure; any other
     failing exit of the runner (docker's own 125-127, ci-sandbox's 2 and 3)
-    is the runner's, so this node's (node.soma's ci_outcome). A build
+    is the runner's, so this node's (runtime/node.soma's ci_outcome). A build
     the kernel killed for the container's memory (oom_kill in its cgroup)
     ends as 137, as docker ends the container itself
     (docs/SECURITY-REVIEW-2.md P-6). "( " with a space: where sh is bash
@@ -248,7 +248,7 @@ ci_docker_args (name mem out image script : string) : list string :=
     runner, or in a container with no network, a read-only root, a memory
     and process cap and nobody's uid, the tree read-only at /work. An hour
     at most. What its outcome is (passed, the bid's failure or this node's
-    problem) is node.soma's ci_outcome, from the node's own signals. *)
+    problem) is runtime/node.soma's ci_outcome, from the node's own signals. *)
 hci_start (hw : hworld) (env : list string) (s : host_state) (w : list string) : nprog (host_state * option (list string)) :=
   match w with
   | [id, out, tree, ci, name] =>
@@ -297,8 +297,8 @@ hci_launch (hw : hworld) (env : list string) (s : host_state) (w : list string) 
     end).
 
 (** A check for an attestor: the node's own binary applies the bid's
-    edits on the head in a fresh clone (cli.soma's [pantheon check]); its
-    output, a tree or why not, becomes node.soma's check_apply_out. The
+    edits on the head in a fresh clone (app/cli.soma's [pantheon check]); its
+    output, a tree or why not, becomes runtime/node.soma's check_apply_out. The
     tree goes on to the repository's CI, if it has one, which removes it
     after; without CI it goes with the job. *)
 hcheck (hw : hworld) (s : host_state) (id repo head : string) (edits : list string) : nprog (nanswer * host_state) :=
@@ -372,7 +372,7 @@ hstop (s : host_state) (id : string) (marked : hjob -> bool) (mark : hjob -> hjo
   | None => hkeep s ans_ok
   end.
 
-(** A finished job resumed with the node's outcome (node.soma's
+(** A finished job resumed with the node's outcome (runtime/node.soma's
     job_result): what its end becomes queued (a CI run's frees CI for the
     next), what went with it removed, and the events queued so far. *)
 hcomplete (hw : hworld) (s : host_state) (id result : string) : nprog (nanswer * host_state) :=
@@ -386,7 +386,7 @@ hcomplete (hw : hworld) (s : host_state) (id result : string) : nprog (nanswer *
 
 (** What the runner saw of the jobs, as the node's events: their output as
     it is, and a job's end ([job_ended]: how it ended, the runner's facts)
-    as node.soma's [job_finished], with the time limit it was stopped for
+    as runtime/node.soma's [job_finished], with the time limit it was stopped for
     ("%.0f", "" if none) and whether it printed too much; the job waits
     for its outcome. The events queued since the last look come first. *)
 hevent (s : host_state) (ev : list string) : host_state * list string :=
@@ -463,7 +463,7 @@ host_op (hw : hworld) (s : host_state) (op : node_op) : option (nprog (nanswer *
   | _ => None
   end.
 
-(** the host's world from the node's setup (cli.soma's node_setup: the
+(** the host's world from the node's setup (app/cli.soma's node_setup: the
     settings, CI commands by repository at index 4, the repositories at
     index 6, [name, genesis commit, ...]) *)
 hworld_of (config : list (list string)) : hworld :=

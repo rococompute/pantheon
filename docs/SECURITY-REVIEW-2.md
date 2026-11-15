@@ -66,17 +66,17 @@ end.
   `Admitted`/`unk` proofs (S-4). The attestors' models are the remaining
   guard.
 - **Can the leader grade its own work?** The leader cannot bid
-  (`bidders_for` excludes it, `market.soma:141-148`; `apply "bid"` rejects
+  (`bidders_for` excludes it, `core/market.soma:141-148`; `apply "bid"` rejects
   the leader, `:265-266`) and cannot merge its own bid
-  (`market.soma:291-292`; `market.proof:381-403`
+  (`core/market.soma:291-292`; `core/market.proof:381-403`
   `leader_never_merges_its_own_bid`/`merge_needs_leader_and_others_bid`).
   Its approval is implicit in `approvals` (one of the three,
-  `market.soma:214-215`), it does not attest (`:300-301`), and it chooses
+  `core/market.soma:214-215`), it does not attest (`:300-301`), and it chooses
   which bid to merge and runs its own check. A later leader can merge a bid
   left pending by an earlier term; the bidder keeps the credit
-  (`finalize`, `market.soma:188-209`).
+  (`finalize`, `core/market.soma:188-209`).
 - **Can a merge be stolen?** Only the current leader's signed `merge`
-  transaction creates a pending merge (`market.soma:285-295`), and only the
+  transaction creates a pending merge (`core/market.soma:285-295`), and only the
   leader can reject/close (`:311-334`); a non-leader cannot merge. A later
   leader can finish a pending bid, and `finalize` credits `bidder b`, so the
   work is not reassigned. The leader can still choose which bid to merge and
@@ -96,10 +96,10 @@ end.
 | Earlier item | Status now | Where |
 |---|---|---|
 | C1 symlink contents in a signed bid | **Fixed** (index blobs, regular modes only) | `shell.ml:282-314`, `test/edits.sh:85-93` |
-| C2 unary `Nat.of_uint` freeze | **Fixed** (`num_opt` 1–18 digits, one pass) | `util.soma:58-66`, `consensus.proof:5-9` |
+| C2 unary `Nat.of_uint` freeze | **Fixed** (`num_opt` 1–18 digits, one pass) | `core/util.soma:58-66`, `core/consensus.proof:5-9` |
 | H1 `.git/config` commands | **Partial** — fixed when the model is another user; the checkout's `PANTHEON_GITDIR` is still model-writable when node and model share a user, and filters are not disabled | `shell.ml:897-905`, `test/edits.sh:95-105`; finding **P-2** |
 | H2 host diplomats own every secret | **Open** | finding **P-1** |
-| H3 connection/line/JSON DoS | **Partial** — caps added, but 64 × 31 MB and 4000 × 12.8 MB still fit | `shell.ml:474-477`, `consensus.soma:222-228`; finding **P-13** |
+| H3 connection/line/JSON DoS | **Partial** — caps added, but 64 × 31 MB and 4000 × 12.8 MB still fit | `shell.ml:474-477`, `core/consensus.soma:222-228`; finding **P-13** |
 | H4 locks lost on restart | ~~Open~~ **Fixed later**: locks persist in `consensus.state` | finding **P-4**, `test/restart-lock.sh`, `test/e2e.sh` restart-lock |
 | H5 pool locked by future nonces | **Open** | finding **P-5** |
 | H6 no secret scanning | **Open** (see secrets section; `model_env` is a blacklist) | `shell.ml:773-775`, secrets section |
@@ -128,7 +128,7 @@ already says a diplomat "could read the other nodes' keys"; `docs/SAFETY.md:45-6
 still presents "models are kept away from keys" as if it held on the host.
 
 **Scenario.** A task, diff, rejection reason or CI output contains an
-instruction (the fences in `agent.soma` only discourage) telling the diplomat
+instruction (the fences in `core/agent.soma` only discourage) telling the diplomat
 to run `cat ~/pantheon/net/claude/key.json`, or `git push --force` to the
 default branch. The diplomat has full tool permissions and the same user; it
 can read all four keys, forge votes, or bypass the mirror's "only what merged"
@@ -230,7 +230,7 @@ Docker CI path, not only `ci-sandbox`.
 
 ## P-4. Pantheon: consensus locks are not persisted, so a restart can break safety
 
-**Severity: High (safety).** `consensus.soma:28-36` keeps `lockr`, `lockv`,
+**Severity: High (safety).** `core/consensus.soma:28-36` keeps `lockr`, `lockv`,
 `validr`, `validv` in memory. On restart the shell replays `blocks.log`
 (`shell.ml:1100-1108`) but starts consensus at the next height with
 `lockr = 0`; `signed.log` prevents a second vote for the *same*
@@ -250,9 +250,9 @@ e2e scenario. This needs a new chain or a compatible replay.
 
 ## P-5. Pantheon: 500 future-nonce transactions can lock the pool for good
 
-**Severity: High (liveness).** `node.soma:27-28` (`poolable`) accepts any
-nonce greater than the agent's next one; `node.soma:105` caps the pool at
-500 overall. `market.soma:433-434` (`block_ok`) only admits the exact next
+**Severity: High (liveness).** `runtime/node.soma:27-28` (`poolable`) accepts any
+nonce greater than the agent's next one; `runtime/node.soma:105` caps the pool at
+500 overall. `core/market.soma:433-434` (`block_ok`) only admits the exact next
 nonce, so the future-nonce entries never clear. `build_block` decodes the
 whole pool on every event.
 
@@ -326,7 +326,7 @@ canonicalize the result under the cache and reject anything that escapes.
 **Severity: Medium.** `shell.ml:957-958` decides `docker_down` by searching
 the CI output for `Cannot connect to the Docker daemon` or `Unable to find
 image`; `:972` turns that into `node problem: ...`, and `:983` sets
-`stage = node`. `agent.soma:371-374` (`abstain`) then sends no vote.
+`stage = node`. `core/agent.soma:371-374` (`abstain`) then sends no vote.
 
 **Scenario.** A bid's `test.sh` prints `Cannot connect to the Docker
 daemon`; every attestor classifies the check as its own problem and
@@ -356,7 +356,7 @@ or include a hash of the test in the CI command; make it explicit in
 
 ## P-8. Pantheon: the leader draw can be ground by revealing an old link
 
-**Severity: Medium.** `market.soma:234-236` (`reaches`) accepts a reveal that
+**Severity: Medium.** `core/market.soma:234-236` (`reaches`) accepts a reveal that
 hashes to the agent's tip in 1 to 64 steps; `:336-340` accepts it. The
 honest shell reveals exactly one step, but a Byzantine node can send a
 `reveal` transaction for any link 2..64 back. The agent is then "revealed",
@@ -379,8 +379,8 @@ intentional, document it and its cost.
 **Severity: Medium.** `shell.ml:400-405` only checks `List.length files < 4`;
 it does not require exactly 4, unique names or unique public keys. The
 consensus derives `f = (n-1)/3` and `quorum = n - f`
-(`consensus.soma:38-40`), but the market hardcodes "3 of 4" in
-`approvals`/`settle` (`market.soma:214-215`).
+(`core/consensus.soma:38-40`), but the market hardcodes "3 of 4" in
+`approvals`/`settle` (`core/market.soma:214-215`).
 
 **Scenario.** A `parts/` with five files is accepted; consensus uses
 `f=1`, `quorum=4` for five nodes, while the market merges on three
@@ -522,7 +522,7 @@ model that runs `soma build`.
 
 **Severity: Medium.** `shell.ml:474-477` allows 64 inbound connections and a
 31 MB line; `:1228-1237` buffers and parses a line before authentication.
-`consensus.soma:222-228` keeps up to 4000 messages per height, and does not
+`core/consensus.soma:222-228` keeps up to 4000 messages per height, and does not
 require votes to have empty values. A 50-transaction block is 12.8 MB.
 
 **Scenario.** A no-key attacker opens 64 connections and sends 31 MB of flat
@@ -537,9 +537,9 @@ proposals per round, and cap the log by bytes rather than count.
 
 ## P-14. Pantheon: a nested `.gitattributes` can freeze a repository
 
-**Severity: Medium.** The default deny list (`agent.soma:31`) includes
+**Severity: Medium.** The default deny list (`core/agent.soma:31`) includes
 `.gitattributes` and `.gitmodules`, but `violation` uses `starts d p`
-(`agent.soma:48-53`), so `sub/.gitattributes` is allowed. `safe_path`
+(`core/agent.soma:48-53`), so `sub/.gitattributes` is allowed. `safe_path`
 (`shell.ml:136-138`) only excludes `.git`, not these files. The check clone
 and the long-lived node checkout can apply attributes differently.
 
@@ -584,8 +584,8 @@ reply, cap the number of keys/values, and make `flatten_reply` iterative.
 
 ## P-17. Pantheon: a NUL in a task spec can stop every node from committing a merge
 
-**Severity: Medium (consistency).** `market.soma:258` stores any spec string;
-`finalize` (`market.soma:193,208`) emits it in the `merge` output;
+**Severity: Medium (consistency).** `core/market.soma:258` stores any spec string;
+`finalize` (`core/market.soma:193,208`) emits it in the `merge` output;
 `shell.ml:1008` puts it in the `git commit -m` argument.
 
 **Scenario.** JSON can carry `\u0000`, which becomes a NUL in the OCaml
@@ -611,13 +611,13 @@ pass the commit message with `-F`/stdin; add a test.
 | Soma is not a sandbox | `GRADUAL.md:440-444` | Understates opam/dune/Mirage/Lean (S-5). |
 | Lean theorems are axioms to Soma | `theories/Soma/Lean.v` | Trusted as Lean's kernel; `soma explore` lists them. |
 | `model_env` strips only `PANTHEON_*` | `shell.ml:773-775` | Other secrets in the node's environment reach the model; use an allowlist. |
-| No secret scanning anywhere | `agent.soma:48-53`, `shell.ml:1000-1013` | A model can put a key in a bid; the chain keeps it. Add a scan before attest/merge (H6). |
+| No secret scanning anywhere | `core/agent.soma:48-53`, `shell.ml:1000-1013` | A model can put a key in a bid; the chain keeps it. Add a scan before attest/merge (H6). |
 | Inbox HTTP is unbounded threads | `scripts/inbox-http.py:256-263` | A token holder can open many waits; add a pool/per-token limit. |
 | `pantheon-inbox` claim is not atomic; `skip` JSON can be invalid | `scripts/pantheon-inbox:45-69,84-89` | Two waiters can claim; control characters in `why` break JSON. |
 | Soma `Declare ML Module` is refused by a text search | `soma_rocq.ml:209-213` | `Declare  ML  Module` (extra spaces) loads a plugin; the docs say refused. |
 | `OCaml Bind`/`Wasm Bind` take arbitrary paths; `project_cache_key`/`copy_tree` follow symlinks | `soma_ocaml.ml:255-258`, `soma.ml:290-318` | A file name can read outside the project; a symlink loop can make a build hang. |
 | CI time is one hour, CPU is unlimited; Soma's build has no timeout of its own | `shell.ml:951`, `deploy/host/ci-sandbox`, `soma-ci` | A bid can consume the CI slot; `timeout`/`flock -w`/CPU limits would help. |
-| `blocks.log`, tasks, `served`, `signed.log` grow without bound | `shell.ml`, `market.soma` | Long-running chains use disk/memory; prune or document. |
+| `blocks.log`, tasks, `served`, `signed.log` grow without bound | `shell.ml`, `core/market.soma` | Long-running chains use disk/memory; prune or document. |
 | ~~`reference/go/` was not audited here~~ | `pantheon/reference/go` | Removed after commit `4a6eab3`; the review focused on the Soma version. |
 | Personal data in history/docs | see below | Author emails, GitHub user, host name; decide before public. |
 
@@ -652,7 +652,7 @@ Smaller items, not detailed above:
 - Edit matching is quadratic (`shell.ml:185-192` `positions`, used by
   `apply_edits` in the node's main loop); a large file plus a long `old`
   string can stall every node on a merge. Use a linear search and cap sizes.
-- A peer can ask for old heights repeatedly (`consensus.soma:223-224`,
+- A peer can ask for old heights repeatedly (`core/consensus.soma:223-224`,
   `shell.ml:1035-1048`); each answer signs up to 51 blocks. Rate-limit per
   peer and cache signed answers.
 - Muse's VM reaches every port on the host's localhost
@@ -677,7 +677,7 @@ Smaller items, not detailed above:
 
 # Proofs and claims
 
-**What is actually proved.** `consensus.proof` and `market.proof` contain more
+**What is actually proved.** `core/consensus.proof` and `core/market.proof` contain more
 than the "Proved so far" table in `docs/PROOFS.md:7-16`: the table lists six
 theorems, while the files also prove `r_decide_needs_quorum`,
 `r_catch_up_needs_weak`, `locks_only_move_forward`, `one_precommit_per_round`,

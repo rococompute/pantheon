@@ -1,5 +1,5 @@
 (** What is proved about consensus, so far. Each theorem here is checked
-    whenever consensus.soma is built. docs/PROOFS.md lists what to prove next. *)
+    whenever core/consensus.soma is built. docs/PROOFS.md lists what to prove next. *)
 
 (** Peer messages' numbers: digits only, at most 18 of them, so a Byzantine
     node's "999...9" is refused before it's read (docs/SECURITY-REVIEW.md, C2). *)

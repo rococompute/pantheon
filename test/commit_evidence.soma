@@ -1,6 +1,6 @@
 (** Model the existing chain-bound signature callback deterministically.
     Production will use node_verify_line; this is not a new cryptosystem. *)
-Import util market consensus.
+Import core.util core.market core.consensus.
 Require Soma.Host.
 
 check (b : bool) (s : string) : string := append (if b then "ok " else "FAIL ") s.

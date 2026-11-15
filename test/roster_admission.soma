@@ -1,6 +1,6 @@
 (** Admission consumes agreed records, never local observations. This tests
     the typed transaction boundary; live certificate transport is pending. *)
-Import util market.
+Import core.util core.market.
 Require Soma.Host.
 
 check (b : bool) (s : string) : string := append (if b then "ok " else "FAIL ") s.

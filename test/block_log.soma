@@ -1,5 +1,5 @@
 (** A blocks.log line becomes the next replay, or nothing. Fixed tokens. *)
-Import util market agent node.
+Import core.util core.market core.agent runtime.node.
 Require Soma.Host.
 
 check (label got expected : string) : string :=

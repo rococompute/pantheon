@@ -1,13 +1,13 @@
-(** The binary's runner: node programs (nodeio.soma's [nprog]) carried
+(** The binary's runner: node programs (runtime/nodeio.soma's [nprog]) carried
     out by Soma.Host's primitives, each operation the one Soma.Host
     declares for it ([host_prim]), and [pantheon node]'s loop: the node's
-    kernel (node_kernel.soma), whose network and named files are
-    node_net.soma's here over the host's sockets and paths, as the
+    kernel (runtime/node_kernel.soma), whose network and named files are
+    runtime/node_net.soma's here over the host's sockets and paths, as the
     unikernel's runner carries them out with Sandbox
-    (node_sandbox.soma), and whose git and programs are node_git.soma's
-    over the host's. Nothing else of the node calls the host: node.soma,
-    cli.soma and what they import are Soma over the node's operations. *)
-Import util nodeio node node_kernel node_net node_git node_path node_file node_service cli.
+    (runtime/node_sandbox.soma), and whose git and programs are runtime/node_git.soma's
+    over the host's. Nothing else of the node calls the host: runtime/node.soma,
+    app/cli.soma and what they import are Soma over the node's operations. *)
+Import core.util runtime.nodeio runtime.node runtime.node_kernel runtime.node_net runtime.node_git runtime.node_path runtime.node_file runtime.node_service app.cli.
 Require Soma.Host.
 
 (** One primitive on the host: the operation's fields handed to the
@@ -74,9 +74,9 @@ Fixpoint run_prims {A : Type} (p : nprog A) : A :=
   end.
 
 (** One operation as the binary carries it out: git and programs as
-    node_git.soma runs them ([git_op]), a path in a checkout looked at as
-    node_path.soma does ([path_op]), a file written whole, directories
-    made and files removed as node_file.soma does ([file_op]), each over
+    runtime/node_git.soma runs them ([git_op]), a path in a checkout looked at as
+    runtime/node_path.soma does ([path_op]), a file written whole, directories
+    made and files removed as runtime/node_file.soma does ([file_op]), each over
     the shell's primitives;
     the rest by the shell's primitives *)
 shell_answer (op : node_op) : nanswer :=
@@ -104,7 +104,7 @@ Fixpoint run_shell {A : Type} (p : nprog A) : A :=
   end.
 
 (** A node's or the service's program: the network's, the named files'
-    and the service socket's operations carried out by node_net.soma
+    and the service socket's operations carried out by runtime/node_net.soma
     ([net_op]) from its state, which it hands on; the rest by the shell *)
 Fixpoint run_net {A : Type} (s : net_state) (p : nprog A) : A * net_state :=
   match p with
@@ -129,7 +129,7 @@ net_open (config : list (list string)) : net_state :=
     than the end of the process *)
 no_sigpipe {A : Type} (p : nprog A) : nprog A := nbind (nexec IoNoSigpipe) (fun _ => p).
 
-(** [pantheon node]: the setup (cli.soma's node_setup, run with no node),
+(** [pantheon node]: the setup (app/cli.soma's node_setup, run with no node),
     the network's state from it, then the kernel: listening, startup and
     the loop's turns, each from the state the last left *)
 run_node (home : string) (flags : list string) : unit :=
@@ -149,7 +149,7 @@ run_node (home : string) (flags : list string) : unit :=
 (** [pantheon service HOME HOST:PORT]: the setup, the network's state as
     [pantheon node] makes it, what the service knows of itself, then the
     requests of the node's unikernel answered as the node's own host work
-    asks (node_service.soma's [service_tick_prog]) *)
+    asks (runtime/node_service.soma's [service_tick_prog]) *)
 run_service (home addr : string) (flags : list string) : unit :=
   match run_shell (node_setup home flags) with
   | Some config =>

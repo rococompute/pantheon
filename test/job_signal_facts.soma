@@ -1,6 +1,6 @@
 (** Fixed signal facts, no process or timing dependency; the last check also
     reads the host constants through the production binding. *)
-Import util node.
+Import core.util runtime.node.
 Require Soma.Host.
 check (b : bool) (label : string) : string := append (if b then "ok " else "FAIL ") label.
 codes : list string := ["K", "T", "S", "A", "I"].

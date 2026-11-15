@@ -1,6 +1,6 @@
 #!/bin/sh
 # The only way the node's user reaches Docker, through sudo. The node runs CI
-# as `docker run` with fixed sandbox flags (node_host.soma, hci_start); this accepts
+# as `docker run` with fixed sandbox flags (runtime/node_host.soma, hci_start); this accepts
 # that exact shape and nothing else, then runs Docker with flags of its own, so
 # a model that gets the node's uid can start a CI container (no network,
 # nobody's uid, a read-only root) and no other.

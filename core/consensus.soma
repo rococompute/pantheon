@@ -7,7 +7,7 @@
     earlier height asks the sender to catch up: the shell sends it the blocks
     it missed, as [Done] messages, and f + 1 matching ones are enough, since
     one of them is honest. *)
-Import util.
+Import core.util.
 
 Inductive kind := Proposal | Prevote | Precommit | Done.
 Scheme Boolean Equality for kind.
@@ -271,7 +271,7 @@ receive (c : consensus_state) (from : string) (fields : list string) : consensus
     round had going, which didn't outlive the process. The propose timer
     when no prevote was cast yet; the prevote and precommit timers when
     they had started (their one-time flags). The node's own messages are
-    sent again by the node (node.soma's [resume_signed_prog]), and the
+    sent again by the node (runtime/node.soma's [resume_signed_prog]), and the
     others' come again with their resends. Going on to the next round
     instead left a node alone in it: with exactly a quorum up, the others,
     who had voted in the round it left, waited there for its vote, and one

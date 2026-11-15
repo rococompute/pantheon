@@ -1,8 +1,8 @@
-(** A unikernel that runs a node program with node_sandbox.soma's
+(** A unikernel that runs a node program with runtime/node_sandbox.soma's
     interpreter: what test/node-sandbox.sh checks with soma build
     --no-image (the MirageOS project type-checks, no image is booted). *)
 Require Import Sandbox.
-Import nodeio node_host node_kernel node_sandbox.
+Import runtime.nodeio runtime.node_host runtime.node_kernel runtime.node_sandbox.
 
 world : kworld :=
   {| w_chain := "pantheon-test";
@@ -23,7 +23,7 @@ world : kworld :=
 iworld : img_world :=
   {| iw_service_host := ""; iw_service_port := 0; iw_token := "" |}.
 
-(** A decided block as node.soma's outputs make it: logged, stored, the
+(** A decided block as runtime/node.soma's outputs make it: logged, stored, the
     height set, the status written, a timer armed; the block and the peer
     count read back. *)
 demo : nprog bool :=

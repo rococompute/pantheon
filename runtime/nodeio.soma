@@ -1,8 +1,8 @@
 (** The node's I/O as one interface (U-1; docs/SHELL-IN-SOMA.md, "Two
     directions, and the unikernel"). Nothing here imports the host: these
     are values, which the binary interprets over Soma.Host's primitives
-    (node_shell.soma's [run_shell] and [host_prim]) and a unikernel can interpret
-    with Sandbox (node_sandbox.soma). *)
+    (runtime/node_shell.soma's [run_shell] and [host_prim]) and a unikernel can interpret
+    with Sandbox (runtime/node_sandbox.soma). *)
 From Corelib Require PrimFloat.
 From Corelib Require PrimInt63.
 Require Crypto.
@@ -83,13 +83,13 @@ Fixpoint smap_size {A : Type} (m : smap A) : nat :=
 (** ---- U-1: the node's I/O as one interface (docs/SHELL-IN-SOMA.md,
     "Two directions, and the unikernel") ----
     The node's effects are values of [node_op], as a Sandbox program's are
-    values of Sandbox.io: the kernel (node_kernel.soma) carries out the
+    values of Sandbox.io: the kernel (runtime/node_kernel.soma) carries out the
     node's tables, peer links, timers, files and signatures, its host's
-    work (node_host.soma) the jobs, checkouts and model calls; what is left
-    are primitives, which the binary's runner (node_shell.soma over
-    node_net.soma) hands Soma.Host, each to the primitive Soma.Host
+    work (runtime/node_host.soma) the jobs, checkouts and model calls; what is left
+    are primitives, which the binary's runner (runtime/node_shell.soma over
+    runtime/node_net.soma) hands Soma.Host, each to the primitive Soma.Host
     declares for it ([host_prim], its fields the arguments), and a unikernel
-    carries out with Sandbox (node_sandbox.soma). An operation's wire
+    carries out with Sandbox (runtime/node_sandbox.soma). An operation's wire
     form ([io_wire]; [io_of_wire] reads it back) is what an image sends
     its service. An effect's result is [(true, 0)]; the clock's is
     [(true, now)]. *)
@@ -233,10 +233,10 @@ Inductive node_op :=
 | IoSignedText
 | IoSignedRestore (slot vid : string) (fields : list string)
 | IoFail (message : string)
-(** the commands' I/O (cli.soma; their timestamped lines are [IoLog]'s and
+(** the commands' I/O (app/cli.soma; their timestamped lines are [IoLog]'s and
     the files they write [IoSave]'s): plain output, an exit status; files
     and directories; this directory; random bytes as hex (a job's fence
-    token is 8 of them; a new key's two starts, cli.soma's new_key, 128
+    token is 8 of them; a new key's two starts, app/cli.soma's new_key, 128
     each); git in a checkout (its output), a clone at a
     commit; a program started with its output and errors appended to a
     log (its pid), and, on an interrupt or a terminate, those processes
@@ -252,7 +252,7 @@ Inductive node_op :=
 | IoClone (url dir commit : string)
 | IoStartLogged (prog log : string) (args : list string)
 | IoStopOnSignal (pids : list string)
-(** the edits machinery's file and git work (cli.soma's edits_prog,
+(** the edits machinery's file and git work (app/cli.soma's edits_prog,
     checkout_edits_prog and check_tree_prog decide; they need no node): a
     path's kind, without following its last part ([kind, exec]: "file",
     "dir", "symlink", "other" or "none", then "true" when its owner may
@@ -270,7 +270,7 @@ Inductive node_op :=
 | IoTempDir (prefix : string)
 | IoRemoveTree (path : string)
 | IoGitEnv (dir stdin : string) (extra args : list string)
-(** processes (U-1; node_host.soma keeps the jobs): one started from the
+(** processes (U-1; runtime/node_host.soma keeps the jobs): one started from the
     directory [cwd], [stdin] its standard input and [env] its environment
     (found: the runner's name for it; not found: why it couldn't start),
     its output and end coming back as [job_bytes] and [job_ended] events;
@@ -281,7 +281,7 @@ Inductive node_op :=
 | IoProcKill (job : string)
 | IoRun (prog : string) (args : list string)
 | IoTempFile (prefix suffix text : string)
-(** the binary runner's (node_net.soma): the host's sockets by name and
+(** the binary runner's (runtime/node_net.soma): the host's sockets by name and
     the node's files by path, which carry out the kernel's [IoNet*] and
     [IoFile*] and the service's [IoServe*] there (a file written whole,
     [IoSave], is the commands' too) *)
@@ -299,13 +299,13 @@ Inductive node_op :=
 | IoSpawn (prog stdin cwd : string) (env args : list string)
 | IoWaitPid (pid : string)
 | IoKillPid (pid : string)
-(** the host's files, one call each (node_file.soma writes them whole
+(** the host's files, one call each (runtime/node_file.soma writes them whole
     and makes directories with these): [text] put in a file, created or
     emptied first, on disk before the answer when [sync] is "true"; a
     file's mode (octal, found when it's there); a rename; a directory
     synced to disk; one directory made; one file removed; a new private
     temporary file (its path); a program started on its own, never waited
-    for (node_file.soma's tree removed in the background). Each not found
+    for (runtime/node_file.soma's tree removed in the background). Each not found
     with why, when it failed. *)
 | IoFilePut (path text sync : string)
 | IoFileMode (path : string)
@@ -315,12 +315,12 @@ Inductive node_op :=
 | IoRemoveFile (path : string)
 | IoTempNew (prefix suffix : string)
 | IoStartDetached (prog : string) (args : list string)
-(** the consensus snapshot (node.soma's snapshot_text): saved atomically
+(** the consensus snapshot (runtime/node.soma's snapshot_text): saved atomically
     and synced before any vote it holds is sent; consensus.state's text,
     absent when there is none *)
 | IoSnapshotSave (text : string)
 | IoSnapshotLoad
-(** the node's service ([pantheon service], node.soma's [service_prog]),
+(** the node's service ([pantheon service], runtime/node.soma's [service_prog]),
     for a unikernel: listening at an address and port; the next request
     (found or not within [wait] seconds: its connection, then its fields:
     the token and an operation's wire form); the answer sent back on that
@@ -328,7 +328,7 @@ Inductive node_op :=
 | IoServeListen (address port : string)
 | IoServeNext (wait : string)
 | IoServeReply (conn found stamp : string) (fields : list string)
-(** the kernel's primitives (node_kernel.soma): what it asks of whatever
+(** the kernel's primitives (runtime/node_kernel.soma): what it asks of whatever
     runs it, named after Sandbox's own, which the unikernel does them
     with and Soma.Host does them with for the binary. Listening on an
     address and port (not found: why, in its data); what came in on the
@@ -357,7 +357,7 @@ Fixpoint resend_fields (fields : list string) : list string :=
   match fields with [] => [] | field :: rest => "field" :: field :: resend_fields rest end.
 
 (** Lists of lists on one wire: each list's values tagged "field", then
-    "alternate"; [nio_lists] reads them back (node.proof's
+    "alternate"; [nio_lists] reads them back (runtime/node.proof's
     nio_lists_reads_frames). *)
 Fixpoint nio_frame_lists (ls : list (list string)) : list string :=
   match ls with
@@ -716,7 +716,7 @@ io_of_wire (w : list string) : option node_op :=
     node's service"): what the binary runs as processes or keeps on the
     host's disk: git and paths in the checkouts, temporary files,
     processes and the events they give, the model's reply files and the
-    inbox (the kernel's node_host.soma decides what a merge, a model call,
+    inbox (the kernel's runtime/node_host.soma decides what a merge, a model call,
     a check or CI asks of them). Everything else is the image's own: its
     votes, blocks, peers and tables, and what the host's work keeps (the
     model's budget and limit, the held requests, the jobs). A service
@@ -829,7 +829,7 @@ Fixpoint nresult {A : Type} (ans : node_op -> nanswer) (p : nprog A) : A :=
     Pure, so any interpreter uses the same bytes and the same tables: the
     lines the node appends to blocks.log and signed.log (Yojson's output,
     byte for byte, as the old shell wrote them), and the tables it keeps
-    in memory for the operations, as one record. node_sandbox.soma
+    in memory for the operations, as one record. runtime/node_sandbox.soma
     interprets the operations with them. *)
 
 (** Yojson.Safe.to_string of a string's characters: a quote, a backslash

@@ -4,7 +4,7 @@
     for a task that already has a pending bid (on the chain or in flight) is
     dropped. A refused or expired in-flight bid clears, and the agent may bid
     again. Run with test/double-bid.sh. *)
-Import util market agent.
+Import core.util core.market core.agent.
 Require Soma.Host.
 
 market0 : obj :=

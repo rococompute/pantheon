@@ -1,5 +1,5 @@
-(** nodeio.soma's pure part, which any interpreter shares: the lines blocks.log and signed.log get (Yojson's bytes, as the old shell's writers made them), the clock's decimal text read back, and what the table operations do. No node, no unikernel. *)
-Import util nodeio.
+(** runtime/nodeio.soma's pure part, which any interpreter shares: the lines blocks.log and signed.log get (Yojson's bytes, as the old shell's writers made them), the clock's decimal text read back, and what the table operations do. No node, no unikernel. *)
+Import core.util runtime.nodeio.
 Require Soma.Host.
 From Soma Require Import OCaml.
 

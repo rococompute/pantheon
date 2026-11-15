@@ -35,7 +35,7 @@ in [PROOFS.md](PROOFS.md); global consensus safety is not yet proved.
 - A merge needs 3 of 4 approvals: the leader, who proposes, plus attestors.
   The bidder's approval counts too after `fallback_blocks`, so one silent
   attestor can't block everything. Even then, at least one attestor must vote
-  yes. `market.proof` proves both rules.
+  yes. `core/market.proof` proves both rules.
 - An attestor's node applies the bid's edits to the head in a fresh clone,
   computes the resulting tree, and runs CI if it has one. Only then does it
   ask its model. A yes names that tree.
@@ -113,7 +113,7 @@ Linux host.
 
 Failed CI output's last 400 characters can enter rejection reasons, the
 replicated chain and other models' prompts in both runners. The agent
-redacts what looks like a secret first (`redact` in `util.soma`: long words
+redacts what looks like a secret first (`redact` in `core/util.soma`: long words
 mixing letters and digits, and the value after a name ending in key, token,
 secret or password), but that is a filter, not a guarantee: a secret that is
 short, all letters, or split by spaces gets through. Read-only does not mean

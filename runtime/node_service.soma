@@ -2,16 +2,16 @@
     "The node's service"): the host's work a unikernel asks for, answered
     only as the node's own host work asks it. A request with the node's
     token, for one of the host's operations ([service_request_of], in
-    node.soma), is carried out only when it is one of the shapes
-    node_host.soma and node.soma make, from what the service knows itself:
+    runtime/node.soma), is carried out only when it is one of the shapes
+    runtime/node_host.soma and runtime/node.soma make, from what the service knows itself:
     its setup (the home, the backend, CI), its own binary and environment,
     and the temporary paths it made. Anything else is refused, said in the
     service's log, and nothing of it runs. A path is under HOME/repos,
     HOME/inbox or a temporary path the service made, with no ".." in it,
     and nothing on the way to it below that root is a symlink (the service
-    looks first). node_service.proof proves what it refuses, and that what
+    looks first). runtime/node_service.proof proves what it refuses, and that what
     the node's host work asks is never refused. *)
-Import util nodeio node node_host.
+Import core.util runtime.nodeio runtime.node runtime.node_host.
 
 (** What the service knows of itself: the node's token, the host's world
     from its setup, its own binary and its environment. *)
@@ -38,7 +38,7 @@ sv_no_up (p : string) : bool :=
 
 (** where the service's paths may be: the checkouts, the inbox, and what
     it made (a temporary directory's git directory sits beside it, a cmd:
-    patch's: node.soma's tool_job_of); only absolute ones *)
+    patch's: runtime/node.soma's tool_job_of); only absolute ones *)
 sv_roots (w : service_world) (made : list string) : list string :=
   filter (starts "/")
     ([hjoin (hw_home (sw_world w)) "repos", hjoin (hw_home (sw_world w)) "inbox"]
@@ -88,7 +88,7 @@ sv_tool_names : list string := ["PANTHEON_WORKTREE=", "PANTHEON_GITDIR=", "PANTH
 sv_env_ok (w : service_world) (e : string) : bool :=
   existsb (seq e) (sw_env w) || existsb (fun pre => starts pre e) sv_tool_names.
 
-(** a backend's arguments, as node.soma's backend_launch has them *)
+(** a backend's arguments, as runtime/node.soma's backend_launch has them *)
 sv_launch_args (backend : string) : list string := tl (tl (tl (backend_launch backend))).
 
 (** CI in a container, as node_host's hci_start makes it: its name one the

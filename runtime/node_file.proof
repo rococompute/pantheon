@@ -1,4 +1,4 @@
-(** How the binary writes its files (node_file.soma), whatever the host's
+(** How the binary writes its files (runtime/node_file.soma), whatever the host's
     primitives answer: a file written whole is touched only by the rename
     of its temporary file, after the text is put (and on disk, when it
     must be) and its mode kept; a failed put renames nothing; a durable

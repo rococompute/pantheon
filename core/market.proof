@@ -1,5 +1,5 @@
 (** What is proved about the market, so far. Each theorem is checked whenever
-    market.soma is built. docs/PROOFS.md lists what to prove next. *)
+    core/market.soma is built. docs/PROOFS.md lists what to prove next. *)
 
 (** The leader supplies one approval; fallback supplies at most one more. *)
 Theorem without_fallback_attestors_must_approve :

@@ -1,8 +1,8 @@
 # Proof inventory and remaining work
 
 `soma build main.soma` checks the proof files. This inventory includes every
-Theorem, Lemma, Corollary and Example in `consensus.proof` and `market.proof`
-(and the main statements of `node_service.proof`, `node_path.proof`, `node_file.proof`, `node_git.proof` and `cli.proof`, below),
+Theorem, Lemma, Corollary and Example in `core/consensus.proof` and `core/market.proof`
+(and the main statements of `runtime/node_service.proof`, `runtime/node_path.proof`, `runtime/node_file.proof`, `runtime/node_git.proof` and `app/cli.proof`, below),
 with its exact source name. These are statements about the pure definitions,
 not proofs of Soma.Host's primitives (the host's I/O), extraction to machine integers, cryptography,
 OS isolation, or deployed end-to-end safety. Soma.Host's I/O is trusted,
@@ -14,7 +14,7 @@ commands need not do so. Trusted toolchains and build-cache provenance matter.
 
 ## Checked statements
 
-### consensus.proof
+### core/consensus.proof
 
 | Name | What it proves; limits |
 |---|---|
@@ -53,7 +53,7 @@ commands need not do so. Trusted toolchains and build-cache provenance matter.
 | `same_round_steps_keep_precommit` | The defined same-round rule closure preserves step 2; not arbitrary execution traces. |
 | `one_precommit_per_round` | After one precommit, the specified same-round rule trace cannot emit another; not a global safety or crash-recovery theorem. |
 
-### market.proof
+### core/market.proof
 
 | Name | What it proves; limits |
 |---|---|
@@ -104,9 +104,9 @@ commands need not do so. Trusted toolchains and build-cache provenance matter.
 | `second_reveal_for_a_draw_is_refused` | Immediately after acceptance, another reveal from that agent is refused; does not cover a later draw. |
 | `accepted_reveals_for_a_draw_are_equal` | Two alternatives accepted from the same state hash to the same tip; equality requires the explicit unique-preimage premise, not proved SHA-256 injectivity. |
 
-### node_service.proof
+### runtime/node_service.proof
 
-What the node's service carries out for an image (node_service.soma;
+What the node's service carries out for an image (runtime/node_service.soma;
 docs/SHELL-IN-SOMA.md, "The node's service"). Statements about its
 policy functions, not about Soma.Host's primitives or the programs it
 starts.
@@ -121,12 +121,12 @@ starts.
 | `processes_are_the_nodes_own` | A process it starts is its binary, the model, docker, its sandbox runner or its `cmd:` backend, from a path it allows, with its own environment's entries and a `cmd:` patch's. |
 | `runs_are_cleanup` | A program run to its end is `rm`, `chmod` or `docker`. |
 | `git_takes_no_options_of_its_own` | Every git argument is one of the host work's words, not an option, or a clone's git directory it allows. |
-| `checkout_git_is_served`, `merge_commit_is_served`, `tool_checkout_is_served`, `model_launches_are_served`, `check_job_is_served`, `ci_is_served`, `cmd_backend_is_served`, `service_environment_is_served`, `cleanup_is_served`, `temporary_names_are_served` | What node_host.soma and node.soma ask, on paths it allows, is allowed: the restriction takes nothing the node needs, given the service runs with the image's flags. |
+| `checkout_git_is_served`, `merge_commit_is_served`, `tool_checkout_is_served`, `model_launches_are_served`, `check_job_is_served`, `ci_is_served`, `cmd_backend_is_served`, `service_environment_is_served`, `cleanup_is_served`, `temporary_names_are_served` | What runtime/node_host.soma and runtime/node.soma ask, on paths it allows, is allowed: the restriction takes nothing the node needs, given the service runs with the image's flags. |
 | `the_key_and_beyond_are_refused`, `programs_beyond_the_nodes_are_refused` | Examples on one service's world: the key, `..`, a root's sibling, git aliases and upload packs, `GIT_SSH_COMMAND`, `LD_PRELOAD`, another CI image, the clock. |
 
-### node_path.proof
+### runtime/node_path.proof
 
-What a path probe answers (node_path.soma), for any answers the host's
+What a path probe answers (runtime/node_path.soma), for any answers the host's
 lstat gives; the lstat itself is Soma.Host's, and a change between the
 probe and the operation is outside it.
 
@@ -138,9 +138,9 @@ probe and the operation is outside it.
 | `probe_none_is_missing` | Answering "none", some part isn't there. |
 | `probe_answers` | It answers "symlink", "none", "dir" or "file". |
 
-### node_file.proof
+### runtime/node_file.proof
 
-How the binary writes its files (node_file.soma), for any answers the
+How the binary writes its files (runtime/node_file.soma), for any answers the
 host's one-call primitives give; what the file system does with a
 rename or a sync is the host's.
 
@@ -154,9 +154,9 @@ rename or a sync is the host's.
 | `failed_save_ends` | A save that failed is said and the binary ends: it never answers as if written. |
 | `remove_tree_starts_rm` | A tree's removal is one program started on its own, `rm -rf -- PATH`, the path its one operand; it always answers done. That rm removes the tree, later, is the host's. |
 
-### node_git.proof
+### runtime/node_git.proof
 
-Git and programs as the binary runs them (node_git.soma), for any
+Git and programs as the binary runs them (runtime/node_git.soma), for any
 answers the host's processes give; that a pipe's reads are the
 program's output, and what the program does, are the host's.
 
@@ -172,7 +172,7 @@ program's output, and what the program does, are the host's.
 | `git_env_keeps_host_git_out` | Git's environment holds the entries asked for, the fixed three, and the host's without any `GIT_` one. |
 | `git_runs_only_git` | Git starts only "git", from where the binary is, with the fixed config flags and that environment; the rest is its input's file, its pipe and its wait. |
 
-### cli.proof
+### app/cli.proof
 
 Besides the commands' parsing and JSON examples:
 

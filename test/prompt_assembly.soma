@@ -1,5 +1,5 @@
 (** Pure prompt assembly: fixed repository data, no node, sockets or timers. *)
-Import util market agent node.
+Import core.util core.market core.agent runtime.node.
 Require Soma.Host.
 
 fixture_plan : string := "2026-11-11

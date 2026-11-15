@@ -1,7 +1,7 @@
 (** A node: consensus, the market it orders blocks for, its agent, and a
     pool of transactions waiting for a block. [step] is everything the shell
     runs: it takes one event and gives back what to do. *)
-Import util nodeio consensus market agent cli.
+Import core.util runtime.nodeio core.consensus core.market core.agent app.cli.
 (* [float] and its literals, OCaml's (Soma.OCaml) *)
 From Soma Require Import OCaml.
 From Stdlib Require Import Ascii.
@@ -187,7 +187,7 @@ step (n : node_state) (ev : list string) : node_state * list (list string) :=
 
 (** ---- Step 2 (docs/SHELL-IN-SOMA.md): the node loop in Soma ----
     The loop holds the state and drives [step]; the shell once bound
-    [node_open] (I/O setup; gone: node_net.soma), startup data, [events] (one select turn),
+    [node_open] (I/O setup; gone: runtime/node_net.soma), startup data, [events] (one select turn),
     smaller output bindings (every output case is decided in Soma),
     the snapshot ([IoSnapshotSave]), [note_refused] and [forever]. An effect is a field list: ["perform"; output...],
     ["save_snapshot"], ["sign"; vote...] or ["refuse"; raw]. [order_effects] is pure: it takes
@@ -387,7 +387,7 @@ Inductive output_action :=
 | SendEveryone (fields : list string).
 
 (** The node's operations, [node_op], and its programs, [nprog], are
-    nodeio.soma's: an interface with no shell under it, so Sandbox can
+    runtime/nodeio.soma's: an interface with no shell under it, so Sandbox can
     interpret the same values (U-1). *)
 
 (** Eligibility is decided before any check process or temporary checkout
@@ -1462,7 +1462,7 @@ llm_repo_prog (token r : string) (paths : list string) : nprog string :=
   else NDone (repo_text_of token r None [] 0 0)).
 
 (** [prompt_assemble] as a node program: a part's program runs only when
-    its placeholder is there (node.proof's prompt_prog_assembles: the
+    its placeholder is there (runtime/node.proof's prompt_prog_assembles: the
     same text). *)
 prompt_prog (token prompt : string) (ctx : list string) (repos plan : nprog string)
     (repo : string -> list string -> nprog string) : nprog string :=
@@ -1531,7 +1531,7 @@ launch_mode (launch : list string) : string := hd "" (tl (tl launch)).
     environment) or one whose clone or checkout failed (600 s). Both of a
     made checkout's directories are removed when the job is over, the git
     directory first (a service allows it while the worktree it sits beside
-    is one it made: node_service.soma). *)
+    is one it made: runtime/node_service.soma). *)
 Record tool_job := { tool_limit : string; tool_env : list string; tool_clean : list string }.
 
 tool_job_of (checkout : option string) (made : option ((string * string) * bool)) (self : string) : tool_job :=

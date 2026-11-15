@@ -1,5 +1,5 @@
 (** Job deadlines, timer order and the select wait. No running node. *)
-Import util node.
+Import core.util runtime.node.
 Require Soma.Host.
 From Soma Require Import OCaml.
 

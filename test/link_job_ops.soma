@@ -3,7 +3,7 @@
     and jobs past their limit, run through a pure scripted interpreter that
     answers each operation from a fixed list and records what it saw. No
     node, no sockets, no timing. *)
-Import util nodeio node.
+Import core.util runtime.nodeio runtime.node.
 Require Soma.Host.
 From Soma Require Import OCaml.
 

@@ -1,10 +1,10 @@
 (** A restart from disk: a node locked on value A at round 3 saves its
-    consensus snapshot through the binary's own primitives (node_shell.soma's
+    consensus snapshot through the binary's own primitives (runtime/node_shell.soma's
     run_shell over IoSave, as the node saves consensus.state), and the node
     started again from the file keeps its lock and valid value, its round
     and step; a conflicting proposal at the next round then gets a nil
     prevote; and a file that isn't a snapshot is refused, not loaded. *)
-Import util consensus nodeio node node_shell.
+Import core.util core.consensus runtime.nodeio runtime.node runtime.node_shell.
 Require Soma.Host.
 
 check (label : string) (ok : bool) : string := append (if ok then "ok " else "FAIL ") label.

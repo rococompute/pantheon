@@ -1,5 +1,5 @@
 (** Codex reply selection on fixed inputs; no running node. *)
-Import util market agent node.
+Import core.util core.market core.agent runtime.node.
 Require Soma.Host.
 
 check (label got expected : string) : string :=

@@ -7,7 +7,7 @@
     The market holds no file contents, so a prompt names what it needs and the
     Soma fills it in from the shell's checkout reads: {{REPOS}} lists every repository's
     files, and {{REPO}} gives a task's context files. *)
-Import util market.
+Import core.util core.market.
 
 me (a : obj) : string := getf a "me".
 backend (a : obj) : string := getf a "backend".
@@ -355,7 +355,7 @@ lead (a m : obj) : obj * list (list string) :=
                        end in
   let mark_merged_on t := existsb (fun b => seq (note b) mark_note && is_merged b) (for_task t) in
   (* a task judged done gets its plan line marked first, when it names one:
-     the leader's mark, a bid of its own (market.soma). Lead runs only with
+     the leader's mark, a bid of its own (core/market.soma). Lead runs only with
      no merge pending, so a mark already made has merged or failed. *)
   (* A close that leaves the plan line open is logged, once, with why: a
      task closed unmarked is drafted again from .plan by a later leader, or

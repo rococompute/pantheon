@@ -1,5 +1,5 @@
 (** The version in a merge commit's message. Fixed strings, no git. *)
-Import util market.
+Import core.util core.market.
 Require Soma.Host.
 
 check (label got expected : string) : string :=

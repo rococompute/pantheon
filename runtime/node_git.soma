@@ -1,8 +1,8 @@
 (** Git and programs as the binary runs them (docs/SHELL-IN-SOMA.md, "The
     binary's network", "Git and programs"): what the binary's runners
-    (node_shell.soma's [run_shell] for the commands, [run_net] for a node
+    (runtime/node_shell.soma's [run_shell] for the commands, [run_net] for a node
     and the service) do with [IoGit], [IoGitEnv], [IoClone] and [IoRun],
-    whoever asked for them (cli.soma, node_host.soma, or an image through
+    whoever asked for them (app/cli.soma, runtime/node_host.soma, or an image through
     its service). Each is the environment read ([IoEnvEntries]) and one
     program run to its end with exactly the environment given
     ([exec_prog]: whether it succeeded, and its output), over the host's
@@ -10,7 +10,7 @@
     input, when there is any, in a temporary file: [spawn_fed]), the
     pipe read and closed ([IoSockRead], [IoSockClose]) and the process
     waited for ([IoWaitPid]). Nothing is kept between them. *)
-Import util nodeio.
+Import core.util runtime.nodeio.
 
 (** ---- a program run to its end ---- *)
 

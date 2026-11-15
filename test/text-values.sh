@@ -1,5 +1,5 @@
 #!/bin/sh
-# util.soma's floats as text (Printf "%.17g", "%.0f", float_of_string) and
+# core/util.soma's floats as text (Printf "%.17g", "%.0f", float_of_string) and
 # JSON tokens (yojson's), against what the binary's OCaml gave for each
 # case in test/text_values.soma.
 set -eu

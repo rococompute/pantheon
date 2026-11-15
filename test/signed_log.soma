@@ -1,7 +1,7 @@
 (** signed.log's lines at startup become votes, cut lines or nothing, in
-    Soma (node.soma's signed_log_entry). Fixed lines and fixed tokens: no
+    Soma (runtime/node.soma's signed_log_entry). Fixed lines and fixed tokens: no
     node and no disk. *)
-Import util market agent node.
+Import core.util core.market core.agent runtime.node.
 Require Soma.Host.
 
 check (label got expected : string) : string :=

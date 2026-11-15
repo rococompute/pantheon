@@ -1,7 +1,7 @@
 (** genesis.json's text through the real yojson binding into boot events:
     a wide genesis (many params and excludes, no cap on their count), the
     old order, and texts that don't start. No node, no disk. *)
-Import util node.
+Import core.util runtime.node.
 Require Soma.Host.
 
 check (label : string) (ok : bool) : string := append (if ok then "ok " else "FAIL ") label.

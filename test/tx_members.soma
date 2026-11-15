@@ -1,7 +1,7 @@
-(** A peer line's members, read in Soma (node.soma's peer_line_parts and
+(** A peer line's members, read in Soma (runtime/node.soma's peer_line_parts and
     node_line_parts) from real yojson tokens, with no sockets, running node
     or timing. *)
-Import util market.
+Import core.util core.market.
 Require Soma.Host.
 
 Fixpoint fields_eq (a b : list string) : bool :=

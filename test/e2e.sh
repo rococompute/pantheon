@@ -139,7 +139,7 @@ scenario_bidders() {
   agree bidders claude codex grok muse && agree_files bidders claude codex grok muse || return 1
   for a in $AGENTS; do
     status=$ROOT/bidders/$a/status.txt
-    # a task's two-worker window (market.soma's bidders_for) is set by the
+    # a task's two-worker window (core/market.soma's bidders_for) is set by the
     # task, the market's version and the leader (bid_blocks is past the
     # run), and moves on past a worker only once its bids there were
     # rejected or cleared: in bid order, at one version, a task's third

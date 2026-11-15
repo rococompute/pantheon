@@ -2,7 +2,7 @@
     binding: the old fields in the old order, control characters made
     spaces (tab and newline kept), and a no-check refusal as this node's own.
     No node, no disk. *)
-Import util node.
+Import core.util runtime.node.
 Require Soma.Host.
 From Stdlib Require Import Ascii.
 

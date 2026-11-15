@@ -2,7 +2,7 @@
     code on fixed inputs through settle, maybe_draw and maybe_end_term
     themselves, with votes and reveals cast before a removal took effect.
     No node, no timing. *)
-Import util market.
+Import core.util core.market.
 Require Soma.Host.
 
 check (label : string) (ok : bool) : string := append (if ok then "ok " else "FAIL ") label.

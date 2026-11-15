@@ -6,7 +6,7 @@
     passed. Eight agents (f = 2) need 6 approvals; four (f = 1) still need
     3, and 2 no votes reject, as before. Known inputs, no timing: run with
     test/n-agents.sh. *)
-Import util market.
+Import core.util core.market.
 Require Soma.Host.
 
 say (cond : bool) (what : string) : list string :=
@@ -53,7 +53,7 @@ draw_state (n k h : nat) : obj :=
 (** whether maybe_draw draws on this state: its condition, word for word.
     The draw itself hashes the reveals into a 48-bit number, which a
     program run here computes in unary and can't, so the decision is
-    checked here and maybe_draw's result by market.proof's Examples
+    checked here and maybe_draw's result by core/market.proof's Examples
     (q7_five_reveals_draw), which the build checks. *)
 draws (m : obj) : bool :=
   awaiting m && draw_ready (length (agents m)) (length (reveals m)) (asince m + param m "reveal_window" <=? mheight m).

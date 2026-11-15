@@ -1,4 +1,4 @@
-(** Git and programs as the binary runs them (node_git.soma), whatever the
+(** Git and programs as the binary runs them (runtime/node_git.soma), whatever the
     host's processes answer: a program's input goes in a file made for
     it and removed right after the start; a program run to its end leaves nothing
     behind (its pipe read only, then closed, then the process waited

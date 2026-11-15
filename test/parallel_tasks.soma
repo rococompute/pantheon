@@ -7,7 +7,7 @@
     since conflicts. The leader clears a bid whose edits no longer apply
     (conflict, not a rejection), and its bidder gets fresh tries when the
     version moves. Run with test/parallel-tasks.sh. *)
-Import util market agent.
+Import core.util core.market core.agent.
 Require Soma.Host.
 
 say (cond : bool) (what : string) : list string :=

@@ -1,11 +1,11 @@
-(** What the node's service carries out (node_service.soma), proved of the
+(** What the node's service carries out (runtime/node_service.soma), proved of the
     functions it runs: what it refuses runs nothing; what it serves is one
     of the host's operations, with the node's token; its paths stay under
     the checkouts, the inbox and what it made, and are looked at for
     symlinks first; its programs are the node's own, with the service's
     environment; git gets no option that runs or configures anything. And
-    the other way: what the node's host work asks (node_host.soma,
-    node.soma) is served, so the restriction takes nothing the node
+    the other way: what the node's host work asks (runtime/node_host.soma,
+    runtime/node.soma) is served, so the restriction takes nothing the node
     needs. *)
 
 (** ---- strings and booleans ---- *)

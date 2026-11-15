@@ -15,7 +15,7 @@
     rejection, and its bidder writes an updated bid. Attestors apply the edits to the head, and a yes names the tree
     they got. The leader's merge names the tree its own check gave, and an
     attestor's yes counts only for that same tree. A merge needs merge_quorum
-    approvals (market.proof): genesis's merge_approvals (1 is the leader
+    approvals (core/market.proof): genesis's merge_approvals (1 is the leader
     alone), or by default n-f of the agents whose scope has the repository,
     of which the leader and bidder supply at most two. Every node then checks its own
     checkout reaches it.
@@ -27,7 +27,7 @@
     be drawn. Withholding still lets the last agent to reveal choose between two
     seeds, so an agent that held back in one draw is barred from the next: a
     recent leader can't steer a draw now and be repaid with a term later. *)
-Import util nodeio consensus.
+Import core.util runtime.nodeio core.consensus.
 From Stdlib Require Import Ascii.
 
 (** ---- A signed transaction (step 5: decode_tx in Soma) ----
@@ -196,7 +196,7 @@ flat_edits (es : list edit) : list string := flat_map (fun e => [epath e, eold e
 
 edit_paths (es : list edit) : list string := nodup_s (map epath es).
 
-(** The market's state, an object (see util.soma). *)
+(** The market's state, an object (see core/util.soma). *)
 agents (m : obj) : list string := getf m "agents".
 mheight (m : obj) : nat := getf m "h".
 term (m : obj) : nat := getf m "term".
@@ -263,7 +263,7 @@ default_params : list (string * nat) :=
   [("term_blocks", 300), ("max_merges", 2), ("stall_blocks", 120), ("attest_window", 120),
    ("fallback_blocks", 60),
    (* tasks open at once: the leader drafts another while fewer are open, when
-      it judges one can run beside them (agent.soma); 1 unless genesis says *)
+      it judges one can run beside them (core/agent.soma); 1 unless genesis says *)
    ("max_open_tasks", 1), ("max_pending_bids", 3), ("bid_cooldown", 5),
    (* approvals a merge or a mark needs, the leader's proposal counting as
       one: 1 is the leader alone, its own check and pick, landing in the block
@@ -415,7 +415,7 @@ reject_quorum (n : nat) : nat := faults n + 1.
     is approved at n - f approvals, rejected at f + 1 no votes, and a draw
     goes ahead at n - f reveals once reveal_window has passed (at all n at
     once). For n = 4 (f = 1): 3 approvals, 2 no votes, 3 reveals, as before
-    n was a parameter. settle and maybe_draw decide with these; market.proof
+    n was a parameter. settle and maybe_draw decide with these; core/market.proof
     checks them at n = 1 to 8 around each threshold, and proves for every n
     that each decision turns exactly at its threshold. *)
 approved_at (n yes : nat) : bool := quorum n <=? yes.
@@ -597,7 +597,7 @@ settle (m : obj) : obj * list (list string) :=
 
 (** v is the link just before the agent's tip: hashed once, not up to 64
     times, so an agent has one value to reveal in each draw and can't choose
-    the seed among older links (docs/SECURITY-REVIEW-2.md P-8; market.proof
+    the seed among older links (docs/SECURITY-REVIEW-2.md P-8; core/market.proof
     accepted_reveals_for_a_draw_are_equal) *)
 next_link (v tip : string) : bool := seq (sha256 v) tip.
 
@@ -665,7 +665,7 @@ apply (m : obj) (a : string) (fields : list string) : obj * list (list string) *
             else
               let id := nbids m + 1 in
               (* counted first, then the bid appended to that state's bids: the shape
-                 market.proof's lemma for an appended bid states *)
+                 core/market.proof's lemma for an appended bid states *)
               let m := setf m "nbids" id in
               ok (setf m "bids" (bids m ++ [{| bidn := id; btask := tid tk; bidder := a; base := num v; edits := w;
                                                note := n; bst := Pending; stale := false; why := ""; votes := [] |}]))
@@ -728,7 +728,7 @@ apply (m : obj) (a : string) (fields : list string) : obj * list (list string) *
           else if marked_line line || starts "#" line then fail "that line is a note or already marked"
           else
             let id := nbids m + 1 in
-            (* the bid appended last, the shape market.proof's lemma for an
+            (* the bid appended last, the shape core/market.proof's lemma for an
                appended bid states *)
             let m := setf (setf m "nbids" id) "pending" (Some {| pbid := id; pby := a; pat := mheight m; pvotes := []; ptree := tree |}) in
             ok (setf m "bids" (bids m ++ [{| bidn := id; btask := tid tk; bidder := a; base := version m; edits := [mark_edit line];
@@ -772,7 +772,7 @@ apply (m : obj) (a : string) (fields : list string) : obj * list (list string) *
 
 (** Who may win a draw: those who revealed, minus anyone who held back in the
     last draw, then minus the last two leaders. Each step is skipped if it
-    would leave no one. Pure on lists, so market.proof reasons about it
+    would leave no one. Pure on lists, so core/market.proof reasons about it
     directly. *)
 draw_pool (revealed held recent latest : list string) : list string :=
   let fresh := match filter (fun a => negb (mem a held)) revealed with [] => revealed | l => l end in

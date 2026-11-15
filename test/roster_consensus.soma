@@ -1,8 +1,8 @@
 (** M-3 part: consensus switches its validators at the height a roster
-    change takes effect (consensus.enter_roster, as node.soma's on_decided
+    change takes effect (consensus.enter_roster, as runtime/node.soma's on_decided
     calls it with market.roster_at for the next height), run as extracted
     code on fixed inputs. No node, no timing. *)
-Import util consensus market.
+Import core.util core.consensus core.market.
 Require Soma.Host.
 
 check (label : string) (ok : bool) : string := append (if ok then "ok " else "FAIL ") label.

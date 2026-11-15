@@ -1,7 +1,7 @@
 (** Step 5: bytes read from peers into events, connection admission and
     the buffered-line cap, checked on fixed inputs through the Soma
     functions the node runs. No sockets, running node or timing. *)
-Import util node.
+Import core.util runtime.node.
 Require Soma.Host.
 From Soma Require Import OCaml.
 

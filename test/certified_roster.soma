@@ -1,6 +1,6 @@
 (** Fixed chain lookups, not local observations. The verification model checks
     exact signed fields; production's callback is node_verify_line. *)
-Import util consensus market.
+Import core.util core.consensus core.market.
 Require Soma.Host.
 check (b : bool) (s : string) : string := append (if b then "ok " else "FAIL ") s.
 body (h : nat) : list string := ["block", show h].

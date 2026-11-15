@@ -1,14 +1,14 @@
 (** A path in a checkout as the runners look at it (docs/SHELL-IN-SOMA.md,
-    "Paths"): what [IoPathProbe] answers, for an edit (cli.soma), a
-    merge's file work (node_host.soma) and the service's guard
-    (node_service.soma), whoever runs it (node_shell.soma's runners, so
+    "Paths"): what [IoPathProbe] answers, for an edit (app/cli.soma), a
+    merge's file work (runtime/node_host.soma) and the service's guard
+    (runtime/node_service.soma), whoever runs it (runtime/node_shell.soma's runners, so
     the binary and the service). Each part of the path below the
     directory is looked at in turn ([IoPathStat], the host's lstat, which
     doesn't follow the last part): a symlink anywhere on the way is
     "symlink", so a write can't leave the checkout; a part that isn't
     there ends it, "none"; otherwise what the last part is, "dir" or
     "file". *)
-Import util nodeio.
+Import core.util runtime.nodeio.
 From Stdlib Require Import Ascii.
 
 (** what a stat answered a part is: "file", "dir", "symlink", "other" or

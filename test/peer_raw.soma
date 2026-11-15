@@ -1,5 +1,5 @@
 (** Real peer JSON decoding, with no sockets, running node or timing. *)
-Import util node.
+Import core.util runtime.node.
 Require Soma.Host.
 
 check_raw (label cap me raw : string) (refused : string -> bool) (expected : list string) : string :=

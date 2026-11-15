@@ -1,4 +1,4 @@
-Import util consensus.
+Import core.util core.consensus.
 Require Soma.Host.
 wire_vote : signed_precommit := {| commit_signer := "a"; commit_signature := "sig with spaces";
   commit_fields := ["precommit", "0008", "02", "00", "hash"] |}.

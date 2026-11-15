@@ -1,7 +1,7 @@
-(** A log file's bytes become its lines in Soma (node.soma's log_lines),
+(** A log file's bytes become its lines in Soma (runtime/node.soma's log_lines),
     and blocks.log's bytes become block_log boot events (boot_expand).
     Fixed texts, no node and no disk. *)
-Import util market agent node node_shell.
+Import core.util core.market core.agent runtime.node runtime.node_shell.
 Require Soma.Host.
 From Stdlib Require Import Ascii.
 

@@ -1,14 +1,14 @@
 (** The node's files as the binary writes them (docs/SHELL-IN-SOMA.md,
-    "Files"): what the binary's runners (node_shell.soma's
+    "Files"): what the binary's runners (runtime/node_shell.soma's
     [shell_answer]) do with [IoSave], [IoMakeDirs], [IoPathWrite],
     [IoPathRemove], [IoDiscardFile], [IoTempFile] and [IoRemoveTree],
-    whoever asked (the kernel's named files through node_net.soma, the
+    whoever asked (the kernel's named files through runtime/node_net.soma, the
     commands, the host's work, or an image through its service), over the
     host's one-call
     primitives: a file put whole, its mode, a rename, a directory synced,
     one directory made, one file removed, a new temporary file, a program
     started on its own. *)
-Import util nodeio.
+Import core.util runtime.nodeio.
 
 (** what went wrong, from a primitive's answer: "" when nothing did *)
 err_of (a : nanswer) : string :=

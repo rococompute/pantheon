@@ -1,17 +1,17 @@
 # Moving the shell into Soma
 
-Pantheon's decisions are Soma (`node.soma` and what it imports), and so is
-the node's kernel (`node_kernel.soma`: its tables, peer links, signatures,
-files and select), the host's work it asks for (`node_host.soma`: a
+Pantheon's decisions are Soma (`runtime/node.soma` and what it imports), and so is
+the node's kernel (`runtime/node_kernel.soma`: its tables, peer links, signatures,
+files and select), the host's work it asks for (`runtime/node_host.soma`: a
 merge's git, the model's budget and limit, jobs, checks and CI) and the
-edits machinery (`cli.soma`: applying edits, reading a checkout's changes
+edits machinery (`app/cli.soma`: applying edits, reading a checkout's changes
 as edits, a bid's tree), the binary's network and jobs
-(`node_net.soma`: its links, buffers, select, the service's socket and
-the process table) and its git and programs (`node_git.soma`). Pantheon
+(`runtime/node_net.soma`: its links, buffers, select, the service's socket and
+the process table) and its git and programs (`runtime/node_git.soma`). Pantheon
 has no OCaml left: what was `shell.ml` (about 1,600 lines of hand-written
 OCaml, then 275) is Soma's own host library, `Soma.Host`, whose
 primitives (one per operation that reaches the host, which
-node_shell.soma's `host_prim` calls by the operation's constructor, and
+runtime/node_shell.soma's `host_prim` calls by the operation's constructor, and
 `argv`, `print_lines` and `forever`) Soma carries out for any program
 built for the machine, as it carries out Sandbox's `io` for a unikernel.
 Hashing, signing and a new key are Soma's in the binary too, and how
@@ -38,7 +38,7 @@ So the dependency turns around first, top-down: Soma runs the program and
 calls OCaml, and `shell.ml` becomes a library that never calls Soma. Then
 each later piece moves a *caller* into Soma, and the helpers it used need no
 wiring: they're plain Soma calls. The node is already shaped for it.
-`node.soma`'s `step` takes an event and returns outputs (lists of strings),
+`runtime/node.soma`'s `step` takes an event and returns outputs (lists of strings),
 and the shell is the loop that gathers events (sockets, timers, finished
 jobs) and does what the outputs say (`feed` and `handle` in `node`).
 
@@ -79,7 +79,7 @@ One task each, in order:
    that order as a pure Soma function from the event, the old and new
    state and the outputs to a list of effects (perform this output, save
    this snapshot, refuse this transaction), and have the loop body only
-   carry the effects out. Then the order is checked like `util.proof`:
+   carry the effects out. Then the order is checked like `core/util.proof`:
    `Example`s that a vote event's effects save before they send, and that
    a refused transaction is remembered and dropped next time, and,
    past the floor, a theorem in a `.proof` for every event. The refused
@@ -103,7 +103,7 @@ One task each, in order:
    and reading bytes stay bindings.
 6. **Genesis, keys and the other commands.** `build_genesis`, `make_keys`,
    `cmd_init` and the rest move over the RSA, SHA-256, file and JSON
-   bindings. (Done: `cli.soma`, below.)
+   bindings. (Done: `app/cli.soma`, below.)
 
 The end: `shell.ml` is bindings to Unix (files, processes, sockets, time),
 cryptokit and yojson, none calling Soma, and `soma explore main.soma` lists
@@ -156,19 +156,19 @@ which the binary runs as processes and the unikernel would ask services for
 over the network. Those are Soma's items, in Soma's own `.plan` (the market
 governs Soma too); the interface is Pantheon's (the `U-1` line in `.plan`).
 
-The interface is `nodeio.soma`, a module with no shell under it: the
+The interface is `runtime/nodeio.soma`, a module with no shell under it: the
 operations, `node_op`, and programs of them, `nprog` (`NDone a`, or
 `NStep op k`: do `op`, then go on as `k` says on its answer), as a Sandbox
 program is a value of `Sandbox.io`. The binary runs a program with
-`node_shell.soma`'s `run_shell`, over shell.ml's primitives: `host_prim`
+`runtime/node_shell.soma`'s `run_shell`, over shell.ml's primitives: `host_prim`
 hands each operation that reaches the host to the function
 `shell.definition` names for it, its fields the arguments (below, "The
 primitives by name"); the wire form, `io_wire`, which `io_of_wire` reads
 back, proved for every operation, is what an image sends its service; `io_do`, the clock and the table reads
 are one-operation programs run that way, and the output actions are
-programs (`action_prog`, `actions_prog`). `nodeio.proof` says what a
+programs (`action_prog`, `actions_prog`). `runtime/nodeio.proof` says what a
 program does whoever interprets it (`ntrace`, the operations carried out
-for given answers; `nand_trace`), and `node.proof`'s
+for given answers; `nand_trace`), and `runtime/node.proof`'s
 `single_actions_trace` that a list of one-operation actions does exactly
 those operations, in order. Output handling is one program too (`output_prog`): the reads it needs
 (the draw, a stored block, the height, the peer count, the vote signed at
@@ -177,7 +177,7 @@ whose answers carry data (`nanswer`'s list), asked in the program's
 continuations after the operations before them, so they happen when they
 did. The status file is a program as well (`status_prog`): the checkouts'
 heads, the divergences, the clock, the model limit and, when a limit is
-on, its end as a time of day, read in the old order (`node.proof`'s
+on, its end as a time of day, read in the old order (`runtime/node.proof`'s
 `status_reads_in_order`). So is a decided merge (`merge_prog`): the
 gate's reads, the checkout's reset, each edit's look at its path, read,
 write or removal, and the commit are operations (`merge_trace`,
@@ -207,9 +207,9 @@ to start, `IoFail`, when it has votes and there is no snapshot), the boot
 events expanded (`boot_expand_prog`) and replayed (`run_boot_prog`, each
 block remembered for catch-up with `IoRememberBlock`), the replay logged
 and the start step carried (`start_node_prog`; `fresh_boot_reads`). So
-`run_node` (node_shell.soma, with `run_shell`: the binary's own
+`run_node` (runtime/node_shell.soma, with `run_shell`: the binary's own
 interpreter, which the unikernel's build never sees) is the setup program
-(cli.soma's `node_setup`), the runtime
+(app/cli.soma's `node_setup`), the runtime
 built from it (`node_open`), the snapshot read back (`IoSnapshotLoad`),
 then `run_shell` of the boot program and `forever` of the tick: every
 effect the node has is a node operation but building `node_open`'s
@@ -220,40 +220,40 @@ Resend reads and the native table remain unchanged.
 ### One kernel, two runners
 
 What a node keeps between operations, and how it carries them out, is
-Soma, written once: `node_kernel.soma`'s kernel, which the binary and the
+Soma, written once: `runtime/node_kernel.soma`'s kernel, which the binary and the
 unikernel both run. `kernel_run` turns a node program into a program of
-the kernel's eight primitives (nodeio.soma's `IoNetListen`,
+the kernel's eight primitives (runtime/nodeio.soma's `IoNetListen`,
 `IoNetMailbox`, `IoNetConnect`, `IoNetSend`, `IoNetClose`, `IoFileRead`,
 `IoFileWrite`, `IoFileAppend`: Sandbox's own, by name) and of the
 operations it hands on as they are (logging, the clock, a time of day,
-refusing to start, and the host's work: nodeio.soma's `service_op`).
+refusing to start, and the host's work: runtime/nodeio.soma's `service_op`).
 Two runners carry that out: the binary's, `run_net` through shell.ml
-(node_shell.soma's `run_node`), whose network and named files are
-node_net.soma's over the host's sockets by name ("The binary's network"
+(runtime/node_shell.soma's `run_node`), whose network and named files are
+runtime/node_net.soma's over the host's sockets by name ("The binary's network"
 below); and the unikernel's, `run_image` with Sandbox
-(node_sandbox.soma's `run_node_image_at`), which asks the node's service
+(runtime/node_sandbox.soma's `run_node_image_at`), which asks the node's service
 for the host's work.
 
-The kernel keeps the tables (nodeio.soma's `nio_tables`: timers, the
+The kernel keeps the tables (runtime/nodeio.soma's `nio_tables`: timers, the
 queue, decided blocks and signed votes by key in AVL maps, resend
 memory, served catch-ups, refused transactions, applied versions and
 divergences), the genesis peers and the links it dialed to them, the
 connections peers opened (offered, then admitted, evicted or refused as
-node.soma decides), when it dials (once a second) and resends (every 2
+runtime/node.soma decides), when it dials (once a second) and resends (every 2
 seconds), the turn's clock reading, the snapshot text last saved (one
 that hasn't changed isn't written again) and the peer lines it signed
 since the last resend and at it, by their fields (a resend sends the
 same lines again, so a line is signed once). It signs peer lines and
 transactions with Soma's RSA (`nio_wire_line`, `nio_encode_tx`; the
 "bad-sig" draw's line has 512 zeros), and writes blocks.log and
-signed.log with the lines nodeio.soma's pure part makes (Yojson's, byte
+signed.log with the lines runtime/nodeio.soma's pure part makes (Yojson's, byte
 for byte; `test/node-sandbox.sh` checks them with `soma run`, and builds
 a unikernel that runs a node program with `soma build --no-image`). A
 select (`IoEvents`) is the runner's mailbox (what came in on
 connections: an offer, bytes, an end), then the host's events (its
 jobs'), then the queue, drained.
 
-| primitive | binary (node_net.soma, over shell.ml's sockets) | unikernel (node_sandbox.soma) |
+| primitive | binary (runtime/node_net.soma, over shell.ml's sockets) | unikernel (runtime/node_sandbox.soma) |
 |---|---|---|
 | `IoNetListen address port` | bind and listen (not found: why) | `listen_mailbox port` |
 | `IoNetMailbox ms` | one select on the listener, peers' connections, dialed links with bytes to write, and the host's jobs (whose output wakes it) | Sandbox's `mailbox` (a fifth of a second at most with a service: a job's output there doesn't wake it) |
@@ -274,10 +274,10 @@ in the binary, and the node's service's in the unikernel: with none, a
 check is reported and comes to nothing, the checkouts are at their genesis
 commits, the model has no limit, and there are no jobs, reply files or
 inbox. The commands' operations (`IoPrint` ... `IoGitEnv`) are shell.ml's
-and node_git.soma's (the unikernel prints, writes named files, and answers false to the rest:
+and runtime/node_git.soma's (the unikernel prints, writes named files, and answers false to the rest:
 it makes no keys and runs no git).
 
-The commands are node programs too (`cli.soma`): `init`, `keygen`,
+The commands are node programs too (`app/cli.soma`): `init`, `keygen`,
 `genesis`, `up`, `status`, `tx`, `plan`, `edits`, `apply-edits` and
 `check` decide in Soma (their arguments and messages, a new agent's
 key.json, chain.json and public.json with the hash chain's tip, the
@@ -293,13 +293,13 @@ own path (`IoSelfExe`) started with its output appended to its log
 (`IoStartLogged`; one that can't start ends the command with why), and
 `up_wait` asks the shell to stop them all on an interrupt or a
 terminate (`IoStopOnSignal`), then waits for each in turn (`IoWaitPid`);
-cli.proof's `up_waits_for_what_it_started` says it waits for exactly
+app/cli.proof's `up_waits_for_what_it_started` says it waits for exactly
 the nodes it started, after the stop is set. The shell's `spawn_node`
 and `await_nodes`, which chose the program and did the waiting, are
 gone. One known difference: a float in network.json's params
 is written as the integer the node reads it as (Yojson kept its digits).
 
-The consensus snapshot is Soma's text (node.soma's `snapshot_text`):
+The consensus snapshot is Soma's text (runtime/node.soma's `snapshot_text`):
 the state as frames of strings, each its length in decimal, ":" and
 itself, after a header naming the format. It replaced OCaml's Marshal,
 which a unikernel can't read and Soma can't check. Reading it back is
@@ -309,7 +309,7 @@ can't read refuses to start, as it did when Marshal failed: a node that
 signed votes must not start without its lock. A consensus.state written
 by an older Pantheon is refused so; such a network wants a new genesis.
 
-The node's setup is a node program too (cli.soma's `node_setup`, run
+The node's setup is a node program too (app/cli.soma's `node_setup`, run
 with no node): the home made absolute and private, genesis.json,
 key.json and chain.json read and checked, the PANTHEON_BYZ fault
 injection noted, the node's flags parsed (a --goal's file read in), the
@@ -334,7 +334,7 @@ service", below; and the jobs themselves are the kernel's, over process
 primitives: "The host's work", below.)
 
 SHA-256 and RSA are Soma's (`Soma.Crypto`, Soma's item): `sha256` and
-`hash_list` are `util.soma`'s, no longer bindings, so the kernel computes
+`hash_list` are `core/util.soma`'s, no longer bindings, so the kernel computes
 them and both the binary and a unikernel run them. The binary used to
 extract them to Cryptokit's (main.soma), the same function in C, about
 ten times faster; that fast path is gone, so what runs is what Soma
@@ -344,7 +344,7 @@ known answers).
 Every signature is checked by Soma, in the binary as in the unikernel:
 a transaction's in `decode_tx` (`nio_tx_verify`, with the agent's key from
 the market's own table, filled by the boot events `["chain", id]` and
-`["key", agent, size, n, e]` that `node_setup` gives) and a peer line's in node.soma
+`["key", agent, size, n, e]` that `node_setup` gives) and a peer line's in runtime/node.soma
 (`nio_line_verify`, with the sender's key from `IoPeerKey`, which the
 kernel reads from the setup). Keys are made with e = 65537 (`make_keys`,
 by Soma since: "The primitives by name", below), which Soma checks in
@@ -364,8 +364,8 @@ nothing new.
 ### The binary's network
 
 The kernel's network and named files, and the service's socket, are Soma
-in the binary too: `node_net.soma`, the binary runner's layer
-(`net_op`, which node_shell.soma's `run_net` asks first, as the kernel
+in the binary too: `runtime/node_net.soma`, the binary runner's layer
+(`net_op`, which runtime/node_shell.soma's `run_net` asks first, as the kernel
 asks `host_op`), with its state (`net_state`) handed from one operation
 to the next and from one turn to the next. It keeps the node's home, the
 listener, the links (a peer's, read as it comes; one the kernel dialed,
@@ -401,7 +401,7 @@ service's framing; there it is now about 90 lines of socket calls.
 
 The jobs' processes are here too, for the binary and for the service
 (which runs an image's): `IoProcStart`, `IoProcKill` and `IoEvents`,
-which node_host.soma asks for, are `net_op`'s. It keeps each process
+which runtime/node_host.soma asks for, are `net_op`'s. It keeps each process
 (the job's name for it, numbered as they start, the pipe its output
 comes on, its pid) and the processes killed. A look (`net_proc_events`)
 selects over their pipes without waiting, then takes each in turn: a
@@ -434,8 +434,8 @@ itself).
 ### Git and programs
 
 Git, a clone and a program run to its end are Soma in the binary too:
-`node_git.soma`, a layer with no state that both of the binary's runners
-ask (node_shell.soma's `shell_answer`, for `run_shell` and for what
+`runtime/node_git.soma`, a layer with no state that both of the binary's runners
+ask (runtime/node_shell.soma's `shell_answer`, for `run_shell` and for what
 `run_net` doesn't carry out itself), whoever asked for the operation:
 the commands, the host's work, or an image through its service. `IoGit`
 and `IoGitEnv` are git for a checkout Pantheon owns: the extra
@@ -449,12 +449,12 @@ repository) but never a prompt, then checks the commit out as above.
 environment read (`IoEnvEntries`) and one program run to its end with
 exactly the environment it is given and a standard input (none for "")
 (`exec_prog`), giving whether it succeeded and its output. That too is
-Soma, over the processes node_net.soma's jobs use: the program started
+Soma, over the processes runtime/node_net.soma's jobs use: the program started
 with its output on a pipe (`IoSpawn`, from where the binary is), the
 pipe read until it closes (`read_out`), closed, then the program waited
 for (`IoWaitPid`); found only when it exited with 0. Its standard
 input, when it has one (a merge's commit message), is Soma's as well
-(`spawn_fed`, which node_net.soma's jobs use too): the text put in a new
+(`spawn_fed`, which runtime/node_net.soma's jobs use too): the text put in a new
 private temporary file (`IoTempNew`, `IoFilePut`), the program started
 reading from it, and the file removed right after the start, whatever
 the start answered. shell.ml's spawn only opens the file it is named
@@ -466,7 +466,7 @@ forever can't hang it. shell.ml's git, clone and run, about 25 lines of
 environments and arguments, are gone, and so are `capture` and the
 `exec` primitive it was. `pantheon edits` on a 250-file checkout takes
 the same time as with `capture` (7.96 s against 7.95 s, alternating, on
-the laptop). node_git.proof proves, of any answers the processes give:
+the laptop). runtime/node_git.proof proves, of any answers the processes give:
 `spawn_fed_removes_its_file` (input made into a file: the text put, the
 start only when that worked, then the file removed), `exec_leaves_nothing` (its start, reads of its pipe, the pipe closed,
 the wait, nothing else), `exec_failed_start_ends`,
@@ -478,8 +478,8 @@ started).
 ### Paths
 
 A path in a checkout as an edit, a merge's file work and the service's
-guard see it (`IoPathProbe`) is Soma too: `node_path.soma`, asked by
-`shell_answer` like node_git.soma. It walks the path's parts below the
+guard see it (`IoPathProbe`) is Soma too: `runtime/node_path.soma`, asked by
+`shell_answer` like runtime/node_git.soma. It walks the path's parts below the
 directory, each joined to the one before, and asks the host what each
 is (`IoPathStat`, an lstat, which doesn't follow the last part): a
 symlink anywhere on the way answers "symlink", so a write can't leave
@@ -487,21 +487,21 @@ the checkout; a part that isn't there ends it, "none"; otherwise the
 last part's kind, "dir" or "file" (anything else that is there counts
 as a file). That is what shell.ml's `no_symlink` and `path_probe` did,
 which are gone; it keeps `path_stat`, the lstat itself.
-node_path.proof proves it of any answers the host's stat gives:
+runtime/node_path.proof proves it of any answers the host's stat gives:
 `probe_only_looks` (every operation is a stat of one of the path's
 parts, in order), `probe_finds_symlinks` (a symlink on the way, every
 part before it there, answers "symlink"), `probe_found_every_part`
 ("dir" or "file" only when every part is there and none is a symlink),
 `probe_none_is_missing` ("none" only when a part isn't there) and
-`probe_answers` (one of the four). With node_service.proof's
+`probe_answers` (one of the four). With runtime/node_service.proof's
 `symlink_never_followed`, the service runs nothing through a symlink the
 host's stat reports at the time it looks.
 
 ### Files
 
-How the binary writes its files is Soma: `node_file.soma`, asked by
+How the binary writes its files is Soma: `runtime/node_file.soma`, asked by
 `shell_answer` like the two above, for the kernel's named files (through
-node_net.soma's `IoSave`), the commands, the host's work and the
+runtime/node_net.soma's `IoSave`), the commands, the host's work and the
 service. A file written whole (`write_whole`) is its text put in
 `FILE.pantheon-tmp` (on disk first when it must be), the file's mode
 kept, then renamed over the file, so the file is the old text or the
@@ -523,7 +523,7 @@ that fails ends the binary, as the exception did. shell.ml's `write_file`, `mkdi
 `rename`, `sync_dir`, `make_dir`, `remove_file`, `temp_new` and
 `start_detached` (a program forked twice, so its parent is the system's
 and nothing is left to reap, its input and output `/dev/null`).
-node_file.proof proves, of any answers those give:
+runtime/node_file.proof proves, of any answers those give:
 `failed_put_renames_nothing` (the file is as it was),
 `whole_write_order` (the put, the mode kept, the rename, then the
 directory synced), `whole_write_only_renames_onto_it` (nothing else
@@ -534,7 +534,7 @@ the path its one operand after `--`, and nothing else).
 
 ### The primitives by name
 
-Which primitive an operation is, is Soma's: node_shell.soma's
+Which primitive an operation is, is Soma's: runtime/node_shell.soma's
 `host_prim` matches the operation's constructor and calls the primitive
 `Soma.Host` declares for it (`Host.sock_read`, `Host.spawn`,
 `Host.file_put`, ...: one per operation that reaches the host, about
@@ -548,13 +548,13 @@ into its wire form, a list of strings, and matched it back, a copy of
 primitive is now one function of the host's calls; their docs are
 Soma's `theories/Soma/Host.v`.
 
-Hashing and signing are Soma's in the binary too (`util.soma`'s
-`sha256` and `hash_list`, `nodeio.soma`'s `nio_sign`, through
+Hashing and signing are Soma's in the binary too (`core/util.soma`'s
+`sha256` and `hash_list`, `runtime/nodeio.soma`'s `nio_sign`, through
 `Soma.Crypto`): main.soma no longer extracts them to Cryptokit's, which
 was about ten times faster. What runs is what Soma checks, and speed is
 for Soma to win back.
 
-A new key is Soma's too: cli.soma's `new_key` asks the system for two
+A new key is Soma's too: app/cli.soma's `new_key` asks the system for two
 random starts of 128 bytes (`IoRandomHex`; the host reads
 /dev/urandom, `Host.random_bytes`, and Soma makes it hex) and hands them
 to `Soma.Crypto`'s `rsa_new_key`, Soma's item: each start's top two bits
@@ -582,7 +582,7 @@ image, with Nat's comparisons and division and String's length, get,
 substring and compare as OCaml's) and the `Extract Inlined Constant`
 of `String.compare` in main.soma and in the image `pantheon image`
 writes (Soma's extraction has it, for both). Soma's `Floats` module,
-`Soma.OCaml`, is still how cli.soma and node.soma write float literals. With every node signing in Soma, the whole e2e
+`Soma.OCaml`, is still how app/cli.soma and runtime/node.soma write float literals. With every node signing in Soma, the whole e2e
 run at once (33 scenarios, four nodes each) starved its flooding node
 and ran past its waits, so test/e2e.sh runs at most six scenarios at
 a time (`E2E_JOBS`).
@@ -590,7 +590,7 @@ a time (`E2E_JOBS`).
 ## The edits machinery
 
 An edit is a path, the old text and the new (docs/DESIGN.md). What edits
-do is Soma's, in `cli.soma`, for all three of their uses:
+do is Soma's, in `app/cli.soma`, for all three of their uses:
 
 - **Applying edits** (`edits_prog`): each edit's plan from the shell's
   look at its path (`edit_plan_of`: unsafe, through a symlink, a
@@ -623,7 +623,7 @@ do is Soma's, in `cli.soma`, for all three of their uses:
 
 The shell does the file and git work, with no node: `IoPathStat` (a
 path's kind, its last part not followed, and its owner's execute bit),
-`IoTempDir`, `IoRemoveTree` (in the background, node_file.soma's) and `IoGitEnv` (git with
+`IoTempDir`, `IoRemoveTree` (in the background, runtime/node_file.soma's) and `IoGitEnv` (git with
 the snapshot's environment entries first). `test/edits.sh` checks the
 three uses, including the hostile `.git` and `PANTHEON_GITDIR` configs,
 and `test/check-*.sh` the check. `pantheon edits` on a 250-file checkout
@@ -633,7 +633,7 @@ before.
 ## The host's work
 
 What a node asks of its checkouts, its model and CI is Soma too, in the
-kernel: `node_host.soma`, which `kernel_op` asks first (`host_op`). The
+kernel: `runtime/node_host.soma`, which `kernel_op` asks first (`host_op`). The
 binary and the unikernel run the same code; only the primitives below it
 are the runner's (the shell for the binary, the service for an image).
 
@@ -660,38 +660,38 @@ are the runner's (the shell for the binary, the service for an image).
   a file, a tree, a container), when it started and its time limit, and
   whether the node stopped it (`IoProcKill`) for its limit or its output.
   The shell gives a job's output as it comes (`job_bytes`) and its end
-  (`job_ended`: how it ended); the kernel makes that node.soma's
-  `job_finished`, and node.soma's outcome (`IoJobComplete`) queues what the
+  (`job_ended`: how it ended); the kernel makes that runtime/node.soma's
+  `job_finished`, and runtime/node.soma's outcome (`IoJobComplete`) queues what the
   end becomes and removes what went with it. CI's one-at-a-time turn and
   its queue are the kernel's, as are a CI run's script (`ci_wrap`) and its
   Docker or sandbox command line.
 
 The shell keeps the primitives: the path operations, `IoTempDir`,
-`IoTempFile` and `IoRemoveTree` (node_file.soma's, above, "Files") and
+`IoTempFile` and `IoRemoveTree` (runtime/node_file.soma's, above, "Files") and
 the processes (`IoSpawn`, `IoWaitPid`, `IoKillPid`, and `up`'s
 `IoStartLogged` and `IoStopOnSignal`), whose table and
-events are node_net.soma's (above, "The binary's network"); git, a
-clone and `IoRun`'s `rm`, `chmod` and `docker rm` are node_git.soma's
+events are runtime/node_net.soma's (above, "The binary's network"); git, a
+clone and `IoRun`'s `rm`, `chmod` and `docker rm` are runtime/node_git.soma's
 programs run to their end over the same processes (above, "Git and
 programs").
 
 ## The node as a unikernel
 
-node.soma imports no shell. What it called in `shell.ml` as pure
-bindings is Soma's: JSON (`util.soma`'s `json_tokens`, the tokens
+runtime/node.soma imports no shell. What it called in `shell.ml` as pure
+bindings is Soma's: JSON (`core/util.soma`'s `json_tokens`, the tokens
 Yojson.Safe's reader gives, comments, bare keys, NaN and surrogate pairs
 included), floats (`float_wire`, `float_text`, `float_of_digits`: `%.17g`,
 `%.0f` and `float_of_string`, exact, through SpecFloat), `clean_text`, the
 line and job limits, and a transaction's key (the market's table, above).
 `test/text-values.sh` runs 610 floats and 248 JSON texts through them
 against what OCaml and Yojson give. The binary's interpreter, `run_shell`,
-and `run_node` are `node_shell.soma`'s, the one module but main.soma that
+and `run_node` are `runtime/node_shell.soma`'s, the one module but main.soma that
 imports `shell`.
 
 `pantheon image HOME FILE` runs a node's setup (`node_setup`, as `pantheon
 node HOME` does) and writes FILE: a Soma program that requires Sandbox,
 with the setup's framed data as a list of strings, whose `main` is
-node_sandbox.soma's `run_node_image_at` (the kernel, run with Sandbox). `soma build FILE` (with
+runtime/node_sandbox.soma's `run_node_image_at` (the kernel, run with Sandbox). `soma build FILE` (with
 `SOMA_MIRAGE_SWITCH` naming Soma's MirageOS switch) makes the image, and
 `solo5-vmnet -- solo5-hvt --block:storage=DISK -- IMAGE --ipv4=IP/24
 --ipv4-gateway=GW` boots it on the Mac's vmnet network at the address
@@ -712,7 +712,7 @@ seconds it resends what the height recorded and its recent transactions
 mailbox (`listen_mailbox`, `mailbox`): a connection opened is a
 `conn_offer` event, which Soma admits, refuses or makes room for
 (`IoConnAdmit`), its bytes `peer_bytes` (held until it is admitted), its
-end `peer_closed`. So the same node.soma code splits the lines, checks
+end `peer_closed`. So the same runtime/node.soma code splits the lines, checks
 their signatures and decides.
 
 `test/node-image.sh` makes a network of four, the image's address on
@@ -734,7 +734,7 @@ gaps in the protocol, the binary's as much as the image's, now fixed:
   it's decided, and a reboot empties it, so that precommit was never
   sent; the others take a block they missed only from f + 1 matching
   `done` messages, which one node ahead can't give. Now a node answering
-  a peer one height behind (`behind`, node.soma's `catchup_plan`) also
+  a peer one height behind (`behind`, runtime/node.soma's `catchup_plan`) also
   sends it, with `IoSignedAt`, every message it signed at that height,
   which completes the peer's quorum. A peer two or more behind needs
   none of it: a quorum decided the next height, so f + 1 honest nodes
@@ -744,8 +744,8 @@ gaps in the protocol, the binary's as much as the image's, now fixed:
   precommitted in that round, waiting there for its precommit, and one
   node in a later round isn't the f + 1 that moves them (4 of 15 runs).
   Now it stays in its round, with that round's timers back
-  (consensus.soma's `resume_timers`), sends what it signed at its height
-  again and keeps it in resend memory (node.soma's
+  (core/consensus.soma's `resume_timers`), sends what it signed at its height
+  again and keeps it in resend memory (runtime/node.soma's
   `resume_signed_prog`), and finishes the round with the others.
 - **A snapshot ahead of signed.log.** A step's snapshot was saved before
   its votes were signed, so a node stopped between the two started from
@@ -761,12 +761,12 @@ HOST:PORT [node flags]` on the host, with `pantheon image HOME FILE
 --service HOST:PORT` making the image that uses it. The service is the
 node's own runtime (shell.ml's primitives, from HOME's setup, as
 `pantheon node HOME` builds them) with a loop of its own, Soma's like the
-node's (node_service.soma's `service_tick_prog`, node_shell.soma's
+node's (runtime/node_service.soma's `service_tick_prog`, runtime/node_shell.soma's
 `run_service`): the next request (`IoServeNext`), run as the binary runs
 that operation (`run_net`) if the service allows it, its answer sent
 back (`IoServeReply`).
 
-What goes to the service is one set, nodeio.soma's `service_op`: the
+What goes to the service is one set, runtime/nodeio.soma's `service_op`: the
 host's primitives the kernel's host work runs on ("The host's work"
 above): git and paths in the checkouts, temporary files and
 directories, programs run to their end, processes started and killed,
@@ -775,7 +775,7 @@ the processes give. What those are for (a merge, a model call, a check,
 CI's turn) is decided in the image's kernel, which keeps the jobs, the
 model's budget and limit and the held requests itself. Everything else
 is the image's own: its votes, blocks, peers, tables and status. The kernel hands a `service_op` operation on as it
-is, and the image's runner (node_sandbox.soma's `iop`) sends its wire
+is, and the image's runner (runtime/node_sandbox.soma's `iop`) sends its wire
 form (`io_wire`) to the service and hands its answer back; each select
 turn (`IoEvents`) also asks for the host's events, which are the events
 the service's jobs gave, after the mailbox's, waiting a fifth of a second at most when it has a service, as
@@ -791,14 +791,14 @@ a field: the token, then the operation's wire form; an answer is one
 too: found, the float as `%.17g` text, then the data. The token is the
 node's, a hash of its private key (`service_token`), which the image and
 the service each have; the service answers `service_op` operations with
-it and refuses anything else (node.proof's `service_answers_only_its_own`).
+it and refuses anything else (runtime/node.proof's `service_answers_only_its_own`).
 A connection that fails is opened again for the next request; with no
 service, or none reachable, those operations answer that they aren't
 there, as before, and the image votes and keeps the chain but can't
 merge, bid or check.
 
 The service carries out only what the node's own host work asks
-(node_service.soma's `sv_allowed`), judged from what it knows itself:
+(runtime/node_service.soma's `sv_allowed`), judged from what it knows itself:
 its setup (HOME, the backend, CI's memory, image and sandbox runner),
 its own binary and environment (`IoSelfExe`, `IoEnvEntries`, read once),
 and the temporary files and directories it made (newest first, a
@@ -831,7 +831,7 @@ removed one taken out). So a token alone isn't the host:
 
 A refused request runs nothing, is answered not found with the reason,
 and is said in the service's log (`service refused OP: why`).
-node_service.proof proves it of these functions, both ways. What it
+runtime/node_service.proof proves it of these functions, both ways. What it
 refuses: `refused_runs_nothing`, `allowed_are_host_ops`,
 `only_the_token_is_served`, `paths_stay_in_roots`,
 `roots_are_the_services`, `path_operations_are_looked_at`,
@@ -839,8 +839,8 @@ refuses: `refused_runs_nothing`, `allowed_are_host_ops`,
 `runs_are_cleanup`, `git_takes_no_options_of_its_own`, and examples on
 one service's world (the key, `..`, a sibling of a root, an alias, an
 upload pack, `GIT_SSH_COMMAND`, `LD_PRELOAD`, another image, the clock).
-And that it takes nothing the node needs: what node_host.soma and
-node.soma ask is served (`checkout_git_is_served`,
+And that it takes nothing the node needs: what runtime/node_host.soma and
+runtime/node.soma ask is served (`checkout_git_is_served`,
 `merge_commit_is_served`, `tool_checkout_is_served`,
 `model_launches_are_served`, `check_job_is_served`, `ci_is_served`,
 `cmd_backend_is_served`, `service_environment_is_served`,
@@ -1082,7 +1082,7 @@ separate work; this status does not mark `.plan`.
   missing replay announcement (the old handle captured zero at creation).
 
 - Step 5, transaction members: `tx_parts` and `tx_parts_of` in
-  market.soma read agent, nonce, fields and signature from the shared JSON
+  core/market.soma read agent, nonce, fields and signature from the shared JSON
   token binding. Each of the four member lookups spends one token budget
   through nested skips, so wide objects take linear work. First duplicate
   keys win, including wrong kinds. The native transaction member parser
@@ -1110,7 +1110,7 @@ separate work; this status does not mark `.plan`.
   `reply_open_at` and `reply_close_at`, one tail-recursive `char_at` scan
   each way with no substring per step, still only after the output-cap
   check. The `node_reply_open` and `node_reply_close` bindings are gone;
-  the shell only reports the cap and yojson's tokens. `node.proof` checks
+  the shell only reports the cap and yojson's tokens. `runtime/node.proof` checks
   the offsets, and `test/reply-braces.sh` checks them on fixed inputs
   (none, only one brace, a close before the open, several objects, a
   200 KB reply) and the fields they lead to.
@@ -1174,7 +1174,7 @@ separate work; this status does not mark `.plan`.
   reading for the turn, stores the timers and jobs, and signals only the
   job Soma names. Select and reading bytes stay in the shell.
   `test/clock-arm.sh` checks these on fixed inputs, with no running node.
-  `node.proof` checks the same edges and proves the due timers are exactly
+  `runtime/node.proof` checks the same edges and proves the due timers are exactly
   the partition, that a stopped job is not stopped again, and that a
   queued event does not wait. Step 5 is not marked complete.
 
@@ -1213,7 +1213,7 @@ separate work; this status does not mark `.plan`.
   the chunks Soma returns and signals the process once (`node_job_flood`);
   it no longer trims the buffer or compares it to the cap. `job_result`
   still formats the outcome, and `node_job_complete` still runs the
-  callback at the completion's original queue position. `node.proof`
+  callback at the completion's original queue position. `runtime/node.proof`
   checks a line split across chunks, several lines in one chunk, an empty
   line, a trailing partial, a malformed chunk kept without an event, and
   the cap at and past its edge, and proves the under-cap append, that the
@@ -1252,13 +1252,13 @@ separate work; this status does not mark `.plan`.
 
 - U-1, part: the node's effects that write (a log line, a timer, an
   event queued for the loop, a send to every peer, to the peer at an
-  index or to a peer by name) are values of `node_op` in `node.soma`.
+  index or to a peer by name) are values of `node_op` in `runtime/node.soma`.
   Every place that called `node_log`, `node_timer`, `node_push`,
   `node_send_all`, `node_send_peer` or `node_peer_send` now builds an
   operation and carries it out with `io_do`; those six bindings are gone,
   and shell.ml's `node_io` is the one interpreter. `action_io` and
   `output_io` give the operation a plan's action or an output is, and
-  `node.proof` checks them on concrete plans and proves each is carried
+  `runtime/node.proof` checks them on concrete plans and proves each is carried
   out as exactly its operation, and that the wire form reads back.
   The clock is the same interface: `IoClock` wires as `["clock"]`, and
   `node_io` returns `(true, Unix.gettimeofday ())`; `io_now` is that
@@ -1282,7 +1282,7 @@ separate work; this status does not mark `.plan`.
   socket and carries the mode out. After a read, a `conn_buffer` event
   reports the buffered bytes and `buffer_over` applies the cap Soma is
   given as a decimal string (no unary literal), closing through a
-  binding. `node.proof` checks both caps at and past their edges and
+  binding. `runtime/node.proof` checks both caps at and past their edges and
   the oldest choice. Peer framing and parsing are in Soma. Job output
   caps are in Soma too (`job_feed`); job deadlines and timer scheduling
   remain native.
@@ -1297,7 +1297,7 @@ separate work; this status does not mark `.plan`.
   fields and own/refused flags without racing a running node. Connection
   admission and buffered-line byte-limit decisions subsequently moved too.
 
-- Step 5, part: `decode_tx` is Soma (market.soma). It refuses a raw
+- Step 5, part: `decode_tx` is Soma (core/market.soma). It refuses a raw
   transaction over the byte cap or not bounded JSON (`tx_shape_ok`, the caps
   as decimal strings), one the shell can't read as a transaction's JSON, one
   whose nonce isn't 1 to 17 digits (`nonce_ok`, before any signature is
@@ -1313,7 +1313,7 @@ separate work; this status does not mark `.plan`.
   is no object. `flatten_reply` turns the yojson binding's tokens into the
   old key, value, ... list (dotted names, list indices, left to right).
   The shell only reports the cap, finds the two bytes, and tokenizes;
-  its `json_in_reply` and `flatten_reply` are gone. `node.proof` checks
+  its `json_in_reply` and `flatten_reply` are gone. `runtime/node.proof` checks
   slices, nesting, absent objects and the flattened fields, and proves a
   reply with no object or past the cap never becomes a reply event, and
   that a parsed object becomes a reply with those fields. Left of step 5:
@@ -1333,7 +1333,7 @@ separate work; this status does not mark `.plan`.
   The shell keeps the limit's state (`node_limit_set`, `node_limit_clear`),
   reads a digit run with `float_of_string` (so big numbers cross as
   floats, not unary nat) and still parses the JSON: `node_reply_fields` is
-  `json_in_reply` and `flatten_reply`. `node.proof` checks limit and
+  `json_in_reply` and `flatten_reply`. `runtime/node.proof` checks limit and
   non-limit texts, deadlines past and future, units, the backoff's cap and
   each outcome, with theorems that a reply with no JSON object or a failed
   job never becomes a reply event. Left of step 5: lines into events
@@ -1346,7 +1346,7 @@ separate work; this status does not mark `.plan`.
   `run_event` drops those without a verify (so refused transactions
   resent every few seconds never pay for one), verifies the rest
   through `node_verify_line`, and turns a verified line into its
-  `tx` or `msg` event. `node.proof` checks the drops and both
+  `tx` or `msg` event. `runtime/node.proof` checks the drops and both
   events. Left of step 5: `decode_tx`, the line and connection
   limits, and the reply JSON.
 
@@ -1392,7 +1392,7 @@ separate work; this status does not mark `.plan`.
   retry-table insertion and socket writes are small bindings; silent-mode
   suppression is selected in Soma. Both cases use `perform_output` during
   startup/replay and runtime, and their old `handle` branches are gone.
-  `node.proof` checks exact status bytes, limit boundaries, log truncation,
+  `runtime/node.proof` checks exact status bytes, limit boundaries, log truncation,
   dispatch, flood ordering/count/range and silent sends. Merge, llm and
   check followed through the same dispatcher.
 
@@ -1401,7 +1401,7 @@ separate work; this status does not mark `.plan`.
   block reads in order; `catchup_send` selects an authenticated peer send
   only for present blocks, including empty blocks. The original two-second
   throttle, remembering silent/absent peers, and inclusive 51-block cap are
-  preserved. `node.proof` checks exact plans and message fields, malformed
+  preserved. `runtime/node.proof` checks exact plans and message fields, malformed
   arities, time/range boundaries, and missing/empty blocks. OCaml supplies
   only clock/table/metadata access and signing/socket writes. The other
   cases now also dispatch through `perform_output`.
@@ -1411,7 +1411,7 @@ separate work; this status does not mark `.plan`.
   when to withhold, queue a hash-chain link or do nothing, and
   `decided_plan` requests exactly one store for an unseen height. OCaml
   binds delay scheduling, logging, queue insertion, metadata/table reads
-  and the synced block store. `node.proof` checks concrete binding plans,
+  and the synced block store. `runtime/node.proof` checks concrete binding plans,
   malformed outputs, withhold/bounds behavior, and duplicate decisions.
   To use the same interpreter during startup and replay, `node_open` now
   returns setup/replay events and the saved consensus as data; Soma runs
@@ -1431,13 +1431,13 @@ separate work; this status does not mark `.plan`.
   apply edits with the same program: see "The edits machinery".)
 
 - The helper callbacks (step 3) were one typed `shell_helpers` record in
-  `util.soma`. `node_open` receives it once; the binding transports its three
+  `core/util.soma`. `node_open` receives it once; the binding transports its three
   remaining fields as a product (`pack_helpers`), since `.definition`
   accepts products but not Soma record types. `shell.ml` unpacks it into a
   named OCaml record and threads it through edit and command callers.
   `edit_once` serves edit application/diff replay, `contains` serves URL
   resolution and CI error classification, and `shell_safe_path` serves path
-  checks. `util.proof` checked all three packed callbacks on pure inputs.
+  checks. `core/util.proof` checked all three packed callbacks on pure inputs.
   With the edits machinery in Soma, no OCaml calls them: the record and
   `cli_open` are gone, and `node_open` takes only the setup.
   Prompt expansion calls `replace_all` directly in Soma; plan filtering
@@ -1455,18 +1455,18 @@ The following entries describe the earlier bottom-up moves and their wiring
 at the time; their `run` references are historical.
 
 
-- The node loop (step 2): `run_node` in `node.soma` holds the state and
+- The node loop (step 2): `run_node` in `runtime/node.soma` holds the state and
   drives `step`; `shell.ml` binds only `node_open` (keys, genesis, replay,
   the listener, the setup feeds), `events` (one select turn), `perform`
   (one output), `save_snapshot`, `note_refused`, `take_state` and
   `forever`. The setup still feeds through the shell's old `feed` inside
   `node_open`; every running event goes through the Soma loop. Its order
-  is `order_effects` in `node.soma`, a pure function from the event, the
+  is `order_effects` in `runtime/node.soma`, a pure function from the event, the
   state before and after `step`, and the outputs to effects (perform this
   output, save this snapshot, refuse this transaction): decided outputs
   first, then the snapshot when consensus changed (`cons_eq`), then the
   rest; a refused transaction is one whose raw form did not enter the
-  pool. `node.proof` checks that order with `Example`s (decided, snapshot
+  pool. `runtime/node.proof` checks that order with `Example`s (decided, snapshot
   and rest together; a refused and an accepted transaction; an empty
   step; steps with only some kinds; a vote saving before it sends), not
   by timing a node. Effects return `bool` and the loop keeps the new
@@ -1475,7 +1475,7 @@ at the time; their `run` references are historical.
   naming the shell's side; the snapshot crosses as consensus state and
   the shell still writes it only when it changed. Next: step 3 above.
 
-- `plan_open` (piece 1, in part): now `plan_open` in `util.soma`, with its
+- `plan_open` (piece 1, in part): now `plan_open` in `core/util.soma`, with its
   string helpers (`trim`, `split_lines`, `is_date_line`, `marked_line`,
   `truncate_line`). `shell.ml`'s OCaml version is deleted; `run` takes the
   Soma function as an extra argument (declared in `shell.definition`,
@@ -1484,11 +1484,11 @@ at the time; their `run` references are historical.
   Still in `shell.ml` from piece 1, next in roughly this order:
   the edit matching (`matches_at`, `positions`,
   `replace_at`, and `apply_edits`' pure logic), `safe_path`'s OCaml copy
-  (Soma already has one in `util.soma`), the JSON helpers
+  (Soma already has one in `core/util.soma`), the JSON helpers
   (`flatten_reply`, `json_in_reply`, `shallow_json`), and
   `chain_len`/`iterate` (over the `sha256` binding).
 
-- `replace_all`: now in `util.soma`, with `drop_str` and a bounded scan.
+- `replace_all`: now in `core/util.soma`, with `drop_str` and a bounded scan.
   The OCaml implementation is deleted. It initially crossed `run` as a
   callback; after step 4 it is called directly by Soma's `prompt_assemble`.
   Replacement remains literal, left-to-right and non-overlapping; inserted
@@ -1499,7 +1499,7 @@ at the time; their `run` references are historical.
 
 - Edit matching: `positions` (the first two places at most), `replace_at`
   and `edit_once` (the text with its one occurrence of the old text
-  replaced, `None` when it's missing or ambiguous) are in `util.soma`.
+  replaced, `None` when it's missing or ambiguous) are in `core/util.soma`.
   `shell.ml`'s `matches_at`, `positions` and `replace_at` are deleted.
   `run` gets Soma's `edit_once` and `contains` as two more arguments and
   stores them in two refs at its start, so `apply_edits`, `hunk_edits`,
@@ -1508,13 +1508,13 @@ at the time; their `run` references are historical.
   "appears more than once" with `contains`. Nat doesn't cross the binding
   boundary (extracted code's `nat` is abstract to `shell.ml`), so the
   bindings take `option string` and `bool`, not positions.
-  Next: `safe_path`'s OCaml copy (use `util.soma`'s, checking the two agree
+  Next: `safe_path`'s OCaml copy (use `core/util.soma`'s, checking the two agree
   on `test/edits.sh`'s cases first), then the JSON helpers
   (`flatten_reply`, `json_in_reply`, `shallow_json`), then
   `chain_len`/`iterate`. I/O stays in the shell.
 
 - Shell path validation: the OCaml `safe_path` logic is deleted and all its
-  callers use `shell_safe_path` in `util.soma`, passed through `run` and
+  callers use `shell_safe_path` in `core/util.soma`, passed through `run` and
   stored in a ref like the edit helpers. The existing Soma `safe_path`
   agrees on the edits script's cases, but differs on other paths: it rejects
   filenames containing `..`, permits NUL, and misses mixed-case `.git`.
@@ -1524,7 +1524,7 @@ at the time; their `run` references are historical.
   Next: the JSON helpers (`flatten_reply`, `json_in_reply`, `shallow_json`),
   then `chain_len`/`iterate`. I/O stays in the shell.
 
-- `shallow_json`: the bounded string scan now lives in `util.soma`.
+- `shallow_json`: the bounded string scan now lives in `core/util.soma`.
   `run` installs it in a ref through `shell.definition`, including for
   `decode_tx`, model replies and peer messages. The thin OCaml wrapper keeps
   depth 4 and the default `max_int` item budget; replies still use 4096.
@@ -1587,9 +1587,9 @@ The rest:
   the string and building `SCons c r` copies `r`, so a walk is quadratic,
   and one that isn't tail recursive is a frame per character. Prompts,
   diffs and files run to hundreds of kilobytes: such code reads by offset
-  with `util.soma`'s `slen`, `substr`, `char_at` and `find_str` (which
+  with `core/util.soma`'s `slen`, `substr`, `char_at` and `find_str` (which
   `main.soma` extracts to OCaml's `String` functions), or folds over
-  `chars s`, with an example in `util.proof` for what it computes. Before
+  `chars s`, with an example in `core/util.proof` for what it computes. Before
   that change, one edit applied to `shell.ml` took 8 s; now it's under
   10 ms, and 0.03 s on a 940 KB file.
 - Each task leaves `run`'s or `node`'s arguments no longer than it found

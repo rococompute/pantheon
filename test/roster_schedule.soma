@@ -1,6 +1,6 @@
 (** M-3 part: the roster by height, run as extracted code on fixed inputs
-    (market.proof checks the same in the kernel). No node, no timing. *)
-Import util market.
+    (core/market.proof checks the same in the kernel). No node, no timing. *)
+Import core.util core.market.
 Require Soma.Host.
 
 check (label : string) (ok : bool) : string := append (if ok then "ok " else "FAIL ") label.

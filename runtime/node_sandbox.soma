@@ -1,6 +1,6 @@
 (** The unikernel's runner (U-1; docs/SHELL-IN-SOMA.md, "One kernel, two
-    runners"): node_kernel.soma's primitives carried out with Sandbox, as
-    node_shell.soma carries them out with Soma.Host for the binary. The
+    runners"): runtime/node_kernel.soma's primitives carried out with Sandbox, as
+    runtime/node_shell.soma carries them out with Soma.Host for the binary. The
     kernel is the same: the same node programs, tables, peer links and
     file bytes (blocks.log, signed.log, status.txt, as Sandbox's named
     files). Connections are Sandbox's, named by their number; what peers'
@@ -8,7 +8,7 @@
 
     What a unikernel can't do itself (git in checkouts, model calls, CI
     and checks, the processes they run, the host's reply files and
-    inbox: nodeio.soma's [service_op]) it asks the node's service for,
+    inbox: runtime/nodeio.soma's [service_op]) it asks the node's service for,
     [pantheon service] on the host, over one TCP connection: the
     operation in its wire form, run there by the binary's own runtime.
     With no service, those answer that they aren't there. Checked without
@@ -17,7 +17,7 @@
     test/node-image-service.sh. *)
 Require Import Sandbox.
 From Stdlib Require Import NArith.BinNat PArith.BinPos.
-Import util nodeio node node_kernel.
+Import core.util runtime.nodeio runtime.node runtime.node_kernel.
 
 (** What only the unikernel's runner needs: the node's service at this IP
     address and port ("" for none) and the token its requests carry. *)

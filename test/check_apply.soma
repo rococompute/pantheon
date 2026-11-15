@@ -1,7 +1,7 @@
-(** What a check job's output becomes (node.soma's check_apply_plan_of and
+(** What a check job's output becomes (runtime/node.soma's check_apply_plan_of and
     check_apply_choice): a failure, a trimmed tree, a lie hash, or no event
     because CI still has to run. Fixed strings, no node. *)
-Import util node.
+Import core.util runtime.node.
 Require Soma.Host.
 From Stdlib Require Import Ascii.
 

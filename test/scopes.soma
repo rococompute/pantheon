@@ -7,7 +7,7 @@
     later leader, and those don't count against its term. With genesis's
     merge_approvals at 1, the leader's merge lands on its own. Run with
     test/scopes.sh. *)
-Import util market agent.
+Import core.util core.market core.agent.
 Require Soma.Host.
 
 say (cond : bool) (what : string) : list string :=

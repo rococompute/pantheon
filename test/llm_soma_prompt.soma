@@ -3,7 +3,7 @@
     and its log lines, the listing and file budgets, and the prompts the
     four request kinds (draft, pick, patch, attest) assemble. No node,
     sockets, timers or model processes. *)
-Import util market agent node.
+Import core.util core.market core.agent runtime.node.
 Require Soma.Host.
 From Soma Require Import OCaml.
 From Stdlib Require Import Ascii.

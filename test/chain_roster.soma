@@ -1,6 +1,6 @@
 (** Exact committed-chain fixtures. Every certificate signs the actual full
     preceding block, including its certificate envelope. No local peer view. *)
-Import util consensus market.
+Import core.util core.consensus core.market.
 Require Soma.Host.
 check (label : string) (ok : bool) : string := append (if ok then "ok " else "FAIL ") label.
 g4 : list string := ["a", "b", "c", "d"].

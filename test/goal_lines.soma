@@ -1,6 +1,6 @@
-(** A --goal file's bytes become agent goal events (node.soma's goal_events),
+(** A --goal file's bytes become agent goal events (runtime/node.soma's goal_events),
     through the same split as a log. Fixed texts, no node. *)
-Import util node node_shell.
+Import core.util runtime.node runtime.node_shell.
 Require Soma.Host.
 From Stdlib Require Import Ascii.
 

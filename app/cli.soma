@@ -1,15 +1,15 @@
 (** Pantheon's commands: init, keygen, genesis, up, status, tx, plan, edits,
     apply-edits and check, as node programs (U-1; docs/SHELL-IN-SOMA.md).
     Each is a value of [nprog unit] over [node_op]: the binary runs it
-    over Soma.Host's primitives (node_shell.soma's run_shell, from
+    over Soma.Host's primitives (runtime/node_shell.soma's run_shell, from
     main.soma's [dispatch]), which answer the commands' operations with
     no node. What a command
     decides is here: its arguments, its messages, a new agent's files, the
     genesis's bytes and every check on them. The operations do the I/O:
     printing, files, git, a new RSA key and starting nodes; the edits
     machinery decides here too, over the host's file and git work.
-    [pantheon node] is node.soma's [run_node]. *)
-Import util nodeio.
+    [pantheon node] is runtime/node.soma's [run_node]. *)
+Import core.util runtime.nodeio.
 (* [float] and its literals, OCaml's (Soma.OCaml) *)
 From Soma Require Import OCaml.
 From Stdlib Require Import Ascii.
@@ -1028,7 +1028,7 @@ cmd_apply_edits (dir file : string) : nprog unit :=
   end)).
 
 (** how `pantheon check` says the failure is the edits' (they don't apply):
-    any other failing exit is this node's (node.soma reads them so) *)
+    any other failing exit is this node's (runtime/node.soma reads them so) *)
 check_bid_failed : string := "1".
 check_node_failed : string := "3".
 
@@ -1070,7 +1070,7 @@ a patch request also gets a scratch checkout in $PANTHEON_WORKTREE: see scripts/
 
 (** ---- the node's setup (pantheon node) ----
     What the node needs decided before its kernel starts
-    (node_kernel.soma's kernel_world; node_net.soma takes the home): the home as an
+    (runtime/node_kernel.soma's kernel_world; runtime/node_net.soma takes the home): the home as an
     absolute path, kept private; genesis.json, key.json and chain.json
     read and checked; the node's flags; the governed repositories checked
     out and checked against the genesis's trees; and which already carry
@@ -1229,7 +1229,7 @@ node_setup (home : string) (flags : list string) : nprog (option (list (list str
      List.concat agents,
      flat_map (fun r => match r with n :: _ :: c :: _ => [n, c] | _ => [] end) repos,
      flat_map (fun s => match s with (n, None) => [n] | _ => [] end) states]
-    (* the boot events: genesis (node.soma's genesis_events reads the
+    (* the boot events: genesis (runtime/node.soma's genesis_events reads the
        roster, tips, block_ms, params, repositories and excludes from its
        text), the chain's id and each agent's key (what a transaction's
        signature is checked with: its size in bytes, n and e as hex), this
@@ -1253,7 +1253,7 @@ node_setup (home : string) (flags : list string) : nprog (option (list (list str
 (** ---- pantheon image ----
     A node as a MirageOS unikernel: [node_setup] run here, on the home's
     files, and what it decided written into FILE as a Soma program that
-    boots it (node_sandbox.soma's [run_node_image]). FILE goes in a
+    boots it (runtime/node_sandbox.soma's [run_node_image]). FILE goes in a
     Pantheon checkout, so its imports resolve; [soma build FILE] makes the
     image, which keeps blocks.log, signed.log and consensus.state on its
     storage device. *)
@@ -1269,7 +1269,7 @@ image_text (home service : string) (config : list (list string)) : string :=
     `pantheon image`. Build it with soma build; boot it with solo5-hvt and
     its storage device (--block:storage=DISK). *)
 Require Import Sandbox.
-Import node_sandbox.
+Import runtime.node_sandbox.
 
 node_config : list (list string) := [
   ", Stdlib.Strings.String.concat ",
@@ -1279,7 +1279,7 @@ main : io unit := run_node_image_at node_config ", soma_quote service, ".
 "].
 
 (** [--service HOST:PORT] taken out of the flags: where the image asks for
-    git, model calls and CI (node_sandbox.soma's service), "" for none *)
+    git, model calls and CI (runtime/node_sandbox.soma's service), "" for none *)
 Fixpoint image_service (flags : list string) : string * list string :=
   match flags with
   | "--service" :: a :: rest => (a, snd (image_service rest))

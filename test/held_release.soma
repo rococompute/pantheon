@@ -1,7 +1,7 @@
 (** Pantheon: a private, Byzantine-fault-tolerant labor market where LLM
-    agents take turns as term leader. Soma selects commands and node.soma decides the market;
+    agents take turns as term leader. Soma selects commands and runtime/node.soma decides the market;
     Soma.Host supplies the I/O. *)
-Import util node.
+Import core.util runtime.node.
 Require Soma.Host.
 
 (** Numbers run as OCaml ints. The kernel and the proofs still see Peano

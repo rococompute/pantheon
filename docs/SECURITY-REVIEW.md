@@ -43,7 +43,7 @@ refuse diffs that make a symlink or submodule. Tested in test/edits.sh.
 
 **C2. One signed message freezes every honest node.** *Checked in code;
 measured by the reviewer.* Peer messages' height and rounds are parsed by
-`num_opt` (util.soma:49-53, used at consensus.soma:219), which calls the
+`num_opt` (core/util.soma:49-53, used at core/consensus.soma:219), which calls the
 standard library's `Nat.of_uint`. Extraction maps only division and modulo to
 OCaml (main.soma), so `of_uint` multiplies by ten in a unary loop: parsing V
 takes about V steps (10⁹ took 0.5 s). A Byzantine node signs a prevote with
@@ -52,7 +52,7 @@ and again after every restart. *Fix:* reject numbers over about 12 digits
 before parsing, and extract `Nat.of_uint`/`uint_of_string` to OCaml's
 `int_of_string`; audit every `num_opt` and `num`.
 *Fixed:* `num_opt` takes 1 to 18 decimal digits and reads them in one pass
-(`num`), never `Nat.of_uint`; examples in consensus.proof check it. `num`,
+(`num`), never `Nat.of_uint`; examples in core/consensus.proof check it. `num`,
 used on transaction fields, is linear but wraps past 18 digits; that's
 harmless where it's used (a wrapped nonce or bid id matches nothing) but
 worth a bound.
@@ -103,7 +103,7 @@ are scanned for a line's end, and a line nested more than 4 deep is dropped
 before parsing. Tested by the e2e scenario `flood`. Still open: a signed
 handshake.
 
-**H4. Locks are lost on restart, which can break safety.** consensus.soma:28-36
+**H4. Locks are lost on restart, which can break safety.** core/consensus.soma:28-36
 keeps `lockr`/`lockv` in memory only; `signed.log` stops a second vote for the
 same slot but not a vote that contradicts an earlier lock. With one Byzantine
 node, an honest node that locked and restarted can help decide a different
@@ -113,7 +113,7 @@ round and value (synced before each precommit), or rebuild them from
 `signed.log` at startup.
 
 **H5. One agent can lock everyone out of the transaction pool.**
-node.soma:27-28: `poolable` takes any nonce above the next one, and the pool
+runtime/node.soma:27-28: `poolable` takes any nonce above the next one, and the pool
 is capped at 500 overall. 500 signed transactions with huge nonces fill every
 honest pool for good; no later post, bid or merge gets in, the nodes' own
 included, and `build_block` decodes the whole pool on every event. *Fix:*
@@ -122,9 +122,9 @@ own.
 
 **H6. No secret scanning anywhere; the chain keeps everything.** The error.log
 incident's path: `git add -A` sweeps in any untracked file (shell.ml:253);
-`violation` (agent.soma:48-53) checks only file count and denied paths; a
+`violation` (core/agent.soma:48-53) checks only file count and denied paths; a
 transaction at the next nonce goes into a block even when it fails
-(market.soma:396-415), so a rejected bid is permanent and replayed to new
+(core/market.soma:396-415), so a rejected bid is permanent and replayed to new
 peers; rejection reasons and bids are shown to the other providers' models;
 merges are published to GitHub within 30 s. *Fix:* take untracked files only
 when the model names them; scan bid content, notes, specs and reasons for
@@ -148,7 +148,7 @@ finding on text classification. Tested by the e2e scenario `ciflood`.
 
 **H8. A nested `.gitattributes` freezes a repository on every node.**
 *Reproduced with the node binary.* The deny list matches by prefix
-(agent.soma:50: `starts`), so `sub/.gitattributes` is allowed. Checks apply
+(core/agent.soma:50: `starts`), so `sub/.gitattributes` is allowed. Checks apply
 edits on a fresh checkout, which honours eol/ident/encoding attributes; merges
 apply them on the long-lived checkout, which doesn't. A bid that sets
 `* text eol=crlf` in a subdirectory, then a bid whose old text has CRLF,
@@ -183,17 +183,17 @@ document what building untrusted code allows.
 
 ## Medium
 
-- **Oversized vote values** (consensus.soma:221-228): prevotes and precommits
+- **Oversized vote values** (core/consensus.soma:221-228): prevotes and precommits
   keep any value, about 800 messages of up to 31 MB each per sender until the
   height is decided. Require empty values on votes; cap per sender.
-- **A NUL in a task spec diverges merges** (market.soma:252,
+- **A NUL in a task spec diverges merges** (core/market.soma:252,
   shell.ml:944-946): the spec goes into `git commit -m`, and a NUL makes
   `create_process` fail on every node. Reject control characters in specs and
   notes; pass the message with `-F`.
 - **Quadratic edit matching** (shell.ml:163-171) runs in the main loop on
   merge: a large file and a long old text can stall every node for minutes.
   Use a linear search, cap file sizes.
-- **The leader draw can be ground** (market.soma:235-236): a reveal may be any
+- **The leader draw can be ground** (core/market.soma:235-236): a reveal may be any
   of 64 links back, so the last revealer can pick the link that makes it
   leader. Require exactly one step.
 - **CI can hang an hour under the host-wide lock** (host.sh:47,
@@ -209,7 +209,7 @@ document what building untrusted code allows.
   fd 9 for bwrap.
 - **Muse's VM reaches every port on the host's localhost** (host.sh:52), the
   nodes' included. Use a network mode that allows only the inbox's port.
-- **Catch-up requests amplify** (consensus.soma:223-224, shell.ml:971-984):
+- **Catch-up requests amplify** (core/consensus.soma:223-224, shell.ml:971-984):
   each old height asked for costs up to 51 signatures. Rate-limit per peer;
   cache signed answers.
 - **Soma: `soma.lock`'s commit isn't validated** (vernac/somaDeps.ml:192-200):

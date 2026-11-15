@@ -1,4 +1,4 @@
-Import util consensus.
+Import core.util core.consensus.
 Require Soma.Host.
 body : list string := ["previous block"].
 roster (h : nat) : list string := if h <? 9 then ["a", "b", "c", "d"] else ["a", "b", "c"].

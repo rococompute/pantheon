@@ -4,12 +4,12 @@
     and most items are longer. A mark names the line by its start, as the
     prompt shows it: the "..." comes off (plan_line_start), and the mark's
     edit replaces the line's start together with the newline before it
-    (market.soma mark_edit), so it marks the whole line, only where a line
+    (core/market.soma mark_edit), so it marks the whole line, only where a line
     begins with it, and only if one line does. A task that closes with its
     line still open is logged once, with why: a later leader, or a new
     genesis, would draft it again. A task whose mark merged is closed by
     whoever leads. Run with test/plan-marks.sh. *)
-Import util market agent.
+Import core.util core.market core.agent.
 Require Soma.Host.
 
 say (cond : bool) (what : string) : list string :=

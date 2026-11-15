@@ -3,7 +3,7 @@
 # has no checkouts, so `pantheon service HOME HOST:PORT` does that for it
 # on the host, with the node's own runtime, and the image asks it for git,
 # model calls, CI and checks, their jobs and the events they give
-# (nodeio.soma's service_op, node.soma's service_tick_prog). Three binary
+# (runtime/nodeio.soma's service_op, runtime/node.soma's service_tick_prog). Three binary
 # nodes and the image, all up, with a fake model (a cmd: backend, as
 # test/e2e.sh's model scenario has): it drafts tasks, writes patches in
 # the checkout it's given with `pantheon edits`, reviews bids and approves.

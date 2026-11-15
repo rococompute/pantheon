@@ -1,7 +1,7 @@
 (** The binary's network and files (docs/SHELL-IN-SOMA.md, "One kernel,
-    two runners"): what the binary's runner (node_shell.soma) does with the
+    two runners"): what the binary's runner (runtime/node_shell.soma) does with the
     kernel's primitives and the service's socket, as the unikernel's does
-    with Sandbox (node_sandbox.soma). The kernel hands over a listener, a
+    with Sandbox (runtime/node_sandbox.soma). The kernel hands over a listener, a
     mailbox, dials, sends and closes ([IoNet*]) and the node's named files
     ([IoFile*]); the service asks for its listener, its next request and
     its replies ([IoServe*]). Here they're kept and carried out over the
@@ -10,7 +10,7 @@
     [IoSave], [IoAppendSynced]). The host's work starts, stops and looks
     at its jobs' processes ([IoProcStart], [IoProcKill], [IoEvents]), which
     are kept here too, over the host's processes ([IoSpawn], through
-    node_git.soma's [spawn_fed]: one started with its output on a pipe
+    runtime/node_git.soma's [spawn_fed]: one started with its output on a pipe
     named among the descriptors and its input, if any, in a temporary
     file; [IoWaitPid],
     [IoKillPid]). What it keeps: the node's home, the listener, the links
@@ -18,7 +18,7 @@
     through a buffer the select drains), the service's listener and
     clients with the bytes each sent, and the processes. *)
 From Stdlib Require Import NArith.BinNat.
-Import util nodeio node_git.
+Import core.util runtime.nodeio runtime.node_git.
 Require Import Soma.Wire.
 
 (** a link: its descriptor, whether the kernel dialed it, whether it is
@@ -272,7 +272,7 @@ serve_reply (s : net_state) (id : string) (fields : list string) : nprog (nanswe
   end.
 
 (** ---- processes ----
-    The host's work's jobs (node_host.soma: what each is for, its time
+    The host's work's jobs (runtime/node_host.soma: what each is for, its time
     limit, what its end becomes) are processes here: started from a
     scratch directory the host's work made, their output read as it comes
     and their end reported, killed when it says. *)

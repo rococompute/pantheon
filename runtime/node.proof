@@ -1,4 +1,4 @@
-(** What node.soma's pure effect order does, checked without running a node:
+(** What runtime/node.soma's pure effect order does, checked without running a node:
     no sockets, no timers, only [order_effects] on made-up steps. A snapshot
     effect appears only when consensus changed (as [empty_node]'s has not),
     decided outputs come before it, and the rest come after. *)

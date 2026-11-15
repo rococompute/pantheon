@@ -1,6 +1,6 @@
 #!/bin/sh
 # A node as a MirageOS unikernel among binaries (U-1). `pantheon image`
-# writes a node's setup into a Soma program (node_sandbox.soma's
+# writes a node's setup into a Soma program (runtime/node_sandbox.soma's
 # run_node_image), soma build makes the image, and solo5-vmnet boots it on
 # the Mac's vmnet network with a storage device, at the address its genesis
 # gives it. Two binary nodes run beside it and the fourth agent is down, so
@@ -168,7 +168,7 @@ sleep 3
 # again, it decides that height from the snapshot and moves on alone, and
 # the binaries, a block behind, can't take it from one node's done (f + 1
 # are needed). It sends them the messages it signed at their height
-# (node.soma's catchup_plan), its precommit among them, and that completes
+# (runtime/node.soma's catchup_plan), its precommit among them, and that completes
 # their quorum.
 first=$before
 for r in 2 3 4; do

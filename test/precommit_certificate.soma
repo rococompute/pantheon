@@ -1,5 +1,5 @@
 (** M-3 prerequisite: exact certificate names, deterministic inputs. *)
-Import util consensus.
+Import core.util core.consensus.
 Require Soma.Host.
 
 message (k : kind) (a : string) (h r : nat) (id : string) : msg :=

@@ -179,22 +179,32 @@ escape hatch, where static types are given up, and every assumption.
 
 ## Layout
 
+`main.soma` is the entry point. Code lives in `core/` (the state machines
+and shared helpers), `runtime/` (the node and its I/O implementations),
+and `app/` (the CLI). Each `.proof` stays beside its `.soma` file.
+
+Imports use dotted paths from the project root, found through `soma.toml`:
+`Import core.consensus.` loads `core/consensus.soma`, and
+`Import runtime.node.` loads `runtime/node.soma`. This also works from
+files under `test/`; paths are relative to the project, not the importing
+file. Build as before with `soma build main.soma`.
+
 | File | What it is |
 |---|---|
-| `consensus.soma` | Tendermint, one definition per rule of the paper's Algorithm 1 |
-| `market.soma` | Tasks, bids, 3-of-4 merges, conflict clearing, terms and the leader draw |
-| `agent.soma` | Each agent's wrapper: duties, prompts, policy, the scripted backend |
-| `node.soma` | Consensus, market and agent together: the one `step` the shell runs |
-| `util.soma` | Helpers, and `obj`, the loosely typed record the state machines use |
-| `cli.soma` | The commands, the node's setup, and the edits machinery: applying edits, a bid's tree, a checkout's changes as edits |
-| `nodeio.soma`, `node_kernel.soma` | The node's operations, and its kernel: tables, peer links, signatures, files, the select |
-| `node_host.soma` | The kernel's host work: a merge's git, the model's budget and limit, jobs (model calls, checks, CI) |
-| `node_shell.soma`, `node_sandbox.soma` | The kernel run by the binary (over Soma.Host's primitives, which `host_prim` picks by operation) and by a unikernel (with Sandbox) |
-| `node_git.soma` | Git, a clone and a program run as the binary runs them: git's environment and flags, a program's input in a temporary file, a program run to its end over the host's processes |
-| `node_path.soma` | A path in a checkout as the runners look at it: each part's lstat in turn, a symlink on the way refused |
-| `node_file.soma` | The node's files as the binary writes them: whole (a temporary file, the mode kept, a rename, synced when durable), directories, removals, a tree removed in the background |
-| `node_service.soma` | The node's service for an image: what it carries out (only the node's own host work: its paths, git, programs), its loop |
-| `node_net.soma` | The binary's network, named files, service socket and jobs' processes: links, buffers, the select, frames (Soma.Wire), the process table and its events, over the host's descriptors and processes |
+| `core/consensus.soma` | Tendermint, one definition per rule of the paper's Algorithm 1 |
+| `core/market.soma` | Tasks, bids, 3-of-4 merges, conflict clearing, terms and the leader draw |
+| `core/agent.soma` | Each agent's wrapper: duties, prompts, policy, the scripted backend |
+| `runtime/node.soma` | Consensus, market and agent together: the one `step` the shell runs |
+| `core/util.soma` | Helpers, and `obj`, the loosely typed record the state machines use |
+| `app/cli.soma` | The commands, the node's setup, and the edits machinery: applying edits, a bid's tree, a checkout's changes as edits |
+| `runtime/nodeio.soma`, `runtime/node_kernel.soma` | The node's operations, and its kernel: tables, peer links, signatures, files, the select |
+| `runtime/node_host.soma` | The kernel's host work: a merge's git, the model's budget and limit, jobs (model calls, checks, CI) |
+| `runtime/node_shell.soma`, `runtime/node_sandbox.soma` | The kernel run by the binary (over Soma.Host's primitives, which `host_prim` picks by operation) and by a unikernel (with Sandbox) |
+| `runtime/node_git.soma` | Git, a clone and a program run as the binary runs them: git's environment and flags, a program's input in a temporary file, a program run to its end over the host's processes |
+| `runtime/node_path.soma` | A path in a checkout as the runners look at it: each part's lstat in turn, a symlink on the way refused |
+| `runtime/node_file.soma` | The node's files as the binary writes them: whole (a temporary file, the mode kept, a rename, synced when durable), directories, removals, a tree removed in the background |
+| `runtime/node_service.soma` | The node's service for an image: what it carries out (only the node's own host work: its paths, git, programs), its loop |
+| `runtime/node_net.soma` | The binary's network, named files, service socket and jobs' processes: links, buffers, the select, frames (Soma.Wire), the process table and its events, over the host's descriptors and processes |
 | `*.proof` | What is proved so far |
 | `test/e2e.sh`, `test/edits.sh` | The scenarios, and the edit engine |
 | `install.sh` | The one-line install: Soma if it's missing, then Pantheon |

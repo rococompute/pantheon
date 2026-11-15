@@ -1,15 +1,15 @@
 (** Pantheon: a private, Byzantine-fault-tolerant labor market where LLM
-    agents take turns as term leader. cli.soma runs the commands and
-    node.soma decides the market; Soma.Host does their I/O. *)
-Import util node cli node_shell.
+    agents take turns as term leader. app/cli.soma runs the commands and
+    runtime/node.soma decides the market; Soma.Host does their I/O. *)
+Import core.util runtime.node app.cli runtime.node_shell.
 Require Soma.Host.
 
-(** The hashes and signatures are Soma's (util.soma's sha256 and
-    hash_list, nodeio.soma's nio_sign, through Soma.Crypto): the kernel
+(** The hashes and signatures are Soma's (core/util.soma's sha256 and
+    hash_list, runtime/nodeio.soma's nio_sign, through Soma.Crypto): the kernel
     computes them, and the binary and the unikernel run them. *)
 
-(** Every command but [node] and [service] is a node program (cli.soma),
-    run over Soma.Host's primitives (node_shell.soma's run_shell); [node] is node.soma's loop, [service]
+(** Every command but [node] and [service] is a node program (app/cli.soma),
+    run over Soma.Host's primitives (runtime/node_shell.soma's run_shell); [node] is runtime/node.soma's loop, [service]
     its service's. *)
 dispatch (args : list string) : unit :=
   match args with

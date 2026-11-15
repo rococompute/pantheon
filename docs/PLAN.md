@@ -69,7 +69,7 @@ the leader reads `.plan` at the repository's head each time it drafts.
 ## How the market uses it
 
 - **Drafting:** the leader's prompt has each repository's open items, in
-  order, under "Each repository's plan" (`node.soma`'s `plan_text_of`,
+  order, under "Each repository's plan" (`runtime/node.soma`'s `plan_text_of`,
   expanded by `prompt_assemble`). The leader
   takes the open item no task already covers that it judges best to do next,
   usually the first, and says why when it isn't. With room for another task
@@ -85,9 +85,9 @@ the leader reads `.plan` at the repository's head each time it drafts.
   `plan_line`), it puts `+ ` before the item's line with a mark of its own,
   which attestors approve like a bid. The prompt shows each line cut at 400
   characters, and most items are longer, so `plan_line` is the line as
-  shown: its start, without the `...` (`util.soma`'s `plan_line_start`).
+  shown: its start, without the `...` (`core/util.soma`'s `plan_line_start`).
   The mark's edit replaces that start together with the newline before it
-  (`market.soma`'s `mark_edit`), so it marks the whole line, only where a
+  (`core/market.soma`'s `mark_edit`), so it marks the whole line, only where a
   line begins with it, and only if exactly one line does. A task that closes
   with its line still open (no bid could finish it, no line was named, or
   the mark failed) is logged once with why: an unmarked item is drafted

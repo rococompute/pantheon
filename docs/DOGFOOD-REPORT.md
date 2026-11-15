@@ -50,7 +50,7 @@ performance and resources first, then capabilities.
 - Proofs: a bid becomes Merged only through finalize with 3 approvals (most of
   item 6); `maybe_draw` bars whoever held back (half of item 9); lockr changes
   only in r_lock, for one step (toward item 3).
-- Strict number parsing in peer and timer messages; `market.proof` cheaper to
+- Strict number parsing in peer and timer messages; `core/market.proof` cheaper to
   check.
 
 **What the operator fixed from what the run showed** (53 commits): CI that
@@ -74,7 +74,7 @@ every 30 s; CI ran in a bubblewrap sandbox held to 1.5 GB, one check at a time.
 **19 merges in 20 tasks** (term 12, height about 14000): Claude 9, Muse 7,
 Codex 3, Grok 0. Of 68 bids: 19 merged, 26 rejected, 23 cleared.
 
-- Record update everywhere in `consensus.soma` (tasks 1–10, mechanical, one
+- Record update everywhere in `core/consensus.soma` (tasks 1–10, mechanical, one
   helper each); Soma's generated Boolean equality for `kind` and the market
   status (11, 12).
 - A failed merge check names its stage: the edits didn't apply, or CI failed
@@ -137,7 +137,7 @@ provider fared:
    ill-typed abstraction; a guard lemma that eliminates `b` first works.
 
 From the laptop run (in the goals then, now merged): record update's term
-blowup, compiles killed for memory with no message, the slow `market.proof`.
+blowup, compiles killed for memory with no message, the slow `core/market.proof`.
 
 ## What the Lima sandbox run found (Nov 8 23:00 to Nov 9)
 
@@ -205,7 +205,7 @@ moves `shell.ml` into Soma (docs/SHELL-IN-SOMA.md).
 **D-5. An agent bids the same patch twice.** Muse's node sent bid 1 on task
 1 and asked Muse for another patch 0.03 s later; Muse gave the same one,
 which went out as bid 2, and the leader had to reject bid 1 as a duplicate.
-`bid_duty` (agent.soma) skips a task while the agent has a pending bid on
+`bid_duty` (core/agent.soma) skips a task while the agent has a pending bid on
 the chain, or one waiting in its queue, but not while its bid is in flight:
 sent and not yet in a block. And an answered patch is enqueued without
 checking the chain, where the first bid had landed by then. The fix: count
@@ -232,10 +232,10 @@ blocks for its merge: the leader proposed it at 1405, Codex voted no at
 2305. Meanwhile `status` showed only "bid 1 [pending]", so an operator (me)
 read it as a stalled merge and went looking for a bug that wasn't there. And
 the no had no reason anywhere: an attestor's model answers `approve` and
-`reason`, and `agent.soma` (the `"attest"` reply) enqueues `attest BID no`
+`reason`, and `core/agent.soma` (the `"attest"` reply) enqueues `attest BID no`
 without the reason, so a rejected bid says only "attestors voted no" and its
 bidder can't learn what to fix. The fix: `attest BID no REASON`, the reason
-kept on the vote (`market.soma`'s attest rule, a reason capped like a bid's
+kept on the vote (`core/market.soma`'s attest rule, a reason capped like a bid's
 note) and in the rejection; `status_lines` shows a pending merge as its
 bid, the votes so far with their reasons, and the height at which it settles
 (the fallback and the attest window); a test of a no with a reason through
@@ -243,7 +243,7 @@ to the rejection and the status.
 
 **D-8. Calls spent on a task that's already finished.** After bid 1 merged,
 step 2 was done, and Muse's bid had marked its `.plan` line `+ ` as the task
-asked. The leader still sent `mark 1` (`agent.soma`, `markq`: it asks
+asked. The leader still sent `mark 1` (`core/agent.soma`, `markq`: it asks
 whenever it judged the task done, checking only for its own mark bid), which
 would have made the line `+ + shell into Soma, step 2`; both attestors voted
 no, after two model calls and two CI runs. And Codex's patch for task 1,

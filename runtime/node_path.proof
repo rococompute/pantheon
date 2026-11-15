@@ -1,4 +1,4 @@
-(** What [IoPathProbe] answers (node_path.soma), whatever the host's stat
+(** What [IoPathProbe] answers (runtime/node_path.soma), whatever the host's stat
     answers: it only looks (each part a stat, in order); "symlink"
     whenever a part on the way is one; "dir" or "file" only when every
     part is there and none is a symlink; "none" only when a part isn't

@@ -1,5 +1,5 @@
 (** Deterministic, agreed-history heartbeat accounting; newest block first. *)
-Import util consensus.
+Import core.util core.consensus.
 Require Soma.Host.
 
 main := Host.print_lines

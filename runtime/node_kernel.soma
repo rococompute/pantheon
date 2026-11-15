@@ -1,26 +1,26 @@
 (** The node's kernel (U-1; docs/SHELL-IN-SOMA.md, "One kernel, two
     runners"): what a node keeps between operations and how it carries
     them out, written once for the binary and the unikernel. A node
-    program's operations ([nprog] over nodeio.soma's [node_op]) become a
+    program's operations ([nprog] over runtime/nodeio.soma's [node_op]) become a
     program of the kernel's primitives ([IoNetListen] ... [IoFileAppend],
     named after Sandbox's) and the operations it hands on as they are
     (logging, the clock, and the host's work: git, model calls, CI, jobs,
-    the inbox: nodeio.soma's [service_op]).
+    the inbox: runtime/nodeio.soma's [service_op]).
 
-    The kernel keeps the tables (nodeio.soma's [nio_tables]: timers, the
+    The kernel keeps the tables (runtime/nodeio.soma's [nio_tables]: timers, the
     queue, decided blocks, signed votes, resend memory, ...), the genesis
     peers and the links it dialed to them, the connections peers opened,
     when it dials and resends next, the turn's clock, the snapshot last
     saved and the peer lines it signed. Peer lines are signed with Soma's
-    RSA (nodeio.soma's [nio_wire_line]).
+    RSA (runtime/nodeio.soma's [nio_wire_line]).
 
-    Two runners carry the primitives out: the binary's, node_net.soma
-    over Soma.Host's sockets by name ([run_net], node_shell.soma); and the
-    unikernel's, with Sandbox (node_sandbox.soma),
+    Two runners carry the primitives out: the binary's, runtime/node_net.soma
+    over Soma.Host's sockets by name ([run_net], runtime/node_shell.soma); and the
+    unikernel's, with Sandbox (runtime/node_sandbox.soma),
     which asks the node's service for the host's work. *)
-Import util nodeio node cli node_host.
+Import core.util runtime.nodeio runtime.node app.cli runtime.node_host.
 
-(** What the kernel is given, from cli.soma's [node_setup]: the chain's
+(** What the kernel is given, from app/cli.soma's [node_setup]: the chain's
     id, this node's key and each agent's public key, the draw (the
     Byzantine flag, the chain's length, the link secret), the check
     exclusions in [IoCheckExclusions]'s wire form, this node's name, the
@@ -51,7 +51,7 @@ Record nio_link := { l_id : string; l_host : string; l_last : PrimFloat.float; l
     before a turn, read back for its deadlines, given up by the select);
     the snapshot text last saved; the peer lines it signed lately, by
     their fields (a resend sends the same line again); and what the host's
-    work keeps (node_host.soma). *)
+    work keeps (runtime/node_host.soma). *)
 Record nio_kernel := {
   k_tables : nio_tables;
   k_names : list (string * (string * string));
@@ -255,8 +255,8 @@ kpass (s : nio_kernel) (op : node_op) : nprog (nanswer * nio_kernel) :=
     signed votes, the snapshot and the status are the node's named files;
     the draw, signing a transaction, the check exclusions and the keys are
     the world's; a checkout's work, the model's limit, jobs and CI are
-    node_host.soma's (the host's events, the jobs' ends among them, are
-    read through it); the tables and stores are nodeio.soma's. Everything
+    runtime/node_host.soma's (the host's events, the jobs' ends among them, are
+    read through it); the tables and stores are runtime/nodeio.soma's. Everything
     else (logging, the clock, the host's primitives) is handed on as it
     is. *)
 kernel_op (w : kworld) (s : nio_kernel) (op : node_op) : nprog (nanswer * nio_kernel) :=
@@ -347,7 +347,7 @@ Fixpoint kernel_run {A : Type} (w : kworld) (p : nprog A) (s : nio_kernel) : npr
   end.
 
 (** ---- From the node's setup ----
-    What cli.soma's [node_setup] decided for a node's home (the settings,
+    What app/cli.soma's [node_setup] decided for a node's home (the settings,
     this node's key, its excluded repositories, those it can't check, CI
     commands, the agents, the repositories, those still at genesis, then
     the boot events), made the kernel's world and its first state. *)
@@ -424,7 +424,7 @@ kernel_listen_prog (w : kworld) (s : nio_kernel) : nprog bool :=
 (** A node from its setup, started: listening, then startup (the snapshot
     read back, the boot events replayed with blocks.log's, the start
     step), giving the node's state and the kernel's for the loop's turns
-    (node.soma's [node_tick_prog], each run by [kernel_run] from the state
+    (runtime/node.soma's [node_tick_prog], each run by [kernel_run] from the state
     the last left). *)
 kernel_boot_prog (w : kworld) (s : nio_kernel) : nprog (option (node_state * nio_kernel)) :=
   nbind (kernel_listen_prog w s) (fun listening =>
