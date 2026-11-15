@@ -1545,3 +1545,215 @@ Proof.
   assert (Hs : nio_eq slot other = false) by (apply Stdlib.Strings.String.eqb_neq; congruence). rewrite Hs.
   apply lookup_filter_other. exact Hne.
 Qed.
+
+(** ---- runtime/node.soma: the snapshot reads back ----
+    [snapshot_of (snapshot_text c) = Some c]: a node that saves its
+    consensus state and starts again from the file has the state it
+    saved, its lock and valid value among it. The one premise is the
+    reader's own: every number it reads back has at most 18 digits (what
+    [num_opt] accepts), the state's numbers and each saved string's
+    length. *)
+
+From Stdlib Require DecimalNat.
+
+Abbreviation sapp := Stdlib.Strings.String.append.
+
+(** at most 18 decimal digits, as [num_opt] reads *)
+Definition digits18 (n : nat) : Prop := slen (show n) <= 18.
+
+Lemma sapp_nil_r : forall s, sapp s "" = s.
+Proof. induction s as [|c s IH]; cbn; [reflexivity|now rewrite IH]. Qed.
+
+Lemma sapp_assoc : forall a b c, sapp (sapp a b) c = sapp a (sapp b c).
+Proof. induction a as [|x a IH]; intros; cbn; [reflexivity|now rewrite IH]. Qed.
+
+Lemma slen_sapp : forall a b, slen (sapp a b) = slen a + slen b.
+Proof. unfold slen. induction a as [|x a IH]; intros; cbn; [reflexivity|now rewrite IH]. Qed.
+
+Lemma substr_at : forall t a b m, t = sapp a b -> substr t (slen a) m = substr b 0 m.
+Proof. unfold substr, slen. intros t a b m ->. induction a as [|x a IH]; cbn; [reflexivity|exact IH]. Qed.
+
+Lemma substr_prefix : forall a b, substr (sapp a b) 0 (slen a) = a.
+Proof. unfold substr, slen. induction a as [|x a IH]; intros; cbn; [now destruct b|now rewrite IH]. Qed.
+
+Lemma concat_empty_cons : forall a l,
+  Stdlib.Strings.String.concat "" (a :: l) = sapp a (Stdlib.Strings.String.concat "" l).
+Proof. intros a [|b l]; cbn; [symmetry; apply sapp_nil_r|reflexivity]. Qed.
+
+Lemma counted_cons : forall x l, counted (x :: l) = sapp (show (slen x)) (SCons ":" (sapp x (counted l))).
+Proof. intros. unfold counted. cbn [flat_map app]. rewrite !concat_empty_cons. reflexivity. Qed.
+
+(** ---- [show] and [num_opt] ---- *)
+
+Lemma digits_uint : forall d acc,
+  digits (DecimalString.NilEmpty.string_of_uint d) acc = Nat.of_uint_acc d acc.
+Proof.
+  unfold digits, chars. induction d as [|d IH|d IH|d IH|d IH|d IH|d IH|d IH|d IH|d IH|d IH]; intro acc;
+    [reflexivity|..];
+    cbn [DecimalString.NilEmpty.string_of_uint Stdlib.Strings.String.list_ascii_of_string fold_left Nat.of_uint_acc];
+    rewrite IH; f_equal; rewrite Nat.tail_mul_spec;
+    match goal with |- context [nat_of_ascii ?c] =>
+      let v := eval vm_compute in (nat_of_ascii c) in change (nat_of_ascii c) with v end;
+    cbn [Nat.sub]; lia.
+Qed.
+
+Lemma uint_digits : forall d,
+  forallb (fun c => (48 <=? nat_of_ascii c) && (nat_of_ascii c <=? 57)) (chars (DecimalString.NilEmpty.string_of_uint d)) = true.
+Proof.
+  unfold chars. induction d as [|d IH|d IH|d IH|d IH|d IH|d IH|d IH|d IH|d IH|d IH]; [reflexivity|..];
+    cbn [DecimalString.NilEmpty.string_of_uint Stdlib.Strings.String.list_ascii_of_string forallb];
+    rewrite IH; reflexivity.
+Qed.
+
+Lemma show_digits : forall n,
+  forallb (fun c => (48 <=? nat_of_ascii c) && (nat_of_ascii c <=? 57)) (chars (show n)) = true.
+Proof.
+  intro n. change (show n) with (DecimalString.NilZero.string_of_uint (Nat.to_uint n)).
+  destruct (Nat.to_uint n); [reflexivity|apply uint_digits ..].
+Qed.
+
+Lemma num_opt_nonempty : forall s, s <> SNil -> num_opt s = if short_digits s 18 then Some (num s) else None.
+Proof. intros [|c s] H; [congruence|reflexivity]. Qed.
+
+Lemma num_opt_uint : forall u, u <> Decimal.Nil ->
+  slen (DecimalString.NilEmpty.string_of_uint u) <= 18 ->
+  num_opt (DecimalString.NilEmpty.string_of_uint u) = Some (Nat.of_uint u).
+Proof.
+  intros u Hu Hs. rewrite num_opt_nonempty by (destruct u; cbn; congruence).
+  unfold short_digits. rewrite uint_digits, (proj2 (Nat.leb_le _ _) Hs). cbn [andb].
+  unfold num. rewrite digits_uint. reflexivity.
+Qed.
+
+(** a number shown reads back, when it has at most 18 digits *)
+Lemma num_opt_show : forall n, digits18 n -> num_opt (show n) = Some n.
+Proof.
+  unfold digits18. intros n Hn. pose proof (DecimalNat.Unsigned.of_to n) as Hof.
+  change (show n) with (DecimalString.NilZero.string_of_uint (Nat.to_uint n)) in *.
+  destruct (Nat.to_uint n) eqn:E; [cbn in Hof; subst n; reflexivity|..];
+    (rewrite <- Hof; apply num_opt_uint; [discriminate|exact Hn]).
+Qed.
+
+(** ---- [uncount] reads [counted]'s strings back ---- *)
+
+Lemma substring_zero : forall s, Stdlib.Strings.String.substring 0 0 s = "".
+Proof. now destruct s. Qed.
+
+Lemma find_go_colon : forall d pre rest t fuel,
+  t = sapp pre (sapp d (SCons ":" rest)) ->
+  forallb (fun c => (48 <=? nat_of_ascii c) && (nat_of_ascii c <=? 57)) (chars d) = true ->
+  slen d < fuel -> find_go fuel ":" t (slen pre) = Some (slen pre + slen d).
+Proof.
+  induction d as [|c d IH]; intros pre rest t fuel Ht Hd Hf; (destruct fuel as [|f]; [cbn in Hf; lia|]);
+    cbn [find_go]; change (slen ":") with 1; change (substr ":" 0 1) with ":";
+    rewrite !(substr_at t pre _ _ Ht).
+  - cbn. rewrite substring_zero, Nat.add_0_r. reflexivity.
+  - assert (Hx : substr (sapp (SCons c d) (SCons ":" rest)) 0 1 = SCons c "") by (cbn; now rewrite substring_zero).
+    assert (Hc : seq (SCons c "") ":" = false).
+    { apply Stdlib.Strings.String.eqb_neq. intro H. injection H as ->. discriminate Hd. }
+    rewrite Hx, Hc. cbn [orb andb Nat.eqb].
+    assert (Hs : S (slen pre) = slen (sapp pre (SCons c ""))) by (rewrite slen_sapp; cbn; lia).
+    rewrite Hs. cbn in Hd. apply andb_prop in Hd as [_ Hd].
+    rewrite (IH (sapp pre (SCons c "")) rest t f); [|rewrite Ht, sapp_assoc; reflexivity|exact Hd|unfold slen in *; cbn in Hf; lia].
+    rewrite slen_sapp. unfold slen. cbn. f_equal. lia.
+Qed.
+
+Lemma find_str_colon : forall d pre rest t,
+  t = sapp pre (sapp d (SCons ":" rest)) ->
+  forallb (fun c => (48 <=? nat_of_ascii c) && (nat_of_ascii c <=? 57)) (chars d) = true ->
+  find_str ":" t (slen pre) = Some (slen pre + slen d).
+Proof.
+  intros d pre rest t Ht Hd. unfold find_str.
+  assert (Hl : slen t = slen pre + slen d + S (slen rest)) by (rewrite Ht, !slen_sapp; unfold slen in *; cbn in *; lia).
+  replace (slen t <? slen ":" + slen pre) with false by (symmetry; apply Nat.ltb_ge; unfold slen in *; cbn in *; lia).
+  apply (find_go_colon d pre rest); [exact Ht|exact Hd|]. cbn. lia.
+Qed.
+
+Lemma counted_length : forall l, length l <= slen (counted l).
+Proof.
+  induction l as [|x l IH]; [unfold slen in *; cbn in *; lia|]. rewrite counted_cons, !slen_sapp. cbn. rewrite slen_sapp. lia.
+Qed.
+
+Lemma uncount_counted : forall l t pre acc fuel,
+  t = sapp pre (counted l) -> Forall (fun x => digits18 (slen x)) l -> length l < fuel ->
+  uncount fuel t (slen pre) acc = Some (rev acc ++ l).
+Proof.
+  induction l as [|x l IH]; intros t pre acc fuel Ht Hl Hf; (destruct fuel as [|f]; [cbn in Hf; lia|]); cbn [uncount].
+  - assert (Hp : slen t = slen pre) by (rewrite Ht; cbn; rewrite sapp_nil_r; reflexivity).
+    rewrite Hp, Nat.leb_refl, Nat.eqb_refl, app_nil_r. reflexivity.
+  - apply Forall_cons_iff in Hl as [Hx Hr]. rewrite counted_cons in Ht.
+    set (d := show (slen x)) in *. set (rest := sapp x (counted l)) in *.
+    assert (Hlen : slen t = slen pre + slen d + S (slen x + slen (counted l)))
+      by (rewrite Ht, !slen_sapp; unfold rest;
+          change (slen (SCons ":" (sapp x (counted l)))) with (S (slen (sapp x (counted l)))); rewrite slen_sapp; lia).
+    replace (slen t <=? slen pre) with false by (symmetry; apply Nat.leb_gt; lia).
+    rewrite (find_str_colon d pre rest t Ht (show_digits _)).
+    replace (slen pre + slen d - slen pre) with (slen d) by lia.
+    assert (Hn : num_opt d = Some (slen x)) by exact (num_opt_show _ Hx).
+    rewrite (substr_at t pre _ _ Ht), substr_prefix, Hn.
+    replace (slen t <? slen pre + slen d + 1 + slen x) with false by (symmetry; apply Nat.ltb_ge; lia).
+    set (pre' := sapp pre (sapp d ":")).
+    assert (Ht' : t = sapp pre' (sapp x (counted l))) by (subst pre' rest; rewrite Ht, !sapp_assoc; reflexivity).
+    assert (Hp' : slen pre + slen d + 1 = slen pre') by (subst pre'; rewrite !slen_sapp; unfold slen in *; cbn in *; lia).
+    rewrite Hp', (substr_at t pre' _ _ Ht'), substr_prefix.
+    assert (Hp'' : slen pre' + slen x = slen (sapp pre' x)) by (rewrite slen_sapp; reflexivity).
+    rewrite Hp'', (IH t (sapp pre' x)); [|rewrite Ht', sapp_assoc; reflexivity|exact Hr|cbn in Hf; lia].
+    cbn [rev]. rewrite <- app_assoc. reflexivity.
+Qed.
+
+(** ---- the state back ---- *)
+
+Lemma kind_of_name_reads_kind_name : forall k, kind_of_name (kind_name k) = Some k.
+Proof. destruct k; reflexivity. Qed.
+
+Lemma msgs_of_frames_reads_log : forall log,
+  Forall (fun m => digits18 (mh m) /\ digits18 (mr m) /\ digits18 (vr m)) log ->
+  msgs_of_frames (map msg_frame log) = Some log.
+Proof.
+  induction log as [|m log IH]; intro H; [reflexivity|]. inversion H as [|? ? (H1 & H2 & H3) Hr]; subst.
+  cbn [map msgs_of_frames]. unfold msg_frame at 1. cbn [msg_of_frame].
+  rewrite kind_of_name_reads_kind_name, (num_opt_show _ H1), (num_opt_show _ H2), (num_opt_show _ H3), (IH Hr).
+  destruct m; reflexivity.
+Qed.
+
+(** what the reader asks of a state: each number it reads back has at most
+    18 digits *)
+Definition snapshot_fits (c : consensus_state) : Prop :=
+  digits18 (consensus.height c) /\ digits18 (consensus.round c) /\ digits18 (consensus.step c) /\
+  digits18 (consensus.lockr c) /\ digits18 (consensus.validr c) /\ digits18 (consensus.block_ms c) /\
+  Forall (fun m => digits18 (mh m) /\ digits18 (mr m) /\ digits18 (vr m)) (consensus.log c) /\
+  Forall (fun s => digits18 (slen s)) (nio_frame_lists (snapshot_frames c)).
+
+Lemma snapshot_parse_reads_text : forall c, snapshot_fits c -> snapshot_parse (snapshot_text c) = Some c.
+Proof.
+  intros c (Hh & Hr & Hs & Hlr & Hvr & Hbm & Hlog & Hw). unfold snapshot_parse.
+  assert (Hu : uncount (slen (snapshot_text c) + 1) (snapshot_text c) 0 [] = Some (nio_frame_lists (snapshot_frames c))).
+  { apply (uncount_counted _ _ "" [] _); [reflexivity|exact Hw|].
+    pose proof (counted_length (nio_frame_lists (snapshot_frames c))) as Hc. unfold snapshot_text.
+    rewrite Nat.add_1_r. apply Nat.lt_succ_r. exact Hc. }
+  rewrite Hu.
+  rewrite nio_lists_reads_frames. unfold snapshot_frames. cbn [app].
+  rewrite Stdlib.Strings.String.eqb_refl. cbn [negb].
+  rewrite (num_opt_show _ Hh), (num_opt_show _ Hr), (num_opt_show _ Hs), (num_opt_show _ Hlr), (num_opt_show _ Hvr),
+    (num_opt_show _ Hbm), (msgs_of_frames_reads_log _ Hlog).
+  destruct c; reflexivity.
+Qed.
+
+(** A node that saves its consensus state reads back the same state: its
+    lock, valid value, round and step, and every vote it remembers. *)
+Theorem snapshot_text_reads_back : forall c, snapshot_fits c -> snapshot_of (snapshot_text c) = Some c.
+Proof.
+  intros c Hc. unfold snapshot_of. rewrite (snapshot_parse_reads_text c Hc).
+  unfold seq. rewrite Stdlib.Strings.String.eqb_refl. reflexivity.
+Qed.
+
+(** The premise holds of the states a node keeps: a new chain's, for one. *)
+Example new_consensus_fits : snapshot_fits (new_consensus "a" ["a", "b", "c", "d"] 1).
+Proof.
+  unfold snapshot_fits, digits18. vm_compute.
+  repeat match goal with
+  | |- _ /\ _ => split
+  | |- Forall _ [] => apply Forall_nil
+  | |- Forall _ (_ :: _) => apply Forall_cons
+  | |- _ <= _ => lia
+  end.
+Qed.

@@ -2,7 +2,7 @@
 
 `soma build main.soma` checks the proof files. This inventory includes every
 Theorem, Lemma, Corollary and Example in `core/consensus.proof` and `core/market.proof`
-(and the main statements of `runtime/node_service.proof`, `runtime/node_path.proof`, `runtime/node_file.proof`, `runtime/node_git.proof` and `app/cli.proof`, below),
+(and the main statements of `runtime/node.proof`'s vote and snapshot sections, `runtime/node_service.proof`, `runtime/node_path.proof`, `runtime/node_file.proof`, `runtime/node_git.proof` and `app/cli.proof`, below),
 with its exact source name. These are statements about the pure definitions,
 not proofs of Soma.Host's primitives (the host's I/O), extraction to machine integers, cryptography,
 OS isolation, or deployed end-to-end safety. Soma.Host's I/O is trusted,
@@ -122,6 +122,28 @@ is shown within a height's list (the AVL map's find-after-add is not proved).
 | `sign_prog_trace` | `sign_prog` is exactly the slot's look-up, then the signing when it is empty. |
 | `signed_slot_list_found`, `signed_slot_list_others`, `lookup_filter_other` | Within a height, signing a slot makes it found with that vote and leaves the other slots' votes as they were. |
 
+### runtime/node.proof: the snapshot reads back
+
+`snapshot_text_reads_back`: `snapshot_of (snapshot_text c) = Some c`. A node
+that saves its consensus state (`consensus.state`) and starts again from the
+file has the state it saved: lock, valid value, round, step and log. The
+premise, `snapshot_fits`, is the reader's own limit: each number read back
+has at most 18 digits (as `num_opt` accepts), the state's numbers and each
+saved string's length; `new_consensus_fits` checks that a new chain's state
+meets it. That the bytes on disk are the bytes written is Soma.Host's.
+
+| Name | Checked statement |
+|---|---|
+| `sapp_nil_r`, `sapp_assoc`, `slen_sapp`, `substr_at`, `substr_prefix`, `substring_zero`, `concat_empty_cons` | String helpers: appending, its length, and a substring at an append's seam. |
+| `counted_cons`, `counted_length` | `counted` writes each string as its length, ":" and itself, and is at least as long as its count of strings. |
+| `digits_uint`, `uint_digits`, `show_digits` | `digits` reads Soma's decimal text the way `Nat.of_uint` does; a shown number is all decimal digits. |
+| `num_opt_nonempty`, `num_opt_uint`, `num_opt_show` | `num_opt (show n) = Some n` when `show n` has at most 18 digits. |
+| `find_go_colon`, `find_str_colon` | The first ":" after a run of digits is found right after them. |
+| `uncount_counted` | `uncount` reads `counted`'s strings back, after any prefix, when each length has at most 18 digits. |
+| `kind_of_name_reads_kind_name`, `msgs_of_frames_reads_log` | A message kind's name, and a log's frames, read back. |
+| `snapshot_parse_reads_text`, `snapshot_text_reads_back` | The snapshot's text parses as its state, and `snapshot_of`'s re-check passes. |
+| `new_consensus_fits` | A new chain's state meets `snapshot_fits`. |
+
 ### runtime/node_service.proof
 
 What the node's service carries out for an image (runtime/node_service.soma;
@@ -202,10 +224,10 @@ Besides the commands' parsing and JSON examples:
 
 - Type the consensus, market and agent states and remove gradual escape hatches.
 - Prove global consensus agreement across authenticated nodes and restart traces.
-  The local lock and precommit results above do not establish this. A
-  restarted node keeps its lock (`consensus.state`; security review P-4, done,
-  tested by `test/restart-lock.sh` and `test/e2e.sh`), but that's a test, not
-  a proof.
+  The local lock and precommit results above do not establish this. The
+  snapshot's round trip is proved
+  (`snapshot_text_reads_back`); that a restarted node then acts on it is
+  tested (`test/restart_lock.soma`, `test/e2e.sh`), not proved.
 - Prove tree agreement through vote admission, settlement and shell application.
   Approval arithmetic and the finalize-origin result are only parts of this.
 - Prove exact conflict clearing, rotation fairness and policy before signing.
