@@ -1,8 +1,7 @@
-(** The node's I/O as one interface (U-1; docs/SHELL-IN-SOMA.md, "Two
-    directions, and the unikernel"). Nothing here imports the host: these
-    are values, which the binary interprets over Soma.Host's primitives
-    (runtime/node_shell.soma's [run_shell] and [host_prim]) and a unikernel can interpret
-    with Sandbox (runtime/node_sandbox.soma). *)
+(** Node operations are values interpreted by node_shell over Soma.Host.
+    Signature helpers also use the opaque host RSA boundary; the machine
+    crypto provider is not available to the Sandbox runner. *)
+Require Soma.Host.
 From Corelib Require PrimFloat.
 From Corelib Require PrimInt63.
 Require Crypto.
@@ -247,6 +246,7 @@ Inductive node_op :=
 | IoChmod (path mode : string)
 | IoMakeDirs (path : string)
 | IoCwd
+| IoRsaNewKey
 | IoRandomHex (count : string)
 | IoGit (dir : string) (args : list string)
 | IoClone (url dir commit : string)
@@ -479,6 +479,7 @@ io_wire (op : node_op) : list string :=
   | IoChmod path mode => ["chmod", path, mode]
   | IoMakeDirs path => ["make_dirs", path]
   | IoCwd => ["cwd"]
+  | IoRsaNewKey => ["rsa_new_key"]
   | IoRandomHex count => ["random_hex", count]
   | IoGit dir args => "git" :: dir :: args
   | IoClone url dir commit => ["clone", url, dir, commit]
@@ -642,6 +643,7 @@ io_of_wire (w : list string) : option node_op :=
   | ["chmod", path, mode] => Some (IoChmod path mode)
   | ["make_dirs", path] => Some (IoMakeDirs path)
   | ["cwd"] => Some IoCwd
+  | ["rsa_new_key"] => Some IoRsaNewKey
   | ["random_hex", count] => Some (IoRandomHex count)
   | "git" :: dir :: args => Some (IoGit dir args)
   | ["clone", url, dir, commit] => Some (IoClone url dir commit)
@@ -871,12 +873,9 @@ nio_vote_line (slot vid : string) (fields : list string) : string :=
   Stdlib.Strings.String.concat " " [slot, vid, nio_json_strings fields].
 
 (** ---- signatures ----
-    What the binary signs and the lines it sends, as the old shell made them
-    (tx_bytes, msg_bytes, encode_tx, wire), with Soma's RSA (Soma.Crypto:
-    PKCS #1 v1.5 of SHA-256, a signature as lowercase hex), so that an
-    interpreter without Cryptokit signs and checks the same bytes. A key's
-    numbers are big-endian bytes; [nk_bytes] is its size in bytes (the
-    key file's "size" over 8). A public key's private fields are empty. *)
+    Machine signatures use Soma.Host's Mirage Crypto boundary: blinded,
+    checked SHA-256/PKCS#1 v1.5 with the existing lowercase-hex wire format.
+    These operations are host assumptions, not kernel computations. *)
 Record nio_key := {
   nk_bytes : nat; nk_n : list PrimInt63.int; nk_e : list PrimInt63.int;
   nk_p : list PrimInt63.int; nk_q : list PrimInt63.int; nk_dp : list PrimInt63.int;
@@ -891,14 +890,13 @@ nio_msg_bytes (chain from : string) (fields : list string) : string :=
   Stdlib.Strings.String.concat nio_nul ["msg", chain, from, nio_json_strings fields].
 
 nio_sign (k : nio_key) (msg : string) : string :=
-  Crypto.hex_of_bytes (Crypto.rsa_sign (nk_bytes k) (nk_p k) (nk_q k) (nk_dp k) (nk_dq k) (nk_qinv k) msg).
+  Host.rsa_sign
+    (to_string (nk_bytes k * 8) :: map Crypto.hex_of_bytes
+      [nk_n k, nk_e k, nk_p k, nk_q k, nk_dp k, nk_dq k, nk_qinv k]) msg.
 
 (** whether [sg] is [k]'s signature of [msg]: hex that isn't isn't *)
 nio_verify (k : nio_key) (msg sg : string) : bool :=
-  match Crypto.bytes_of_hex sg with
-  | Some b => Crypto.rsa_verify (nk_bytes k) (nk_n k) (nk_e k) msg b
-  | None => false
-  end.
+  Host.rsa_verify [to_string (nk_bytes k * 8), Crypto.hex_of_bytes (nk_n k), Crypto.hex_of_bytes (nk_e k)] msg sg.
 
 (** a signed transaction's line, as [encode_tx]: its fields and the
     signature of its bytes *)

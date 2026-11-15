@@ -1,0 +1,25 @@
+(** Machine RSA integration; generated private keys are never printed. *)
+Import core.util runtime.nodeio runtime.node_kernel runtime.node_shell app.cli.
+Require Soma.Host.
+
+check (label : string) (ok : bool) : string :=
+  append (if ok then "ok " else "FAIL ") label.
+
+main : unit :=
+  match host_prim IoRsaNewKey with
+  | (true, (_, [size, n, e, d, p, q, dp, dq, qi])) =>
+      let key := kkey_of_hex size n e p q dp dq qi in
+      let public := kkey_of_hex size n e "" "" "" "" "" in
+      let msg := nio_tx_bytes "chain" "agent" "7" ["post", "repo", "payload"] in
+      let sg := nio_sign key msg in
+      Host.print_lines [
+        check "key size" (seq size "2048"),
+        check "key generation stays local" (negb (service_op IoRsaNewKey)),
+        check "signed transaction verifies" (nio_verify public msg sg),
+        check "changed message rejected" (negb (nio_verify public (append msg "!") sg)),
+        check "truncated signature rejected" (negb (nio_verify public msg (substr sg 0 510))),
+        check "signature width" (Nat.eqb (slen sg) 512),
+        check "CLI requests host key generation"
+          (match new_key (fun _ => NDone tt) with NStep IoRsaNewKey _ => true | _ => false end)]
+  | _ => Host.print_lines ["FAIL key generation"]
+  end.

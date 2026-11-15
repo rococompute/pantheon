@@ -5,8 +5,8 @@
     runtime/node_net.soma's here over the host's sockets and paths, as the
     unikernel's runner carries them out with Sandbox
     (runtime/node_sandbox.soma), and whose git and programs are runtime/node_git.soma's
-    over the host's. Nothing else of the node calls the host: runtime/node.soma,
-    app/cli.soma and what they import are Soma over the node's operations. *)
+    over the host's. Signature helpers in nodeio also use the host crypto boundary; the other
+    runtime/node.soma and app/cli.soma effects use the node's operations. *)
 Import core.util runtime.nodeio runtime.node runtime.node_kernel runtime.node_net runtime.node_git runtime.node_path runtime.node_file runtime.node_service app.cli.
 Require Soma.Host.
 
@@ -23,6 +23,7 @@ host_prim (op : node_op) : nanswer :=
   | IoPrint text => Host.print text
   | IoExit code => Host.exit code
   | IoCwd => Host.cwd tt
+  | IoRsaNewKey => Host.rsa_new_key "2048"
   | IoRandomHex count =>
       match Host.random_bytes count with
       | (true, (_, [b])) => ans_data true [Crypto.hex_of_bytes (Crypto.bytes_of_string b)]

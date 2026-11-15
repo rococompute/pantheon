@@ -907,7 +907,7 @@ Proof.
     id kind raw prompt ctx clean launch env | repo | | | | repo | repo path |
     until reason backoff | backoff | | | probing requests | job result | id out tree ci | path | path |
     raw | | raw | who | | | | stamp | path | | | timers | | | wait |
-    | | height txs | | slot vid fields | message | text | code | path | path mode | path | | count | dir args |
+    | | height txs | | slot vid fields | message | text | code | path | path mode | path | | | count | dir args |
     url dir commit | prog log args | pids | path | dir path | dir path text | dir path | prefix | path | dir stdin extra args | prog stdin cwd env args | job | prog args | prefix suffix text | host port backlog | host port | ms reads writes | fd nonblock | fd | fd data | fd | fd | path durable text | path text | | prog stdin cwd env args | pid | pid | path text sync | path | src dst | dir | path | path | prefix suffix | prog args | text | | address port | wait | conn found stamp fields |
     address port | ms | address port ms | conn data | conn | name | name durable text | name text ];
     try reflexivity.

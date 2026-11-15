@@ -201,22 +201,10 @@ Fixpoint iterate (n : nat) (x : string) : string :=
 
 agents_default : list string := ["claude", "codex", "grok", "muse"].
 
-(** a new 2048-bit key, [size, n, e, d, p, q, dp, dq, qinv] in hex, from
-    two random starts of 128 bytes (Soma.Crypto's rsa_new_key: e = 65537,
-    which Soma checks signatures with in about 1 ms against Cryptokit's
-    random 2048-bit default's 90); [None] in the rare case the starts give
-    no key *)
+(** A new 2048-bit key from the machine's vetted RSA provider. *)
 new_key (k : option (list string) -> nprog unit) : nprog unit :=
-  cli_ask (IoRandomHex "128") (fun a =>
-  cli_ask (IoRandomHex "128") (fun b =>
-  match Crypto.bytes_of_hex (ans_one a), Crypto.bytes_of_hex (ans_one b) with
-  | Some rp, Some rq =>
-      match Crypto.rsa_new_key 2048 rp rq with
-      | Some parts => k (Some ("2048" :: map Crypto.hex_of_bytes parts))
-      | None => k None
-      end
-  | _, _ => k None
-  end)).
+  cli_ask IoRsaNewKey (fun a =>
+    k (if fst a then Some (snd (snd a)) else None)).
 
 (** a key as key.json and public.json hold it, from [new_key]'s
     [size, n, e, d, p, q, dp, dq, qinv]; the private parts only in key.json *)
