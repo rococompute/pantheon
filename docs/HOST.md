@@ -19,7 +19,7 @@ Nothing listens beyond localhost. The nodes talk on 127.0.0.1. Muse's VM (Lima o
     scripts/host.sh start       # nodes, mirror, Muse's inbox server
     scripts/host.sh vm muse     # Muse's VM, its CLI, instructions and token
     scripts/host.sh login muse  # once: Muse's device-code login, inside the VM
-    scripts/host.sh diplomats   # from a herdr pane: a tab per agent, plus a status tab
+    scripts/host.sh diplomats   # from a herdr pane: a tab per agent, plus a status tab (integrations/herdr/)
 
 ## Set up once, by a person
 
