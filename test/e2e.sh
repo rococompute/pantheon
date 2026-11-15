@@ -972,10 +972,35 @@ run() {
 
 ALL="bidders bidder-fallback bidder-timeout happy crash restart-lock equivocate double-vote silent bad-sig withhold bad-tree future-nonce deny silent-model policy model stuck limit limit-cli prune epoch text network ci cifail ciflood cispoof nocheck parallel scope flood"
 want=${*:-$ALL}
-# at most E2E_JOBS scenarios at once (four nodes each): every node signs
-# its lines with Soma's RSA, so a whole run at once starves a flooding
-# node and stretches past the waits
-jobs_max=${E2E_JOBS:-6}
+# Each scenario starts four nodes. Budget two effective CPUs per scenario,
+# accounting for container quotas as well as affinity. Keep explicit stress
+# runs available through E2E_JOBS; assertions and deadlines are unchanged.
+jobs_max=${E2E_JOBS:-}
+if [ -z "$jobs_max" ]; then
+  cpus=$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)
+  if command -v nproc >/dev/null 2>&1; then cpus=$(nproc); fi
+  if [ -r /sys/fs/cgroup/cpu.max ]; then
+    read -r quota period < /sys/fs/cgroup/cpu.max
+    if [[ "$quota" =~ ^[0-9]+$ && "$period" =~ ^[0-9]+$ ]] && [ "$period" -gt 0 ]; then
+      quota_cpus=$((quota / period))
+      [ "$quota_cpus" -lt "$cpus" ] && cpus=$quota_cpus
+    fi
+  elif [ -r /sys/fs/cgroup/cpu/cpu.cfs_quota_us ] && [ -r /sys/fs/cgroup/cpu/cpu.cfs_period_us ]; then
+    read -r quota < /sys/fs/cgroup/cpu/cpu.cfs_quota_us
+    read -r period < /sys/fs/cgroup/cpu/cpu.cfs_period_us
+    if [ "$quota" -gt 0 ] && [ "$period" -gt 0 ]; then
+      quota_cpus=$((quota / period))
+      [ "$quota_cpus" -lt "$cpus" ] && cpus=$quota_cpus
+    fi
+  fi
+  jobs_max=$((cpus / 2))
+  [ "$jobs_max" -lt 1 ] && jobs_max=1
+  [ "$jobs_max" -gt 6 ] && jobs_max=6
+fi
+if ! [[ "$jobs_max" =~ ^[0-9]+$ ]] || ! [ "$jobs_max" -gt 0 ] 2>/dev/null; then
+  echo 'E2E_JOBS must be a positive integer' >&2; exit 2
+fi
+echo "e2e: $jobs_max concurrent scenarios (four nodes each)"
 pids=""
 for s in $want; do
   while [ "$(jobs -pr | wc -l)" -ge "$jobs_max" ]; do sleep 1; done

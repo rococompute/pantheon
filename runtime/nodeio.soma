@@ -873,7 +873,7 @@ nio_vote_line (slot vid : string) (fields : list string) : string :=
   Stdlib.Strings.String.concat " " [slot, vid, nio_json_strings fields].
 
 (** ---- signatures ----
-    Machine signatures use Soma.Host's Mirage Crypto boundary: blinded,
+    Machine signatures use Soma.Host's OpenSSL boundary: blinded,
     checked SHA-256/PKCS#1 v1.5 with the existing lowercase-hex wire format.
     These operations are host assumptions, not kernel computations. *)
 Record nio_key := {

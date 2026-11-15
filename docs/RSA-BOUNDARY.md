@@ -1,43 +1,56 @@
 # RSA machine boundary (draft migration)
 
-Pantheon's machine runtime now asks Soma.Host to generate RSA keys and sign and
-verify SHA-256/PKCS#1 v1.5 messages with Mirage Crypto. The CLI uses a dedicated
-`IoRsaNewKey` operation, implemented by `node_shell`; the remote service policy
-rejects that operation. The node's signature helpers invoke opaque host
-primitives. They are no longer reference computations that the kernel can run.
-No cryptographic theorem is asserted by this change.
+The machine runtime uses Soma.Host's OpenSSL 3 provider for generation and
+SHA-256/PKCS#1 v1.5 signatures. The CLI requests local `IoRsaNewKey`; the remote
+service rejects it. Signature helpers are opaque host assumptions, not kernel
+computations or cryptographic theorems. No pure-RSA fallback is used.
 
-This requires [Soma PR #3](https://github.com/yevbar/soma/pull/3),
-commit `07fc8eae2d4e6828d4c65a0c1a8f889efee1d9a9`. Build Soma first, and
-install `mirage-crypto-pk.2.4.1 mirage-crypto-rng.2.4.1` in the generated-program
-OCaml switch (`SOMA_OCAML_SWITCH`). Then run `soma build main.soma`.
+Requires the coordinated [Soma PR #3](https://github.com/yevbar/soma/pull/3).
+Build Soma commit `f96267ffd9741ebd2333c1e55246e7ee7bb70048` first, with OpenSSL 3 development headers/libcrypto
+available to the generated runtime switch, then `soma build main.soma`.
+The generated project's opam dependencies include `conf-libssl` and Zarith.
 
-Existing key JSON fields, public identities, signed message bytes, and lowercase
-hex signatures remain compatible. Keys are 2048 bits with e = 65537. Existing
-keys with either prime order are accepted. Mirage Crypto requires a prime
-public exponent for private-key import. Older Cryptokit keys with composite
-random public exponents still verify but cannot sign with this provider. This
-is a merge blocker until a compatible vetted provider/import path or an
-explicit operational migration is reviewed. No such keys are silently rotated.
-Unsupported sizes or inconsistent CRT fields fail closed. There is
-no automatic key rotation and no evidence here that existing keys were
-compromised. A signing error stops execution; it never emits an empty signature.
+Key JSON fields, public identities, signed bytes and lowercase-hex signatures
+remain unchanged. New keys are 2048 bits with e = 65537. The existing Cryptokit
+fixture is retained: composite public exponents and exponents greater than n
+are supported. During private import Soma normalizes the exponent without
+changing its transformation, then OpenSSL validates the private/CRT components.
+Signatures are finally verified against the original public key. Public
+verification outside EVP's exponent range uses OpenSSL public-number arithmetic,
+padding validation and SHA-256 with an exact DigestInfo encoding. See Soma's
+`doc/soma/host-rsa.md` for this explicit compatibility path and its review needs.
 
-The previous CLI supplied two real 128-byte OS random reads, not fixed test
-seeds. The change addresses use of an unreviewed RSA implementation, not an
-assertion of predictable seeds. Soma's fixed primality-test bases and private
-exponentiation need separate cryptographic review. Pure Soma RSA remains
-available as reference code but is no longer used for these machine operations.
+The previous CLI used real 128-byte OS random reads, not fixed test seeds.
+No composite key or compromise was demonstrated. No keys are automatically
+rotated. Invalid inputs fail closed; signing never emits an empty signature.
+One validated private key is cached per process to avoid repeating primality
+checks on every vote. Secret lifetime/erasure and import timing are not proved.
 
-This draft intentionally targets machine binaries. The existing unikernel build
-cannot use Unix-backed Soma.Host crypto and is not supported by this revision;
-it needs a reviewed Mirage entropy/provider integration before use. Deployment
-status is unknown, and this change does not deploy or rotate any running node.
-Review the compatibility and performance implications before merging: key import
-validation is repeated for each signature, and private-number import is not
-claimed constant-time. OS entropy, Mirage Crypto, its dependencies, the compiler,
-and the host remain trusted. In-memory secret lifetime/erasure is unchanged.
+## Remaining unikernel blocker
 
-Validation: Soma's `test-suite/misc/soma_host_rsa.sh` covers provider/reference
-interoperability and malformed inputs. Run this repository's build, signed-log,
-edit-engine, and local e2e tests against the revised Soma compiler.
+This revision targets machine binaries. The Sandbox runner reaches Host RSA
+through the kernel's signature helpers. Soma now rejects those operations
+before image extraction with an explicit missing-provider/entropy diagnostic. The new OpenSSL C binding also depends on a machine
+libcrypto and its entropy integration, not the freestanding Mirage target.
+A separate reviewed provider/entropy binding and compatible legacy-key path,
+followed by cross-compilation and image tests, are necessary before enabling
+unikernel signing. Sending private keys to the remote service or restoring
+unreviewed pure RSA is not an acceptable fallback. Deployment status is unknown;
+this draft does not deploy, boot a production image or rotate any running node.
+
+## Validation commands
+
+Run Soma's `test-suite/misc/soma_host_rsa.sh`, then this repository's build,
+`test/rsa-host.sh`, `test/signed-log.sh`, `soma run test/nio_tables.soma`,
+`test/edits.sh`, and `test/e2e.sh`. `test/node-sandbox.sh` additionally checks the
+unikernel path; report its result separately rather than treating machine tests
+as image validation. PR descriptions record exact results and remaining limits.
+
+The e2e runner now budgets two effective CPUs per concurrent scenario, up to six
+scenarios, respecting CPU affinity and Linux cgroup quotas. Each scenario starts
+four nodes. `E2E_JOBS=6` remains an explicit stress override. No assertion or
+scenario deadline was relaxed. This environment's quota is four CPUs (therefore
+two scenarios by default); six-job runs have exhibited merge/catch-up timeouts.
+A 100-call local warm-signing benchmark measured about 6.5 ms CPU per call for
+the first Mirage draft and 1.0 ms for this cached OpenSSL boundary. This is not
+a throughput guarantee or proof that RSA alone caused the timeouts.
