@@ -1,0 +1,90 @@
+(** The node's files as the binary writes them (docs/SHELL-IN-SOMA.md,
+    "Files"): what the binary's runners (node_shell.soma's
+    [shell_answer]) do with [IoSave], [IoMakeDirs], [IoPathWrite],
+    [IoPathRemove], [IoDiscardFile] and [IoTempFile], whoever asked (the
+    kernel's named files through node_net.soma, the commands, the host's
+    work, or an image through its service), over the host's one-call
+    primitives: a file put whole, its mode, a rename, a directory synced,
+    one directory made, one file removed, a new temporary file. *)
+Import util nodeio.
+
+(** what went wrong, from a primitive's answer: "" when nothing did *)
+err_of (a : nanswer) : string :=
+  if fst a then "" else match ans_list a with [e] => if seq e "" then "failed" else e | _ => "failed" end.
+
+(** where a file is written before it is renamed into place *)
+save_tmp (p : string) : string := append p ".pantheon-tmp".
+
+(** [p] written whole: [text] put in [save_tmp p] (on disk first when
+    [durable]), [p]'s mode kept, then renamed over [p], so [p] is the old
+    text or the new, never part of one; when [durable], the directory is
+    synced after the rename, so the rename is on disk before anything
+    relies on it (consensus.state's text, before any vote it holds is
+    sent). "" when it worked, else what went wrong. *)
+write_whole (p : string) (durable : bool) (text : string) : nprog string :=
+  let tmp := save_tmp p in
+  let rename_in := fun (_ : unit) =>
+    nbind (nask (IoRename tmp p)) (fun r =>
+    if negb (fst r) then NDone (err_of r)
+    else if durable then nbind (nask (IoSyncDir (dirname p))) (fun d => NDone (err_of d))
+    else NDone "") in
+  nbind (nask (IoFileMode p)) (fun m =>
+  nbind (nask (IoFilePut tmp text (if durable then "true" else "false"))) (fun w =>
+  if negb (fst w) then NDone (err_of w)
+  else if fst m then
+    nbind (nexec (IoChmod tmp (ans_one m))) (fun ok =>
+    if ok then rename_in tt else NDone (append tmp ": its mode couldn't be kept"))
+  else rename_in tt)).
+
+(** [d] and the directories above it that aren't there, the highest
+    first; never "", "." or "/" *)
+Fixpoint make_dirs_go (fuel : nat) (d : string) : nprog string :=
+  match fuel with
+  | O => NDone ""
+  | S f =>
+      if seq d "" || seq d "." || seq d "/" then NDone "" else
+      nbind (nask (IoFileExists d)) (fun e =>
+      if fst e then NDone "" else
+      nbind (make_dirs_go f (dirname d)) (fun up =>
+      if negb (seq up "") then NDone up else
+      nbind (nask (IoMakeDir d)) (fun m => NDone (err_of m))))
+  end.
+
+(** each step's directory is shorter than the last, so its length is
+    fuel enough *)
+make_dirs (d : string) : nprog string := make_dirs_go (slen d + 1) d.
+
+(** a failure the binary can't go on from: said, and the process ends *)
+file_fail (message : string) : nprog nanswer :=
+  nbind (nexec (IoFail message)) (fun _ => NDone (ans_flag false)).
+
+(** a file saved whole; failing, the binary ends *)
+save_prog (p : string) (durable : bool) (text : string) : nprog nanswer :=
+  nbind (write_whole p durable text) (fun e => if seq e "" then NDone ans_ok else file_fail (hcat [p, ": ", e])).
+
+(** a path in a checkout written: the directories above it, then the file
+    whole ("" when it worked, else what went wrong) *)
+path_write_prog (dir p text : string) : nprog nanswer :=
+  nbind (make_dirs (dirname (hjoin dir p))) (fun e =>
+  if negb (seq e "") then NDone (ans_data true [e])
+  else nbind (write_whole (hjoin dir p) false text) (fun e => NDone (ans_data true [e]))).
+
+(** a new private temporary file with [text] in it (its path) *)
+temp_file_prog (prefix suffix text : string) : nprog nanswer :=
+  nbind (nask (IoTempNew prefix suffix)) (fun t =>
+  if negb (fst t) then file_fail (hcat [prefix, ": ", err_of t]) else
+  nbind (write_whole (ans_one t) false text) (fun e =>
+  if seq e "" then NDone (ans_data true [ans_one t]) else file_fail (hcat [ans_one t, ": ", e]))).
+
+(** what the runners carry out this way; anything else goes on as it is *)
+file_op (op : node_op) : option (nprog nanswer) :=
+  match op with
+  | IoSave p durable text => Some (save_prog p (seq durable "true") text)
+  | IoMakeDirs d =>
+      Some (nbind (make_dirs d) (fun e => if seq e "" then NDone ans_ok else file_fail (hcat [d, ": ", e])))
+  | IoPathWrite dir p text => Some (path_write_prog dir p text)
+  | IoPathRemove dir p => Some (nbind (nask (IoRemoveFile (hjoin dir p))) (fun r => NDone (ans_data true [err_of r])))
+  | IoDiscardFile p => Some (nbind (nask (IoRemoveFile p)) (fun _ => NDone ans_ok))
+  | IoTempFile prefix suffix text => Some (temp_file_prog prefix suffix text)
+  | _ => None
+  end.

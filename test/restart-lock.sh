@@ -20,7 +20,7 @@ let () =
     round = 2; step = 2; lockr = 3; lockv = ["A"];
     validr = 3; validv = ["A"] } in
   let n = { empty_node with cons = c } in
-  Shell.write_file ~sync:true path (snapshot_text n.cons);
+  ignore (shell_answer (IoSave (path, "true", snapshot_text n.cons)));
   let load p = match snapshot_of (In_channel.with_open_bin p In_channel.input_all) with Some c -> c | None -> failwith "malformed" in
   let restarted = restore_cons empty_node (load path) in
   let restarted, _ = step0 restarted ["start"] in

@@ -42,6 +42,36 @@ Fixpoint split_go (c : ascii) (l cur : list ascii) (acc : list string) : list st
 
 split_on (c : ascii) (s : string) : list string := split_go c (chars s) [] [].
 
+Fixpoint drop_slashes (l : list ascii) : list ascii :=
+  match l with c :: r => if Ascii.eqb c "/"%char then drop_slashes r else l | [] => [] end.
+
+Fixpoint take_name (l : list ascii) (acc : list ascii) : list ascii :=
+  match l with c :: r => if Ascii.eqb c "/"%char then acc else take_name r (c :: acc) | [] => acc end.
+
+(** Filename.basename: the last name, trailing separators dropped *)
+basename (s : string) : string :=
+  if seq s "" then "." else
+  match drop_slashes (List.rev (chars s)) with
+  | [] => "/"
+  | r => of_chars (take_name r [])
+  end.
+
+Fixpoint drop_name (l : list ascii) : list ascii :=
+  match l with c :: r => if Ascii.eqb c "/"%char then l else drop_name r | [] => [] end.
+
+(** Filename.dirname: what is left with the last name and the separators
+    around it dropped; "." when nothing is, "/" when only separators are *)
+dirname (s : string) : string :=
+  if seq s "" then "." else
+  match drop_slashes (List.rev (chars s)) with
+  | [] => "/"
+  | r =>
+      match drop_name r with
+      | [] => "."
+      | r2 => match drop_slashes r2 with [] => "/" | r3 => of_chars (List.rev r3) end
+      end
+  end.
+
 Fixpoint rev_onto {A : Type} (l acc : list A) : list A :=
   match l with [] => acc | x :: r => rev_onto r (x :: acc) end.
 

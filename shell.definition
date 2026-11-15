@@ -46,8 +46,13 @@ print_lines : list string -> unit.
     failed, and why), "sock_accept" NAME NONBLOCK ([its name, the peer's address]),
     "sock_read" NAME (["bytes", DATA], ["again"] or ["closed"]),
     "sock_write" NAME DATA (["wrote", COUNT], ["again"] or ["failed"]),
-    "sock_error" NAME (found: the dial failed), "sock_close" NAME, "save"
-    PATH DURABLE TEXT (DURABLE "true": synced and renamed into place),
+    "sock_error" NAME (found: the dial failed), "sock_close" NAME,
+    "file_put" PATH TEXT SYNC (created or emptied, then TEXT; SYNC "true":
+    on disk before the answer), "file_mode" PATH ([octal], found when it's
+    there), "rename" SRC DST, "sync_dir" DIR, "make_dir" PATH,
+    "remove_file" PATH and "temp_new" PREFIX SUFFIX ([a new private file's
+    path]), each not found with why when it failed (node_file.soma writes
+    a file whole, makes directories and removes files with these),
     "append_synced" PATH TEXT, "no_sigpipe", "spawn" PROG STDIN CWD
     ("field" ENTRY)... "alternate" ARGS... (PROG run from CWD with that
     environment, STDIN its standard input from a file: found, [its pid,
@@ -69,14 +74,14 @@ forever : forall {A : Type}, (A -> A) -> A -> unit.
 
 (** The host's primitives (nodeio.soma's service_op: what a unikernel
     asks its service for), which need no node; none decides anything:
-    "dir_entries" PATH, "read_text" PATH (found or not), "discard_file"
-    PATH (removed, if it's there), "self_exe", "env_entries", "random_hex"
-    COUNT.
+    "dir_entries" PATH, "read_text" PATH (found or not), "self_exe",
+    "env_entries", "random_hex" COUNT.
     The jobs' processes (IoProcStart, IoProcKill and IoEvents) are
     node_net.soma's, over "spawn", "wait_pid" and "kill_pid"; a program
     run to its end with the user's environment (IoRun) is node_git.soma's,
-    over "env_entries" and "exec"; "temp_file" PREFIX SUFFIX TEXT (a new private
-    file with TEXT in it: [path]). What a job is for, its limit, what goes
+    over "env_entries" and "exec"; a new private temporary file with text
+    in it (IoTempFile) and a file removed (IoDiscardFile) are
+    node_file.soma's. What a job is for, its limit, what goes
     with it and what its end becomes are node_host.soma's. *)
 (** A job's buffered read chunks, in order, are the node's: Soma's
     job_feed appends the chunk the shell just read and, past the output
@@ -99,9 +104,7 @@ forever : forall {A : Type}, (A -> A) -> A -> unit.
     checkout_edits_prog and check_tree_prog decide): "path_stat" PATH
     [kind, exec] (its last part not followed: "file", "dir", "symlink",
     "other" or "none"; node_path.soma's path probe walks a path's parts
-    with it), "path_write" DIR PATH TEXT
-    (keeping the mode) and
-    "path_remove" DIR PATH ["" or what went wrong], "temp_dir" PREFIX
+    with it; a path's write and removal are node_file.soma's), "temp_dir" PREFIX
     [path] and "remove_tree" PATH (later, in the background). Git (IoGit,
     IoGitEnv: no user or system config, no hooks and no signing; extra
     environment entries first and a standard input) and a clone (IoClone)

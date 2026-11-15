@@ -463,6 +463,33 @@ part before it there, answers "symlink"), `probe_found_every_part`
 `symlink_never_followed`, the service runs nothing through a symlink the
 host's stat reports at the time it looks.
 
+### Files
+
+How the binary writes its files is Soma: `node_file.soma`, asked by
+`shell_answer` like the two above, for the kernel's named files (through
+node_net.soma's `IoSave`), the commands, the host's work and the
+service. A file written whole (`write_whole`) is its text put in
+`FILE.pantheon-tmp` (on disk first when it must be), the file's mode
+kept, then renamed over the file, so the file is the old text or the
+new, never part of one; durable, the directory is synced after the
+rename, so consensus.state's text is on disk before any vote it holds
+is sent. Directories are made where none is, the highest first
+(`make_dirs`); a path's write in a checkout makes the directories above
+it, then writes the file whole; a path's removal and a discarded file
+are one removal; a temporary file is a new private one, then written
+whole. A save or a temporary file that fails ends the binary, as the
+exception did. shell.ml's `write_file`, `mkdir_p`, `path_write`,
+`path_remove` and `temp_file`'s write are gone; it keeps one call each:
+`file_put` (create or empty, write, sync if asked), `file_mode`,
+`rename`, `sync_dir`, `make_dir`, `remove_file` and `temp_new`.
+node_file.proof proves, of any answers those give:
+`failed_put_renames_nothing` (the file is as it was),
+`whole_write_order` (the put, the mode kept, the rename, then the
+directory synced), `whole_write_only_renames_onto_it` (nothing else
+touches the file), `make_dirs_only_where_none` (never "", "." or "/",
+and only where the host said none is), `path_write_writes_its_file` and
+`failed_save_ends`.
+
 ## The edits machinery
 
 An edit is a path, the old text and the new (docs/DESIGN.md). What edits

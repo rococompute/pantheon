@@ -2,7 +2,7 @@
 
 `soma build main.soma` checks the proof files. This inventory includes every
 Theorem, Lemma, Corollary and Example in `consensus.proof` and `market.proof`
-(and the main statements of `node_service.proof` and `node_path.proof`, below),
+(and the main statements of `node_service.proof`, `node_path.proof` and `node_file.proof`, below),
 with its exact source name. These are statements about the pure definitions,
 not proofs of the OCaml shell, extraction to machine integers, cryptography,
 OS isolation, or deployed end-to-end safety. Shell hashes, decoding, signatures
@@ -137,6 +137,21 @@ probe and the operation is outside it.
 | `probe_found_every_part` | Answering neither "symlink" nor "none", every part is there and none is a symlink. |
 | `probe_none_is_missing` | Answering "none", some part isn't there. |
 | `probe_answers` | It answers "symlink", "none", "dir" or "file". |
+
+### node_file.proof
+
+How the binary writes its files (node_file.soma), for any answers the
+host's one-call primitives give; what the file system does with a
+rename or a sync is the host's.
+
+| Name | What it says, and its limit |
+|---|---|
+| `failed_put_renames_nothing` | A put that fails ends the write before any rename: the file is as it was. |
+| `whole_write_order` | When each step works: the mode looked at, the text put (synced when durable), the mode kept, the rename, then (durable) the directory synced. |
+| `whole_write_only_renames_onto_it` | Every operation of a whole write is one of those; the only one on the file itself is the rename onto it. |
+| `make_dirs_only_where_none` | A directory is made only where the host said none is, and never "", "." or "/". |
+| `path_write_writes_its_file` | A path's write makes directories and writes that one file whole, nothing else. |
+| `failed_save_ends` | A save that failed is said and the binary ends: it never answers as if written. |
 
 ## Remaining work
 

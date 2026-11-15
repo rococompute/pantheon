@@ -67,23 +67,6 @@ let new_key bits =
 
 let read_text p = try Some (In_channel.with_open_bin p In_channel.input_all) with _ -> None
 
-(* whole, through a temporary file renamed into place, keeping the file's
-   mode; [sync]: on disk, file and directory, before the rename is relied on
-   (consensus.state's text, node.soma's snapshot_text, before any vote it
-   holds is sent) *)
-let write_file ?(sync = false) p s =
-  let tmp = p ^ ".pantheon-tmp" in
-  let mode = try Some (Unix.stat p).st_perm with _ -> None in
-  Out_channel.with_open_bin tmp (fun oc ->
-      output_string oc s;
-      if sync then (flush oc; Unix.fsync (Unix.descr_of_out_channel oc)));
-  Option.iter (Unix.chmod tmp) mode;
-  Unix.rename tmp p;
-  if sync then begin
-    let fd = Unix.openfile (Filename.dirname p) [ Unix.O_RDONLY ] 0 in
-    Fun.protect ~finally:(fun () -> Unix.close fd) (fun () -> Unix.fsync fd)
-  end
-
 (* appended in one write, then to disk: a block or a signed vote survives a
    crash whole *)
 let append_synced p s =
@@ -93,13 +76,22 @@ let append_synced p s =
       if Unix.write fd b 0 (Bytes.length b) <> Bytes.length b then failwith (p ^ ": short write");
       Unix.fsync fd)
 
-(* a new temporary file with [text] in it, private as temp_file makes it *)
-let temp_file prefix suffix text =
-  let f = Filename.temp_file prefix suffix in
-  Out_channel.with_open_bin f (fun oc -> output_string oc text);
-  f
+(* one call on the host's files, its failure as not found with why
+   (node_file.soma writes files whole and makes directories with these) *)
+let tried f = try f (); ans_ok with e -> (false, (0., [ Printexc.to_string e ]))
 
-let rec mkdir_p d = if d <> "" && d <> "." && d <> "/" && not (Sys.file_exists d) then (mkdir_p (Filename.dirname d); Unix.mkdir d 0o755)
+(* [s] put in [p], created or emptied first; [sync]: on disk before the
+   answer *)
+let file_put p s sync =
+  tried (fun () ->
+      Out_channel.with_open_gen [ Open_wronly; Open_creat; Open_trunc; Open_binary ] 0o666 p (fun oc ->
+          output_string oc s;
+          if sync then (flush oc; Unix.fsync (Unix.descr_of_out_channel oc))))
+
+let sync_dir d =
+  tried (fun () ->
+      let fd = Unix.openfile d [ Unix.O_RDONLY ] 0 in
+      Fun.protect ~finally:(fun () -> Unix.close fd) (fun () -> Unix.fsync fd))
 
 (* A tree removed in the background: a checkout with a build in it is close
    to a GB, and removing it in the main loop stalled consensus for minutes *)
@@ -128,14 +120,6 @@ let path_stat f =
       [ kind; string_of_bool (st.st_perm land 0o100 <> 0) ]
   | exception _ -> [ "none"; "false" ]
 
-(* "" when it worked, else what went wrong *)
-let attempt f = try f (); "" with e -> Printexc.to_string e
-
-let path_write dir p text =
-  let f = Filename.concat dir p in
-  attempt (fun () -> mkdir_p (Filename.dirname f); write_file f text)
-
-let path_remove dir p = attempt (fun () -> Sys.remove (Filename.concat dir p))
 
 (* ---------- programs ---------- *)
 
@@ -145,7 +129,8 @@ let path_remove dir p = attempt (fun () -> Sys.remove (Filename.concat dir p))
 let stdin_fd text =
   if text = "" then Unix.openfile "/dev/null" [ O_RDONLY; O_CLOEXEC ] 0
   else begin
-    let f = temp_file "pantheon-in" ".txt" text in
+    let f = Filename.temp_file "pantheon-in" ".txt" in
+    Out_channel.with_open_bin f (fun oc -> output_string oc text);
     let fd = Unix.openfile f [ O_RDONLY; O_CLOEXEC ] 0 in
     (try Sys.remove f with _ -> ());
     fd
@@ -321,7 +306,6 @@ let node_io op =
   | [ "cwd" ] -> ans_data [ Sys.getcwd () ]
   | [ "file_exists"; path ] -> ans_flag (Sys.file_exists path)
   | [ "chmod"; path; mode ] -> ans_flag (try Unix.chmod path (int_of_string ("0o" ^ mode)); true with _ -> false)
-  | [ "make_dirs"; path ] -> mkdir_p path; ans_ok
   | [ "new_key"; bits ] -> ans_data (new_key (int_of_string bits))
   | [ "random_hex"; count ] -> ans_data [ random_hex (int_of_string count) ]
   | "spawn_node" :: log :: args ->
@@ -350,8 +334,14 @@ let node_io op =
   | [ "sock_write"; id; data ] -> sock_write id data
   | [ "sock_error"; id ] -> sock_error id
   | [ "sock_close"; id ] -> sock_close id; ans_ok
-  | [ "save"; path; durable; text ] -> write_file ~sync:(durable = "true") path text; ans_ok
   | [ "append_synced"; path; text ] -> append_synced path text; ans_ok
+  | [ "file_put"; path; text; sync ] -> file_put path text (sync = "true")
+  | [ "file_mode"; path ] -> (match Unix.stat path with st -> ans_data [ Printf.sprintf "%o" st.st_perm ] | exception _ -> ans_flag false)
+  | [ "rename"; src; dst ] -> tried (fun () -> Unix.rename src dst)
+  | [ "sync_dir"; dir ] -> sync_dir dir
+  | [ "make_dir"; path ] -> tried (fun () -> Unix.mkdir path 0o755)
+  | [ "remove_file"; path ] -> tried (fun () -> Sys.remove path)
+  | [ "temp_new"; prefix; suffix ] -> (match Filename.temp_file prefix suffix with f -> ans_data [ f ] | exception e -> (false, (0., [ Printexc.to_string e ])))
   | [ "no_sigpipe" ] -> Sys.set_signal Sys.sigpipe Sys.Signal_ignore; ans_ok
   | "spawn" :: prog :: stdin :: cwd :: rest ->
       (match fields_then_args rest with
@@ -365,13 +355,9 @@ let node_io op =
        | None -> (false, (0., [ "exec came malformed" ])))
   (* the host's (nodeio.soma's service_op) *)
   | [ "path_stat"; path ] -> ans_data (path_stat path)
-  | [ "path_write"; dir; path; text ] -> ans_data [ path_write dir path text ]
-  | [ "path_remove"; dir; path ] -> ans_data [ path_remove dir path ]
   | [ "temp_dir"; prefix ] -> ans_data [ Filename.temp_dir prefix "" ]
-  | [ "temp_file"; prefix; suffix; text ] -> ans_data [ temp_file prefix suffix text ]
   | [ "remove_tree"; path ] -> remove_tree_later path; ans_ok
   | [ "read_text"; path ] -> ans_found (read_text path)
-  | [ "discard_file"; path ] -> (try Sys.remove path with _ -> ()); ans_ok
   | [ "dir_entries"; path ] -> ans_data (if Sys.file_exists path then Array.to_list (Sys.readdir path) else [])
   | [ "self_exe" ] -> ans_data [ self_exe ]
   | [ "env_entries" ] -> ans_data (Array.to_list (Unix.environment ()))

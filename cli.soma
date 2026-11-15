@@ -57,19 +57,6 @@ path (dir file : string) : string :=
 
 is_relative (p : string) : bool := negb (starts "/" p).
 
-Fixpoint drop_slashes (l : list ascii) : list ascii :=
-  match l with c :: r => if Ascii.eqb c "/"%char then drop_slashes r else l | [] => [] end.
-
-Fixpoint take_name (l : list ascii) (acc : list ascii) : list ascii :=
-  match l with c :: r => if Ascii.eqb c "/"%char then acc else take_name r (c :: acc) | [] => acc end.
-
-(** Filename.basename: the last name, trailing separators dropped *)
-basename (s : string) : string :=
-  if seq s "" then "." else
-  match drop_slashes (List.rev (chars s)) with
-  | [] => "/"
-  | r => of_chars (take_name r [])
-  end.
 
 
 (** ---- ordering, as OCaml's compare on strings: by bytes ---- *)
