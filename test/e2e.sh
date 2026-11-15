@@ -139,17 +139,45 @@ scenario_bidders() {
   agree bidders claude codex grok muse && agree_files bidders claude codex grok muse || return 1
   for a in $AGENTS; do
     status=$ROOT/bidders/$a/status.txt
-    # a task's two-worker window (market.soma's bidders_for) moves on past
-    # a worker only once its bids there were rejected or cleared: in bid
-    # order, a task's third bid needs one such bid before it, its fourth
-    # two, and so on (a bid cleared because its task closed came after),
-    # within a term
-    grep '^bid ' "$status" | sort -k2,2n | awk '
-      $4 == "task" { t = $5
-        if (n[t] >= 2 + gone[t]) { print "FAIL bidders: task", t, "drew bid", $2, "with", n[t], "before it and", gone[t] + 0, "of them rejected or cleared"; bad = 1 }
-        n[t]++
-        if (($3 == "[rejected]" || $3 == "[cleared]") && $0 !~ /task closed/) gone[t]++ }
-      END { exit bad }' || return 1
+    # a task's two-worker window (market.soma's bidders_for) is set by the
+    # task, the market's version and the leader (bid_blocks is past the
+    # run), and moves on past a worker only once its bids there were
+    # rejected or cleared: in bid order, at one version, a task's third
+    # bid needs one such bid before it, its fourth two, and so on (a bid
+    # cleared because its task closed came after). A merge moves the
+    # version, and with max_merges=2 ends a term, so a task still open
+    # after its bid merged (its close not yet in) gets a new window. Each
+    # bid's version is the merges before it in blocks.log, its bids lined
+    # up with status.txt's by number.
+    python3 - "$status" "$ROOT/bidders/$a/blocks.log" <<'PY' || return 1
+import json, re, sys
+status, blocks = sys.argv[1], sys.argv[2]
+bids = {}
+for line in open(status):
+    m = re.match(r"bid (\d+) \[(\w+)\] task (\d+) by (\S+) ?(.*)", line)
+    if m:
+        bids[int(m[1])] = (m[2], int(m[3]), m[4], m[5])
+version, seen, n, gone, bad = 0, 0, {}, {}, 0
+for line in open(blocks):
+    for raw in json.loads(line)["txs"]:
+        tx = json.loads(raw); f = tx["fields"]
+        if f[0] == "merge":
+            version += 1
+        elif f[0] == "bid":
+            seen += 1
+            state, task, who, why = bids.get(seen, ("", 0, "", ""))
+            if (task, who) != (int(f[1]), tx["agent"]):
+                print("FAIL bidders: bid", seen, "in status.txt isn't the chain's bid", seen, "(task", f[1], "by", tx["agent"] + ")"); sys.exit(1)
+            k = (task, version)
+            if n.get(k, 0) >= 2 + gone.get(k, 0):
+                print("FAIL bidders: task", task, "drew bid", seen, "at version", version, "with", n[k], "before it there and", gone.get(k, 0), "of them rejected or cleared"); bad = 1
+            n[k] = n.get(k, 0) + 1
+            if state in ("rejected", "cleared") and "task closed" not in why:
+                gone[k] = gone.get(k, 0) + 1
+if seen != len(bids):
+    print("FAIL bidders: the chain has", seen, "bids and status.txt", len(bids)); sys.exit(1)
+sys.exit(bad)
+PY
     for worker in $AGENTS; do
       grep -q " by $worker " "$status" || { echo "FAIL bidders: $worker never bid on $a"; return 1; }
     done
