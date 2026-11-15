@@ -19,9 +19,6 @@
    programs"). Every answer is nodeio.soma's nanswer: (carried out, or the
    boolean read, (a number, data)). *)
 
-let fail fmt = Printf.ksprintf (fun s -> prerr_endline ("error: " ^ s); exit 1) fmt
-let say fmt = Printf.ksprintf (fun s -> Printf.printf "%s %s\n%!" (string_of_float (Unix.gettimeofday ())) s) fmt
-
 (* nanswer's shapes (nodeio.soma's ans_ok, ans_flag, ans_data) *)
 let ans_ok = (true, (0., []))
 let ans_flag b = (b, (0., []))
@@ -33,31 +30,19 @@ let ans_exn e = ans_why (Printexc.to_string e)
 (* one call on the host, its data, or its failure as not found with why *)
 let attempt f = try ans_data (f ()) with e -> ans_exn e
 
-(* ---------- keys and random bytes ----------
-   Hashes and signatures are Soma's (util.soma, nodeio.soma, Soma.Crypto);
-   a new key and random bytes come from the system's randomness. *)
-
-let hex s = Cryptokit.transform_string (Cryptokit.Hexa.encode ()) s
-let rng = lazy (Cryptokit.Random.device_rng "/dev/urandom")
-let random_hex n = hex (Cryptokit.Random.string (Lazy.force rng) n)
-
-let new_key bits =
-  let k = Cryptokit.RSA.new_key ~rng:(Lazy.force rng) ~e:65537 bits in
-  string_of_int k.size :: List.map hex [ k.n; k.e; k.d; k.p; k.q; k.dp; k.dq; k.qinv ]
-
 (* ---------- the clock, the log, the commands' I/O ---------- *)
 
 let host_clock () = (true, (Unix.gettimeofday (), []))
-let host_log text = say "%s" text; ans_ok
+let host_log text = Printf.printf "%s %s\n%!" (string_of_float (Unix.gettimeofday ())) text; ans_ok
 let host_local_time stamp =
   let tm = Unix.localtime (float_of_string stamp) in
   ans_data [ Printf.sprintf "%02d:%02d" tm.Unix.tm_hour tm.Unix.tm_min ]
-let host_fail message = fail "%s" message
+let host_fail message = prerr_endline ("error: " ^ message); exit 1
 let host_print text = print_string text; flush stdout; ans_ok
 let host_exit code = exit (int_of_string code)
 let host_cwd () = ans_data [ Sys.getcwd () ]
-let host_new_key bits = ans_data (new_key (int_of_string bits))
-let host_random_hex count = ans_data [ random_hex (int_of_string count) ]
+(* COUNT bytes of the system's randomness *)
+let host_random_bytes count = attempt (fun () -> [ In_channel.with_open_bin "/dev/urandom" (fun ic -> really_input_string ic (int_of_string count)) ])
 (* test programs print their checks with this *)
 let print_lines xs = List.iter print_endline xs
 let argv () = Array.to_list Sys.argv |> List.tl
@@ -244,19 +229,18 @@ let host_sock_dial host port =
        | exception Unix.Unix_error ((EINPROGRESS | EWOULDBLOCK | EAGAIN), _, _) -> ans_data [ sock_add fd; "connecting" ]
        | exception _ -> close_all [ fd ]; ans_flag false)
 
-(* the named descriptors ready to read and to write, within [ms], framed
-   (nodeio.soma's nio_frame_lists). Interrupted: none ready; failed (a
-   descriptor past FD_SETSIZE, EBADF): not found, and why *)
+(* the named descriptors ready to read and to write, within [ms].
+   Interrupted: none ready; failed (a descriptor past FD_SETSIZE, EBADF):
+   false, and why *)
 let host_sock_select ms reads writes =
   let named ids = List.concat_map (fun id -> with_sock id [] (fun fd -> [ (id, fd) ])) ids in
   let r = named reads and w = named writes in
-  let framed ls = ans_data (List.concat_map (fun l -> List.concat_map (fun v -> [ "field"; v ]) l @ [ "alternate" ]) ls) in
   match Unix.select (List.map snd r) (List.map snd w) [] (float_of_string ms /. 1000.) with
   | rr, ww, _ ->
       let ready l got = List.filter_map (fun (id, fd) -> if List.mem fd got then Some id else None) l in
-      framed [ ready r rr; ready w ww ]
-  | exception Unix.Unix_error (EINTR, _, _) -> framed [ []; [] ]
-  | exception Unix.Unix_error (e, _, _) -> ans_why (Unix.error_message e)
+      (true, (ready r rr, ready w ww))
+  | exception Unix.Unix_error (EINTR, _, _) -> (true, ([], []))
+  | exception Unix.Unix_error (e, _, _) -> (false, ([ Unix.error_message e ], []))
 
 (* a connection the listener has: [its name, the peer's address] *)
 let host_sock_accept id nonblock =

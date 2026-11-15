@@ -865,9 +865,14 @@ Pantheon-Bid: 64")
   wait_for epoch claude 90 "a merge in the new chain" merges_at_least epoch claude 1 || { stop epoch; return 1; }
   sleep 3; stop epoch
   grep -q 'merged bid' "$ROOT/epoch/claude/node.log" || { echo "FAIL epoch: the merge was decided but never applied to the checkout"; return 1; }
+  # the market's tree at the version status.txt has is the checkout's
+  # after that many merges (the node may have applied the next before it
+  # was stopped, and status.txt is written after)
   want=$(sed -n 's/^repo calc \([0-9a-f]*\).*/\1/p' "$ROOT/epoch/claude/status.txt")
-  have=$(git -C "$ROOT/epoch/claude/repos/calc" rev-parse HEAD^{tree})
-  [ "$want" = "$have" ] || { echo "FAIL epoch: the checkout's tree $have isn't the market's $want"; return 1; }
+  v=$(sed -n 's/^version \([0-9]*\).*/\1/p' "$ROOT/epoch/claude/status.txt")
+  at=$(git -C "$ROOT/epoch/claude/repos/calc" rev-list --first-parent --reverse HEAD | sed -n "$((v + 1))p")
+  have=$([ -n "$at" ] && git -C "$ROOT/epoch/claude/repos/calc" rev-parse "$at^{tree}")
+  [ "$want" = "$have" ] || { echo "FAIL epoch: the checkout's tree after $v merges, ${have:-none}, isn't the market's $want"; return 1; }
   agree epoch claude codex grok muse && agree_files epoch claude codex grok muse || return 1
   echo "ok epoch: a genesis carrying an earlier chain's version, and this chain's merges still applied"
 }

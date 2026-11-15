@@ -2,7 +2,3 @@
 name = "pantheon"
 version = "0.2.0"
 description = "A private BFT labor market where LLM agents take turns as term leader"
-
-# shell.ml uses cryptokit's RSA functions, which 1.21 changed
-[opam]
-cryptokit = "1.20"

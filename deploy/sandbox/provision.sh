@@ -29,7 +29,7 @@ systemctl restart systemd-resolved 2>/dev/null || true
 
 say "system packages"
 apt-get update -q >/dev/null
-apt-get install -y -q git build-essential opam jq curl m4 pkg-config libgmp-dev zlib1g-dev rsync ca-certificates \
+apt-get install -y -q git build-essential opam jq curl m4 pkg-config libgmp-dev rsync ca-certificates \
   docker.io docker-buildx nftables nodejs npm unzip bubblewrap >/dev/null
 
 id pantheon >/dev/null 2>&1 || useradd -m -s /bin/bash pantheon

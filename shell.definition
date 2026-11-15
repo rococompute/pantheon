@@ -8,11 +8,10 @@
     (node_git.soma), and which primitive each operation is
     (node_shell.soma's host_prim), and Rocq's kernel never computes these,
     so to a proof each is an assumption: soma explore lists them. *)
-OCaml Library "cryptokit".
-
-(** sha256, hash_list and RSA signing are Soma's (util.soma and nodeio.soma,
-    through Soma.Crypto), in the binary as in the unikernel; Cryptokit is
-    only a new key's (host_new_key) and random bytes' (host_random_hex). *)
+OCaml Library "unix".
+(** sha256, hash_list, RSA signing and a new key are Soma's (util.soma,
+    nodeio.soma and cli.soma, through Soma.Crypto), in the binary as in
+    the unikernel; the shell gives only random bytes (host_random_bytes). *)
 
 (** A signed transaction is all Soma's: market.soma's decode_tx reads it
     (util.soma's json_tokens), checks the signature with the agent's
@@ -47,13 +46,12 @@ host_local_time : string -> bool * (float * list string).
 host_fail : string -> bool * (float * list string).
 
 (** the commands' I/O (cli.soma): plain output, an exit status, this
-    directory, a new RSA key (BITS, e = 65537: [size, n, e, d, p, q, dp,
-    dq, qinv], hex) and COUNT random bytes as hex *)
+    directory, and COUNT random bytes from the system ([the bytes]; Soma
+    makes them hex) *)
 host_print : string -> bool * (float * list string).
 host_exit : string -> bool * (float * list string).
 host_cwd : unit -> bool * (float * list string).
-host_new_key : string -> bool * (float * list string).
-host_random_hex : string -> bool * (float * list string).
+host_random_bytes : string -> bool * (float * list string).
 
 (** files: one read whole (found or not), whether a path is there, a
     directory's entries, a mode set (octal; whether it was), text
@@ -117,15 +115,15 @@ host_stop_on_signal : list string -> bool * (float * list string).
     select's answer becomes): a listener on HOST PORT BACKLOG ([its
     name], or not found and why), a dial that doesn't wait ([its name,
     "connected" or "connecting"]), one select of MS milliseconds over
-    names to read and to write (those ready to read, then to write,
-    framed as nodeio.soma's nio_frame_lists; not found when the select
-    failed, and why), an accept (NONBLOCK "true": the connection doesn't
+    names to read and to write ((true, (those ready to read, those
+    ready to write)), none when interrupted; (false, ([why], [])) when
+    the select failed), an accept (NONBLOCK "true": the connection doesn't
     block; [its name, the peer's address]), a read (["bytes", DATA],
     ["again"] or ["closed"]), a write (["wrote", COUNT], ["again"] or
     ["failed"]), a dial's outcome (found: it failed) and a close *)
 host_sock_listen : string -> string -> string -> bool * (float * list string).
 host_sock_dial : string -> string -> bool * (float * list string).
-host_sock_select : string -> list string -> list string -> bool * (float * list string).
+host_sock_select : string -> list string -> list string -> bool * (list string * list string).
 host_sock_accept : string -> string -> bool * (float * list string).
 host_sock_read : string -> bool * (float * list string).
 host_sock_write : string -> string -> bool * (float * list string).

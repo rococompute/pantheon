@@ -8,15 +8,15 @@ edits machinery (`cli.soma`: applying edits, reading a checkout's changes
 as edits, a bid's tree), the binary's network and jobs
 (`node_net.soma`: its links, buffers, select, the service's socket and
 the process table) and its git and programs (`node_git.soma`); what is left of the program around them is
-`shell.ml`, about 290 lines of hand-written OCaml (it was about 1,600)
+`shell.ml`, about 275 lines of hand-written OCaml (it was about 1,600)
 that `shell.definition` declares to Soma as its primitives (`host_*`,
 one per operation that reaches the host, which node_shell.soma's
 `host_prim` calls by the operation's constructor) and `argv`,
-`print_lines` and `forever`. Hashing and signing are Soma's in the binary
-too; Cryptokit is only a new key's and random bytes'. The goal: as much of `shell.ml` as can be
+`print_lines` and `forever`. Hashing, signing and a new key are Soma's
+in the binary too, and shell.ml links nothing but OCaml's own Unix. The goal: as much of `shell.ml` as can be
 is Soma, extracted with the rest, and OCaml is left only as thin bindings to
-the libraries that do I/O: Unix (files, processes, sockets, time) and
-cryptokit (RSA, SHA-256). Each binding is declared in a
+the libraries that do I/O: Unix (files, processes, sockets, time, the
+system's randomness). Each binding is declared in a
 `.definition` file, as `examples/example_projects/async_tasks` declares
 Async's functions (GRADUAL.md, "OCaml modules").
 
@@ -349,8 +349,9 @@ a transaction's in `decode_tx` (`nio_tx_verify`, with the agent's key from
 the market's own table, filled by the boot events `["chain", id]` and
 `["key", agent, size, n, e]` that `node_setup` gives) and a peer line's in node.soma
 (`nio_line_verify`, with the sender's key from `IoPeerKey`, which the
-kernel reads from the setup). Keys are made with e = 65537 (`make_keys`),
-which Soma checks in about 1.6 ms. A genesis made before has Cryptokit's
+kernel reads from the setup). Keys are made with e = 65537 (`make_keys`,
+by Soma since: "The primitives by name", below), which Soma checks in
+about 1.6 ms. A genesis made before has Cryptokit's
 random 2048-bit public exponents, which take about 90 ms each: such a
 network still works, slowly, and wants a new genesis.
 
@@ -554,8 +555,22 @@ Hashing and signing are Soma's in the binary too (`util.soma`'s
 `sha256` and `hash_list`, `nodeio.soma`'s `nio_sign`, through
 `Soma.Crypto`): main.soma no longer extracts them to Cryptokit's, which
 was about ten times faster. What runs is what Soma checks, and speed is
-for Soma to win back. Cryptokit stays only for a new key and random
-bytes, which Soma has no source of. With every node signing in Soma, the whole e2e
+for Soma to win back.
+
+A new key is Soma's too: cli.soma's `new_key` asks the system for two
+random starts of 128 bytes (`IoRandomHex`; the shell reads
+/dev/urandom, `host_random_bytes`, and Soma makes it hex) and hands them
+to `Soma.Crypto`'s `rsa_new_key`, Soma's item: each start's top two bits
+and low bit set, then the next odd number no prime below 2000 divides,
+not 1 modulo 65537, that passes Miller–Rabin for the first twelve
+primes, stepping by 2; `d`, `dp` and `dq` as e's inverse, `(1 + k x) /
+e`, and `qinv` by Fermat. A key takes one to two seconds; Crypto.v's
+`rsa_new_key_signs` has the kernel make a 512-bit key and check that
+what it signs verifies. `IoNewKey` and Cryptokit are gone: shell.ml
+links only OCaml's Unix, which Soma no longer tries to install from
+opam (a library that comes with the compiler; Soma's somaOcaml.ml,
+`with_compiler`). The select's answer is framed by Soma too
+(`host_sock_select` gives the two lists; `host_prim` frames them). With every node signing in Soma, the whole e2e
 run at once (33 scenarios, four nodes each) starved its flooding node
 and ran past its waits, so test/e2e.sh runs at most six scenarios at
 a time (`E2E_JOBS`).

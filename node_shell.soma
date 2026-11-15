@@ -22,8 +22,11 @@ host_prim (op : node_op) : nanswer :=
   | IoPrint text => host_print text
   | IoExit code => host_exit code
   | IoCwd => host_cwd tt
-  | IoNewKey bits => host_new_key bits
-  | IoRandomHex count => host_random_hex count
+  | IoRandomHex count =>
+      match host_random_bytes count with
+      | (true, (_, [b])) => ans_data true [Crypto.hex_of_bytes (Crypto.bytes_of_string b)]
+      | a => a
+      end
   | IoReadText path => host_read_text path
   | IoFileExists path => host_file_exists path
   | IoDirEntries path => host_dir_entries path
@@ -49,7 +52,9 @@ host_prim (op : node_op) : nanswer :=
   | IoStopOnSignal pids => host_stop_on_signal pids
   | IoSockListen host port backlog => host_sock_listen host port backlog
   | IoSockDial host port => host_sock_dial host port
-  | IoSockSelect ms reads writes => host_sock_select ms reads writes
+  | IoSockSelect ms reads writes =>
+      let '(ok, (r, w)) := host_sock_select ms reads writes in
+      if ok then ans_data true (nio_frame_lists [r, w]) else ans_data false r
   | IoSockAccept fd nonblock => host_sock_accept fd nonblock
   | IoSockRead fd => host_sock_read fd
   | IoSockWrite fd data => host_sock_write fd data

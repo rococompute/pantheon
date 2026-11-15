@@ -9,7 +9,7 @@
 # with _build and _opam in it.
 FROM debian:bookworm
 RUN apt-get update -q && apt-get install -y -q --no-install-recommends git python3 ca-certificates build-essential opam jq curl m4 \
-      pkg-config libgmp-dev zlib1g-dev rsync sudo && rm -rf /var/lib/apt/lists/*
+      pkg-config libgmp-dev rsync sudo && rm -rf /var/lib/apt/lists/*
 RUN useradd -m pantheon
 COPY deploy/pantheon-ci.sh /usr/local/bin/pantheon-ci
 USER pantheon

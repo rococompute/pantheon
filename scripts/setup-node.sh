@@ -23,15 +23,14 @@ SOMA_REF=${SOMA_REF:-gradual}
 SOMA_REPO=${SOMA_REPO:-git@github.com:yevbar/soma.git}
 say() { printf 'setup: %s\n' "$*"; }
 
-# 1. system packages: git, a C toolchain, opam, gmp for zarith, zlib for cryptokit
+# 1. system packages: git, a C toolchain, opam, gmp for zarith
 missing=""
 for c in git make cc opam jq curl m4 pkg-config; do command -v $c >/dev/null || missing="$missing $c"; done
 [ -e /usr/include/gmp.h ] || [ -e "/usr/include/$(uname -m)-linux-gnu/gmp.h" ] || missing="$missing gmp"
-[ -e /usr/include/zlib.h ] || missing="$missing zlib"
 if [ -n "$missing" ]; then
   command -v apt-get >/dev/null || { echo "setup: missing:$missing. Install them with your package manager and run again" >&2; exit 1; }
   say "installing system packages (missing:$missing)"
-  sudo apt-get update -q && sudo apt-get install -y -q git build-essential opam jq curl m4 pkg-config libgmp-dev zlib1g-dev rsync ca-certificates
+  sudo apt-get update -q && sudo apt-get install -y -q git build-essential opam jq curl m4 pkg-config libgmp-dev rsync ca-certificates
 fi
 
 # 2. opam
@@ -73,8 +72,8 @@ command -v soma >/dev/null || { echo "setup: Soma didn't build: see the output a
 if [ "${SOMA_ONLY:-}" = 1 ]; then say "Soma is built: $SOMA_DIR/_build/install/default/bin/soma"; exit 0; fi
 
 # 5. Pantheon. The first build makes Soma's own OCaml switch
-# (~/.cache/soma/ocaml) and installs what shell.definition names, cryptokit
-# and yojson, at the versions soma.toml's [opam] gives.
+# (~/.cache/soma/ocaml) and installs what shell.definition names (OCaml's
+# Unix, which comes with the compiler).
 cd "$here"
 say "building Pantheon"
 soma build main.soma || { echo "setup: building Pantheon failed: see above" >&2; exit 1; }

@@ -201,7 +201,24 @@ Fixpoint iterate (n : nat) (x : string) : string :=
 
 agents_default : list string := ["claude", "codex", "grok", "muse"].
 
-(** a key as key.json and public.json hold it, from [IoNewKey]'s
+(** a new 2048-bit key, [size, n, e, d, p, q, dp, dq, qinv] in hex, from
+    two random starts of 128 bytes (Soma.Crypto's rsa_new_key: e = 65537,
+    which Soma checks signatures with in about 1 ms against Cryptokit's
+    random 2048-bit default's 90); [None] in the rare case the starts give
+    no key *)
+new_key (k : option (list string) -> nprog unit) : nprog unit :=
+  cli_ask (IoRandomHex "128") (fun a =>
+  cli_ask (IoRandomHex "128") (fun b =>
+  match Crypto.bytes_of_hex (ans_one a), Crypto.bytes_of_hex (ans_one b) with
+  | Some rp, Some rq =>
+      match Crypto.rsa_new_key 2048 rp rq with
+      | Some parts => k (Some ("2048" :: map Crypto.hex_of_bytes parts))
+      | None => k None
+      end
+  | _, _ => k None
+  end)).
+
+(** a key as key.json and public.json hold it, from [new_key]'s
     [size, n, e, d, p, q, dp, dq, qinv]; the private parts only in key.json *)
 key_json (k : list string) (priv : bool) : json :=
   match k with
@@ -218,10 +235,8 @@ make_keys (home name addr : string) (k : string -> nprog unit) : nprog unit :=
   if has then cli_fail (cat [home, " already has keys. They are this agent's identity: keep them. To start over, remove the directory first"]) else
   cli_do (IoMakeDirs home) (fun _ =>
   cli_do (IoChmod home "700") (fun _ =>
-  (* e = 65537, not Cryptokit's random 2048-bit default: Soma checks
-     signatures (Soma.Crypto), in about 1 ms with it against 90 *)
-  cli_ask (IoNewKey "2048") (fun key =>
-  let key := ans_list key in
+  new_key (fun key =>
+  match key with None => cli_fail "the system's randomness gave no key: run it again" | Some key =>
   cli_ask (IoRandomHex "32") (fun secret =>
   let secret := ans_one secret in
   let priv f j := cli_do (IoSave (path home f) "false" (json_file j)) (fun _ => cli_do (IoChmod (path home f) "600") (fun _ => NDone tt)) in
@@ -230,7 +245,8 @@ make_keys (home name addr : string) (k : string -> nprog unit) : nprog unit :=
   let pub := path home "public.json" in
   cli_do (IoSave pub "false" (json_file (JObj [("name", JStr name), ("addr", JStr addr), ("pubkey", key_json key false),
                                              ("tip", JStr (iterate chain_len secret))]))) (fun _ =>
-  k pub)))))))).
+  k pub))))
+  end)))).
 
 Fixpoint keygen_args (args : list string) (home name addr : string) : (string * string * string) + string :=
   match args with
