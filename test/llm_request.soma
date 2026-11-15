@@ -1,6 +1,6 @@
 (** Pure prompt assembly: fixed repository data, no node, sockets or timers. *)
-Import util shell market agent node.
-From Stdlib Require ExtrOcamlNatInt.
+Import util market agent node.
+Require Soma.Host.
 
 fixture_plan : string := "2026-11-11
 # a note
@@ -106,4 +106,4 @@ role_checks : list string := map (fun p =>
     (if contains "{{F}}" (snd p) || contains "{{PLAN}}" (snd p) ||
         contains "{{REPO}}" (snd p) || contains "{{REPOS}}" (snd p) then "unexpanded" else "expanded")
     "expanded") role_prompts.
-main := print_lines (checks ++ role_checks).
+main := Host.print_lines (checks ++ role_checks).

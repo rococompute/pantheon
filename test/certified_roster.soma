@@ -1,7 +1,7 @@
 (** Fixed chain lookups, not local observations. The verification model checks
     exact signed fields; production's callback is node_verify_line. *)
-Import util shell consensus market.
-From Stdlib Require ExtrOcamlNatInt.
+Import util consensus market.
+Require Soma.Host.
 check (b : bool) (s : string) : string := append (if b then "ok " else "FAIL ") s.
 body (h : nat) : list string := ["block", show h].
 block_at (h : nat) : option (list string) := if h =? 0 then None else Some (body h).
@@ -32,7 +32,7 @@ leave7 : list (string * bool * nat) := changes (request_certified p7 [] (agreed 
 join4 : list (string * bool * nat) := changes (request_certified p4 leave4 (fun _ => None) 7 "d" ["roster", "join", "d"]).
 height_roster (h : nat) : list string := roster_at g7 [("g", false, 2)] h.
 
-main := print_lines [
+main := Host.print_lines [
  check (match window (agreed ["a", "b", "c"]) with Some [a,b,c] =>
           (length a =? 3) && (length b =? 3) && (length c =? 3) | _ => false end) "exact certified window",
  check (no_window (window (fun h => if h =? 3 then None else agreed ["a", "b", "c"] h))) "missing head refused",

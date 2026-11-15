@@ -186,7 +186,7 @@ step (n : node_state) (ev : list string) : node_state * list (list string) :=
   end.
 
 (** ---- Step 2 (docs/SHELL-IN-SOMA.md): the node loop in Soma ----
-    The loop holds the state and drives [step]; shell.ml bound
+    The loop holds the state and drives [step]; the shell once bound
     [node_open] (I/O setup; gone: node_net.soma), startup data, [events] (one select turn),
     smaller output bindings (every output case is decided in Soma),
     the snapshot ([IoSnapshotSave]), [note_refused] and [forever]. An effect is a field list: ["perform"; output...],
@@ -337,7 +337,7 @@ order_effects (ev : list string) (before after : node_state) (outs : list (list 
   refused ++ decided ++ sign_effects outs ++ save ++ rest.
 
 (** Step 4: classify outputs in Soma. Every case has its own small
-    bindings; an output no case names does nothing, as shell.ml's old
+    bindings; an output no case names does nothing, as the shell's old
     handle did with it. *)
 Inductive output_request :=
 | SetTimer (ms : string) (event : list string)
@@ -2877,7 +2877,7 @@ boot_snapshot_prog : nprog (option node_state) :=
 (** ---- The node's service (docs/SHELL-IN-SOMA.md, "The node's service") ----
     A unikernel runs no processes and has no checkouts: [pantheon service
     HOME HOST:PORT] does that for it on the host, with the node's own
-    runtime (shell.ml's, from HOME's setup), and the image asks it for the
+    runtime (Soma.Host's, from HOME's setup), and the image asks it for the
     operations [service_op] names, over one TCP connection. Each request
     is the token and an operation's wire form; it is run as the binary
     runs it, and its answer goes back. The token is the node's: a hash of

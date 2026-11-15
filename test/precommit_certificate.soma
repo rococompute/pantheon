@@ -1,5 +1,6 @@
 (** M-3 prerequisite: exact certificate names, deterministic inputs. *)
-Import util shell consensus.
+Import util consensus.
+Require Soma.Host.
 
 message (k : kind) (a : string) (h r : nat) (id : string) : msg :=
   {| kd := k; frm := a; mh := h; mr := r; vr := 0; vid := id; value := [] |}.
@@ -16,7 +17,7 @@ sample : consensus_state :=
       message Prevote "d" 8 2 "block",
       message Precommit "d" 8 2 "block"] |}.
 
-main := print_lines
+main := Host.print_lines
   (precommitters sample 2 "block" ++ ["--"] ++
    precommitters sample 3 "block" ++ ["--"] ++
    precommitters sample 2 "other" ++ ["--"] ++

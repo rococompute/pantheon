@@ -1,10 +1,11 @@
-Import util shell consensus.
+Import util consensus.
+Require Soma.Host.
 wire_vote : signed_precommit := {| commit_signer := "a"; commit_signature := "sig with spaces";
   commit_fields := ["precommit", "0008", "02", "00", "hash"] |}.
 wire_cert : commit_certificate := {| certificate_height := 8; certificate_round := 2;
   certificate_votes := [wire_vote, wire_vote] |}.
 absent (fs : list string) : bool := match decode_commit_certificate fs with None => true | _ => false end.
-main := print_lines (map (fun (b : bool) => if b then "true" else "false") [
+main := Host.print_lines (map (fun (b : bool) => if b then "true" else "false") [
   match encode_commit_certificate wire_cert with
   | Some fs => match decode_commit_certificate fs with
     | Some c => (certificate_height c =? 8) && (certificate_round c =? 2) &&

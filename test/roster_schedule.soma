@@ -1,7 +1,7 @@
 (** M-3 part: the roster by height, run as extracted code on fixed inputs
     (market.proof checks the same in the kernel). No node, no timing. *)
-Import util shell market.
-From Stdlib Require ExtrOcamlNatInt.
+Import util market.
+Require Soma.Host.
 
 check (label : string) (ok : bool) : string := append (if ok then "ok " else "FAIL ") label.
 
@@ -19,7 +19,7 @@ cycle4 : list (string * bool * nat) := [("a4", false, effective_height 8 1), ("a
 pcs (missing : nat) : list (list string) :=
   map (fun _ => ["a1", "a2"]) (List.seq 0 missing) ++ [["a1", "a2", "a3"]].
 
-main := print_lines [
+main := Host.print_lines [
   check "absent for absent_blocks - 1 blocks is kept" (negb (removal_due 3 "a3" (pcs 2))),
   check "absent for absent_blocks blocks is proposed for removal" (removal_due 3 "a3" (pcs 3)),
   check "present in the latest block resets the run" (absent_run "a1" (pcs 5) =? 0),

@@ -3,9 +3,10 @@
     and its log lines, the listing and file budgets, and the prompts the
     four request kinds (draft, pick, patch, attest) assemble. No node,
     sockets, timers or model processes. *)
-Import util shell market agent node.
+Import util market agent node.
+Require Soma.Host.
+From Soma Require Import OCaml.
 From Stdlib Require Import Ascii.
-From Stdlib Require ExtrOcamlNatInt.
 
 check (label got expected : string) : string :=
   append (if seq got expected then "ok " else "FAIL ") (append label
@@ -314,4 +315,4 @@ Do as much of the task")))))) patch_p)) "yes",
   check "attest: no placeholder left" (no_placeholder attest_p) "yes"
 ].
 
-main := print_lines (replace_checks ++ plan_checks ++ gate_checks ++ listing_checks ++ assemble_checks ++ kind_checks).
+main := Host.print_lines (replace_checks ++ plan_checks ++ gate_checks ++ listing_checks ++ assemble_checks ++ kind_checks).

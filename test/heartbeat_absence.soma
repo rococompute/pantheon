@@ -1,7 +1,8 @@
 (** Deterministic, agreed-history heartbeat accounting; newest block first. *)
-Import util shell consensus.
+Import util consensus.
+Require Soma.Host.
 
-main := print_lines
+main := Host.print_lines
   ([show (missed_blocks "d" [["a"], ["b"], ["d"]]),
     show (missed_blocks "d" [["a"], ["b"], ["c"], ["d"]]),
     show (missed_blocks "d" [["d"], ["a"], ["b"]]),

@@ -4,7 +4,8 @@
     for a task that already has a pending bid (on the chain or in flight) is
     dropped. A refused or expired in-flight bid clears, and the agent may bid
     again. Run with test/double-bid.sh. *)
-Import util shell market agent.
+Import util market agent.
+Require Soma.Host.
 
 market0 : obj :=
   let m := new_market ["claude", "codex", "grok", "muse"] in
@@ -149,4 +150,4 @@ lines_scripted : list string :=
 report : list string :=
   lines_setup ++ lines_duty ++ lines_expire ++ lines_refused ++ lines_reply ++ lines_two ++ lines_scripted.
 
-main := print_lines report.
+main := Host.print_lines report.

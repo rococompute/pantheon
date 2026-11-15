@@ -1,6 +1,6 @@
 (** The node's I/O as one interface (U-1; docs/SHELL-IN-SOMA.md, "Two
-    directions, and the unikernel"). Nothing here imports the shell: these
-    are values, which the binary interprets over shell.ml's primitives
+    directions, and the unikernel"). Nothing here imports the host: these
+    are values, which the binary interprets over Soma.Host's primitives
     (node_shell.soma's [run_shell] and [host_prim]) and a unikernel can interpret
     with Sandbox (node_sandbox.soma). *)
 From Corelib Require PrimFloat.
@@ -87,8 +87,8 @@ Fixpoint smap_size {A : Type} (m : smap A) : nat :=
     node's tables, peer links, timers, files and signatures, its host's
     work (node_host.soma) the jobs, checkouts and model calls; what is left
     are primitives, which the binary's runner (node_shell.soma over
-    node_net.soma) hands shell.ml, each to the binding shell.definition
-    names for it ([host_prim], its fields the arguments), and a unikernel
+    node_net.soma) hands Soma.Host, each to the primitive Soma.Host
+    declares for it ([host_prim], its fields the arguments), and a unikernel
     carries out with Sandbox (node_sandbox.soma). An operation's wire
     form ([io_wire]; [io_of_wire] reads it back) is what an image sends
     its service. An effect's result is [(true, 0)]; the clock's is
@@ -330,7 +330,7 @@ Inductive node_op :=
 | IoServeReply (conn found stamp : string) (fields : list string)
 (** the kernel's primitives (node_kernel.soma): what it asks of whatever
     runs it, named after Sandbox's own, which the unikernel does them
-    with and shell.ml does them with for the binary. Listening on an
+    with and Soma.Host does them with for the binary. Listening on an
     address and port (not found: why, in its data); what came in on the
     connections since the last look, waiting [ms] milliseconds at most
     when nothing has (framed: ["opened", CONN, HOST], ["bytes", CONN,
@@ -827,10 +827,10 @@ Fixpoint nresult {A : Type} (ans : node_op -> nanswer) (p : nprog A) : A :=
 
 (** ---- What the operations write and keep (U-1) ----
     Pure, so any interpreter uses the same bytes and the same tables: the
-    lines shell.ml appends to blocks.log and signed.log (Yojson's output,
-    byte for byte), and the tables it keeps in memory for the operations,
-    as one record. node_sandbox.soma interprets the operations with them;
-    shell.ml keeps its own copies today. *)
+    lines the node appends to blocks.log and signed.log (Yojson's output,
+    byte for byte, as the old shell wrote them), and the tables it keeps
+    in memory for the operations, as one record. node_sandbox.soma
+    interprets the operations with them. *)
 
 (** Yojson.Safe.to_string of a string's characters: a quote, a backslash
     and \b \f \n \r \t named, every other control character and DEL as
@@ -871,7 +871,7 @@ nio_vote_line (slot vid : string) (fields : list string) : string :=
   Stdlib.Strings.String.concat " " [slot, vid, nio_json_strings fields].
 
 (** ---- signatures ----
-    What the binary signs and the lines it sends, as shell.ml makes them
+    What the binary signs and the lines it sends, as the old shell made them
     (tx_bytes, msg_bytes, encode_tx, wire), with Soma's RSA (Soma.Crypto:
     PKCS #1 v1.5 of SHA-256, a signature as lowercase hex), so that an
     interpreter without Cryptokit signs and checks the same bytes. A key's

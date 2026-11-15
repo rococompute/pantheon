@@ -1,6 +1,6 @@
 (** What cli.soma's pure pieces compute, checked whenever cli.soma is
     built: paths as OCaml's Filename gives them, the commands' argument
-    parsing as shell.ml's did it, and JSON as Yojson.Safe prints it. *)
+    parsing as the old shell's did it, and JSON as Yojson.Safe prints it. *)
 
 Example path_as_filename_concat :
   path "a" "b" = "a/b" /\ path "a/" "b" = "a/b" /\ path "" "b" = "b" /\ path "/" "b" = "/b".

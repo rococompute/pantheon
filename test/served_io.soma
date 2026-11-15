@@ -1,7 +1,8 @@
 (** Fixed answers through the served I/O boundary and the actual native
     float formatter/parser used by the production operation. No clock race. *)
-Import util shell nodeio node.
-From Stdlib Require ExtrOcamlNatInt.
+Import util nodeio node.
+Require Soma.Host.
+From Soma Require Import OCaml.
 check (label : string) (ok : bool) : string := append (if ok then "ok " else "FAIL ") label.
 float_eq (a b : float) : bool := negb (PrimFloat.ltb a b) && negb (PrimFloat.ltb b a).
 Fixpoint wires_eq (a b : list (list string)) : bool := match a,b with
@@ -92,4 +93,4 @@ checks : list string := [
    negb (eq_strs (io_wire (IoServedAt "peer" "3")) (io_wire (IoServedAt "peer" "4")))),
  check "remember action uses production codec" (match action_io (RememberPeer "peer" "3" 100.25%float) with Some op => eq_strs (io_wire op) ["mark_served","peer","3","100.25"] | None => false end)
 ].
-main := print_lines checks.
+main := Host.print_lines checks.

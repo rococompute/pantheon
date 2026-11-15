@@ -6,7 +6,8 @@
     passed. Eight agents (f = 2) need 6 approvals; four (f = 1) still need
     3, and 2 no votes reject, as before. Known inputs, no timing: run with
     test/n-agents.sh. *)
-Import util shell market.
+Import util market.
+Require Soma.Host.
 
 say (cond : bool) (what : string) : list string :=
   [if cond then append "ok " what else append "FAIL " what].
@@ -96,4 +97,4 @@ lines_four : list string :=
 
 report : list string := lines_seven ++ lines_draw ++ lines_eight ++ lines_four.
 
-main := print_lines report.
+main := Host.print_lines report.

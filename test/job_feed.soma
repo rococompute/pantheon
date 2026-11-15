@@ -1,6 +1,6 @@
 (** Fixed job-output buffers. No running node and no timers. *)
-Import util shell node.
-From Stdlib Require ExtrOcamlNatInt.
+Import util node.
+Require Soma.Host.
 
 check (label : string) (ok : bool) : string := append (if ok then "ok " else "FAIL ") label.
 same_bool (a b : bool) : bool := if a then b else negb b.
@@ -56,4 +56,4 @@ par"),
   check "production tail is 65536 bytes" (seq job_keep_text "65536")
 ].
 
-main := print_lines checks.
+main := Host.print_lines checks.

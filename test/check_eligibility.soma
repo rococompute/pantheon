@@ -1,6 +1,6 @@
 (** Deterministic check launch and refusal plans; no running node. *)
-Import util shell nodeio node.
-From Stdlib Require ExtrOcamlNatInt.
+Import util nodeio node.
+Require Soma.Host.
 From Stdlib Require Import Ascii.
 
 check (label : string) (ok : bool) : string := append (if ok then "ok " else "FAIL ") label.
@@ -9,7 +9,7 @@ ch (n : nat) : string := Stdlib.Strings.String.String (ascii_of_nat n) Stdlib.St
 
 same_op (got want : node_op) : bool := eq_strs (io_wire got) (io_wire want).
 
-main := print_lines [
+main := Host.print_lines [
   check "eligible with empty lists" (same_op
     (check_request_op "9" "soma" "head" ["edit"] [] [])
     (IoCheck "9" "soma" "head" ["edit"])),

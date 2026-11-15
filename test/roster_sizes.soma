@@ -5,7 +5,8 @@
     draw goes ahead at n - f reveals once reveal_window has passed (at all n
     inside it). Real transactions through apply, known inputs, no timing:
     run with test/roster-sizes.sh. *)
-Import util shell market.
+Import util market.
+Require Soma.Host.
 
 say (cond : bool) (what : string) : list string :=
   [if cond then append "ok " what else append "FAIL " what].
@@ -82,4 +83,4 @@ lines_six : list string :=
   ++ say (negb (draws (draw_state 6 5 5))) "six agents: five reveals inside the reveal window wait"
   ++ say (draws (draw_state 6 6 5)) "six agents: all six reveals draw at once".
 
-main := print_lines (lines_five ++ lines_six).
+main := Host.print_lines (lines_five ++ lines_six).

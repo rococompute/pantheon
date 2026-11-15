@@ -4,9 +4,9 @@
 Theorem, Lemma, Corollary and Example in `consensus.proof` and `market.proof`
 (and the main statements of `node_service.proof`, `node_path.proof`, `node_file.proof`, `node_git.proof` and `cli.proof`, below),
 with its exact source name. These are statements about the pure definitions,
-not proofs of the OCaml shell, extraction to machine integers, cryptography,
-OS isolation, or deployed end-to-end safety. Shell hashes, decoding, signatures
-and I/O are trusted. Gradual casts and `Any` remain part of the trust boundary;
+not proofs of Soma.Host's primitives (the host's I/O), extraction to machine integers, cryptography,
+OS isolation, or deployed end-to-end safety. Soma.Host's I/O is trusted,
+and Soma.Crypto's hashes and signatures are computed but not proved correct. Gradual casts and `Any` remain part of the trust boundary;
 a successful build alone does not rule out assumptions (`Admitted`, axioms,
 `unk` or `err`). Inspect `soma explore main.soma` and assumption reports too.
 The default host/sandbox CI policy rejects added assumptions; arbitrary CI
@@ -108,7 +108,7 @@ commands need not do so. Trusted toolchains and build-cache provenance matter.
 
 What the node's service carries out for an image (node_service.soma;
 docs/SHELL-IN-SOMA.md, "The node's service"). Statements about its
-policy functions, not about shell.ml's primitives or the programs it
+policy functions, not about Soma.Host's primitives or the programs it
 starts.
 
 | Name | What it says, and its limit |
@@ -117,7 +117,7 @@ starts.
 | `allowed_are_host_ops` | What it allows is one of nodeio's `service_op` operations. |
 | `only_the_token_is_served` | A request served carries the node's token and decodes to a `service_op`; no claim about the token's secrecy. |
 | `paths_stay_in_roots`, `roots_are_the_services` | A path it allows has no `..` part and is an absolute root (HOME/repos, HOME/inbox, a temporary path it made or its `.git`) or under one. |
-| `path_operations_are_looked_at`, `symlink_never_followed` | Every read, write, listing or removal is probed below its root first, and one through a symlink runs nothing; the probe's own truth is shell.ml's. |
+| `path_operations_are_looked_at`, `symlink_never_followed` | Every read, write, listing or removal is probed below its root first, and one through a symlink runs nothing; the probe's own truth is Soma.Host's. |
 | `processes_are_the_nodes_own` | A process it starts is its binary, the model, docker, its sandbox runner or its `cmd:` backend, from a path it allows, with its own environment's entries and a `cmd:` patch's. |
 | `runs_are_cleanup` | A program run to its end is `rm`, `chmod` or `docker`. |
 | `git_takes_no_options_of_its_own` | Every git argument is one of the host work's words, not an option, or a clone's git directory it allows. |
@@ -127,7 +127,7 @@ starts.
 ### node_path.proof
 
 What a path probe answers (node_path.soma), for any answers the host's
-lstat gives; the lstat itself is shell.ml's, and a change between the
+lstat gives; the lstat itself is Soma.Host's, and a change between the
 probe and the operation is outside it.
 
 | Name | What it says, and its limit |
@@ -178,7 +178,7 @@ Besides the commands' parsing and JSON examples:
 
 | Name | What it says, and its limit |
 |---|---|
-| `up_waits_for_what_it_started` | `pantheon up` sets the stop on an interrupt or a terminate for the nodes it started, then waits for exactly those, in order. That the shell's handler terminates them is the shell's. |
+| `up_waits_for_what_it_started` | `pantheon up` sets the stop on an interrupt or a terminate for the nodes it started, then waits for exactly those, in order. That the handler terminates them is Soma.Host's. |
 
 ## Remaining work
 

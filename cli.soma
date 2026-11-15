@@ -1,13 +1,13 @@
 (** Pantheon's commands: init, keygen, genesis, up, status, tx, plan, edits,
     apply-edits and check, as node programs (U-1; docs/SHELL-IN-SOMA.md).
     Each is a value of [nprog unit] over [node_op]: the binary runs it
-    over shell.ml's primitives (node_shell.soma's run_shell, from
+    over Soma.Host's primitives (node_shell.soma's run_shell, from
     main.soma's [dispatch]), which answer the commands' operations with
     no node. What a command
     decides is here: its arguments, its messages, a new agent's files, the
     genesis's bytes and every check on them. The operations do the I/O:
     printing, files, git, a new RSA key and starting nodes; the edits
-    machinery decides here too, over the shell's file and git work.
+    machinery decides here too, over the host's file and git work.
     [pantheon node] is node.soma's [run_node]. *)
 Import util nodeio.
 (* [float] and its literals, OCaml's (Soma.OCaml) *)
@@ -1270,10 +1270,6 @@ image_text (home service : string) (config : list (list string)) : string :=
     its storage device (--block:storage=DISK). *)
 Require Import Sandbox.
 Import node_sandbox.
-
-(* the stores' maps compare keys as OCaml compares strings, as the binary does *)
-Extract Inlined Constant Stdlib.Strings.String.compare =>
-  ""(fun a b -> let c = Stdlib.compare (a : string) b in if c < 0 then Lt else if c = 0 then Eq else Gt)"".
 
 node_config : list (list string) := [
   ", Stdlib.Strings.String.concat ",

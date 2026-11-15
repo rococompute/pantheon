@@ -1,6 +1,7 @@
-(** nodeio.soma's pure part, which any interpreter shares: the lines blocks.log and signed.log get (Yojson's bytes, from shell.ml's writers), the clock's decimal text read back, and what the table operations do. No node, no unikernel. *)
-Import util shell nodeio.
-From Stdlib Require ExtrOcamlNatInt.
+(** nodeio.soma's pure part, which any interpreter shares: the lines blocks.log and signed.log get (Yojson's bytes, as the old shell's writers made them), the clock's decimal text read back, and what the table operations do. No node, no unikernel. *)
+Import util nodeio.
+Require Soma.Host.
+From Soma Require Import OCaml.
 
 check (label : string) (ok : bool) : string := append (if ok then "ok " else "FAIL ") label.
 
@@ -38,7 +39,7 @@ t1 : nio_tables :=
 
 (** A 2048-bit key of Cryptokit's (fresh for this test; its public
     exponent is random, as [RSA.new_key] makes them), and a transaction
-    and a peer line that shell.ml's encode_tx and wire signed with it
+    and a peer line that the old shell's encode_tx and wire signed with it
     (chain pantheon-0123456789abcdef, claude, nonce 7; a field with a
     quote, a newline, a tab, a check mark and a control character), as
     hex: Soma's RSA signs the same bytes. *)
@@ -149,4 +150,4 @@ checks : list string := [
      && negb (nio_tx_verify test_key_wire "claude" "8" test_fields (substr shell_tx (Nat.sub (slen shell_tx) 514) 512)))
 ].
 
-main := print_lines checks.
+main := Host.print_lines checks.

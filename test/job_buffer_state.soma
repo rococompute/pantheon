@@ -1,5 +1,5 @@
-Import util shell node.
-From Stdlib Require ExtrOcamlNatInt.
+Import util node.
+Require Soma.Host.
 check (label : string) (ok : bool) : string := append (if ok then "ok " else "FAIL ") label.
 a := job_remember empty_node "1" ["first", " chunk"].
 b := job_remember a "2" ["other"].
@@ -12,4 +12,4 @@ checks := [
   check "empty removes" (eq_strs (job_buffer (job_remember b "1" []) "1") []),
   check "peer independent" (eq_strs (peer_buffer (job_remember (peer_remember b "1" ["peer"]) "1" ["job"]) "1") ["peer"])
 ].
-main := print_lines checks.
+main := Host.print_lines checks.

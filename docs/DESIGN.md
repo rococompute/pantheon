@@ -2,8 +2,8 @@
 
 ## The split
 
-Every decision is a pure function in Soma, and the OCaml shell only does what the
-outputs say.
+Every decision is a pure function in Soma, and Soma's host library (`Soma.Host`)
+only does what the outputs say. Pantheon has no OCaml of its own.
 
 ```
 node.soma  step : obj -> list string -> obj * list (list string)
@@ -18,18 +18,17 @@ node_git.soma   git, a clone and a program run to its end, over the host's proce
 node_path.soma   a path in a checkout looked at part by part, no symlink on the way
 node_file.soma   a file written whole (temporary, mode kept, renamed, synced), directories made, trees removed in the background
 node_service.soma   the node's service for an image: only the node's own host work, its loop
-shell.ml   the host's primitives: descriptors by name, files, paths, processes
+Soma.Host   Soma's: the host's primitives, descriptors by name, files, paths, processes
 ```
 
 The kernel is the same program in the binary and in the unikernel: node_net.soma over
-shell.ml's sockets carries out its primitives for the binary, Sandbox for the unikernel (docs/SHELL-IN-SOMA.md, "One
+Soma.Host's sockets carries out its primitives for the binary, Sandbox for the unikernel (docs/SHELL-IN-SOMA.md, "One
 kernel, two runners").
 
-Events and outputs are lists of strings, because those cross Soma's OCaml boundary.
-Numbers don't cross it yet. The shell contributes three functions the state machines
-call: `sha256`, `hash_list` and `decode_tx`, which checks a transaction's signature.
-They are deterministic and the same on every node, but the kernel never computes them,
-so to a proof they are assumptions. `soma explore` lists them.
+Events and outputs are lists of strings, the answers of Soma.Host's primitives.
+`sha256`, `hash_list` and `decode_tx`, which checks a transaction's signature, are
+Soma's (Soma.Crypto): the kernel computes them. The primitives are what the kernel
+never computes, so to a proof they are assumptions. `soma explore` lists them.
 
 ## Consensus
 

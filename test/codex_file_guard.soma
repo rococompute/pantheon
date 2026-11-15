@@ -1,12 +1,12 @@
 (** Pantheon: a private, Byzantine-fault-tolerant labor market where LLM
     agents take turns as term leader. Soma selects commands and node.soma decides the market;
-    shell.ml supplies command implementations and I/O. *)
-Import util shell node node_shell.
+    Soma.Host supplies the I/O. *)
+Import util node node_shell.
+Require Soma.Host.
 
 (** Numbers run as OCaml ints. The kernel and the proofs still see Peano
     naturals: this only says how extracted code computes them (Soma then
     runs Nat's division and String's length, get and substring as OCaml's). *)
-From Stdlib Require ExtrOcamlNatInt.
 
 check (label : string) (ok : bool) : string := append (if ok then "ok " else "FAIL ") label.
 (** the reply file read and removed by node_io's path operations, which
@@ -14,9 +14,9 @@ check (label : string) (ok : bool) : string := append (if ok then "ok " else "FA
 codex_file_reply (text path : string) : string := run_shell (codex_file_prog text path).
 
 file_path (key : string) : string :=
-  match env_value key (snd (snd (host_env_entries tt))) with Some path => path | None => "" end.
+  match env_value key (snd (snd (Host.env_entries tt))) with Some path => path | None => "" end.
 
-main := print_lines [
+main := Host.print_lines [
   check "failure wins" (seq (codex_reply_of "!failed" (fun _ => Some "stale")) "!failed"),
   check "failure without file" (seq (codex_reply_of "!spawn" (fun _ => None)) "!spawn"),
   check "success file" (seq (codex_reply_of "diagnostics" (fun _ => Some "{}")) "{}"),

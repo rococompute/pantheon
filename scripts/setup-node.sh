@@ -71,9 +71,9 @@ command -v soma >/dev/null || { echo "setup: Soma didn't build: see the output a
 
 if [ "${SOMA_ONLY:-}" = 1 ]; then say "Soma is built: $SOMA_DIR/_build/install/default/bin/soma"; exit 0; fi
 
-# 5. Pantheon. The first build makes Soma's own OCaml switch
-# (~/.cache/soma/ocaml) and installs what shell.definition names (OCaml's
-# Unix, which comes with the compiler).
+# 5. Pantheon, all Soma. The first build makes Soma's own OCaml switch
+# (~/.cache/soma/ocaml); Soma.Host's primitives use OCaml's Unix, which
+# comes with the compiler.
 cd "$here"
 say "building Pantheon"
 soma build main.soma || { echo "setup: building Pantheon failed: see above" >&2; exit 1; }

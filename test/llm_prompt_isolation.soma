@@ -1,12 +1,12 @@
 (** Pantheon: a private, Byzantine-fault-tolerant labor market where LLM
     agents take turns as term leader. Soma selects commands and node.soma decides the market;
-    shell.ml supplies command implementations and I/O. *)
-Import util shell node.
+    Soma.Host supplies the I/O. *)
+Import util node.
+Require Soma.Host.
 
 (** Numbers run as OCaml ints. The kernel and the proofs still see Peano
     naturals: this only says how extracted code computes them (Soma then
     runs Nat's division and String's length, get and substring as OCaml's). *)
-From Stdlib Require ExtrOcamlNatInt.
 
 check (label got want : string) : string := append (if seq got want then "ok " else "FAIL ") label.
 assembled (p : string) (ctx : list string) : string :=
@@ -22,4 +22,4 @@ checks : list string := [
   check "later placeholder in inserted repo listing expands"
     (prompt_assemble "T" "{{REPOS}}" [] (fun _ => "{{PLAN}}") (fun _ => "open plans") (fun _ _ => "unused")) "open plans"
 ].
-main := print_lines checks.
+main := Host.print_lines checks.

@@ -1,8 +1,8 @@
 (** A peer line's members, read in Soma (node.soma's peer_line_parts and
     node_line_parts) from real yojson tokens, with no sockets, running node
     or timing. *)
-Import util shell node.
-From Stdlib Require ExtrOcamlNatInt.
+Import util node.
+Require Soma.Host.
 
 parts_eq (a b : option (string * (string * list string))) : bool :=
   match a, b with
@@ -21,7 +21,7 @@ wide (n : nat) : string :=
                (map (fun i => append """k" (append (show i) """:[""x"",{""y"":1}],")) (List.seq 0 n)))
        """from"":""p"",""sig"":""s"",""fields"":[""tx"",""r""]}").
 
-main := print_lines [
+main := Host.print_lines [
   check "members in order" "{""from"":""p"",""sig"":""s"",""fields"":[""a"",""b""]}"
     (Some ("p", ("s", ["a", "b"]))),
   check "any key order" "{""fields"":[],""sig"":""s"",""from"":""p""}" (Some ("p", ("s", []))),

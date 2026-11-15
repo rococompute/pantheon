@@ -1,8 +1,8 @@
 (** Grok's reply, decided in Soma: choices.0.message.content over the
     yojson binding's tokens, with Yojson.Safe.Util's old semantics. Fixed
     token lists, no node and no binding. *)
-Import util shell market agent node.
-From Stdlib Require ExtrOcamlNatInt.
+Import util market agent node.
+Require Soma.Host.
 
 check (label got expected : string) : string :=
   append (if seq got expected then "ok " else "FAIL ") label.
@@ -55,4 +55,4 @@ checks : list string := [
     (append "grok: " (take_str 300 long))
 ].
 
-main := print_lines checks.
+main := Host.print_lines checks.

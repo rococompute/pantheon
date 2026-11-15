@@ -1,6 +1,6 @@
 (** The unikernel's runner (U-1; docs/SHELL-IN-SOMA.md, "One kernel, two
     runners"): node_kernel.soma's primitives carried out with Sandbox, as
-    node_shell.soma carries them out with shell.ml for the binary. The
+    node_shell.soma carries them out with Soma.Host for the binary. The
     kernel is the same: the same node programs, tables, peer links and
     file bytes (blocks.log, signed.log, status.txt, as Sandbox's named
     files). Connections are Sandbox's, named by their number; what peers'

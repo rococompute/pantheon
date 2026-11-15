@@ -1,12 +1,12 @@
 (** Fixed held-request event construction. No running node, no sockets. *)
-Import util shell node.
-From Stdlib Require ExtrOcamlNatInt.
+Import util node.
+Require Soma.Host.
 
 check (label : string) (ok : bool) : string := append (if ok then "ok " else "FAIL ") label.
 eq_events (a b : list (list string)) : bool :=
   (length a =? length b) && forallb (fun p => eq_strs (fst p) (snd p)) (combine a b).
 
-main := print_lines [
+main := Host.print_lines [
   check "absent request" (eq_events (held_one_events None) []),
   check "empty fields stay present" (eq_events (held_one_events (Some ("", "", "", [])))
     [["llm_release", "", "", ""]]),

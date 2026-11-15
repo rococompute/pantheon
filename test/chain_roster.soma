@@ -1,7 +1,7 @@
 (** Exact committed-chain fixtures. Every certificate signs the actual full
     preceding block, including its certificate envelope. No local peer view. *)
-Import util shell consensus market.
-From Stdlib Require ExtrOcamlNatInt.
+Import util consensus market.
+Require Soma.Host.
 check (label : string) (ok : bool) : string := append (if ok then "ok " else "FAIL ") label.
 g4 : list string := ["a", "b", "c", "d"].
 g7 : list string := ["a", "b", "c", "d", "e", "f", "g"].
@@ -53,7 +53,7 @@ old_carrier := framed (certificate 3 (committed 3 ["a", "b", "c"]) ["a", "b", "d
 exact (cs : option (list (string * bool * nat))) (a : string) (join : bool) (e : nat) : bool :=
   match cs with Some [(x, j, h)] => seq a x && Bool.eqb join j && (h =? e) | _ => false end.
 
-main := print_lines [
+main := Host.print_lines [
   check "full committed-chain window is exact and ordered"
     (match window b4 with Some [a,b,c] => same_roster a ["a","b","c"] && same_roster b a && same_roster c a | _ => false end),
   check "carrier comes from h+1"

@@ -1,69 +1,70 @@
 (** The binary's runner: node programs (nodeio.soma's [nprog]) carried
-    out by shell.ml's primitives, each operation the one shell.definition
-    names for it ([host_prim]), and [pantheon node]'s loop: the node's
+    out by Soma.Host's primitives, each operation the one Soma.Host
+    declares for it ([host_prim]), and [pantheon node]'s loop: the node's
     kernel (node_kernel.soma), whose network and named files are
     node_net.soma's here over the host's sockets and paths, as the
     unikernel's runner carries them out with Sandbox
     (node_sandbox.soma), and whose git and programs are node_git.soma's
-    over the shell's. Nothing else of the node calls the shell: node.soma,
+    over the host's. Nothing else of the node calls the host: node.soma,
     cli.soma and what they import are Soma over the node's operations. *)
-Import util shell nodeio node node_kernel node_net node_git node_path node_file node_service cli.
+Import util nodeio node node_kernel node_net node_git node_path node_file node_service cli.
+Require Soma.Host.
 
 (** One primitive on the host: the operation's fields handed to the
-    shell.ml function shell.definition names for it. An operation that
+    Soma.Host primitive for it (Soma carries them out). An operation that
     is none (the kernel's, or one a runner carries out itself) reaching
     here is a bug: the binary refuses to go on, naming it. *)
 host_prim (op : node_op) : nanswer :=
   match op with
-  | IoClock => host_clock tt
-  | IoLog text => host_log text
-  | IoLocalTime stamp => host_local_time stamp
-  | IoFail message => host_fail message
-  | IoPrint text => host_print text
-  | IoExit code => host_exit code
-  | IoCwd => host_cwd tt
+  | IoClock => Host.clock tt
+  | IoLog text => Host.log text
+  | IoLocalTime stamp => Host.local_time stamp
+  | IoFail message => Host.fail message
+  | IoPrint text => Host.print text
+  | IoExit code => Host.exit code
+  | IoCwd => Host.cwd tt
   | IoRandomHex count =>
-      match host_random_bytes count with
+      match Host.random_bytes count with
       | (true, (_, [b])) => ans_data true [Crypto.hex_of_bytes (Crypto.bytes_of_string b)]
       | a => a
       end
-  | IoReadText path => host_read_text path
-  | IoFileExists path => host_file_exists path
-  | IoDirEntries path => host_dir_entries path
-  | IoChmod path mode => host_chmod path mode
-  | IoAppendSynced path text => host_append_synced path text
-  | IoFilePut path text sync => host_file_put path text sync
-  | IoFileMode path => host_file_mode path
-  | IoRename src dst => host_rename src dst
-  | IoSyncDir dir => host_sync_dir dir
-  | IoMakeDir path => host_make_dir path
-  | IoRemoveFile path => host_remove_file path
-  | IoTempNew prefix suffix => host_temp_new prefix suffix
-  | IoTempDir prefix => host_temp_dir prefix
-  | IoStartDetached prog args => host_start_detached prog args
-  | IoSelfExe => host_self_exe tt
-  | IoEnvEntries => host_env_entries tt
-  | IoPathStat path => host_path_stat path
-  | IoSpawn prog stdin cwd env args => host_spawn prog stdin cwd env args
-  | IoWaitPid pid => host_wait_pid pid
-  | IoKillPid pid => host_kill_pid pid
-  | IoNoSigpipe => host_no_sigpipe tt
-  | IoStartLogged prog log args => host_start_logged prog log args
-  | IoStopOnSignal pids => host_stop_on_signal pids
-  | IoSockListen host port backlog => host_sock_listen host port backlog
-  | IoSockDial host port => host_sock_dial host port
+  | IoReadText path => Host.read_text path
+  | IoFileExists path => Host.file_exists path
+  | IoDirEntries path => Host.dir_entries path
+  | IoChmod path mode => Host.chmod path mode
+  | IoAppendSynced path text => Host.append_synced path text
+  | IoFilePut path text sync => Host.file_put path text sync
+  | IoFileMode path => Host.file_mode path
+  | IoRename src dst => Host.rename src dst
+  | IoSyncDir dir => Host.sync_dir dir
+  | IoMakeDir path => Host.make_dir path
+  | IoRemoveFile path => Host.remove_file path
+  | IoTempNew prefix suffix => Host.temp_new prefix suffix
+  | IoTempDir prefix => Host.temp_dir prefix
+  | IoStartDetached prog args => Host.start_detached prog args
+  | IoSelfExe => Host.self_exe tt
+  | IoEnvEntries => Host.env_entries tt
+  | IoPathStat path => Host.path_stat path
+  | IoSpawn prog stdin cwd env args => Host.spawn prog stdin cwd env args
+  | IoWaitPid pid => Host.wait_pid pid
+  | IoKillPid pid => Host.kill_pid pid
+  | IoNoSigpipe => Host.no_sigpipe tt
+  | IoStartLogged prog log args => Host.start_logged prog log args
+  | IoStopOnSignal pids => Host.stop_on_signal pids
+  | IoSockListen host port backlog => Host.sock_listen host port backlog
+  | IoSockDial host port => Host.sock_dial host port
   | IoSockSelect ms reads writes =>
-      let '(ok, (r, w)) := host_sock_select ms reads writes in
+      let '(ok, (r, w)) := Host.sock_select ms reads writes in
       if ok then ans_data true (nio_frame_lists [r, w]) else ans_data false r
-  | IoSockAccept fd nonblock => host_sock_accept fd nonblock
-  | IoSockRead fd => host_sock_read fd
-  | IoSockWrite fd data => host_sock_write fd data
-  | IoSockError fd => host_sock_error fd
-  | IoSockClose fd => host_sock_close fd
-  | _ => host_fail (append "unknown node operation " (Stdlib.Strings.String.concat " " (io_wire op)))
+  | IoSockAccept fd nonblock => Host.sock_accept fd nonblock
+  | IoSockRead fd => Host.sock_read fd
+  | IoSockWrite fd data => Host.sock_write fd data
+  | IoSockError fd => Host.sock_error fd
+  | IoSockClose fd => Host.sock_close fd
+  | _ => Host.fail (append "unknown node operation " (Stdlib.Strings.String.concat " " (io_wire op)))
   end.
 
-(** The shell's primitives: each operation through [host_prim], in
+(** The host's primitives: each operation through [host_prim], in
     order, each answer handed to the rest of the program. Every operation
     the binary does goes through here. *)
 Fixpoint run_prims {A : Type} (p : nprog A) : A :=
@@ -137,7 +138,7 @@ run_node (home : string) (flags : list string) : unit :=
       match kernel_world config with
       | Some w =>
           match run_net (net_open config) (no_sigpipe (kernel_boot_prog w (kernel_start (w_identity w) config))) with
-          | (Some p, s) => forever (fun ps => run_net (snd ps) (kernel_tick_prog w (fst ps))) (p, s)
+          | (Some p, s) => Host.forever (fun ps => run_net (snd ps) (kernel_tick_prog w (fst ps))) (p, s)
           | (None, _) => tt
           end
       | None => run_shell (nbind (nask (IoFail "the node's setup came back malformed")) (fun _ => NDone tt))
@@ -155,7 +156,7 @@ run_service (home addr : string) (flags : list string) : unit :=
       match run_net (net_open config)
               (no_sigpipe (nbind (service_start_prog addr) (fun ok =>
                if ok then nbind (service_world_prog config) (fun w => NDone (Some w)) else NDone None))) with
-      | (Some w, s) => forever (fun ps => run_net (snd ps) (service_tick_prog w (fst ps))) (service_begin, s)
+      | (Some w, s) => Host.forever (fun ps => run_net (snd ps) (service_tick_prog w (fst ps))) (service_begin, s)
       | (None, _) => tt
       end
   | None => tt

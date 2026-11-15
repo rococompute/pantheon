@@ -1,6 +1,6 @@
 (** Fixed process outcomes and byte framing; no running node or timers. *)
-Import util shell node.
-From Stdlib Require ExtrOcamlNatInt.
+Import util node.
+Require Soma.Host.
 
 check (label : string) (ok : bool) : string := append (if ok then "ok " else "FAIL ") label.
 result_is (status : job_status) (timeout : option string) (flooded : bool) (out expected : string) : bool :=
@@ -59,4 +59,4 @@ b
   check "malformed wait tag rejected" (match job_status_of "unknown" "0" with None => true | _ => false end)
 ].
 
-main := print_lines checks.
+main := Host.print_lines checks.

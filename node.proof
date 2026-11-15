@@ -868,7 +868,7 @@ Proof. intros cap me raw parts refused H. unfold peer_raw_event. rewrite H. refl
 
 (** U-1: the node's operations as one interface. The dispatch produces
     [node_op] values; each crosses the binding as its wire form, which
-    reads back as the same operation (shell.ml's node_io is that match). *)
+    reads back as the same operation. *)
 Lemma resend_parts_reads_fields : forall fields alternate,
   resend_parts (resend_fields fields ++ ("alternate" :: alternate)) = Some (fields, alternate).
 Proof.

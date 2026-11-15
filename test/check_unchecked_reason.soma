@@ -2,15 +2,15 @@
     binding: the old fields in the old order, control characters made
     spaces (tab and newline kept), and a no-check refusal as this node's own.
     No node, no disk. *)
-Import util shell node node_shell.
-From Stdlib Require ExtrOcamlNatInt.
+Import util node node_shell.
+Require Soma.Host.
 From Stdlib Require Import Ascii.
 
 check (label : string) (ok : bool) : string := append (if ok then "ok " else "FAIL ") label.
 
 ch (n : nat) : string := Stdlib.Strings.String.String (ascii_of_nat n) Stdlib.Strings.String.EmptyString.
 
-main := print_lines [
+main := Host.print_lines [
   check "explicit no-check reason" (seq (check_unchecked_reason "soma" false)
     "this node doesn't check soma (--no-check soma)"),
   check "scope reason wins" (seq (check_unchecked_reason "pantheon" true)

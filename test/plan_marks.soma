@@ -9,7 +9,8 @@
     line still open is logged once, with why: a later leader, or a new
     genesis, would draft it again. A task whose mark merged is closed by
     whoever leads. Run with test/plan-marks.sh. *)
-Import util shell market agent.
+Import util market agent.
+Require Soma.Host.
 
 say (cond : bool) (what : string) : list string :=
   [if cond then append "ok " what else append "FAIL " what].
@@ -106,4 +107,4 @@ lines_other_leader : list string :=
 
 report : list string := lines_edit ++ lines_agent ++ lines_other_leader.
 
-main := print_lines report.
+main := Host.print_lines report.

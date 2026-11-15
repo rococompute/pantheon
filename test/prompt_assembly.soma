@@ -1,6 +1,6 @@
 (** Pure prompt assembly: fixed repository data, no node, sockets or timers. *)
-Import util shell market agent node.
-From Stdlib Require ExtrOcamlNatInt.
+Import util market agent node.
+Require Soma.Host.
 
 fixture_plan : string := "2026-11-11
 # a note
@@ -130,4 +130,4 @@ role_goldens : list (string * string) := [
 role_checks : list string := map (fun p => check_prompt (append (fst p) " prompt bytes")
   (sha256 (snd p)) (get_or "missing golden" (fst p) role_goldens)) role_prompts.
 
-main := print_lines (checks ++ role_checks).
+main := Host.print_lines (checks ++ role_checks).

@@ -7,7 +7,8 @@
     since conflicts. The leader clears a bid whose edits no longer apply
     (conflict, not a rejection), and its bidder gets fresh tries when the
     version moves. Run with test/parallel-tasks.sh. *)
-Import util shell market agent.
+Import util market agent.
+Require Soma.Host.
 
 say (cond : bool) (what : string) : list string :=
   [if cond then append "ok " what else append "FAIL " what].
@@ -134,4 +135,4 @@ lines_tries : list string :=
 report : list string :=
   lines_posting ++ lines_drafting ++ lines_stale ++ lines_clearing ++ lines_check ++ lines_tries.
 
-main := print_lines report.
+main := Host.print_lines report.

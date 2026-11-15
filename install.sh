@@ -61,7 +61,7 @@ fi
 # PANTHEON_DIR, fetched at PANTHEON_REF. Piped into sh, $0 is the shell.
 here=""
 case $0 in *install.sh) here=$(cd "$(dirname "$0")" && pwd) ;; esac
-if [ -n "$here" ] && [ -f "$here/main.soma" ] && [ -f "$here/shell.ml" ]; then
+if [ -n "$here" ] && [ -f "$here/main.soma" ] && [ -f "$here/node_shell.soma" ]; then
   PANTHEON_DIR=$here
   say "building the checkout at $PANTHEON_DIR"
 else
@@ -78,9 +78,9 @@ fi
 cd "$PANTHEON_DIR"
 say "Pantheon $(git log -1 --format='%h %s' 2>/dev/null || echo '(not a git checkout)')"
 
-# 3. The build: main.exe is the whole program. The first build installs the
-# OCaml libraries shell.definition names (cryptokit, yojson) into Soma's
-# switch for programs.
+# 3. The build: main.exe is the whole program, all Soma. The first build
+# makes Soma's switch for programs (Soma.Host's primitives use OCaml's
+# Unix, which comes with the compiler: nothing is installed from opam).
 log=$PANTHEON_DIR/install.log
 say "building Pantheon with $SOMA (log: $log)"
 "$SOMA" build main.soma > "$log" 2>&1 || { tail -40 "$log"; die "the build failed: see $log"; }

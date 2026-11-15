@@ -15,7 +15,7 @@
     RSA (nodeio.soma's [nio_wire_line]).
 
     Two runners carry the primitives out: the binary's, node_net.soma
-    over shell.ml's sockets by name ([run_net], node_shell.soma); and the
+    over Soma.Host's sockets by name ([run_net], node_shell.soma); and the
     unikernel's, with Sandbox (node_sandbox.soma),
     which asks the node's service for the host's work. *)
 Import util nodeio node cli node_host.

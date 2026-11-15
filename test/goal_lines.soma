@@ -1,8 +1,8 @@
 (** A --goal file's bytes become agent goal events (node.soma's goal_events),
     through the same split as a log. Fixed texts, no node. *)
-Import util shell node node_shell.
+Import util node node_shell.
+Require Soma.Host.
 From Stdlib Require Import Ascii.
-From Stdlib Require ExtrOcamlNatInt.
 
 check (label got expected : string) : string :=
   append (if seq got expected then "ok " else "FAIL ") label.
@@ -39,4 +39,4 @@ checks : list string := [
     "agent|behavior|honest;agent|goal|- one;agent|goal|- two;agent|deny|secret"
 ].
 
-main := print_lines checks.
+main := Host.print_lines checks.

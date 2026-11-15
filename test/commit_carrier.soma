@@ -1,4 +1,5 @@
-Import util shell consensus.
+Import util consensus.
+Require Soma.Host.
 body : list string := ["previous block"].
 roster (h : nat) : list string := if h <? 9 then ["a", "b", "c", "d"] else ["a", "b", "c"].
 seal (a : string) (fs : list string) : string := hash_list (a :: fs).
@@ -14,7 +15,7 @@ blocks (h : nat) : option (list string) :=
   if h =? 8 then Some body else if h =? 9 then Some carrier else None.
 missing (c : option commit_certificate) : bool := match c with None => true | _ => false end.
 bad_frame (b : list string) : bool := match unframe_commit_block b with None => true | _ => false end.
-main := print_lines (map (fun (b : bool) => if b then "true" else "false") [
+main := Host.print_lines (map (fun (b : bool) => if b then "true" else "false") [
   match unframe_commit_block carrier with Some (c, ts) =>
     (certificate_height c =? 8) && (certificate_round c =? 2) && same_roster ts txs &&
     forallb (fun v => same_roster (commit_fields v) (commit_fields (vote (commit_signer v)))) (certificate_votes c)

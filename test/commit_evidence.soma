@@ -1,7 +1,7 @@
 (** Model the existing chain-bound signature callback deterministically.
     Production will use node_verify_line; this is not a new cryptosystem. *)
-Import util shell market consensus.
-From Stdlib Require ExtrOcamlNatInt.
+Import util market consensus.
+Require Soma.Host.
 
 check (b : bool) (s : string) : string := append (if b then "ok " else "FAIL ") s.
 Fixpoint same (a b : list string) : bool := match a, b with
@@ -36,7 +36,7 @@ refused (x : option (list heartbeat_record)) : bool := match x with None => true
 first : list heartbeat_record := records (recorded 1 []).
 second : list heartbeat_record := records (recorded 2 first).
 
-main := print_lines [
+main := Host.print_lines [
  check (accepted c4 good) "genuine callback evidence",
  check (same (names good) ["a", "b", "d"]) "canonical previous-roster order",
  check (same (names good) (names (rev good))) "arrival order does not affect names",

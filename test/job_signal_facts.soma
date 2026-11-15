@@ -1,6 +1,7 @@
 (** Fixed signal facts, no process or timing dependency; the last check also
     reads the host constants through the production binding. *)
-Import util shell node.
+Import util node.
+Require Soma.Host.
 check (b : bool) (label : string) : string := append (if b then "ok " else "FAIL ") label.
 codes : list string := ["K", "T", "S", "A", "I"].
 finished (tag raw : string) (timeout : option string) (flood : bool) : string :=
@@ -10,7 +11,7 @@ finished (tag raw : string) (timeout : option string) (flood : bool) : string :=
   end.
 Fixpoint same (xs ys : list string) : bool := match xs, ys with
   | [], [] => true | x :: xs, y :: ys => seq x y && same xs ys | _, _ => false end.
-main := print_lines [
+main := Host.print_lines [
  check (seq (job_signal_name codes "K") "SIGKILL") "kill",
  check (seq (job_signal_name codes "T") "SIGTERM") "term",
  check (seq (job_signal_name codes "S") "SIGSEGV") "segv",

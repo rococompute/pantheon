@@ -1,9 +1,9 @@
 (** What a check job's output becomes (node.soma's check_apply_plan_of and
     check_apply_choice): a failure, a trimmed tree, a lie hash, or no event
     because CI still has to run. Fixed strings, no node. *)
-Import util shell node.
+Import util node.
+Require Soma.Host.
 From Stdlib Require Import Ascii.
-From Stdlib Require ExtrOcamlNatInt.
 
 check (label got expected : string) : string :=
   append (if seq got expected then "ok " else "FAIL ") label.
@@ -65,4 +65,4 @@ checks : list string := [
     check_apply_tree (CheckApplyTree true false "kept") "HASH") "kept"
 ].
 
-main := print_lines (checks ++ [append "lie " (check_lie_tree "req-9")]).
+main := Host.print_lines (checks ++ [append "lie " (check_lie_tree "req-9")]).

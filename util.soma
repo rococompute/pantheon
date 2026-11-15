@@ -310,7 +310,7 @@ Fixpoint flat (l : list (string * string)) : list string :=
 
 last_n {A : Type} (n : nat) (l : list A) : list A := skipn (length l - n) l.
 
-(** ---- .plan parsing, moved from shell.ml (docs/SHELL-IN-SOMA.md) ---- *)
+(** ---- .plan parsing, moved from the old shell (docs/SHELL-IN-SOMA.md) ---- *)
 
 blank_char (c : ascii) : bool :=
   let n := nat_of_ascii c in (n =? 32) || (n =? 9) || (n =? 13) || (n =? 10).
@@ -422,7 +422,7 @@ replace_all (s sub replacement : string) : string :=
   if seq sub "" then s
   else Stdlib.Strings.String.concat "" (rev_onto (replace_all_go (slen s + 1) s sub replacement 0 []) []).
 
-(** ---- edit matching, moved from shell.ml (docs/SHELL-IN-SOMA.md) ---- *)
+(** ---- edit matching, moved from the old shell (docs/SHELL-IN-SOMA.md) ---- *)
 
 (** Where [sub] occurs in [s]: the first two places at most, in order. An
     edit applies only when its old text occurs exactly once. An empty [sub]
@@ -444,7 +444,7 @@ replace_at (s : string) (i : nat) (old repl : string) : string :=
 edit_once (s old repl : string) : option string :=
   match positions s old with [i] => Some (replace_at s i old repl) | _ => None end.
 
-(** Bounded structural scan before JSON parsing, moved from shell.ml.
+(** Bounded structural scan before JSON parsing, moved from the old shell.
     This is deliberately not a JSON validator: unmatched closers can make
     depth negative, and unfinished strings are left to the parser. Keeping
     opening and closing counts separately preserves that signed depth.
@@ -473,7 +473,7 @@ Fixpoint shallow_json_go (fuel : nat) (s : string) (i : nat) (max items opens cl
   | _, _ => true
   end.
 
-(** Decimal limits avoid exposing extracted nat to shell.ml. Both callers
+(** Decimal limits, as text. Both callers
     use depth 4; transactions/peer messages use max_int items, replies 4096. *)
 shallow_json (max max_items s : string) : bool :=
   shallow_json_go (slen s) s 0 (num max) (num max_items) 0 0 false false.

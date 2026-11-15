@@ -1,6 +1,6 @@
 (** A blocks.log line becomes the next replay, or nothing. Fixed tokens. *)
-Import util shell market agent node.
-From Stdlib Require ExtrOcamlNatInt.
+Import util market agent node.
+Require Soma.Host.
 
 check (label got expected : string) : string :=
   append (if seq got expected then "ok " else "FAIL ") label.
@@ -40,4 +40,4 @@ checks : list string := [
     (replay_text (block_log_replay None "1")) "none"
 ].
 
-main := print_lines checks.
+main := Host.print_lines checks.

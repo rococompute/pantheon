@@ -3,8 +3,9 @@
     and jobs past their limit, run through a pure scripted interpreter that
     answers each operation from a fixed list and records what it saw. No
     node, no sockets, no timing. *)
-Import util shell nodeio node.
-From Stdlib Require ExtrOcamlNatInt.
+Import util nodeio node.
+Require Soma.Host.
+From Soma Require Import OCaml.
 
 check (label : string) (ok : bool) : string := append (if ok then "ok " else "FAIL ") label.
 
@@ -42,7 +43,7 @@ jobs : list (string * (float * (float * bool))) :=
   [("1", (0%float, (10%float, false))), ("2", (0%float, (100%float, false))),
    ("3", (0%float, (5%float, true))), ("4", (1%float, (5%float, false)))].
 
-main := print_lines [
+main := Host.print_lines [
   check "a new connection is admitted as new"
     (same (io_wire (admit_op "9" "h" [] [])) ["conn_admit", "9", "new", ""]),
   check "an offer past the overall cap evicts the quietest connection"

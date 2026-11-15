@@ -1,8 +1,8 @@
 (** A peer line's members, read in Soma (node.soma's peer_line_parts and
     node_line_parts) from real yojson tokens, with no sockets, running node
     or timing. *)
-Import util shell market.
-From Stdlib Require ExtrOcamlNatInt.
+Import util market.
+Require Soma.Host.
 
 Fixpoint fields_eq (a b : list string) : bool :=
   match a, b with
@@ -24,7 +24,7 @@ check (label raw : string) (expected : option (string * (string * (list string *
   append (if parts_eq (tx_parts raw) expected then "ok " else "FAIL ") label.
 
 expected : option (string * (string * (list string * string))) := Some ("p", ("1", (["x", "y"], "s"))).
-main := print_lines [
+main := Host.print_lines [
   check "members" "{""agent"":""p"",""nonce"":""1"",""fields"":[""x"",""y""],""sig"":""s""}" expected,
   check "duplicate first" "{""agent"":""p"",""agent"":""p"",""nonce"":""1"",""fields"":[""x"",""y""],""sig"":""s""}" expected,
   check "duplicate wrong first" "{""agent"":null,""agent"":""p"",""nonce"":""1"",""fields"":[""x"",""y""],""sig"":""s""}" None,

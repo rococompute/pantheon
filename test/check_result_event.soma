@@ -2,15 +2,15 @@
     binding: the old fields in the old order, control characters made
     spaces (tab and newline kept), and a no-check refusal as this node's own.
     No node, no disk. *)
-Import util shell node.
-From Stdlib Require ExtrOcamlNatInt.
+Import util node.
+Require Soma.Host.
 From Stdlib Require Import Ascii.
 
 check (label : string) (ok : bool) : string := append (if ok then "ok " else "FAIL ") label.
 
 ch (n : nat) : string := Stdlib.Strings.String.String (ascii_of_nat n) Stdlib.Strings.String.EmptyString.
 
-main := print_lines [
+main := Host.print_lines [
   check "a pass" (eq_strs (check_result_event "7" true "abc" "" "")
     ["check_result", "7", "ok", "true", "tree", "abc", "why", "", "stage", ""]),
   check "the bid's failure" (eq_strs (check_result_event "7" false "t" "bad" "ci")

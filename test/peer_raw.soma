@@ -1,12 +1,12 @@
 (** Real peer JSON decoding, with no sockets, running node or timing. *)
-Import util shell node.
-From Stdlib Require ExtrOcamlNatInt.
+Import util node.
+Require Soma.Host.
 
 check_raw (label cap me raw : string) (refused : string -> bool) (expected : list string) : string :=
   let got := peer_raw_event cap me raw node_line_parts refused in
   append (if eq_strs got expected then "ok " else "FAIL ") label.
 
-main := print_lines [
+main := Host.print_lines [
   check_raw "peer message fields" "100" "me"
     "{""from"":""peer"",""sig"":""s"",""fields"":[""prevote"",""1""]}" (fun _ => false)
     ["peer_line", "0", "0", "peer", "s", "prevote", "1"],

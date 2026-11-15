@@ -1,29 +1,15 @@
 (** Pantheon: a private, Byzantine-fault-tolerant labor market where LLM
     agents take turns as term leader. cli.soma runs the commands and
-    node.soma decides the market; shell.ml does their I/O. *)
-Import util shell node cli node_shell.
-
-(** Numbers run as OCaml ints. The kernel and the proofs still see Peano
-    naturals: these only say how extracted code computes them. With them,
-    Soma extracts Nat's comparisons and division and String's length, get
-    and substring as OCaml's (its somaOcaml.ml, extracts_nat_as_int), as it
-    does for an image: util.soma reads long text through them, each as
-    total as its definition (offsets past the end give [None] or an empty
-    string), and node_net.soma's frames are Soma.Wire's, taken by offset. *)
-From Stdlib Require ExtrOcamlNatInt.
-
-(** The stores' maps (nodeio.soma's smap) order keys by [String.compare]:
-    OCaml's comparison of strings is the same order, byte by byte, without
-    taking the strings apart a character at a time. *)
-Extract Inlined Constant Stdlib.Strings.String.compare =>
-  "(fun a b -> let c = Stdlib.compare (a : string) b in if c < 0 then Lt else if c = 0 then Eq else Gt)".
+    node.soma decides the market; Soma.Host does their I/O. *)
+Import util node cli node_shell.
+Require Soma.Host.
 
 (** The hashes and signatures are Soma's (util.soma's sha256 and
     hash_list, nodeio.soma's nio_sign, through Soma.Crypto): the kernel
     computes them, and the binary and the unikernel run them. *)
 
 (** Every command but [node] and [service] is a node program (cli.soma),
-    run over the shell's primitives (node_shell.soma's run_shell); [node] is node.soma's loop, [service]
+    run over Soma.Host's primitives (node_shell.soma's run_shell); [node] is node.soma's loop, [service]
     its service's. *)
 dispatch (args : list string) : unit :=
   match args with
@@ -32,4 +18,4 @@ dispatch (args : list string) : unit :=
   | _ => run_shell (cli_prog args)
   end.
 
-main := dispatch (argv tt).
+main := dispatch (Host.argv tt).

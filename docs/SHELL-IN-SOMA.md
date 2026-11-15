@@ -7,22 +7,19 @@ merge's git, the model's budget and limit, jobs, checks and CI) and the
 edits machinery (`cli.soma`: applying edits, reading a checkout's changes
 as edits, a bid's tree), the binary's network and jobs
 (`node_net.soma`: its links, buffers, select, the service's socket and
-the process table) and its git and programs (`node_git.soma`); what is left of the program around them is
-`shell.ml`, about 275 lines of hand-written OCaml (it was about 1,600)
-that `shell.definition` declares to Soma as its primitives (`host_*`,
-one per operation that reaches the host, which node_shell.soma's
-`host_prim` calls by the operation's constructor) and `argv`,
-`print_lines` and `forever`. Hashing, signing and a new key are Soma's
-in the binary too, and shell.ml links nothing but OCaml's own Unix. The goal: as much of `shell.ml` as can be
-is Soma, extracted with the rest, and OCaml is left only as thin bindings to
-the libraries that do I/O: Unix (files, processes, sockets, time, the
-system's randomness). Each binding is declared in a
-`.definition` file, as `examples/example_projects/async_tasks` declares
-Async's functions (GRADUAL.md, "OCaml modules").
+the process table) and its git and programs (`node_git.soma`). Pantheon
+has no OCaml left: what was `shell.ml` (about 1,600 lines of hand-written
+OCaml, then 275) is Soma's own host library, `Soma.Host`, whose
+primitives (one per operation that reaches the host, which
+node_shell.soma's `host_prim` calls by the operation's constructor, and
+`argv`, `print_lines` and `forever`) Soma carries out for any program
+built for the machine, as it carries out Sandbox's `io` for a unikernel.
+Hashing, signing and a new key are Soma's in the binary too, and how
+numbers and strings run is Soma's choice, not the program's.
 
-What it buys: every line that moves is checked by Soma's kernel and can be
-explored and proved about, and `soma explore main.soma` lists only the
-bindings as assumptions, not a 1,600-line shell.
+What it buys: every line is checked by Soma's kernel and can be explored
+and proved about, and `soma explore main.soma` lists only Soma.Host's
+primitives as assumptions, not a 1,600-line shell.
 
 ## Next: Soma owns the entry point and the loop
 
@@ -538,9 +535,9 @@ the path its one operand after `--`, and nothing else).
 ### The primitives by name
 
 Which primitive an operation is, is Soma's: node_shell.soma's
-`host_prim` matches the operation's constructor and calls the binding
-`shell.definition` declares for it (`host_sock_read`, `host_spawn`,
-`host_file_put`, ...: one per operation that reaches the host, about
+`host_prim` matches the operation's constructor and calls the primitive
+`Soma.Host` declares for it (`Host.sock_read`, `Host.spawn`,
+`Host.file_put`, ...: one per operation that reaches the host, about
 forty), its fields the arguments, typed (an environment and a program's
 arguments are lists, not frames). An operation that is none, the
 kernel's or one a runner carries out itself, ends the binary naming
@@ -549,7 +546,7 @@ into its wire form, a list of strings, and matched it back, a copy of
 `io_of_wire` in OCaml, with the wire's frames parsed again
 (`fields_then_args`, `framed`) for the select and a spawn. Each
 primitive is now one function of the host's calls; their docs are
-`shell.definition`'s.
+Soma's `theories/Soma/Host.v`.
 
 Hashing and signing are Soma's in the binary too (`util.soma`'s
 `sha256` and `hash_list`, `nodeio.soma`'s `nio_sign`, through
@@ -558,19 +555,34 @@ was about ten times faster. What runs is what Soma checks, and speed is
 for Soma to win back.
 
 A new key is Soma's too: cli.soma's `new_key` asks the system for two
-random starts of 128 bytes (`IoRandomHex`; the shell reads
-/dev/urandom, `host_random_bytes`, and Soma makes it hex) and hands them
+random starts of 128 bytes (`IoRandomHex`; the host reads
+/dev/urandom, `Host.random_bytes`, and Soma makes it hex) and hands them
 to `Soma.Crypto`'s `rsa_new_key`, Soma's item: each start's top two bits
 and low bit set, then the next odd number no prime below 2000 divides,
 not 1 modulo 65537, that passes Miller–Rabin for the first twelve
 primes, stepping by 2; `d`, `dp` and `dq` as e's inverse, `(1 + k x) /
 e`, and `qinv` by Fermat. A key takes one to two seconds; Crypto.v's
 `rsa_new_key_signs` has the kernel make a 512-bit key and check that
-what it signs verifies. `IoNewKey` and Cryptokit are gone: shell.ml
+what it signs verifies. `IoNewKey` and Cryptokit are gone: the binary
 links only OCaml's Unix, which Soma no longer tries to install from
 opam (a library that comes with the compiler; Soma's somaOcaml.ml,
 `with_compiler`). The select's answer is framed by Soma too
-(`host_sock_select` gives the two lists; `host_prim` frames them). With every node signing in Soma, the whole e2e
+(`Host.sock_select` gives the two lists; `host_prim` frames them).
+
+The primitives are Soma's, not Pantheon's: `Soma.Host`
+(theories/Soma/Host.v in Soma) declares them, each a parameter Soma
+never computes, and Soma's build gives a program that uses them its own
+runtime for them (toplevel/somaHost.ml, written as soma_host.ml next to
+the extracted program and checked against Host.v's declarations), as it
+gives a Sandbox image its runtime. `shell.ml` and `shell.definition`
+are gone, and so is every line of OCaml in Pantheon's source:
+`From Stdlib Require ExtrOcamlNatInt` (Soma now extracts `nat` as
+OCaml's `int` for every program built for the machine, as for an
+image, with Nat's comparisons and division and String's length, get,
+substring and compare as OCaml's) and the `Extract Inlined Constant`
+of `String.compare` in main.soma and in the image `pantheon image`
+writes (Soma's extraction has it, for both). Soma's `Floats` module,
+`Soma.OCaml`, is still how cli.soma and node.soma write float literals. With every node signing in Soma, the whole e2e
 run at once (33 scenarios, four nodes each) starved its flooding node
 and ran past its waits, so test/e2e.sh runs at most six scenarios at
 a time (`E2E_JOBS`).

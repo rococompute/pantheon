@@ -1,6 +1,6 @@
 (** The version in a merge commit's message. Fixed strings, no git. *)
-Import util shell market.
-From Stdlib Require ExtrOcamlNatInt.
+Import util market.
+Require Soma.Host.
 
 check (label got expected : string) : string :=
   append (if seq got expected then "ok " else "FAIL ") label.
@@ -25,4 +25,4 @@ checks : list string := [
     (commit_version "Pantheon-Version:  4") "0"
 ].
 
-main := print_lines checks.
+main := Host.print_lines checks.

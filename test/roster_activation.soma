@@ -2,8 +2,8 @@
     code on fixed inputs through settle, maybe_draw and maybe_end_term
     themselves, with votes and reveals cast before a removal took effect.
     No node, no timing. *)
-Import util shell market.
-From Stdlib Require ExtrOcamlNatInt.
+Import util market.
+Require Soma.Host.
 
 check (label : string) (ok : bool) : string := append (if ok then "ok " else "FAIL ") label.
 
@@ -78,7 +78,7 @@ draws (m : obj) : bool :=
   awaiting m && draw_ready (length (roster_now m)) (length (revealed m)) (asince m + param m "reveal_window" <=? mheight m).
 silent (m : obj) : list string := filter (fun a => negb (mem a (revealed m))) (roster_now m).
 
-main := print_lines [
+main := Host.print_lines [
   check "a stable roster counts as before: approvals, quorums, scope"
     ((match pending (proposed seven) with Some p => counted_approvals (proposed seven) p =? approvals p 0 60 | None => false end)
      && pair_is (quorums (proposed seven)) 5 3 && (length (scope (proposed seven) "calc") =? 7)),

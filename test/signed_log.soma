@@ -1,8 +1,8 @@
 (** signed.log's lines at startup become votes, cut lines or nothing, in
     Soma (node.soma's signed_log_entry). Fixed lines and fixed tokens: no
     node and no disk. *)
-Import util shell market agent node.
-From Stdlib Require ExtrOcamlNatInt.
+Import util market agent node.
+Require Soma.Host.
 
 check (label got expected : string) : string :=
   append (if seq got expected then "ok " else "FAIL ") label.
@@ -68,4 +68,4 @@ checks : list string := [
     "refuse start start"
 ].
 
-main := print_lines checks.
+main := Host.print_lines checks.

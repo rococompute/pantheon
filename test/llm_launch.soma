@@ -1,7 +1,7 @@
 (** Pure model-launch decisions: a cmd: job's limit, environment and
     cleanup from its tool checkout, and grok's header and body. No node. *)
-Import util shell market agent node.
-From Stdlib Require ExtrOcamlNatInt.
+Import util market agent node.
+Require Soma.Host.
 
 check (label got expected : string) : string :=
   append (if seq got expected then "ok " else "FAIL ") label.
@@ -62,4 +62,4 @@ Content-Type: application/json
     "curl|600|grok|H|-s|-m|600|-H|@HDR@|-d|@-|https://api.x.ai/v1/chat/completions"
 ].
 
-main := print_lines checks.
+main := Host.print_lines checks.

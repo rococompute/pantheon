@@ -1,0 +1,70 @@
+(** A restart from disk: a node locked on value A at round 3 saves its
+    consensus snapshot through the binary's own primitives (node_shell.soma's
+    run_shell over IoSave, as the node saves consensus.state), and the node
+    started again from the file keeps its lock and valid value, its round
+    and step; a conflicting proposal at the next round then gets a nil
+    prevote; and a file that isn't a snapshot is refused, not loaded. *)
+Import util consensus nodeio node node_shell.
+Require Soma.Host.
+
+check (label : string) (ok : bool) : string := append (if ok then "ok " else "FAIL ") label.
+
+locked : consensus_state :=
+  let c := new_consensus "a" ["a", "b", "c", "d"] 1 in
+  {| c with round := 2; consensus.step := 2; lockr := 3; lockv := ["A"]; validr := 3; validv := ["A"] |}.
+
+saved_lock (c : consensus_state) : bool :=
+  (lockr c =? 3) && same_roster (lockv c) ["A"].
+saved_valid (c : consensus_state) : bool :=
+  (validr c =? 3) && same_roster (validv c) ["A"] && (round c =? 2) && (consensus.step c =? 2).
+
+(** a prevote for nil among the outputs *)
+prevotes_nil (outs : list (list string)) : bool :=
+  existsb (fun o => match o with
+                    | "broadcast" :: "prevote" :: _ :: _ :: _ :: id :: _ => String.eqb id ""
+                    | _ => false
+                    end) outs.
+
+(** a conflicting proposal (value B) at round 3, from its proposer *)
+conflicting (c : consensus_state) : consensus_state :=
+  let c := {| c with round := 3; consensus.step := 0 |} in
+  let p := {| kd := Proposal; frm := proposer c (height c) (round c); mh := height c; mr := round c; vr := 0;
+              vid := hash_list ["B"]; value := ["B"] |} in
+  {| c with log := [p] |}.
+
+loaded (path : string) : option consensus_state :=
+  match Host.read_text path with
+  | (true, (_, [t])) => snapshot_of t
+  | _ => None
+  end.
+
+(** each step's answer matched, so that each runs, in order *)
+checks (path : string) : list string :=
+  match run_shell (nask (IoSave path "true" (snapshot_text locked))) with
+  | (false, _) => [check "the snapshot saved" false]
+  | _ =>
+      match loaded path with
+      | None => [check "the snapshot loads" false]
+      | Some s =>
+          let restarted := fst (node.step (restore_cons empty_node s) ["start"]) in
+          let c := cons restarted in
+          let after := match r_fresh (conflicting c) (fun _ => true) with
+                       | Some (_, outs) => prevotes_nil outs
+                       | None => false
+                       end in
+          let kept := [check "the lock survives the disk" (saved_lock c),
+                       check "the valid value, round and step survive" (saved_valid c),
+                       check "a conflicting proposal gets a nil prevote" after] in
+          match Host.file_put path "broken" "true" with
+          | (true, _) =>
+              app kept [check "a broken snapshot is refused" (match loaded path with None => true | Some _ => false end)]
+          | _ => app kept [check "a broken snapshot written" false]
+          end
+      end
+  end.
+
+main : unit :=
+  match Host.temp_dir "pantheon-restart" with
+  | (true, (_, [dir])) => Host.print_lines (checks (append dir "/consensus.state"))
+  | _ => Host.print_lines ["FAIL a temporary directory"]
+  end.

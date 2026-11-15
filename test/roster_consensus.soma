@@ -2,8 +2,8 @@
     change takes effect (consensus.enter_roster, as node.soma's on_decided
     calls it with market.roster_at for the next height), run as extracted
     code on fixed inputs. No node, no timing. *)
-Import util shell consensus market.
-From Stdlib Require ExtrOcamlNatInt.
+Import util consensus market.
+Require Soma.Host.
 
 check (label : string) (ok : bool) : string := append (if ok then "ok " else "FAIL ") label.
 
@@ -46,7 +46,7 @@ outsider_c : consensus_state := with_log (new_consensus "a4" three 5) decided_lo
 settled (c : consensus_state) : consensus_state := fst (consensus.settle 64 c (fun _ => true) [] []).
 caught_up : consensus_state := with_log outsider_c (done_msg "a1" 5 "v" :: decided_log).
 
-main := print_lines [
+main := Host.print_lines [
   check "a stable roster: entering the same roster leaves the state as it was"
     (same_roster (nodes (entered seven [] 10)) seven && (length (log (enter_roster logged7 seven)) =? 3)
      && qw (entered seven [] 10) 5 3),

@@ -7,7 +7,8 @@
     later leader, and those don't count against its term. With genesis's
     merge_approvals at 1, the leader's merge lands on its own. Run with
     test/scopes.sh. *)
-Import util shell market agent.
+Import util market agent.
+Require Soma.Host.
 
 say (cond : bool) (what : string) : list string :=
   [if cond then append "ok " what else append "FAIL " what].
@@ -166,4 +167,4 @@ lines_moved : list string :=
 report : list string :=
   lines_scope ++ lines_bidders ++ lines_leader ++ lines_quorum ++ lines_alone ++ lines_stall ++ lines_agent ++ lines_moved.
 
-main := print_lines report.
+main := Host.print_lines report.

@@ -3,8 +3,8 @@
     and jobs past their limit, run through a pure scripted interpreter that
     answers each operation from a fixed list and records what it saw. No
     node, no sockets, no timing. *)
-Import util shell nodeio node.
-From Stdlib Require ExtrOcamlNatInt.
+Import util nodeio node.
+Require Soma.Host.
 
 check (label : string) (ok : bool) : string := append (if ok then "ok " else "FAIL ") label.
 
@@ -37,7 +37,7 @@ main :=
   let (seen, values) := scripted
     [IoPeerExists "absent", IoNonceFlooded, IoIsDiverged "repo", IoPeerExists "present"]
     [false, true, false, true] in
-  print_lines [
+  Host.print_lines [
     check "exact read order" (same_all seen
       [["peer_exists", "absent"], ["nonce_flooded"], ["is_diverged", "repo"], ["peer_exists", "present"]]),
     check "false is data and does not stop reads" (match values with [false, true, false, true] => true | _ => false end),
