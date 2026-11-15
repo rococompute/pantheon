@@ -5,7 +5,8 @@
     write syncs the directory after the rename; directories are made only
     where none is, never "", "." or "/"; a path's write makes the
     directories above it and writes that file, nothing else; and a save
-    that failed ends the binary rather than going on. *)
+    that failed ends the binary rather than going on; a tree is removed by
+    rm started on its own, the path its one operand. *)
 
 Lemma ntrace_nbind : forall (A B : Type) ans (p : nprog A) (f : A -> nprog B),
   ntrace ans (nbind p f) = ntrace ans p ++ ntrace ans (f (nresult ans p)).
@@ -121,3 +122,12 @@ Proof.
   - apply Stdlib.Strings.String.eqb_eq in E. exfalso. exact (H E).
   - reflexivity.
 Qed.
+
+(** ---- a tree removed ---- *)
+
+(** a tree's removal is one thing: rm started on its own with the path as
+    its one operand, after "--"; it never waits and always answers done *)
+Theorem remove_tree_starts_rm : forall ans p,
+  ntrace ans (remove_tree_prog p) = [IoStartDetached "rm" ["-rf", "--", p]] /\
+  nresult ans (remove_tree_prog p) = ans_ok.
+Proof. intros ans p. split; reflexivity. Qed.

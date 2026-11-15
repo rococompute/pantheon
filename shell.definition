@@ -50,9 +50,12 @@ print_lines : list string -> unit.
     "file_put" PATH TEXT SYNC (created or emptied, then TEXT; SYNC "true":
     on disk before the answer), "file_mode" PATH ([octal], found when it's
     there), "rename" SRC DST, "sync_dir" DIR, "make_dir" PATH,
-    "remove_file" PATH and "temp_new" PREFIX SUFFIX ([a new private file's
-    path]), each not found with why when it failed (node_file.soma writes
-    a file whole, makes directories and removes files with these),
+    "remove_file" PATH, "temp_new" PREFIX SUFFIX ([a new private file's
+    path]) and "start_detached" PROG ARGS... (PROG started on its own and
+    not waited for, its parent the system's, its input and output
+    /dev/null), each not found with why when it failed (node_file.soma
+    writes a file whole, makes directories, removes files and removes a
+    tree in the background, rm -rf -- PATH, with these),
     "append_synced" PATH TEXT, "no_sigpipe", "spawn" PROG STDIN CWD
     ("field" ENTRY)... "alternate" ARGS... (PROG run from CWD with that
     environment, STDIN its standard input from a file: found, [its pid,
@@ -105,7 +108,7 @@ forever : forall {A : Type}, (A -> A) -> A -> unit.
     [kind, exec] (its last part not followed: "file", "dir", "symlink",
     "other" or "none"; node_path.soma's path probe walks a path's parts
     with it; a path's write and removal are node_file.soma's), "temp_dir" PREFIX
-    [path] and "remove_tree" PATH (later, in the background). Git (IoGit,
+    [path]; "remove_tree" PATH (in the background) is node_file.soma's. Git (IoGit,
     IoGitEnv: no user or system config, no hooks and no signing; extra
     environment entries first and a standard input) and a clone (IoClone)
     are node_git.soma's, over "env_entries" and "exec". *)

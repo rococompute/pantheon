@@ -152,6 +152,7 @@ rename or a sync is the host's.
 | `make_dirs_only_where_none` | A directory is made only where the host said none is, and never "", "." or "/". |
 | `path_write_writes_its_file` | A path's write makes directories and writes that one file whole, nothing else. |
 | `failed_save_ends` | A save that failed is said and the binary ends: it never answers as if written. |
+| `remove_tree_starts_rm` | A tree's removal is one program started on its own, `rm -rf -- PATH`, the path its one operand; it always answers done. That rm removes the tree, later, is the host's. |
 
 ## Remaining work
 

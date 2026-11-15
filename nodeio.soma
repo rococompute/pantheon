@@ -304,7 +304,9 @@ Inductive node_op :=
     emptied first, on disk before the answer when [sync] is "true"; a
     file's mode (octal, found when it's there); a rename; a directory
     synced to disk; one directory made; one file removed; a new private
-    temporary file (its path). Each not found with why, when it failed. *)
+    temporary file (its path); a program started on its own, never waited
+    for (node_file.soma's tree removed in the background). Each not found
+    with why, when it failed. *)
 | IoFilePut (path text sync : string)
 | IoFileMode (path : string)
 | IoRename (src dst : string)
@@ -312,6 +314,7 @@ Inductive node_op :=
 | IoMakeDir (path : string)
 | IoRemoveFile (path : string)
 | IoTempNew (prefix suffix : string)
+| IoStartDetached (prog : string) (args : list string)
 (** the consensus snapshot (node.soma's snapshot_text): saved atomically
     and synced before any vote it holds is sent; consensus.state's text,
     absent when there is none *)
@@ -515,6 +518,7 @@ io_wire (op : node_op) : list string :=
   | IoMakeDir path => ["make_dir", path]
   | IoRemoveFile path => ["remove_file", path]
   | IoTempNew prefix suffix => ["temp_new", prefix, suffix]
+  | IoStartDetached prog args => "start_detached" :: prog :: args
   | IoSnapshotSave text => ["snapshot_save", text]
   | IoSnapshotLoad => ["snapshot_load"]
   | IoServeListen address port => ["serve_listen", address, port]
@@ -694,6 +698,7 @@ io_of_wire (w : list string) : option node_op :=
   | ["make_dir", path] => Some (IoMakeDir path)
   | ["remove_file", path] => Some (IoRemoveFile path)
   | ["temp_new", prefix, suffix] => Some (IoTempNew prefix suffix)
+  | "start_detached" :: prog :: args => Some (IoStartDetached prog args)
   | "exec" :: prog :: stdin :: rest =>
       match resend_parts rest with
       | Some (env, args) => Some (IoExec prog stdin env args)

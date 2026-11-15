@@ -477,18 +477,26 @@ is sent. Directories are made where none is, the highest first
 (`make_dirs`); a path's write in a checkout makes the directories above
 it, then writes the file whole; a path's removal and a discarded file
 are one removal; a temporary file is a new private one, then written
-whole. A save or a temporary file that fails ends the binary, as the
-exception did. shell.ml's `write_file`, `mkdir_p`, `path_write`,
+whole. A tree (a checkout, a temporary directory) is removed in the
+background, since a checkout with a build in it is close to a GB and
+removing it in the main loop stalled consensus for minutes: `rm -rf --
+PATH` started on its own (`remove_tree_prog`), the path one argument
+with no shell between, where shell.ml's `remove_tree_later` built a
+`/bin/sh` line with the path quoted into it. A save or a temporary file
+that fails ends the binary, as the exception did. shell.ml's `write_file`, `mkdir_p`, `path_write`,
 `path_remove` and `temp_file`'s write are gone; it keeps one call each:
 `file_put` (create or empty, write, sync if asked), `file_mode`,
-`rename`, `sync_dir`, `make_dir`, `remove_file` and `temp_new`.
+`rename`, `sync_dir`, `make_dir`, `remove_file`, `temp_new` and
+`start_detached` (a program forked twice, so its parent is the system's
+and nothing is left to reap, its input and output `/dev/null`).
 node_file.proof proves, of any answers those give:
 `failed_put_renames_nothing` (the file is as it was),
 `whole_write_order` (the put, the mode kept, the rename, then the
 directory synced), `whole_write_only_renames_onto_it` (nothing else
 touches the file), `make_dirs_only_where_none` (never "", "." or "/",
 and only where the host said none is), `path_write_writes_its_file` and
-`failed_save_ends`.
+`failed_save_ends` and `remove_tree_starts_rm` (rm started on its own,
+the path its one operand after `--`, and nothing else).
 
 ## The edits machinery
 
@@ -526,7 +534,7 @@ do is Soma's, in `cli.soma`, for all three of their uses:
 
 The shell does the file and git work, with no node: `IoPathStat` (a
 path's kind, its last part not followed, and its owner's execute bit),
-`IoTempDir`, `IoRemoveTree` (in the background) and `IoGitEnv` (git with
+`IoTempDir`, `IoRemoveTree` (in the background, node_file.soma's) and `IoGitEnv` (git with
 the snapshot's environment entries first). `test/edits.sh` checks the
 three uses, including the hostile `.git` and `PANTHEON_GITDIR` configs,
 and `test/check-*.sh` the check. `pantheon edits` on a 250-file checkout
@@ -570,7 +578,7 @@ are the runner's (the shell for the binary, the service for an image).
   Docker or sandbox command line.
 
 The shell keeps the primitives: the path operations, `IoTempDir`,
-`IoTempFile` (a new private file with its text), `IoRemoveTree`, `IoExec`
+`IoTempFile` and `IoRemoveTree` (node_file.soma's, above, "Files"), `IoExec`
 (a program run to its end with the environment it is given: git, a
 clone and `IoRun`'s `rm`, `chmod` and `docker rm` are node_git.soma's
 over it, above, "Git and programs") and the processes (`IoSpawn`, `IoWaitPid`, `IoKillPid`),

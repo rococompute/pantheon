@@ -93,9 +93,26 @@ let sync_dir d =
       let fd = Unix.openfile d [ Unix.O_RDONLY ] 0 in
       Fun.protect ~finally:(fun () -> Unix.close fd) (fun () -> Unix.fsync fd))
 
-(* A tree removed in the background: a checkout with a build in it is close
-   to a GB, and removing it in the main loop stalled consensus for minutes *)
-let remove_tree_later path = ignore (Sys.command ("rm -rf " ^ Filename.quote path ^ " >/dev/null 2>&1 &"))
+(* PROG started on its own and not waited for: forked twice, so its parent
+   is the system's and nothing is left to reap; its input, output and
+   errors /dev/null (node_file.soma removes a tree in the background with
+   this) *)
+let start_detached prog args =
+  match Unix.fork () with
+  | 0 ->
+      (try
+         if Unix.fork () = 0 then begin
+           ignore (Unix.setsid ());
+           let null = Unix.openfile "/dev/null" [ O_RDWR; O_CLOEXEC ] 0 in
+           List.iter (Unix.dup2 null) [ Unix.stdin; Unix.stdout; Unix.stderr ];
+           Unix.execvp prog (Array.of_list (prog :: args))
+         end
+       with _ -> ());
+      Unix._exit 0
+  | pid ->
+      let rec reap () = try ignore (Unix.waitpid [] pid) with Unix.Unix_error (EINTR, _, _) -> reap () in
+      reap (); ans_ok
+  | exception e -> (false, (0., [ Printexc.to_string e ]))
 
 (* The node's own binary, as an absolute path, fixed when the program starts
    and before anything changes directory (docs/SECURITY-REVIEW-2.md P-10):
@@ -341,6 +358,7 @@ let node_io op =
   | [ "sync_dir"; dir ] -> sync_dir dir
   | [ "make_dir"; path ] -> tried (fun () -> Unix.mkdir path 0o755)
   | [ "remove_file"; path ] -> tried (fun () -> Sys.remove path)
+  | "start_detached" :: prog :: args -> start_detached prog args
   | [ "temp_new"; prefix; suffix ] -> (match Filename.temp_file prefix suffix with f -> ans_data [ f ] | exception e -> (false, (0., [ Printexc.to_string e ])))
   | [ "no_sigpipe" ] -> Sys.set_signal Sys.sigpipe Sys.Signal_ignore; ans_ok
   | "spawn" :: prog :: stdin :: cwd :: rest ->
@@ -356,7 +374,6 @@ let node_io op =
   (* the host's (nodeio.soma's service_op) *)
   | [ "path_stat"; path ] -> ans_data (path_stat path)
   | [ "temp_dir"; prefix ] -> ans_data [ Filename.temp_dir prefix "" ]
-  | [ "remove_tree"; path ] -> remove_tree_later path; ans_ok
   | [ "read_text"; path ] -> ans_found (read_text path)
   | [ "dir_entries"; path ] -> ans_data (if Sys.file_exists path then Array.to_list (Sys.readdir path) else [])
   | [ "self_exe" ] -> ans_data [ self_exe ]
