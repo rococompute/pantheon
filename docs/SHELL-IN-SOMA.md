@@ -8,10 +8,12 @@ edits machinery (`cli.soma`: applying edits, reading a checkout's changes
 as edits, a bid's tree), the binary's network and jobs
 (`node_net.soma`: its links, buffers, select, the service's socket and
 the process table) and its git and programs (`node_git.soma`); what is left of the program around them is
-`shell.ml`, about 395 lines of hand-written OCaml (it was about 1,600)
-that `shell.definition` declares to Soma as four assumptions (`argv`,
-`print_lines`, `node_io`, `forever`), with the crypto main.soma extracts
-to Cryptokit. The goal: as much of `shell.ml` as can be
+`shell.ml`, about 290 lines of hand-written OCaml (it was about 1,600)
+that `shell.definition` declares to Soma as its primitives (`host_*`,
+one per operation that reaches the host, which node_shell.soma's
+`host_prim` calls by the operation's constructor) and `argv`,
+`print_lines` and `forever`. Hashing and signing are Soma's in the binary
+too; Cryptokit is only a new key's and random bytes'. The goal: as much of `shell.ml` as can be
 is Soma, extracted with the rest, and OCaml is left only as thin bindings to
 the libraries that do I/O: Unix (files, processes, sockets, time) and
 cryptokit (RSA, SHA-256). Each binding is declared in a
@@ -161,9 +163,11 @@ The interface is `nodeio.soma`, a module with no shell under it: the
 operations, `node_op`, and programs of them, `nprog` (`NDone a`, or
 `NStep op k`: do `op`, then go on as `k` says on its answer), as a Sandbox
 program is a value of `Sandbox.io`. The binary runs a program with
-`node.soma`'s `run_shell`, through one binding, `node_io` (shell.ml
-interprets the operation's wire form, `io_wire`; `io_of_wire` reads it
-back, proved for every operation); `io_do`, the clock and the table reads
+`node_shell.soma`'s `run_shell`, over shell.ml's primitives: `host_prim`
+hands each operation that reaches the host to the function
+`shell.definition` names for it, its fields the arguments (below, "The
+primitives by name"); the wire form, `io_wire`, which `io_of_wire` reads
+back, proved for every operation, is what an image sends its service; `io_do`, the clock and the table reads
 are one-operation programs run that way, and the output actions are
 programs (`action_prog`, `actions_prog`). `nodeio.proof` says what a
 program does whoever interprets it (`ntrace`, the operations carried out
@@ -282,7 +286,7 @@ The commands are node programs too (`cli.soma`): `init`, `keygen`,
 key.json, chain.json and public.json with the hash chain's tip, the
 genesis's bytes and every check on them, written through a small JSON
 value that prints as Yojson.Safe does) and do their I/O through the
-operations above, which `node_io` answers with no node. `main.soma`'s `dispatch` runs them with `run_shell`; `pantheon node` is `run_node`. The `cmd_*` and
+operations above, which shell.ml's primitives answer with no node. `main.soma`'s `dispatch` runs them with `run_shell`; `pantheon node` is `run_node`. The `cmd_*` and
 `read_plan` bindings are gone. A genesis is the same bytes either way:
 the old binary and the new one, given the same parts, write the same
 genesis.json. Two cases that crashed the old binary now say why:
@@ -334,10 +338,11 @@ primitives: "The host's work", below.)
 
 SHA-256 and RSA are Soma's (`Soma.Crypto`, Soma's item): `sha256` and
 `hash_list` are `util.soma`'s, no longer bindings, so the kernel computes
-them and a unikernel runs them. The binary extracts them to Cryptokit's
-(main.soma), the same function in C: Soma's extracted SHA-256 is about a
-tenth of its speed, which slowed e2e from 114 s to 130 s. The test checks
-the two agree on known answers.
+them and both the binary and a unikernel run them. The binary used to
+extract them to Cryptokit's (main.soma), the same function in C, about
+ten times faster; that fast path is gone, so what runs is what Soma
+checks, and speed is for Soma to win back (test/nio_tables.soma checks
+known answers).
 
 Every signature is checked by Soma, in the binary as in the unikernel:
 a transaction's in `decode_tx` (`nio_tx_verify`, with the agent's key from
@@ -351,10 +356,9 @@ network still works, slowly, and wants a new genesis.
 
 Signing is Soma's too, in the kernel (`nio_sign`, through `nio_wire_line`
 and `nio_encode_tx`): about 12 ms a signature with a 2048-bit key in the
-unikernel. The binary extracts `nio_sign` to Cryptokit's (main.soma,
-`Shell.rsa_sign_bytes`), as it does SHA-256: PKCS#1 v1.5 is
-deterministic, so it is the same signature, in about 1 ms. With Soma's,
-the e2e `future-nonce` flood (600 transactions, each signed and resent)
+unikernel and now in the binary too, which used to extract `nio_sign`
+to Cryptokit's (about 1 ms; PKCS#1 v1.5 is deterministic, so the same
+signature). With Soma's, the e2e `future-nonce` flood (600 transactions, each signed and resent)
 froze the node that sent it. The kernel keeps the lines it signed since
 the last resend and those the last resend sent, so a resend signs
 nothing new.
@@ -392,7 +396,8 @@ written whole or appended (`IoSave`, `IoAppendSynced`) and
 `IoNoSigpipe` (a write to a closed connection is an error, not the end
 of the process). shell.ml keeps a table of descriptors by name, and
 nothing of the node: `node_open` and its handles are gone, and so is
-node_io's handle argument (`node_io : list string -> nanswer`). This was shell.ml's largest
+node_io's handle argument (`node_io : list string -> nanswer`; since
+then `node_io` is gone too: "The primitives by name", below). This was shell.ml's largest
 part, about 175 lines of links, buffers, the mailbox's select and the
 service's framing; there it is now about 90 lines of socket calls.
 
@@ -528,6 +533,32 @@ touches the file), `make_dirs_only_where_none` (never "", "." or "/",
 and only where the host said none is), `path_write_writes_its_file` and
 `failed_save_ends` and `remove_tree_starts_rm` (rm started on its own,
 the path its one operand after `--`, and nothing else).
+
+### The primitives by name
+
+Which primitive an operation is, is Soma's: node_shell.soma's
+`host_prim` matches the operation's constructor and calls the binding
+`shell.definition` declares for it (`host_sock_read`, `host_spawn`,
+`host_file_put`, ...: one per operation that reaches the host, about
+forty), its fields the arguments, typed (an environment and a program's
+arguments are lists, not frames). An operation that is none, the
+kernel's or one a runner carries out itself, ends the binary naming
+it, as before. shell.ml's `node_io` is gone: it turned the operation
+into its wire form, a list of strings, and matched it back, a copy of
+`io_of_wire` in OCaml, with the wire's frames parsed again
+(`fields_then_args`, `framed`) for the select and a spawn. Each
+primitive is now one function of the host's calls; their docs are
+`shell.definition`'s.
+
+Hashing and signing are Soma's in the binary too (`util.soma`'s
+`sha256` and `hash_list`, `nodeio.soma`'s `nio_sign`, through
+`Soma.Crypto`): main.soma no longer extracts them to Cryptokit's, which
+was about ten times faster. What runs is what Soma checks, and speed is
+for Soma to win back. Cryptokit stays only for a new key and random
+bytes, which Soma has no source of. With every node signing in Soma, the whole e2e
+run at once (33 scenarios, four nodes each) starved its flooding node
+and ran past its waits, so test/e2e.sh runs at most six scenarios at
+a time (`E2E_JOBS`).
 
 ## The edits machinery
 

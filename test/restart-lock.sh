@@ -30,7 +30,7 @@ let () =
   let c = { c with round = 3; step = 0 } in
   let p = { kd = Proposal; frm = proposer c c.height c.round;
     mh = c.height; mr = c.round; vr = 0;
-    vid = Shell.hash_list ["B"]; value = ["B"] } in
+    vid = hash_list ["B"]; value = ["B"] } in
   let c = { c with log = [p] } in
   (match r_fresh c (fun _ -> true) with
    | Some (_, outs) ->

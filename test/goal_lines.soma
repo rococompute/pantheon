@@ -3,13 +3,6 @@
 Import util shell node node_shell.
 From Stdlib Require Import Ascii.
 From Stdlib Require ExtrOcamlNatInt.
-Extract Inlined Constant Nat.div => "(fun a b -> if b = 0 then 0 else a / b)".
-Extract Inlined Constant Nat.modulo => "(fun a b -> if b = 0 then a else a mod b)".
-Extract Inlined Constant Stdlib.Strings.String.length => "String.length".
-Extract Inlined Constant Stdlib.Strings.String.get =>
-  "(fun n s -> if n < String.length s then Some (String.unsafe_get s n) else None)".
-Extract Inlined Constant Stdlib.Strings.String.substring =>
-  "(fun n m s -> let l = String.length s in if n >= l then """" else String.sub s n (min m (l - n)))".
 
 check (label got expected : string) : string :=
   append (if seq got expected then "ok " else "FAIL ") label.

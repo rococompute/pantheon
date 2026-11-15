@@ -1,14 +1,6 @@
 (** nodeio.soma's pure part, which any interpreter shares: the lines blocks.log and signed.log get (Yojson's bytes, from shell.ml's writers), the clock's decimal text read back, and what the table operations do. No node, no unikernel. *)
 Import util shell nodeio.
 From Stdlib Require ExtrOcamlNatInt.
-Extract Inlined Constant Nat.div => "(fun a b -> if b = 0 then 0 else a / b)".
-Extract Inlined Constant Nat.modulo => "(fun a b -> if b = 0 then a else a mod b)".
-
-Extract Inlined Constant Stdlib.Strings.String.length => "String.length".
-Extract Inlined Constant Stdlib.Strings.String.get =>
-  "(fun n s -> if n < String.length s then Some (String.unsafe_get s n) else None)".
-Extract Inlined Constant Stdlib.Strings.String.substring =>
-  "(fun n m s -> let l = String.length s in if n >= l then """" else String.sub s n (min m (l - n)))".
 
 check (label : string) (ok : bool) : string := append (if ok then "ok " else "FAIL ") label.
 
@@ -137,7 +129,7 @@ checks : list string := [
     (match stored (stores nio_empty [IoSignedRestore "prevote/1/0" "v" ["prevote", "1"]]) (IoSignedVote "prevote/1/0") with
      | (true, (_, ["v"])) => true | _ => false end),
   check "the stores hand the tables' operations on" (match stored t2 IoNonceFlooded with (false, (_, [])) => true | _ => false end),
-  check "Soma's sha256 is SHA-256 (the binary's, Cryptokit's)"
+  check "Soma's sha256 is SHA-256"
     (seq (sha256 "abc") "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"),
   check "hash_list frames each string by its length, as the binary's"
     (seq (hash_list ["ab", "c"]) "430fb1b4ac43316eca81fab27a1930ab8eff8fef6a1dc7903dce44bbc2790dc5" && seq (hash_list []) "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"),

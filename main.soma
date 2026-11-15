@@ -18,21 +18,12 @@ From Stdlib Require ExtrOcamlNatInt.
 Extract Inlined Constant Stdlib.Strings.String.compare =>
   "(fun a b -> let c = Stdlib.compare (a : string) b in if c < 0 then Lt else if c = 0 then Eq else Gt)".
 
-(** The hashes are Soma's (util.soma, Soma.Crypto): the kernel computes
-    them, the unikernel runs them. The binary runs Cryptokit's, the same
-    function in C, about ten times faster than Soma's extracted SHA-256
-    (test/nio_tables.soma checks the two agree). *)
-Extract Constant util.sha256 => "Shell.sha256".
-Extract Constant util.hash_list => "Shell.hash_list".
-(** So is signing (nodeio.soma's nio_sign, Soma's RSA, about 12 ms a
-    signature): Cryptokit's PKCS#1 v1.5 signature with the same key is
-    the same bytes, about ten times faster. A node signs each peer line
-    and transaction it sends. *)
-Extract Constant nodeio.nio_sign =>
-  "(fun k m -> Shell.rsa_sign_bytes k.nk_bytes (Obj.magic k.nk_n) (Obj.magic k.nk_e) (Obj.magic k.nk_p) (Obj.magic k.nk_q) (Obj.magic k.nk_dp) (Obj.magic k.nk_dq) (Obj.magic k.nk_qinv) m)".
+(** The hashes and signatures are Soma's (util.soma's sha256 and
+    hash_list, nodeio.soma's nio_sign, through Soma.Crypto): the kernel
+    computes them, and the binary and the unikernel run them. *)
 
 (** Every command but [node] and [service] is a node program (cli.soma),
-    run through the shell's node_io; [node] is node.soma's loop, [service]
+    run over the shell's primitives (node_shell.soma's run_shell); [node] is node.soma's loop, [service]
     its service's. *)
 dispatch (args : list string) : unit :=
   match args with

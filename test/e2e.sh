@@ -148,7 +148,8 @@ scenario_bidders() {
     # version, and with max_merges=2 ends a term, so a task still open
     # after its bid merged (its close not yet in) gets a new window. Each
     # bid's version is the merges before it in blocks.log, its bids lined
-    # up with status.txt's by number.
+    # up with status.txt's by number (bid transactions the market refused
+    # get none).
     python3 - "$status" "$ROOT/bidders/$a/blocks.log" <<'PY' || return 1
 import json, re, sys
 status, blocks = sys.argv[1], sys.argv[2]
@@ -164,10 +165,13 @@ for line in open(blocks):
         if f[0] == "merge":
             version += 1
         elif f[0] == "bid":
-            seen += 1
-            state, task, who, why = bids.get(seen, ("", 0, "", ""))
+            # a bid the market refused (its task closed a block before,
+            # say) stays in its block but gets no number: the next numbered
+            # bid is the next chain bid that is status.txt's next
+            state, task, who, why = bids.get(seen + 1, ("", 0, "", ""))
             if (task, who) != (int(f[1]), tx["agent"]):
-                print("FAIL bidders: bid", seen, "in status.txt isn't the chain's bid", seen, "(task", f[1], "by", tx["agent"] + ")"); sys.exit(1)
+                continue
+            seen += 1
             k = (task, version)
             if n.get(k, 0) >= 2 + gone.get(k, 0):
                 print("FAIL bidders: task", task, "drew bid", seen, "at version", version, "with", n[k], "before it there and", gone.get(k, 0), "of them rejected or cleared"); bad = 1
@@ -175,7 +179,7 @@ for line in open(blocks):
             if state in ("rejected", "cleared") and "task closed" not in why:
                 gone[k] = gone.get(k, 0) + 1
 if seen != len(bids):
-    print("FAIL bidders: the chain has", seen, "bids and status.txt", len(bids)); sys.exit(1)
+    print("FAIL bidders: status.txt's bid", seen + 1, "isn't on the chain in order"); sys.exit(1)
 sys.exit(bad)
 PY
     for worker in $AGENTS; do
@@ -963,8 +967,15 @@ run() {
 
 ALL="bidders bidder-fallback bidder-timeout happy crash restart-lock equivocate double-vote silent bad-sig withhold bad-tree future-nonce deny silent-model policy model stuck limit limit-cli prune epoch text network ci cifail ciflood cispoof nocheck parallel scope flood"
 want=${*:-$ALL}
+# at most E2E_JOBS scenarios at once (four nodes each): every node signs
+# its lines with Soma's RSA, so a whole run at once starves a flooding
+# node and stretches past the waits
+jobs_max=${E2E_JOBS:-6}
 pids=""
-for s in $want; do (run "$s" > "$ROOT/$s.result" 2>&1; echo $? > "$ROOT/$s.code") & pids="$pids $!"; done
+for s in $want; do
+  while [ "$(jobs -pr | wc -l)" -ge "$jobs_max" ]; do sleep 1; done
+  (run "$s" > "$ROOT/$s.result" 2>&1; echo $? > "$ROOT/$s.code") & pids="$pids $!"
+done
 wait $pids
 fails=0
 for s in $want; do

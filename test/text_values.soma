@@ -4,11 +4,6 @@
     binary's, before they moved to Soma). *)
 Import util shell.
 From Stdlib Require ExtrOcamlNatInt.
-Extract Inlined Constant Stdlib.Strings.String.length => "String.length".
-Extract Inlined Constant Stdlib.Strings.String.get =>
-  "(fun n s -> if n < String.length s then Some (String.unsafe_get s n) else None)".
-Extract Inlined Constant Stdlib.Strings.String.substring =>
-  "(fun n m s -> let l = String.length s in if n >= l then """" else String.sub s n (min m (l - n)))".
 
 float_cases : list (string * (string * string)) := [
   ("0", ("0", "0"))

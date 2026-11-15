@@ -1,8 +1,9 @@
 (** Pantheon's commands: init, keygen, genesis, up, status, tx, plan, edits,
     apply-edits and check, as node programs (U-1; docs/SHELL-IN-SOMA.md).
     Each is a value of [nprog unit] over [node_op]: the binary runs it
-    through shell.ml's [node_io] (main.soma's [dispatch]), whose path-only
-    arms answer the commands' operations with no node. What a command
+    over shell.ml's primitives (node_shell.soma's run_shell, from
+    main.soma's [dispatch]), which answer the commands' operations with
+    no node. What a command
     decides is here: its arguments, its messages, a new agent's files, the
     genesis's bytes and every check on them. The operations do the I/O:
     printing, files, git, a new RSA key and starting nodes; the edits

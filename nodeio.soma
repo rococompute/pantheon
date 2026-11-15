@@ -1,7 +1,7 @@
 (** The node's I/O as one interface (U-1; docs/SHELL-IN-SOMA.md, "Two
     directions, and the unikernel"). Nothing here imports the shell: these
-    are values, which the binary interprets through shell.ml
-    (node_shell.soma's [run_shell] over the [node_io] binding) and a unikernel can interpret
+    are values, which the binary interprets over shell.ml's primitives
+    (node_shell.soma's [run_shell] and [host_prim]) and a unikernel can interpret
     with Sandbox (node_sandbox.soma). *)
 From Corelib Require PrimFloat.
 From Corelib Require PrimInt63.
@@ -87,12 +87,12 @@ Fixpoint smap_size {A : Type} (m : smap A) : nat :=
     node's tables, peer links, timers, files and signatures, its host's
     work (node_host.soma) the jobs, checkouts and model calls; what is left
     are primitives, which the binary's runner (node_shell.soma over
-    node_net.soma) hands shell.ml through one binding, [node_io], and a
-    unikernel carries out with Sandbox (node_sandbox.soma). An operation
-    crosses the binding as its wire form ([io_wire]), since a .definition
-    takes no Soma inductive; [io_of_wire] reads it back, and shell.ml's
-    [node_io] does exactly that match. An effect's result is [(true, 0)];
-    the clock's is [(true, now)]. *)
+    node_net.soma) hands shell.ml, each to the binding shell.definition
+    names for it ([host_prim], its fields the arguments), and a unikernel
+    carries out with Sandbox (node_sandbox.soma). An operation's wire
+    form ([io_wire]; [io_of_wire] reads it back) is what an image sends
+    its service. An effect's result is [(true, 0)]; the clock's is
+    [(true, now)]. *)
 Inductive node_op :=
 | IoLog (text : string)
 | IoTimer (ms : string) (event : list string)
@@ -738,11 +738,11 @@ service_op (op : node_op) : bool :=
     What the node does, as data, the way a Sandbox program is a value of
     [Sandbox.io]: [NDone a] has finished with [a]; [NStep op k] does [op],
     then goes on as [k] says, given the operation's answer. An answer is
-    a [nanswer], what [node_io] gives. Building a program
+    a [nanswer], what a primitive gives. Building a program
     does nothing; an interpreter runs it, so the binary and a unikernel
     can run the same one. *)
-(** An operation's answer, the same shape for every operation so one
-    binding carries them all: whether it was carried out (or the boolean a
+(** An operation's answer, the same shape for every operation so every
+    primitive and interpreter gives one kind: whether it was carried out (or the boolean a
     table read gives), a number (the clock's time, a served timestamp) and
     data (what a read returns: a stored block's transactions, the height).
     An effect's is [(true, (0, []))]. *)

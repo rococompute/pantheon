@@ -4,21 +4,9 @@
 Import util shell node node_shell.
 
 (** Numbers run as OCaml ints. The kernel and the proofs still see Peano
-    naturals: these only say how extracted code computes them. *)
+    naturals: this only says how extracted code computes them (Soma then
+    runs Nat's division and String's length, get and substring as OCaml's). *)
 From Stdlib Require ExtrOcamlNatInt.
-Extract Inlined Constant Nat.div => "(fun a b -> if b = 0 then 0 else a / b)".
-Extract Inlined Constant Nat.modulo => "(fun a b -> if b = 0 then a else a mod b)".
-
-(** Strings run as OCaml's (ExtrOcamlNativeString), which leaves out the
-    operations that count in [nat]. With [nat] as OCaml ints they're
-    OCaml's own, each as total as its definition: offsets past the end give
-    [None] or an empty string. util.soma reads long text through them. *)
-Extract Inlined Constant Stdlib.Strings.String.length => "String.length".
-Extract Inlined Constant Stdlib.Strings.String.get =>
-  "(fun n s -> if n < String.length s then Some (String.unsafe_get s n) else None)".
-Extract Inlined Constant Stdlib.Strings.String.substring =>
-  "(fun n m s -> let l = String.length s in if n >= l then """" else String.sub s n (min m (l - n)))".
-
 
 check (label : string) (ok : bool) : string := append (if ok then "ok " else "FAIL ") label.
 (** the reply file read and removed by node_io's path operations, which
@@ -26,7 +14,7 @@ check (label : string) (ok : bool) : string := append (if ok then "ok " else "FA
 codex_file_reply (text path : string) : string := run_shell (codex_file_prog text path).
 
 file_path (key : string) : string :=
-  match env_value key (snd (snd (node_io ["env_entries"]))) with Some path => path | None => "" end.
+  match env_value key (snd (snd (host_env_entries tt))) with Some path => path | None => "" end.
 
 main := print_lines [
   check "failure wins" (seq (codex_reply_of "!failed" (fun _ => Some "stale")) "!failed"),

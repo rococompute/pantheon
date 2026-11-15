@@ -1,21 +1,70 @@
 (** The binary's runner: node programs (nodeio.soma's [nprog]) carried
-    out by shell.ml, through its one interpreting binding, [node_io], and
-    [pantheon node]'s loop: the node's kernel (node_kernel.soma), whose
-    network and named files are node_net.soma's here over the host's
-    sockets and paths, as the unikernel's runner carries them out with
-    Sandbox (node_sandbox.soma), and whose git and programs are
-    node_git.soma's over the shell's. Nothing else of the node calls the shell:
-    node.soma, cli.soma and what they import are Soma over the node's
-    operations. *)
+    out by shell.ml's primitives, each operation the one shell.definition
+    names for it ([host_prim]), and [pantheon node]'s loop: the node's
+    kernel (node_kernel.soma), whose network and named files are
+    node_net.soma's here over the host's sockets and paths, as the
+    unikernel's runner carries them out with Sandbox
+    (node_sandbox.soma), and whose git and programs are node_git.soma's
+    over the shell's. Nothing else of the node calls the shell: node.soma,
+    cli.soma and what they import are Soma over the node's operations. *)
 Import util shell nodeio node node_kernel node_net node_git node_path node_file node_service cli.
 
-(** The shell's primitives: each operation through [node_io], in its wire
-    form, in order, each answer handed to the rest of the program. Every
-    operation the binary does goes through here. *)
+(** One primitive on the host: the operation's fields handed to the
+    shell.ml function shell.definition names for it. An operation that
+    is none (the kernel's, or one a runner carries out itself) reaching
+    here is a bug: the binary refuses to go on, naming it. *)
+host_prim (op : node_op) : nanswer :=
+  match op with
+  | IoClock => host_clock tt
+  | IoLog text => host_log text
+  | IoLocalTime stamp => host_local_time stamp
+  | IoFail message => host_fail message
+  | IoPrint text => host_print text
+  | IoExit code => host_exit code
+  | IoCwd => host_cwd tt
+  | IoNewKey bits => host_new_key bits
+  | IoRandomHex count => host_random_hex count
+  | IoReadText path => host_read_text path
+  | IoFileExists path => host_file_exists path
+  | IoDirEntries path => host_dir_entries path
+  | IoChmod path mode => host_chmod path mode
+  | IoAppendSynced path text => host_append_synced path text
+  | IoFilePut path text sync => host_file_put path text sync
+  | IoFileMode path => host_file_mode path
+  | IoRename src dst => host_rename src dst
+  | IoSyncDir dir => host_sync_dir dir
+  | IoMakeDir path => host_make_dir path
+  | IoRemoveFile path => host_remove_file path
+  | IoTempNew prefix suffix => host_temp_new prefix suffix
+  | IoTempDir prefix => host_temp_dir prefix
+  | IoStartDetached prog args => host_start_detached prog args
+  | IoSelfExe => host_self_exe tt
+  | IoEnvEntries => host_env_entries tt
+  | IoPathStat path => host_path_stat path
+  | IoSpawn prog stdin cwd env args => host_spawn prog stdin cwd env args
+  | IoWaitPid pid => host_wait_pid pid
+  | IoKillPid pid => host_kill_pid pid
+  | IoNoSigpipe => host_no_sigpipe tt
+  | IoStartLogged prog log args => host_start_logged prog log args
+  | IoStopOnSignal pids => host_stop_on_signal pids
+  | IoSockListen host port backlog => host_sock_listen host port backlog
+  | IoSockDial host port => host_sock_dial host port
+  | IoSockSelect ms reads writes => host_sock_select ms reads writes
+  | IoSockAccept fd nonblock => host_sock_accept fd nonblock
+  | IoSockRead fd => host_sock_read fd
+  | IoSockWrite fd data => host_sock_write fd data
+  | IoSockError fd => host_sock_error fd
+  | IoSockClose fd => host_sock_close fd
+  | _ => host_fail (append "unknown node operation " (Stdlib.Strings.String.concat " " (io_wire op)))
+  end.
+
+(** The shell's primitives: each operation through [host_prim], in
+    order, each answer handed to the rest of the program. Every operation
+    the binary does goes through here. *)
 Fixpoint run_prims {A : Type} (p : nprog A) : A :=
   match p with
   | NDone a => a
-  | NStep op k => run_prims (k (node_io (io_wire op)))
+  | NStep op k => run_prims (k (host_prim op))
   end.
 
 (** One operation as the binary carries it out: git and programs as
@@ -23,7 +72,7 @@ Fixpoint run_prims {A : Type} (p : nprog A) : A :=
     node_path.soma does ([path_op]), a file written whole, directories
     made and files removed as node_file.soma does ([file_op]), each over
     the shell's primitives;
-    the rest by the shell *)
+    the rest by the shell's primitives *)
 shell_answer (op : node_op) : nanswer :=
   match git_op op with
   | Some q => run_prims q
@@ -33,7 +82,7 @@ shell_answer (op : node_op) : nanswer :=
       | None =>
           match file_op op with
           | Some q => run_prims q
-          | None => node_io (io_wire op)
+          | None => host_prim op
           end
       end
   end.

@@ -188,7 +188,7 @@ escape hatch, where static types are given up, and every assumption.
 | `cli.soma` | The commands, the node's setup, and the edits machinery: applying edits, a bid's tree, a checkout's changes as edits |
 | `nodeio.soma`, `node_kernel.soma` | The node's operations, and its kernel: tables, peer links, signatures, files, the select |
 | `node_host.soma` | The kernel's host work: a merge's git, the model's budget and limit, jobs (model calls, checks, CI) |
-| `node_shell.soma`, `node_sandbox.soma` | The kernel run by the binary (through shell.ml) and by a unikernel (with Sandbox) |
+| `node_shell.soma`, `node_sandbox.soma` | The kernel run by the binary (over shell.ml's primitives, which `host_prim` picks by operation) and by a unikernel (with Sandbox) |
 | `node_git.soma` | Git, a clone and a program run as the binary runs them: git's environment and flags, a program's input in a temporary file, a program run to its end over the host's processes |
 | `node_path.soma` | A path in a checkout as the runners look at it: each part's lstat in turn, a symlink on the way refused |
 | `node_file.soma` | The node's files as the binary writes them: whole (a temporary file, the mode kept, a rename, synced when durable), directories, removals, a tree removed in the background |
