@@ -298,7 +298,6 @@ Inductive node_op :=
 | IoSpawn (prog stdin cwd : string) (env args : list string)
 | IoWaitPid (pid : string)
 | IoKillPid (pid : string)
-| IoExec (prog stdin : string) (env args : list string)
 (** the host's files, one call each (node_file.soma writes them whole
     and makes directories with these): [text] put in a file, created or
     emptied first, on disk before the answer when [sync] is "true"; a
@@ -510,7 +509,6 @@ io_wire (op : node_op) : list string :=
   | IoSpawn prog stdin cwd env args => "spawn" :: prog :: stdin :: cwd :: resend_fields env ++ ("alternate" :: args)
   | IoWaitPid pid => ["wait_pid", pid]
   | IoKillPid pid => ["kill_pid", pid]
-  | IoExec prog stdin env args => "exec" :: prog :: stdin :: resend_fields env ++ ("alternate" :: args)
   | IoFilePut path text sync => ["file_put", path, text, sync]
   | IoFileMode path => ["file_mode", path]
   | IoRename src dst => ["rename", src, dst]
@@ -699,11 +697,6 @@ io_of_wire (w : list string) : option node_op :=
   | ["remove_file", path] => Some (IoRemoveFile path)
   | ["temp_new", prefix, suffix] => Some (IoTempNew prefix suffix)
   | "start_detached" :: prog :: args => Some (IoStartDetached prog args)
-  | "exec" :: prog :: stdin :: rest =>
-      match resend_parts rest with
-      | Some (env, args) => Some (IoExec prog stdin env args)
-      | None => None
-      end
   | ["snapshot_save", text] => Some (IoSnapshotSave text)
   | ["snapshot_load"] => Some IoSnapshotLoad
   | ["serve_listen", address, port] => Some (IoServeListen address port)

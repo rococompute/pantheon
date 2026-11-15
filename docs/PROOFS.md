@@ -2,7 +2,7 @@
 
 `soma build main.soma` checks the proof files. This inventory includes every
 Theorem, Lemma, Corollary and Example in `consensus.proof` and `market.proof`
-(and the main statements of `node_service.proof`, `node_path.proof` and `node_file.proof`, below),
+(and the main statements of `node_service.proof`, `node_path.proof`, `node_file.proof` and `node_git.proof`, below),
 with its exact source name. These are statements about the pure definitions,
 not proofs of the OCaml shell, extraction to machine integers, cryptography,
 OS isolation, or deployed end-to-end safety. Shell hashes, decoding, signatures
@@ -153,6 +153,21 @@ rename or a sync is the host's.
 | `path_write_writes_its_file` | A path's write makes directories and writes that one file whole, nothing else. |
 | `failed_save_ends` | A save that failed is said and the binary ends: it never answers as if written. |
 | `remove_tree_starts_rm` | A tree's removal is one program started on its own, `rm -rf -- PATH`, the path its one operand; it always answers done. That rm removes the tree, later, is the host's. |
+
+### node_git.proof
+
+Git and programs as the binary runs them (node_git.soma), for any
+answers the host's processes give; that a pipe's reads are the
+program's output, and what the program does, are the host's.
+
+| Name | What it says, and its limit |
+|---|---|
+| `read_out_reads` | Reading a program's output only reads its pipe. |
+| `exec_leaves_nothing` | A program that started: its start, reads of its pipe, the pipe closed, then the process waited for, nothing else. |
+| `exec_failed_start_ends` | A program that couldn't start runs nothing more and answers not found, with why. |
+| `exec_ok_only_on_exit_0` | It answers success only when it started and its wait said it exited with 0. |
+| `git_env_keeps_host_git_out` | Git's environment holds the entries asked for, the fixed three, and the host's without any `GIT_` one. |
+| `git_runs_only_git` | Git starts only "git", from where the binary is, with the fixed config flags and that environment; the rest is its pipe and its wait. |
 
 ## Remaining work
 

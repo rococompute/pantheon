@@ -14,11 +14,11 @@ node_kernel.soma   the node's kernel: tables, peer links, signatures, files, the
 node_host.soma   the kernel's host work: a merge's git, the model's limit, jobs, checks and CI
 cli.soma   the commands, the node's setup, and the edits machinery
 node_net.soma   the binary's network: links, buffers, the select, the service's socket, the jobs' processes
-node_git.soma   git, a clone and a program as the binary runs them, over the host's exec
+node_git.soma   git, a clone and a program run to its end, over the host's processes
 node_path.soma   a path in a checkout looked at part by part, no symlink on the way
 node_file.soma   a file written whole (temporary, mode kept, renamed, synced), directories made, trees removed in the background
 node_service.soma   the node's service for an image: only the node's own host work, its loop
-shell.ml   the host's primitives: descriptors by name, files, paths, processes, exec
+shell.ml   the host's primitives: descriptors by name, files, paths, processes
 ```
 
 The kernel is the same program in the binary and in the unikernel: node_net.soma over

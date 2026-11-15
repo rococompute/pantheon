@@ -4,9 +4,54 @@
     and the service) do with [IoGit], [IoGitEnv], [IoClone] and [IoRun],
     whoever asked for them (cli.soma, node_host.soma, or an image through
     its service). Each is the environment read ([IoEnvEntries]) and one
-    program run to its end with exactly the environment given ([IoExec]:
-    whether it succeeded, and its output). Nothing is kept between them. *)
+    program run to its end with exactly the environment given
+    ([exec_prog]: whether it succeeded, and its output), over the host's
+    processes: one started with its output on a pipe ([IoSpawn]), the
+    pipe read and closed ([IoSockRead], [IoSockClose]) and the process
+    waited for ([IoWaitPid]). Nothing is kept between them. *)
 Import util nodeio.
+
+(** ---- a program run to its end ---- *)
+
+(** a pipe's chunks, newest first, read until it's closed (or [fuel]
+    reads) *)
+Fixpoint read_out (fuel : nat) (pipe : string) (acc : list string) : nprog (list string) :=
+  match fuel with
+  | O => NDone acc
+  | S f =>
+      nbind (nask (IoSockRead pipe)) (fun r =>
+      match ans_list r with
+      | [tag, d] => if seq tag "bytes" then read_out f pipe (d :: acc) else NDone acc
+      | [tag] => if seq tag "again" then read_out f pipe acc else NDone acc
+      | _ => NDone acc
+      end)
+  end.
+
+(** a wait's answer: the process exited with 0 *)
+exited_ok (w : nanswer) : bool := match ans_list w with [how, c] => seq how "exit" && seq c "0" | _ => false end.
+
+(** [prog] run to its end with exactly [env], [stdin] its standard input
+    ("": none), from where the binary is: started with its output on a
+    pipe (its errors discarded), the pipe read until it closes, then
+    closed, then the program waited for, so no descriptor or process is
+    left behind (a pipe closed after [fuel] reads ends a program that
+    goes on writing, so the wait can't hang on it). Found when it exited
+    with 0, and its output; one that couldn't start: not found, and why. *)
+exec_go (fuel : nat) (prog stdin : string) (env args : list string) : nprog nanswer :=
+  nbind (nask (IoSpawn prog stdin "" env args)) (fun s =>
+  match fst s, ans_list s with
+  | true, [pid, pipe] =>
+      nbind (read_out fuel pipe []) (fun out =>
+      nbind (nask (IoSockClose pipe)) (fun _ =>
+      nbind (nask (IoWaitPid pid)) (fun w =>
+      NDone (ans_data (exited_ok w) [hcat (rev out)]))))
+  | _, _ => NDone (ans_data false [ans_one s])
+  end).
+
+(** 2^20 reads of up to 64 KiB: 64 GiB of output *)
+exec_fuel : nat := Nat.pow 2 20.
+
+exec_prog (prog stdin : string) (env args : list string) : nprog nanswer := exec_go exec_fuel prog stdin env args.
 
 (** git for a checkout Pantheon owns: no user or system config, no hooks,
     no signing, so every node does exactly the same thing; [extra]
@@ -22,20 +67,20 @@ git_args (dir : string) (args : list string) : list string :=
 
 (** git in [dir], [stdin] its standard input ("": none) *)
 git_prog (dir stdin : string) (extra args : list string) : nprog nanswer :=
-  nbind (nask IoEnvEntries) (fun e => nask (IoExec "git" stdin (git_env extra (ans_list e)) (git_args dir args))).
+  nbind (nask IoEnvEntries) (fun e => exec_prog "git" stdin (git_env extra (ans_list e)) (git_args dir args)).
 
 (** a clone from anywhere git can fetch, then its commit checked out: the
     clone with the user's own git config, for credentials to a private
     repository, but never a prompt *)
 clone_prog (url dir commit : string) : nprog nanswer :=
   nbind (nask IoEnvEntries) (fun e =>
-  nbind (nask (IoExec "git" "" ("GIT_TERMINAL_PROMPT=0" :: ans_list e) ["clone", "--quiet", url, dir])) (fun a =>
+  nbind (exec_prog "git" "" ("GIT_TERMINAL_PROMPT=0" :: ans_list e) ["clone", "--quiet", url, dir]) (fun a =>
   if fst a then nbind (git_prog dir "" [] ["checkout", "-q", "--detach", commit]) (fun b => NDone (ans_flag (fst b)))
   else NDone (ans_flag false))).
 
 (** a program run to its end with the user's environment *)
 run_prog (prog : string) (args : list string) : nprog nanswer :=
-  nbind (nask IoEnvEntries) (fun e => nask (IoExec prog "" (ans_list e) args)).
+  nbind (nask IoEnvEntries) (fun e => exec_prog prog "" (ans_list e) args).
 
 (** what the runners carry out this way; anything else goes to the shell
     as it is *)

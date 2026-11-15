@@ -435,11 +435,25 @@ for no hooks, no signing, no line-ending or mode or symlink guesses.
 `IoClone` clones with the user's own config (credentials for a private
 repository) but never a prompt, then checks the commit out as above.
 `IoRun` runs a program with the user's environment. Each is the
-environment read (`IoEnvEntries`) and one `IoExec`: a program run to its
-end with exactly the environment it is given and a standard input (none
-for ""), giving whether it succeeded and its output. shell.ml's git,
-clone and run, about 25 lines of environments and arguments, are gone;
-it keeps `capture`, which `IoExec` is.
+environment read (`IoEnvEntries`) and one program run to its end with
+exactly the environment it is given and a standard input (none for "")
+(`exec_prog`), giving whether it succeeded and its output. That too is
+Soma, over the processes node_net.soma's jobs use: the program started
+with its output on a pipe (`IoSpawn`, from where the binary is), the
+pipe read until it closes (`read_out`), closed, then the program waited
+for (`IoWaitPid`); found only when it exited with 0. A pipe is closed
+before the wait even if the reads run out, so a program that writes
+forever can't hang it. shell.ml's git, clone and run, about 25 lines of
+environments and arguments, are gone, and so are `capture` and the
+`exec` primitive it was. `pantheon edits` on a 250-file checkout takes
+the same time as with `capture` (7.96 s against 7.95 s, alternating, on
+the laptop). node_git.proof proves, of any answers the processes give:
+`exec_leaves_nothing` (its start, reads of its pipe, the pipe closed,
+the wait, nothing else), `exec_failed_start_ends`,
+`exec_ok_only_on_exit_0`, `git_env_keeps_host_git_out` (none of the
+host's own `GIT_` entries reach git) and `git_runs_only_git` (git is
+"git" with the fixed config flags and that environment, nothing else
+started).
 
 ### Paths
 
@@ -578,12 +592,12 @@ are the runner's (the shell for the binary, the service for an image).
   Docker or sandbox command line.
 
 The shell keeps the primitives: the path operations, `IoTempDir`,
-`IoTempFile` and `IoRemoveTree` (node_file.soma's, above, "Files"), `IoExec`
-(a program run to its end with the environment it is given: git, a
+`IoTempFile` and `IoRemoveTree` (node_file.soma's, above, "Files") and
+the processes (`IoSpawn`, `IoWaitPid`, `IoKillPid`), whose table and
+events are node_net.soma's (above, "The binary's network"); git, a
 clone and `IoRun`'s `rm`, `chmod` and `docker rm` are node_git.soma's
-over it, above, "Git and programs") and the processes (`IoSpawn`, `IoWaitPid`, `IoKillPid`),
-whose table and events are node_net.soma's (above, "The binary's
-network").
+programs run to their end over the same processes (above, "Git and
+programs").
 
 ## The node as a unikernel
 

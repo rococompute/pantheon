@@ -6,8 +6,7 @@
 
    - the binary runner's (node_net.soma, node_git.soma): descriptors by
      name, the node's files written whole or appended, processes started,
-     waited for and killed, a program run to its end with the environment
-     it is given, the clock and the log;
+     waited for and killed, the clock and the log;
    - the host's (nodeio.soma's service_op: what a unikernel asks its
      service for): paths, temporary files and the environment;
    - the commands' I/O.
@@ -28,6 +27,11 @@ let ans_ok = (true, (0., []))
 let ans_flag b = (b, (0., []))
 let ans_data l = (true, (0., l))
 let ans_found = function Some x -> ans_data [ x ] | None -> ans_flag false
+(* not carried out, and why *)
+let ans_why why = (false, (0., [ why ]))
+let ans_exn e = ans_why (Printexc.to_string e)
+(* one call on the host, its data, or its failure as not found with why *)
+let attempt f = try ans_data (f ()) with e -> ans_exn e
 
 (* ---------- hashing and signatures ----------
    Soma's (util.soma's sha256 and hash_list, nodeio.soma's nio_sign, through
@@ -76,9 +80,9 @@ let append_synced p s =
       if Unix.write fd b 0 (Bytes.length b) <> Bytes.length b then failwith (p ^ ": short write");
       Unix.fsync fd)
 
-(* one call on the host's files, its failure as not found with why
-   (node_file.soma writes files whole and makes directories with these) *)
-let tried f = try f (); ans_ok with e -> (false, (0., [ Printexc.to_string e ]))
+(* one call on the host's files (node_file.soma writes files whole and
+   makes directories with these) *)
+let tried f = attempt (fun () -> f (); [])
 
 (* [s] put in [p], created or emptied first; [sync]: on disk before the
    answer *)
@@ -112,7 +116,7 @@ let start_detached prog args =
   | pid ->
       let rec reap () = try ignore (Unix.waitpid [] pid) with Unix.Unix_error (EINTR, _, _) -> reap () in
       reap (); ans_ok
-  | exception e -> (false, (0., [ Printexc.to_string e ]))
+  | exception e -> ans_exn e
 
 (* The node's own binary, as an absolute path, fixed when the program starts
    and before anything changes directory (docs/SECURITY-REVIEW-2.md P-10):
@@ -167,18 +171,6 @@ let start ?cwd prog stdin env args =
   | exception e -> back (); close_all [ r; w; ifd; devnull ]; Error (Printexc.to_string e)
   | pid -> back (); close_all [ w; ifd; devnull ]; Ok (pid, r)
 
-(* run a program to its end with exactly [env]: whether it succeeded, and
-   its output (node_git.soma makes git's and the commands' environments) *)
-let capture env stdin prog args =
-  match start prog stdin env args with
-  | Error e -> (false, e)
-  | Ok (pid, r) ->
-      let ic = Unix.in_channel_of_descr r in
-      let out = In_channel.input_all ic in
-      close_in ic;
-      let _, st = Unix.waitpid [] pid in
-      (st = Unix.WEXITED 0, out)
-
 (* the host's descriptors by name: sockets, and the pipes processes write
    their output on *)
 let socks : (string, Unix.file_descr) Hashtbl.t = Hashtbl.create 64
@@ -191,12 +183,14 @@ let sock_find id = Hashtbl.find_opt socks id
    and ends become): a process here is started with its output on a pipe
    named among the sockets, waited for, killed. *)
 
-(* PROG run from [cwd] with [env], [stdin] its standard input from a file:
-   [its pid, its output's pipe], or not found and why *)
+(* PROG run from [cwd] ("": where the binary is) with [env], [stdin] its
+   standard input from a file: [its pid, its output's pipe], or not found
+   and why (node_net.soma's jobs, node_git.soma's programs run to their
+   end) *)
 let spawn prog stdin cwd env args =
-  match start ~cwd prog stdin (Array.of_list env) args with
+  match start ?cwd:(if cwd = "" then None else Some cwd) prog stdin (Array.of_list env) args with
   | Ok (pid, r) -> ans_data [ string_of_int pid; sock_add r ]
-  | Error e -> (false, (0., [ e ]))
+  | Error e -> ans_why e
 
 (* a process's end, waited for: [how, value] (exit, signal or stop, the wait
    status's facts), or not found and why *)
@@ -206,7 +200,7 @@ let rec wait_pid pid =
   | Unix.WSIGNALED sg -> ans_data [ "signal"; string_of_int sg ]
   | Unix.WSTOPPED sg -> ans_data [ "stop"; string_of_int sg ]
   | exception Unix.Unix_error (EINTR, _, _) -> wait_pid pid
-  | exception e -> (false, (0., [ Printexc.to_string e ]))
+  | exception e -> ans_exn e
 
 (* lists of lists on one wire (nodeio.soma's nio_frame_lists), and a
    wire's fields, then the rest as it is (nodeio.soma's resend_parts) *)
@@ -233,11 +227,11 @@ let resolve host port =
 (* a listening socket on HOST:PORT: [its name], or not found and why *)
 let sock_listen host port backlog =
   match resolve host port with
-  | None -> (false, (0., [ "can't resolve " ^ host ]))
+  | None -> ans_why ("can't resolve " ^ host)
   | Some a ->
       let fd = Unix.socket ~cloexec:true PF_INET SOCK_STREAM 0 in
       (try Unix.setsockopt fd SO_REUSEADDR true; Unix.bind fd a; Unix.listen fd backlog; ans_data [ sock_add fd ]
-       with e -> close_all [ fd ]; (false, (0., [ Printexc.to_string e ])))
+       with e -> close_all [ fd ]; ans_exn e)
 
 (* a dial that doesn't wait: [its name, "connected" or "connecting"] *)
 let sock_dial host port =
@@ -262,7 +256,7 @@ let sock_select ms reads writes =
       let ready l got = List.filter_map (fun (id, fd) -> if List.mem fd got then Some id else None) l in
       ans_data (frame_lists [ ready r rr; ready w ww ])
   | exception Unix.Unix_error (EINTR, _, _) -> ans_data (frame_lists [ []; [] ])
-  | exception Unix.Unix_error (e, _, _) -> (false, (0., [ Unix.error_message e ]))
+  | exception Unix.Unix_error (e, _, _) -> ans_why (Unix.error_message e)
 
 (* a connection the listener has: [its name, the peer's address] *)
 let sock_accept id nonblock =
@@ -306,10 +300,13 @@ let print_lines xs = List.iter print_endline xs
 let argv () = Array.to_list Sys.argv |> List.tl
 let rec forever f s = forever f (f s)
 
+(* an operation whose wire has fields, then the rest (nodeio.soma's
+   resend_fields) *)
+let framed name rest f = match fields_then_args rest with Some (a, b) -> f a b | None -> ans_why (name ^ " came malformed")
+
 (* One operation in its wire form (this match is nodeio.soma's io_of_wire
    for the shell's) *)
 let node_io op =
-  let run_out (ok, out) = (ok, (0., [ out ])) in
   match op with
   (* the clock, the log, the commands' I/O (cli.soma) *)
   | [ "clock" ] -> (true, (Unix.gettimeofday (), []))
@@ -338,14 +335,11 @@ let node_io op =
       List.iter (fun p -> ignore (Unix.waitpid [] p)) pids;
       ans_ok
   (* the binary runner's (node_net.soma, node_git.soma): descriptors, the
-     node's files (a file written whole is the commands' too), processes
-     and programs run to their end *)
+     node's files (a file written whole is the commands' too) and
+     processes *)
   | [ "sock_listen"; host; port; backlog ] -> sock_listen host port (int_of_string backlog)
   | [ "sock_dial"; host; port ] -> sock_dial host port
-  | "sock_select" :: ms :: rest ->
-      (match fields_then_args rest with
-       | Some (reads, writes) -> sock_select ms reads writes
-       | None -> (false, (0., [ "sock_select came malformed" ])))
+  | "sock_select" :: ms :: rest -> framed "sock_select" rest (sock_select ms)
   | [ "sock_accept"; id; nonblock ] -> sock_accept id (nonblock = "true")
   | [ "sock_read"; id ] -> sock_read id
   | [ "sock_write"; id; data ] -> sock_write id data
@@ -353,24 +347,17 @@ let node_io op =
   | [ "sock_close"; id ] -> sock_close id; ans_ok
   | [ "append_synced"; path; text ] -> append_synced path text; ans_ok
   | [ "file_put"; path; text; sync ] -> file_put path text (sync = "true")
-  | [ "file_mode"; path ] -> (match Unix.stat path with st -> ans_data [ Printf.sprintf "%o" st.st_perm ] | exception _ -> ans_flag false)
+  | [ "file_mode"; path ] -> attempt (fun () -> [ Printf.sprintf "%o" (Unix.stat path).st_perm ])
   | [ "rename"; src; dst ] -> tried (fun () -> Unix.rename src dst)
   | [ "sync_dir"; dir ] -> sync_dir dir
   | [ "make_dir"; path ] -> tried (fun () -> Unix.mkdir path 0o755)
   | [ "remove_file"; path ] -> tried (fun () -> Sys.remove path)
   | "start_detached" :: prog :: args -> start_detached prog args
-  | [ "temp_new"; prefix; suffix ] -> (match Filename.temp_file prefix suffix with f -> ans_data [ f ] | exception e -> (false, (0., [ Printexc.to_string e ])))
+  | [ "temp_new"; prefix; suffix ] -> attempt (fun () -> [ Filename.temp_file prefix suffix ])
   | [ "no_sigpipe" ] -> Sys.set_signal Sys.sigpipe Sys.Signal_ignore; ans_ok
-  | "spawn" :: prog :: stdin :: cwd :: rest ->
-      (match fields_then_args rest with
-       | Some (env, args) -> spawn prog stdin cwd env args
-       | None -> (false, (0., [ "spawn came malformed" ])))
+  | "spawn" :: prog :: stdin :: cwd :: rest -> framed "spawn" rest (spawn prog stdin cwd)
   | [ "wait_pid"; pid ] -> wait_pid (int_of_string pid)
   | [ "kill_pid"; pid ] -> (try Unix.kill (int_of_string pid) Sys.sigkill with _ -> ()); ans_ok
-  | "exec" :: prog :: stdin :: rest ->
-      (match fields_then_args rest with
-       | Some (env, args) -> run_out (capture (Array.of_list env) stdin prog args)
-       | None -> (false, (0., [ "exec came malformed" ])))
   (* the host's (nodeio.soma's service_op) *)
   | [ "path_stat"; path ] -> ans_data (path_stat path)
   | [ "temp_dir"; prefix ] -> ans_data [ Filename.temp_dir prefix "" ]
