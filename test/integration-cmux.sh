@@ -73,7 +73,7 @@ printf -- '- add a sub command\n2. add a mul command\nKeep it small.\n' > "$t/go
 # a repository's .plan in a node's checkout (not a git repository here: read as the file is)
 mkdir -p "$t/net/claude/repos/calc"
 printf '# a note\n\n2026-11-15\n* add a sub command\nadd a mul command\nadd a div command\n- add a pow command\n' > "$t/net/claude/repos/calc/.plan"
-printf 'height 7  term 1  leader codex\ntask 1 [closed] calc: - add a sub command\ntask 2 [open] calc: - add a mul command\nbid 1 [merged] task 1 by grok \nbid 2 [pending] task 2 by muse \n' > "$t/net/claude/status.txt"
+printf 'height 7  term 1  leader codex\ntask 1 [closed] calc: - add a sub command\ntask 2 [open] calc: - add a mul command\ntask 3 [closed] calc: add a mod command\ntask 4 [open] calc: add a neg command\nbid 1 [merged] task 1 by grok \nbid 2 [pending stale] task 2 by muse \nbid 3 [rejected] task 3 by codex \nbid 4 [rejected] task 2 by codex \n' > "$t/net/claude/status.txt"
 pc=$here/integrations/cmux/pantheon-cmux
 
 # the plan layout (the default)
@@ -132,7 +132,11 @@ cp "$t/status.keep" "$t/net/claude/status.txt"; ( NET=$t/net ST=$t/net/.cmux; . 
 head -1 "$pm" | grep -q '^## Goal$' || fail "goal headed Goal again"
 grep -q '^~~add a pow command~~$' "$pm" || fail "plan's dropped item"
 ! grep -q 'a note' "$pm" || fail "plan shows a # note"
-grep -q '^- \*\*#2\*\* `open` calc: - add a mul command' "$pm" || fail "plan's tasks: $(cat "$pm")"
+# each task led by its bids' best outcome: merged, pending, rejected, none
+grep -q '^🟢 \*\*#1\*\* `closed` calc: - add a sub command$' "$pm" || fail "a task with a merged bid: $(cat "$pm")"
+grep -q '^🟡 \*\*#2\*\* `open` calc: - add a mul command$' "$pm" || fail "a task with a pending bid (and a rejected one)"
+grep -q '^🔴 \*\*#3\*\* `closed` calc: add a mod command$' "$pm" || fail "a task whose bids were rejected"
+grep -q '^⚪ \*\*#4\*\* `open` calc: add a neg command$' "$pm" || fail "a task with no bids yet"
 # unchanged, it isn't rewritten (the view doesn't redraw for nothing)
 touch -t 202001010000 "$pm"
 ( sed -n "/^ITEMS_AWK='/,/^}'\$/p" "$pc"; sed -n '/^status_of()/,/^}/p; /^render_plan()/,/^}/p' "$pc"; sed -n '/^agents_of()/,/^}/p' "$pc" ) > "$t/fn.sh"
