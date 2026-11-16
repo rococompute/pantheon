@@ -69,11 +69,11 @@ export STUB_DIR="$t" CMUX="$t/bin/cmux" PANTHEON=/bin/true DIPLOMAT_CLI="echo di
 
 # a network: four agents with a key and a genesis
 for a in claude codex grok muse; do mkdir -p "$t/net/$a"; echo '{}' > "$t/net/$a/key.json"; echo '{}' > "$t/net/$a/genesis.json"; done
-printf -- '- add a sub command\n' > "$t/goal.txt"
+printf -- '- add a sub command\n2. add a mul command\nKeep it small.\n' > "$t/goal.txt"
 # a repository's .plan in a node's checkout (not a git repository here: read as the file is)
 mkdir -p "$t/net/claude/repos/calc"
-printf '# a note\n\n2026-11-15\n* add a sub command\nadd a mul command\n- add a pow command\n' > "$t/net/claude/repos/calc/.plan"
-printf 'height 7  term 1  leader codex\ntask 1 [closed] calc: - add a sub command\ntask 2 [open] calc: - add a mul command\n' > "$t/net/claude/status.txt"
+printf '# a note\n\n2026-11-15\n* add a sub command\nadd a mul command\nadd a div command\n- add a pow command\n' > "$t/net/claude/repos/calc/.plan"
+printf 'height 7  term 1  leader codex\ntask 1 [closed] calc: - add a sub command\ntask 2 [open] calc: - add a mul command\nbid 1 [merged] task 1 by grok \nbid 2 [pending] task 2 by muse \n' > "$t/net/claude/status.txt"
 pc=$here/integrations/cmux/pantheon-cmux
 
 # the plan layout (the default)
@@ -113,17 +113,21 @@ PY
 # the plan: goal, the .plan's marks, the tasks
 pm=$t/net/.cmux/plan.md
 head -1 "$pm" | grep -q '^## Goal' || fail "plan opens on its goal, with no title or chain line: $(cat "$pm")"
-grep -q '^## Goal' "$pm" && grep -q '^- add a sub command' "$pm" || fail "plan's goal"
+# each item leads with its icon: its task merged and closed, open with bids, or none
+grep -q '^✅ add a sub command$' "$pm" || fail "goal's done item: $(cat "$pm")"
+grep -q '^⏳ add a mul command$' "$pm" || fail "goal's numbered item being bid on: $(cat "$pm")"
+grep -q '^Keep it small.$' "$pm" || fail "goal's prose line, as it is"
 grep -q '^## Plan: calc' "$pm" || fail "plan's repository"
 grep -q '^### 2026-11-15' "$pm" || fail "plan's day"
-grep -q '^- \[x\] add a sub command' "$pm" || fail "plan's done item"
-grep -q '^- \[ \] add a mul command' "$pm" || fail "plan's open item"
-grep -q '^- ~~add a pow command~~' "$pm" || fail "plan's dropped item"
+[ "$(grep -c '^✅ add a sub command$' "$pm")" = 2 ] || fail "plan's done item"
+[ "$(grep -c '^⏳ add a mul command$' "$pm")" = 2 ] || fail "plan's item being bid on"
+grep -q '^🟡 add a div command$' "$pm" || fail "plan's item not picked up: $(cat "$pm")"
+grep -q '^~~add a pow command~~$' "$pm" || fail "plan's dropped item"
 ! grep -q 'a note' "$pm" || fail "plan shows a # note"
 grep -q '^- \*\*#2\*\* `open` calc: - add a mul command' "$pm" || fail "plan's tasks: $(cat "$pm")"
 # unchanged, it isn't rewritten (the view doesn't redraw for nothing)
 touch -t 202001010000 "$pm"
-( sed -n '/^status_of()/,/^}/p; /^render_plan()/,/^}/p' "$pc"; sed -n '/^agents_of()/,/^}/p' "$pc" ) > "$t/fn.sh"
+( sed -n "/^ITEMS_AWK='/,/^}'\$/p" "$pc"; sed -n '/^status_of()/,/^}/p; /^render_plan()/,/^}/p' "$pc"; sed -n '/^agents_of()/,/^}/p' "$pc" ) > "$t/fn.sh"
 ( NET=$t/net ST=$t/net/.cmux; . "$t/fn.sh"; render_plan )
 [ -z "$(find "$pm" -newer "$t/goal.txt")" ] || fail "an unchanged plan was rewritten"
 # the node scripts: run from where up ran, each with its backend and the node arguments

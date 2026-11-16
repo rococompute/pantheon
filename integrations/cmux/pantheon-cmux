@@ -328,27 +328,67 @@ status_of() {
 # repository's .plan at the market's head (a node's checkout: every node has
 # the same commits) with its marks, and the tasks. Written only when it
 # changed, so the view doesn't redraw for nothing.
+# An item's icon, from the task that covers it (status.txt: "task N [state]
+# SPEC", "bid N [state ...] task N by A"): done, a task for it merged and
+# closed; being bid on, a task for it open with bids; else not picked up yet. A
+# task covers an item when its spec holds the item's text, letters and digits
+# only (a leader quotes the item, not always with its backticks), or else, for
+# a numbered goal line, says "goal step N". Items lead with their icon, one
+# to a paragraph, in place of a list's numbers or dots. ITEMS=goal: the goal
+# file's list lines, its other lines as they are; ITEMS=plan: a .plan.
+ITEMS_AWK='
+function norm(s) { s = tolower(s); gsub(/[^a-z0-9]/, "", s); return s }
+function icon(text, num,   k, j, id, by_text, st) {
+  k = norm(text); st = ""
+  for (j = 1; j <= n; j++) { id = ids[j]
+    if (length(k) >= 8 && index(spec[id], k)) { by_text = 1; st = st state(id) }
+  }
+  if (!by_text && num != "")
+    for (j = 1; j <= n; j++) { id = ids[j]; if (raw[id] ~ ("goal step " num "([^0-9]|$)")) st = st state(id) }
+  return st ~ /D/ ? "✅" : st ~ /B/ ? "⏳" : "🟡"
+}
+function state(id) { return (st_[id] == "closed" && merged[id]) ? "D" : (st_[id] == "open" && bids[id]) ? "B" : "-" }
+FNR == NR {
+  if ($1 == "task") { id = $2; s = $3; gsub(/[^a-z]/, "", s); st_[id] = s
+    line = $0; sub(/^task [0-9]+ \[[a-z]+\] /, "", line); spec[id] = norm(line); raw[id] = tolower(line); ids[++n] = id }
+  else if ($1 == "bid") { for (i = 3; i < NF; i++) if ($i == "task") { t = $(i + 1); bids[t]++; if ($3 ~ /merged/) merged[t]++; break } }
+  next
+}
+items == "goal" {
+  if (match($0, /^[ \t]*([-*+]|[0-9]+[.)])[ \t]+/)) {
+    marker = substr($0, 1, RLENGTH); text = substr($0, RLENGTH + 1)
+    num = ""; if (marker ~ /[0-9]/) { num = marker; gsub(/[^0-9]/, "", num) }
+    printf "\n%s %s\n\n", icon(text, num), text
+  } else print
+  next
+}
+items == "plan" {
+  if (/^#/ || /^[ \t]*$/) next
+  if (/^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]/) { printf "%s### %s\n\n", (days++ ? "\n" : ""), $0; next }
+  if (/^[+*] /) { printf "✅ %s\n\n", substr($0, 3); next }
+  if (/^- /) { printf "~~%s~~\n\n", substr($0, 3); next }
+  printf "%s %s\n\n", icon($0, ""), $0
+}'
+
 render_plan() {
   a1=$(agents_of "$NET" | head -1) f=$NET/$a1/status.txt
+  sf=$f; [ -f "$sf" ] || sf=/dev/null
   # (no title or chain line: the height, term and leader are in the sidebar and
   # the status tab, and with them here the file changed with every block)
   {
     if [ -f "$f" ] && grep -q '^finished:' "$f"; then printf '**Finished:** every agent, as leader, found no more tasks.\n\n'; fi
     g=$(cat "$ST/goal" 2>/dev/null || true)
-    if [ -n "$g" ] && [ -f "$g" ]; then printf '## Goal\n\n'; cat "$g"; printf '\n'; fi
+    if [ -n "$g" ] && [ -f "$g" ]; then
+      printf '## Goal\n\n'
+      awk -v items=goal "$ITEMS_AWK" "$sf" "$g"; printf '\n'
+    fi
     for r in "$NET/$a1"/repos/*/; do
       # at the node's head (its checkout follows it), else as the file is
       plan=$(git -C "$r" show HEAD:.plan 2>/dev/null || cat "$r/.plan" 2>/dev/null) || continue
       [ -n "$plan" ] || continue
       printf '## Plan: %s\n\n' "$(basename "$r")"
       # .plan: "# " comments, a date per day, an item a line: "+ " or "* " done, "- " dropped
-      awk '/^#/ || /^[ \t]*$/ { next }
-           /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]/ { printf "%s### %s\n\n", (days++ ? "\n" : ""), $0; next }
-           /^[+*] / { printf "- [x] %s\n", substr($0, 3); next }
-           /^- / { printf "- ~~%s~~\n", substr($0, 3); next }
-           { printf "- [ ] %s\n", $0 }' <<EOF
-$plan
-EOF
+      printf '%s\n' "$plan" | awk -v items=plan "$ITEMS_AWK" "$sf" -
       printf '\n'
     done
     if [ -f "$f" ] && grep -q '^task ' "$f"; then
