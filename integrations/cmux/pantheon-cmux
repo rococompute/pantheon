@@ -375,8 +375,8 @@ render_plan() {
   # (no title or chain line: the height, term and leader are in the sidebar and
   # the status tab, and with them here the file changed with every block)
   {
-    # a finished market's goal is headed Done
-    head=Goal; [ -f "$f" ] && grep -q '^finished:' "$f" && head=Done
+    # the goal is headed Market, and Done once the market finished
+    head=Market; [ -f "$f" ] && grep -q '^finished:' "$f" && head=Done
     g=$(cat "$ST/goal" 2>/dev/null || true)
     if [ -n "$g" ] && [ -f "$g" ]; then
       printf '## %s\n\n' "$head"
@@ -392,7 +392,7 @@ render_plan() {
       printf '\n'
     done
     if [ -f "$f" ] && grep -q '^task ' "$f"; then
-      printf '## Tasks\n\n'
+      printf '## Bids\n\n'
       # each led by its bids' best outcome: one merged (green), one pending
       # (yellow), rejected ones (red), else none yet (white)
       awk '$1 == "bid" { for (i = 3; i < NF; i++) if ($i == "task") { t = $(i + 1); s = $3; gsub(/[^a-z]/, "", s)
