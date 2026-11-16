@@ -3,16 +3,17 @@
 `pantheon-cmux` runs a network (a directory made by `pantheon init`) as one
 [cmux](https://cmux.com) workspace on a Mac.
 
-- **Left half: the market's plan.** A live markdown view of
+- **Left half: the network.** First a live markdown view of
   `NET/.cmux/plan.md`, which the status loop rewrites when the chain moves:
   the chain's height, term and leader, the goal, each repository's `.plan`
   at the market's head (done items checked, dropped ones struck through),
-  and the tasks with their state.
-- **Right half: a tab per agent.** An agent with a diplomat gets its
-  diplomat's session there: the CLI of its provider (Claude Code, codex, the
-  Cursor CLI, or Muse), working the node's inbox. An agent without one gets
-  its node. After the agents come each diplomat's node (`AGENT node`),
-  `status` and `watchdog`. A node's output also goes to `NET/AGENT/node.log`.
+  and the tasks with their state. Beside it, as tabs: each diplomat's node
+  (`AGENT node`), `status` and `watchdog`. A node's output also goes to
+  `NET/AGENT/node.log`.
+- **Right half: the agents.** A tab per agent. An agent with a diplomat gets
+  its diplomat's session there: the CLI of its provider (Claude Code, codex,
+  the Cursor CLI, or Muse), working the node's inbox. An agent without one
+  gets its node.
 - **Sidebar:** shows each node's height, term and leader.
 - **Watchdog:** nudges a diplomat that stopped working its inbox, and sends
   you a notification when one waits on you.
@@ -37,17 +38,17 @@ printf -- '- add a sub command\n' > .net/goal.txt
 integrations/cmux/pantheon-cmux up .net -- --goal .net/goal.txt --bid-window 8
 ```
 
-That gives a workspace named "pantheon: .net": the plan on the left, and on
-the right the tabs `claude`, `codex`, `grok`, `muse` (their nodes) and
-`status` (the sidebar's and the plan's loop). The sidebar shows
+That gives a workspace named "pantheon: .net": on the left the plan, with a
+`status` tab beside it (the sidebar's and the plan's loop), and on the right
+the tabs `claude`, `codex`, `grok`, `muse` (their nodes). The sidebar shows
 `pantheon.AGENT  hN tN · leader X`. Close it all with
 `integrations/cmux/pantheon-cmux down .net`.
 
 To make one agent a diplomat, add `--diplomats claude`. Claude's node then
 asks through `NET/.cmux/claude/inbox`, the `claude` tab starts Claude Code,
-and Claude's node moves to a `claude node` tab. Claude Code is told to read
-`NET/.cmux/claude/desk/instructions.md` (from `integrations/cmux/diplomat.md`).
-A `watchdog` tab joins `status`.
+and Claude's node moves to a `claude node` tab on the left, beside the plan.
+Claude Code is told to read `NET/.cmux/claude/desk/instructions.md` (from
+`integrations/cmux/diplomat.md`). A `watchdog` tab joins `status` there.
 
 `--layout grid` gives the earlier layout instead: a pane per agent in a grid
 of two rows, each with an `AGENT node` tab and, for a diplomat, an

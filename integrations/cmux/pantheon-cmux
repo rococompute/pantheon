@@ -16,8 +16,9 @@
 #       --diplomats "A B"          these agents answer through an interactive session (default: none)
 #       --backends A=B,...         the other agents' backends, as for `pantheon up` (default: scripted)
 #       --yolo                     start the diplomats' CLIs with their approvals off (read "Isolation")
-#       --layout plan|grid         plan (default): the market's plan on the left half, live, and on the
-#                                  right a tab per agent (its diplomat, else its node); grid: a pane per agent
+#       --layout plan|grid         plan (default): the left half the network's (the market's plan, live,
+#                                  then the diplomats' nodes, status and the watchdog as tabs), the right
+#                                  a tab per agent (its diplomat, else its node); grid: a pane per agent
 #   pantheon-cmux status NET       the sidebar's and the plan's loop (up starts it in a "status" tab)
 #   pantheon-cmux watchdog NET [--check|--once]
 #                                  the watchdog's loop, a pass a minute (up starts it in a "watchdog"
@@ -169,15 +170,15 @@ tab() {
   printf '%s' "$t_s"
 }
 
-# The market's plan on the left half (cmux's markdown viewer, on the file
-# the status loop keeps); on the right, one pane: a tab per agent (its
-# diplomat's session, else its node), then the diplomats' nodes, status
-# and the watchdog
+# The left half is the network's: the market's plan (cmux's markdown
+# viewer, on the file the status loop keeps), then the diplomats' nodes,
+# status and the watchdog, as tabs beside it. The right half is the agents':
+# a tab per agent (its diplomat's session, else its node).
 layout_plan() {
   render_plan
   cm rename-tab --workspace "$w" --surface "$s1" "$first" >/dev/null
   if in_list "$first" "$sessions"; then printf '%s\n' "$s1" > "$ST/$first/surface"; else printf '%s\n' "$s1" > "$ST/$first/node-surface"; fi
-  cm markdown open "$ST/plan.md" --workspace "$w" --surface "$s1" --direction left --focus false >/dev/null \
+  mo=$(cm --id-format both markdown open "$ST/plan.md" --workspace "$w" --surface "$s1" --direction left --focus false) \
     || say "cmux didn't open the plan's view: open $ST/plan.md in it by hand"
   p=$(pane_of "$w" "$s1") k=1
   for a in $agents; do
@@ -185,13 +186,20 @@ layout_plan() {
     s=$(tab "$p" "sh $(q "$(main_of "$a")")" "$a" "$k"); k=$((k + 1))
     if in_list "$a" "$sessions"; then printf '%s\n' "$s" > "$ST/$a/surface"; else printf '%s\n' "$s" > "$ST/$a/node-surface"; fi
   done
+  # the plan's pane, from what markdown open says (pane=pane:N (UUID)); without
+  # one, the network's tabs go after the agents'
+  lp=$(printf '%s' "$mo" | sed -n 's/.*pane=pane:[0-9]* (\([0-9A-Fa-f-]*\)).*/\1/p')
+  plan_s=$(printf '%s' "$mo" | first_uuid)
+  if [ -n "$lp" ]; then j=1; else lp=$p j=$k plan_s=""; fi
   for a in $sessions; do
-    s=$(tab "$p" "sh $(q "$ST/$a/node.sh")" "$a node" "$k"); k=$((k + 1))
+    s=$(tab "$lp" "sh $(q "$ST/$a/node.sh")" "$a node" "$j"); j=$((j + 1))
     printf '%s\n' "$s" > "$ST/$a/node-surface"
   done
-  tab "$p" "sh $(q "$self") status $(q "$NET")" status "$k" >/dev/null; k=$((k + 1))
-  [ -z "$sessions" ] || tab "$p" "sh $(q "$self") watchdog $(q "$NET")" watchdog "$k" >/dev/null
-  # (each new tab is selected as it's made: back to the first agent's)
+  tab "$lp" "sh $(q "$self") status $(q "$NET")" status "$j" >/dev/null; j=$((j + 1))
+  [ -z "$sessions" ] || tab "$lp" "sh $(q "$self") watchdog $(q "$NET")" watchdog "$j" >/dev/null
+  # (each new tab is selected as it's made: back to the plan on the left, and
+  # the first agent's on the right, which keeps the focus)
+  [ -z "$plan_s" ] || cm reorder-surface --workspace "$w" --surface "$plan_s" --index 0 --focus true >/dev/null 2>&1 || true
   cm reorder-surface --workspace "$w" --surface "$s1" --index 0 --focus true >/dev/null 2>&1 || true
 }
 
@@ -285,7 +293,7 @@ for x in json.load(sys.stdin)["workspaces"]:
   printf '%s\n' "$w" > "$ST/workspace"
   s1=$(cm --json --id-format both list-panes --workspace "$w" | python3 -c 'import json,sys; print(json.load(sys.stdin)["panes"][0]["surface_ids"][0])')
   if [ "$layout" = plan ]; then layout_plan; else layout_grid; fi
-  say "$NET is up in cmux workspace \"pantheon: $(basename "$NET")\" ($w): $([ "$layout" = plan ] && echo "the market's plan on the left, a tab per agent on the right" || echo "a pane per agent") ($(echo $agents))"
+  say "$NET is up in cmux workspace \"pantheon: $(basename "$NET")\" ($w): $([ "$layout" = plan ] && echo "the market's plan on the left with the network's tabs (nodes, status, watchdog), a tab per agent on the right" || echo "a pane per agent") ($(echo $agents))"
   [ -z "$sessions" ] || say "diplomats:$sessions, in their agents' tabs$([ -n "$yolo" ] && echo ', approvals off' || echo '; answer their approvals there')"
   say "stop it with: pantheon-cmux down $NET"
 }

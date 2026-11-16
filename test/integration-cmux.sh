@@ -44,6 +44,10 @@ elif cmd == "list-panes":
 elif cmd == "new-split":
     s = uuid(); st["panes"].append({"id": uuid(), "surface_ids": [s], "cmds": [opt("--command")]}); save()
     print("OK surface:9 (%s) workspace:1 (%s)" % (s, st["ws"][0]["id"]))
+elif cmd == "markdown":
+    # a pane of its own, as cmux's viewer is, on the left
+    s = uuid(); p = uuid(); st["panes"].insert(0, {"id": p, "surface_ids": [s], "cmds": ["markdown " + args[i + 2]]}); save()
+    print("OK surface=surface:9 (%s) pane=pane:9 (%s) path=%s" % (s, p, args[i + 2]))
 elif cmd == "new-surface":
     s = uuid()
     for p in st["panes"]:
@@ -90,6 +94,18 @@ grep -q "rename-tab .* claude node" "$t/ledger" || fail "claude's node tab"
 ! grep -q "codex node" "$t/ledger" || fail "codex's node is its agent's tab"
 grep -q "rename-tab .* status" "$t/ledger" && grep -q "rename-tab .* watchdog" "$t/ledger" || fail "status and watchdog tabs"
 n=$(grep -c '^new-surface' "$t/ledger" || true); [ "$n" = 6 ] || fail "6 tabs beside the first (3 agents, claude's node, status, watchdog), not $n"
+# the left half is the network's: the plan, then claude's node, status and the
+# watchdog; the right half the agents': claude's diplomat, then the other three
+python3 - "$t/cmux.json" "$t/net/.cmux" <<'PY' || fail "the halves"
+import json, sys
+st = json.load(open(sys.argv[1])); d = sys.argv[2]
+left, right = st["panes"][0]["cmds"], st["panes"][1]["cmds"]
+want_left = ["markdown " + d + "/plan.md", "sh '" + d + "/claude/node.sh'"]
+assert left[:2] == want_left, left
+assert len(left) == 4 and left[2].endswith(" status '" + d.rsplit("/.cmux", 1)[0] + "'") and " watchdog " in left[3], left
+assert right == ["sh '" + d + "/claude/session.sh'"] + ["sh '" + d + "/" + a + "/node.sh'" for a in ("codex", "grok", "muse")], right
+assert len(st["panes"]) == 2, st["panes"]
+PY
 # the plan: goal, the .plan's marks, the tasks
 pm=$t/net/.cmux/plan.md
 grep -q '^# The market: net' "$pm" || fail "plan's title: $(cat "$pm")"
