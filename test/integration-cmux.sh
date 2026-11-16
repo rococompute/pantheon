@@ -1,10 +1,10 @@
 #!/bin/sh
 # integrations/cmux/pantheon-cmux against a stub of cmux's CLI (no cmux, no
 # Mac needed): up makes one workspace with the market's plan on the left (the
-# goal, a .plan with its marks, the tasks) beside status and the watchdog, and a
+# goal, a .plan with its marks, the bids) beside the watchdog, and a
 # pane per agent on the right (its diplomat, then its node), or with --layout
 # grid a pane per agent; a diplomat's tab and inbox are wired
-# to its node's backend; the status and watchdog tabs; it
+# to its node's backend; the watchdog's tab, and no status tab; it
 # refuses a second up and a network whose nodes run outside it; the sidebar's
 # line is read from status.txt; the watchdog nudges a diplomat idle for two
 # passes, and leaves alone one that waits on a person (notified once) or is
@@ -93,9 +93,10 @@ done
 grep -q "^new-split .*--command sh '$t/net/.cmux/codex/node.sh'" "$t/ledger" || fail "codex's pane runs its node"
 grep -q "rename-tab .* claude node" "$t/ledger" || fail "claude's node tab"
 ! grep -q "codex node" "$t/ledger" || fail "codex's node is its agent's tab"
-grep -q "rename-tab .* status" "$t/ledger" && grep -q "rename-tab .* watchdog" "$t/ledger" || fail "status and watchdog tabs"
-n=$(grep -c '^new-surface' "$t/ledger" || true); [ "$n" = 3 ] || fail "3 tabs (claude's node, status, watchdog), not $n"
-# the left half is the network's: the plan, status and the watchdog; the right
+grep -q "rename-tab .* watchdog" "$t/ledger" || fail "the watchdog's tab"
+! grep -q "rename-tab .* status" "$t/ledger" || fail "no status tab"
+n=$(grep -c '^new-surface' "$t/ledger" || true); [ "$n" = 2 ] || fail "2 tabs (claude's node, watchdog), not $n"
+# the left half is the network's: the plan and the watchdog; the right
 # half a pane per agent: claude's diplomat with its node's tab, and the other
 # three agents' nodes (no diplomat: their node is their agent's tab)
 python3 - "$t/cmux.json" "$t/net/.cmux" <<'PY' || fail "the halves"
@@ -104,7 +105,7 @@ st = json.load(open(sys.argv[1])); d = sys.argv[2]; net = d.rsplit("/.cmux", 1)[
 panes = [p["cmds"] for p in st["panes"]]
 assert len(panes) == 5, panes
 left = panes[0]
-assert left[0] == "markdown " + d + "/plan.md" and left[1].endswith(" status '" + net + "'") and " watchdog " in left[2] and len(left) == 3, left
+assert left[0] == "markdown " + d + "/plan.md" and left[1].endswith(" watchdog '" + net + "'") and len(left) == 2, left
 agents = {p[0]: p for p in panes[1:]}
 assert agents["sh '" + d + "/claude/session.sh'"] == ["sh '" + d + "/claude/session.sh'", "sh '" + d + "/claude/node.sh'"], agents
 for a in ("codex", "grok", "muse"):
@@ -214,6 +215,10 @@ sh "$pc" watchdog "$t/net" --once > /dev/null; sh "$pc" watchdog "$t/net" --once
 sh "$pc" watchdog "$t/net" --check | grep -q "watchdog: claude finished" || fail "--check names a finished market's diplomat"
 timeout 20 sh "$pc" watchdog "$t/net" > "$t/wd" 2>&1 || fail "the watchdog's loop didn't end for a finished market"
 grep -q "the market finished" "$t/wd" || fail "the watchdog says why it stops: $(cat "$t/wd")"
+# the watchdog keeps what the status tab did: the sidebar, the plan, the finish notice
+grep -q '^set-status pantheon.claude finished at h44' "$t/ledger" || fail "the watchdog sets the sidebar: $(grep set-status "$t/ledger" | tail -2)"
+head -1 "$t/net/.cmux/plan.md" | grep -q '^## Done$' || fail "the watchdog renders the plan: $(head -1 "$t/net/.cmux/plan.md")"
+[ -e "$t/net/.cmux/finished" ] && [ -e "$t/net/.cmux/claude/inbox/finished" ] && grep -q '^notify --title Pantheon: the market finished' "$t/ledger" || fail "the watchdog tells the diplomats and you the market finished"
 printf 'height 43  term 2  leader grok\n' > "$t/net/claude/status.txt"
 
 # down
@@ -228,6 +233,7 @@ n=$(grep -c '^new-split' "$t/ledger" || true); [ "$n" = 3 ] || fail "a pane per 
 ! grep -q '^markdown' "$t/ledger" || fail "the grid has no plan's view"
 for a in claude codex grok muse; do grep -q "rename-tab .* $a node" "$t/ledger" || fail "$a's node tab (grid)"; done
 grep -q "rename-tab .* claude diplomat" "$t/ledger" || fail "claude's diplomat tab (grid)"
+grep -q "rename-tab .* watchdog" "$t/ledger" && ! grep -q "rename-tab .* status" "$t/ledger" || fail "the grid's watchdog tab, and no status tab"
 if sh "$pc" up "$t/net" --layout tiles > "$t/out4" 2>&1; then fail "--layout tiles"; fi
 grep -q -- "--layout tiles: plan" "$t/out4" || fail "--layout tiles refused: $(cat "$t/out4")"
 sh "$pc" down "$t/net" > /dev/null

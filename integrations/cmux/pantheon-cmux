@@ -4,9 +4,9 @@
 # the chain), and on the right a tab per agent: its diplomat's session
 # (Claude Code, codex, Grok Build, Muse) working its node's inbox, or,
 # for an agent without one, its node. The workspace's sidebar shows each
-# node's height, term and leader. A watchdog nudges a diplomat that stopped
-# working its inbox, and notifies you when one waits on a person (an
-# approval, a question).
+# node's height, term and leader. A watchdog keeps the sidebar and the plan,
+# says each term's leader, nudges a diplomat that stopped working its inbox,
+# and notifies you when one waits on a person (an approval, a question).
 # Run it on a Mac with cmux; it follows integrations/herdr's plan.
 #
 #   pantheon-cmux up NET [options] [-- NODE ARGS...]
@@ -17,12 +17,12 @@
 #       --backends A=B,...         the other agents' backends, as for `pantheon up` (default: scripted)
 #       --yolo                     accepted, and the default: every diplomat runs with approvals off (read "Isolation")
 #       --layout plan|grid         plan (default): the left half the network's (the market's plan, live,
-#                                  with status and the watchdog as tabs), the right a pane per agent (its
+#                                  with the watchdog as a tab), the right a pane per agent (its
 #                                  diplomat's session, then its node's tab); grid: a pane per agent
-#   pantheon-cmux status NET       the sidebar's and the plan's loop (up starts it in a "status" tab)
 #   pantheon-cmux watchdog NET [--check|--once]
-#                                  the watchdog's loop, a pass a minute (up starts it in a "watchdog"
-#                                  tab when there are diplomats); --check: what it sees now, nudging
+#                                  the watchdog's loop (up starts it in a "watchdog" tab): the sidebar,
+#                                  the plan and each term's leader every 10 seconds, the diplomats a
+#                                  pass a minute; --check: what it sees of the diplomats now, nudging
 #                                  no one; --once: one pass, nudging
 #   pantheon-cmux down NET         close the workspace, which stops its nodes and sessions
 #
@@ -175,8 +175,8 @@ tab() {
 }
 
 # The left half is the network's: the market's plan (cmux's markdown
-# viewer, on the file the status loop keeps), with status and the watchdog
-# as tabs beside it. The right half is the agents': a pane per agent, in a
+# viewer, on the file the watchdog keeps), with the watchdog as a tab beside
+# it. The right half is the agents': a pane per agent, in a
 # grid of two rows, each with the agent's tab (its diplomat's session, else
 # its node) and then, for a diplomat, its node's tab.
 layout_plan() {
@@ -204,12 +204,11 @@ layout_plan() {
     printf '%s\n' "$s" > "$ST/$a/node-surface"
   done
   # the plan's pane, from what markdown open says (pane=pane:N (UUID)); without
-  # one, status and the watchdog go in the first agent's pane
+  # one, the watchdog goes in the first agent's pane
   lp=$(printf '%s' "$mo" | sed -n 's/.*pane=pane:[0-9]* (\([0-9A-Fa-f-]*\)).*/\1/p')
   plan_s=$(printf '%s' "$mo" | first_uuid)
   if [ -n "$lp" ]; then j=1; else lp=$(pane_of "$w" "$s1") j=2 plan_s=""; fi
-  tab "$lp" "sh $(q "$self") status $(q "$NET")" status "$j" >/dev/null
-  [ -z "$sessions" ] || tab "$lp" "sh $(q "$self") watchdog $(q "$NET")" watchdog "$((j + 1))" >/dev/null
+  tab "$lp" "sh $(q "$self") watchdog $(q "$NET")" watchdog "$j" >/dev/null
   # (each new tab is selected as it's made: back to each diplomat's session,
   # the plan, and last the first agent's tab, which keeps the focus)
   for a in $sessions; do
@@ -220,7 +219,7 @@ layout_plan() {
 }
 
 # A pane per agent in a grid of two rows, its node's tab and its diplomat's;
-# status and the watchdog in the first pane
+# the watchdog in the first pane
 layout_grid() {
   cm rename-tab --workspace "$w" --surface "$s1" "$first node" >/dev/null
   cols=$(( (n + 1) / 2 )) i=1 tops=$s1
@@ -242,8 +241,7 @@ layout_grid() {
   done
   p1=$(pane_of "$w" "$s1")
   k=1; in_list "$first" "$sessions" && k=2
-  tab "$p1" "sh $(q "$self") status $(q "$NET")" status "$k" >/dev/null
-  [ -z "$sessions" ] || tab "$p1" "sh $(q "$self") watchdog $(q "$NET")" watchdog "$((k + 1))" >/dev/null
+  tab "$p1" "sh $(q "$self") watchdog $(q "$NET")" watchdog "$k" >/dev/null
 }
 
 cmd_up() {
@@ -309,7 +307,7 @@ for x in json.load(sys.stdin)["workspaces"]:
   printf '%s\n' "$w" > "$ST/workspace"
   s1=$(cm --json --id-format both list-panes --workspace "$w" | python3 -c 'import json,sys; print(json.load(sys.stdin)["panes"][0]["surface_ids"][0])')
   if [ "$layout" = plan ]; then layout_plan; else layout_grid; fi
-  say "$NET is up in cmux workspace \"pantheon: $(basename "$NET")\" ($w): $([ "$layout" = plan ] && echo "the market's plan on the left with status and the watchdog, a pane per agent on the right (the agent, then its node)" || echo "a pane per agent") ($(echo $agents))"
+  say "$NET is up in cmux workspace \"pantheon: $(basename "$NET")\" ($w): $([ "$layout" = plan ] && echo "the market's plan on the left with the watchdog, a pane per agent on the right (the agent, then its node)" || echo "a pane per agent") ($(echo $agents))"
   [ -z "$sessions" ] || say "diplomats:$sessions, in their agents' tabs, with approvals off"
   say "stop it with: pantheon-cmux down $NET"
 }
@@ -445,29 +443,23 @@ render_plan() {
   if cmp -s "$ST/plan.md.tmp" "$ST/plan.md"; then rm -f "$ST/plan.md.tmp"; else mv "$ST/plan.md.tmp" "$ST/plan.md"; fi
 }
 
-cmd_status() {
-  net_arg "${1:-}" status; need_cmux
-  w=$(workspace); [ -n "$w" ] || die "$NET isn't up in cmux: pantheon-cmux up $NET"
-  while :; do
-    clear 2>/dev/null || true
-    printf 'Pantheon network %s, %s\n\n' "$NET" "$(date '+%H:%M:%S')"
-    for a in $(agents_of "$NET"); do
-      line=$(status_of "$a")
-      printf '  %-10s %s\n' "$a" "$line"
-      # keyed pantheon.AGENT: cmux keeps some agents' names (codex, grok) for its own
-      cm set-status "pantheon.$a" "$line" --workspace "$w" >/dev/null 2>&1 || true
-    done
-    render_plan
-    # a finishing market (genesis finish=1) that finished: its nodes stop on
-    # their own; tell the diplomats (their inbox wait says so) and you, once
-    a1=$(agents_of "$NET" | head -1)
-    if [ ! -e "$ST/finished" ] && grep -q '^finished:' "$NET/$a1/status.txt" 2>/dev/null; then
-      : > "$ST/finished"
-      for a in $(agents_of "$NET"); do [ -d "$ST/$a/inbox" ] && : > "$ST/$a/inbox/finished"; done
-      cm notify --title "Pantheon: the market finished" --body "Every agent, as leader, found no more tasks: the nodes stopped. pantheon-cmux down $NET closes the workspace." --workspace "$w" >/dev/null 2>&1 || true
-    fi
-    sleep 10
+# One pass of what the watchdog keeps: each node's line in the sidebar, the
+# plan, and, once a finishing market (genesis finish=1) finished (its nodes
+# stop on their own), word to the diplomats (their inbox wait says so) and
+# to you, once
+status_pass() {
+  w=$(workspace)
+  for a in $(agents_of "$NET"); do
+    # keyed pantheon.AGENT: cmux keeps some agents' names (codex, grok) for its own
+    cm set-status "pantheon.$a" "$(status_of "$a")" --workspace "$w" >/dev/null 2>&1 || true
   done
+  render_plan
+  a1=$(agents_of "$NET" | head -1)
+  if [ ! -e "$ST/finished" ] && grep -q '^finished:' "$NET/$a1/status.txt" 2>/dev/null; then
+    : > "$ST/finished"
+    for a in $(agents_of "$NET"); do [ -d "$ST/$a/inbox" ] && : > "$ST/$a/inbox/finished"; done
+    cm notify --title "Pantheon: the market finished" --body "Every agent, as leader, found no more tasks: the nodes stopped. pantheon-cmux down $NET closes the workspace." --workspace "$w" >/dev/null 2>&1 || true
+  fi
 }
 
 # AGENT's session state, from cmux's hooks: working, idle, done, completed,
@@ -548,11 +540,13 @@ cmd_watchdog() {
     --check) for a in $(agents_of "$NET"); do dry=1 watch_agent "$a"; done; return 0 ;;
     --once) note_leaders; for a in $(agents_of "$NET"); do watch_agent "$a" || true; done; return 0 ;;
   esac
-  say "watching the diplomats of $NET every minute, and saying each term's leader (all of them in $ST/leaders.log)"
+  say "keeping $NET's sidebar and plan, saying each term's leader (all of them in $ST/leaders.log), and watching its diplomats every minute"
+  p=0
   while :; do
-    note_leaders
+    status_pass; note_leaders
     if market_finished; then say "the market finished, so the diplomats are done: the watchdog stops, and nudges no one"; return 0; fi
-    for a in $(agents_of "$NET"); do watch_agent "$a" || true; done; sleep 60
+    if [ $((p % 6)) -eq 0 ]; then for a in $(agents_of "$NET"); do watch_agent "$a" || true; done; fi
+    p=$((p + 1)); sleep 10
   done
 }
 
@@ -573,6 +567,6 @@ cmd_down() {
 
 c=${1:-}; [ $# -gt 0 ] && shift
 case $c in
-  up|status|watchdog|down) "cmd_$c" "$@" ;;
+  up|watchdog|down) "cmd_$c" "$@" ;;
   *) awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "$0"; [ -z "$c" ] || [ "$c" = help ] || [ "$c" = -h ] || exit 1 ;;
 esac

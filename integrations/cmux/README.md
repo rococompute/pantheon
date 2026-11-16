@@ -4,7 +4,7 @@
 [cmux](https://cmux.com) workspace on a Mac.
 
 - **Left half: the network.** A live markdown view of `NET/.cmux/plan.md`,
-  which the status loop rewrites when it changes: the goal under **Market
+  which the watchdog rewrites when it changes: the goal under **Market
   (X leader)**, X the term's leader (**Market** while one is drawn, **Done**
   once a finishing market finished), and each repository's `.plan`
   at the market's head, every item led by its status (✅ done, ⏳ being bid on,
@@ -14,15 +14,16 @@
   leader's for a merge or a rejection (what it does for the goal, or why not),
   else its bidder's; inside, its bidder's title and note and the leader's
   reason. The tasks the bids answer stay out of the view. The chain's height, term
-  and leader are in the sidebar and the `status` tab. Beside it, as tabs: `status` and `watchdog`.
+  and leader are in the sidebar, and each term's leader in the `watchdog` tab beside it.
 - **Right half: a pane per agent,** in a grid of two rows. An agent with a
   diplomat has two tabs there: its diplomat's session, the CLI of its
   provider (Claude Code, codex, Grok Build, or Muse) working the node's inbox,
   then its node (`AGENT node`). An agent without one has its node. A node's
   output also goes to `NET/AGENT/node.log`.
 - **Sidebar:** shows each node's height, term and leader.
-- **Watchdog:** nudges a diplomat that stopped working its inbox, and sends
-  you a notification when one waits on you.
+- **Watchdog:** keeps the sidebar and the plan, says each term's leader,
+  nudges a diplomat that stopped working its inbox, and sends you a
+  notification when one waits on you.
 - **A finishing market** (`pantheon init ... --param finish=1`): when it
   finishes, its nodes stop on their own, the plan view heads its goal **Done**, the
   sidebar says `finished at hN`, each diplomat's inbox wait tells it to stop,
@@ -30,7 +31,6 @@
 
 ```
 pantheon-cmux up NET [--diplomats "A B"] [--backends A=B,...] [--layout plan|grid] [-- NODE ARGS...]
-pantheon-cmux status NET          # the sidebar's and the plan's loop (up starts it)
 pantheon-cmux watchdog NET [--check|--once]
 pantheon-cmux down NET            # close the workspace: nodes and sessions stop
 ```
@@ -49,7 +49,7 @@ integrations/cmux/pantheon-cmux up .net -- --goal .net/goal.txt --bid-window 8
 ```
 
 That gives a workspace named "pantheon: .net": on the left the plan, with a
-`status` tab beside it (the sidebar's and the plan's loop), and on the right
+`watchdog` tab beside it (it keeps the sidebar and the plan), and on the right
 a pane for each of `claude`, `codex`, `grok` and `muse` (their nodes). The sidebar shows
 `pantheon.AGENT  hN tN · leader X`. Close it all with
 `integrations/cmux/pantheon-cmux down .net`.
@@ -58,7 +58,7 @@ To make one agent a diplomat, add `--diplomats claude`. Claude's node then
 asks through `NET/.cmux/claude/inbox`, the `claude` tab starts Claude Code,
 and Claude's node moves to a `claude node` tab beside it, in Claude's pane.
 Claude Code is told to read `NET/.cmux/claude/desk/instructions.md` (from
-`integrations/cmux/diplomat.md`). A `watchdog` tab joins `status` there.
+`integrations/cmux/diplomat.md`), and the `watchdog` tab watches its session too.
 
 `--layout grid` gives the earlier layout instead: a pane per agent in a grid
 of two rows, each with an `AGENT node` tab and, for a diplomat, an
@@ -86,7 +86,12 @@ All its state is in `NET/.cmux/`:
 
 ## The watchdog
 
-The watchdog reads each diplomat's state from `cmux current --json`, which
+The `watchdog` tab runs with or without diplomats. Every 10 seconds it sets
+each node's line in the sidebar, rewrites the plan view when it changed, and
+says each new term's leader; once a finishing market finished, it tells the
+diplomats and you, and stops. Once a minute it watches the diplomats.
+
+It reads each diplomat's state from `cmux current --json`, which
 cmux's hooks for Claude Code, codex, Grok, Muse and Cursor fill in. It
 matches a session by its tab's id.
 
