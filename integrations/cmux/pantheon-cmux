@@ -40,6 +40,15 @@
 #   DIPLOMAT_CLI  a command to start every diplomat with instead of its provider's CLI (it gets
 #                 the prompt as its last argument); for another CLI, or for a test
 #   GROK_MODEL    Grok Build's model for a grok diplomat (default: Grok Build's own)
+#   PANTHEON_RUNS where each run's record is kept (default: ~/.pantheon/runs)
+#
+# Every run is recorded by default, outside NET, so removing NET loses
+# nothing: PANTHEON_RUNS/NAME-YYYYMMDD-HHMMSS holds each node's blocks.log
+# (every signed transaction: tasks, bids with their patches, picks, merges,
+# rejections and their reasons, closes, votes), status.txt, node.log and
+# genesis.json (never key.json), leaders.log, plan.md, the goal, and, once the
+# market finished or went down, a git bundle of each repository as the market
+# left it. up makes it, the watchdog keeps it current, down finishes it.
 #
 # What it keeps lives in NET/.cmux: the workspace's id, and for each agent
 # its node's script, and a diplomat's inbox, desk (its inbox wrapper and
@@ -305,10 +314,16 @@ for x in json.load(sys.stdin)["workspaces"]:
   done
   [ -n "$w" ] || die "cmux made a workspace but it isn't listed: $out"
   printf '%s\n' "$w" > "$ST/workspace"
+  # the run's record, outside NET
+  rec=${PANTHEON_RUNS:-$HOME/.pantheon/runs}/$(basename "$NET" | sed 's/^\.//')-$(date +%Y%m%d-%H%M%S)
+  mkdir -p "$rec" && printf '%s\n' "$rec" > "$ST/record"
+  { printf 'network %s\nstarted %s\ndiplomats%s\nnode arguments%s\n' "$NET" "$(date)" "${sessions:- none}" "$nargs"; } > "$rec/run.txt"
+  record
   s1=$(cm --json --id-format both list-panes --workspace "$w" | python3 -c 'import json,sys; print(json.load(sys.stdin)["panes"][0]["surface_ids"][0])')
   if [ "$layout" = plan ]; then layout_plan; else layout_grid; fi
   say "$NET is up in a cmux workspace named for its market (Market, then Market (X leader), then Done) ($w): $([ "$layout" = plan ] && echo "the market's plan on the left with the watchdog, a pane per agent on the right (the agent, then its node)" || echo "a pane per agent") ($(echo $agents))"
   [ -z "$sessions" ] || say "diplomats:$sessions, in their agents' tabs, with approvals off"
+  say "its record (chain, statuses, logs; repositories once it ends) is kept in $rec"
   say "stop it with: pantheon-cmux down $NET"
 }
 
@@ -443,6 +458,28 @@ render_plan() {
   if cmp -s "$ST/plan.md.tmp" "$ST/plan.md"; then rm -f "$ST/plan.md.tmp"; else mv "$ST/plan.md.tmp" "$ST/plan.md"; fi
 }
 
+# The run's record (see the top): every node's chain, status and log, never a
+# key; with BUNDLE=1, a git bundle of each repository at the first node's head
+record() {
+  rec=$(cat "$ST/record" 2>/dev/null) || return 0
+  [ -n "$rec" ] && mkdir -p "$rec" || return 0
+  for a_ in $(agents_of "$NET"); do
+    mkdir -p "$rec/$a_"
+    for x in blocks.log status.txt node.log genesis.json; do
+      [ -f "$NET/$a_/$x" ] && ! cmp -s "$NET/$a_/$x" "$rec/$a_/$x" && cp "$NET/$a_/$x" "$rec/$a_/$x"
+    done
+  done
+  for x in leaders.log plan.md; do [ -f "$ST/$x" ] && cp "$ST/$x" "$rec/$x"; done
+  g_=$(cat "$ST/goal" 2>/dev/null || true); [ -n "$g_" ] && [ -f "$g_" ] && cp "$g_" "$rec/goal.txt"
+  if [ "${BUNDLE:-}" = 1 ]; then
+    for r_ in "$NET/$(agents_of "$NET" | head -1)"/repos/*/; do
+      [ -d "$r_/.git" ] || continue
+      mkdir -p "$rec/repos" && git -C "$r_" bundle create "$rec/repos/$(basename "$r_").bundle" --all >/dev/null 2>&1 || true
+    done
+  fi
+  return 0
+}
+
 # One pass of what the watchdog keeps: the workspace's name (the market's
 # title, renamed when it changes), the plan, and, once a finishing market
 # (genesis finish=1) finished (its nodes stop on their own), word to the
@@ -453,8 +490,10 @@ status_pass() {
     cm rename-workspace --workspace "$w" "$title" >/dev/null 2>&1 && printf '%s\n' "$title" > "$ST/title"
   fi
   render_plan
+  record
   a1=$(agents_of "$NET" | head -1)
   if [ ! -e "$ST/finished" ] && grep -q '^finished:' "$NET/$a1/status.txt" 2>/dev/null; then
+    BUNDLE=1 record
     : > "$ST/finished"
     for a in $(agents_of "$NET"); do [ -d "$ST/$a/inbox" ] && : > "$ST/$a/inbox/finished"; done
     cm notify --title "Pantheon: the market finished" --body "Every agent, as leader, found no more tasks: the nodes stopped. pantheon-cmux down $NET closes the workspace." --workspace "$w" >/dev/null 2>&1 || true
@@ -551,6 +590,8 @@ cmd_watchdog() {
 
 cmd_down() {
   net_arg "${1:-}" down; need_cmux
+  # the record, before anything stops
+  BUNDLE=1 record; rec=$(cat "$ST/record" 2>/dev/null || true)
   if workspace_alive; then
     cm close-workspace --force --workspace "$(workspace)" >/dev/null && say "closed $NET's workspace"
   else say "$NET has no cmux workspace up"; fi
@@ -561,7 +602,10 @@ cmd_down() {
   if pgrep -f -- "node $NET/" >/dev/null 2>&1; then
     pkill -TERM -f -- "node $NET/" && say "terminated $NET's nodes that outlived their terminals"
   fi
+  # and again once they stopped: their last blocks
+  BUNDLE=1 record
   say "$NET's nodes are stopped"
+  [ -z "$rec" ] || say "its record (chain, statuses, logs, repositories) is kept in $rec"
 }
 
 c=${1:-}; [ $# -gt 0 ] && shift

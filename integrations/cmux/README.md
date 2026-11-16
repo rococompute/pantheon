@@ -68,6 +68,20 @@ Claude Code is told to read `NET/.cmux/claude/desk/instructions.md` (from
 of two rows, each with an `AGENT node` tab and, for a diplomat, an
 `AGENT diplomat` tab, and no plan view.
 
+## The run's record
+
+Every run is recorded by default, outside `NET`, so removing `NET` loses
+nothing: `~/.pantheon/runs/NAME-YYYYMMDD-HHMMSS/` (or under `PANTHEON_RUNS`).
+It holds `run.txt` (the network, when, the diplomats, the node arguments),
+the goal, `leaders.log`, `plan.md`, and for each node its `blocks.log`
+(every signed transaction: each task posted and by whom, each bid with its
+title, note and patch, picks, merges with the leader's title, rejections and
+their reasons, closes, finish votes), `status.txt`, `node.log` and
+`genesis.json`, never `key.json`. Once the market finishes or goes down,
+`repos/NAME.bundle` holds each repository as the market left it (`git clone
+NAME.bundle`). `up` makes it and says where, the watchdog keeps it current,
+and `down` finishes it.
+
 ## What it keeps
 
 All its state is in `NET/.cmux/`:

@@ -65,7 +65,7 @@ else:
     print("OK")
 STUB
 chmod +x "$t/bin/cmux"
-export STUB_DIR="$t" CMUX="$t/bin/cmux" PANTHEON=/bin/true DIPLOMAT_CLI="echo diplomat"
+export STUB_DIR="$t" CMUX="$t/bin/cmux" PANTHEON=/bin/true DIPLOMAT_CLI="echo diplomat" PANTHEON_RUNS="$t/runs"
 
 # a network: four agents with a key and a genesis
 for a in claude codex grok muse; do mkdir -p "$t/net/$a"; echo '{}' > "$t/net/$a/key.json"; echo '{}' > "$t/net/$a/genesis.json"; done
@@ -165,6 +165,11 @@ grep -q "You are claude," "$t/net/.cmux/claude/desk/instructions.md" || fail "in
 ! grep -q '{{' "$t/net/.cmux/claude/desk/instructions.md" || fail "instructions left a placeholder"
 grep -q "^exec echo diplomat '" "$t/net/.cmux/claude/session.sh" || fail "the session starts DIPLOMAT_CLI with the prompt"
 [ -s "$t/net/.cmux/claude/surface" ] || fail "the diplomat's tab recorded"
+# the run's record, outside NET: made by up, never a key
+rec=$(cat "$t/net/.cmux/record"); case $rec in "$t/runs/net-"*) ;; *) fail "the record under PANTHEON_RUNS: $rec" ;; esac
+[ -f "$rec/run.txt" ] && [ -f "$rec/claude/status.txt" ] && [ -f "$rec/claude/genesis.json" ] && [ -f "$rec/goal.txt" ] || fail "up records the run: $(ls -R "$rec")"
+grep -q "its record .* is kept in $rec" "$t/out" || fail "up says where the record is"
+[ -z "$(find "$t/runs" -name key.json)" ] || fail "a key in the record"
 
 # no second up, and none while its nodes run elsewhere
 if ( cd "$t" && sh "$pc" up net ) > "$t/out2" 2>&1; then fail "a second up"; fi
@@ -230,8 +235,12 @@ printf 'height 47  term 5  leader (drawing)\nno more tasks: 2 of 4, say muse gro
 ( NET=$t/net ST=$t/net/.cmux; . "$t/fn0.sh"; render_plan ); head -1 "$t/net/.cmux/plan.md" | grep -q '^## Market (2/4 to done)$' || fail "the plan headed with the count: $(head -1 "$t/net/.cmux/plan.md")"
 printf 'height 43  term 2  leader grok\n' > "$t/net/claude/status.txt"
 
-# down
+# down: the record is finished, and kept when NET is gone
+echo '{"h":9,"txs":[]}' > "$t/net/codex/blocks.log"
 sh "$pc" down "$t/net" > "$t/out3"
+cmp -s "$t/net/codex/blocks.log" "$rec/codex/blocks.log" || fail "down records the last blocks"
+grep -q "its record .* is kept in $rec" "$t/out3" || fail "down says where the record is: $(cat "$t/out3")"
+[ -z "$(find "$t/runs" -name key.json)" ] || fail "a key in the record after down"
 grep -q "^close-workspace --force --workspace " "$t/ledger" || fail "down closes the workspace"
 [ ! -e "$t/net/.cmux/workspace" ] || fail "down forgets the workspace"
 
