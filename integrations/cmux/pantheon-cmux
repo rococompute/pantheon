@@ -376,10 +376,11 @@ render_plan() {
   # (no title or chain line: the height, term and leader are in the sidebar and
   # the status tab, and with them here the file changed with every block)
   {
-    if [ -f "$f" ] && grep -q '^finished:' "$f"; then printf '**Finished:** every agent, as leader, found no more tasks.\n\n'; fi
+    # a finished market's goal is headed Done
+    head=Goal; [ -f "$f" ] && grep -q '^finished:' "$f" && head=Done
     g=$(cat "$ST/goal" 2>/dev/null || true)
     if [ -n "$g" ] && [ -f "$g" ]; then
-      printf '## Goal\n\n'
+      printf '## %s\n\n' "$head"
       awk -v items=goal "$ITEMS_AWK" "$sf" "$g"; printf '\n'
     fi
     for r in "$NET/$a1"/repos/*/; do
