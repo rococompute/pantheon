@@ -180,6 +180,14 @@ sh "$pc" watchdog "$t/net" --once > /dev/null; sh "$pc" watchdog "$t/net" --once
 sh "$pc" watchdog "$t/net" --check | grep -q "watchdog: claude limited" || fail "--check names a limited agent"
 printf 'height 43  term 2  leader grok\n' > "$t/net/claude/status.txt"
 sh "$pc" watchdog "$t/net" --check | grep -q "watchdog: claude idle" || fail "--check names the state"
+# a finished market: an idle diplomat is done, so no nudge, and the loop ends
+printf 'height 44  term 3  leader \nfinished: every agent, as leader, found no more tasks\n' > "$t/net/claude/status.txt"; : > "$t/ledger"
+sh "$pc" watchdog "$t/net" --once > /dev/null; sh "$pc" watchdog "$t/net" --once > /dev/null; sh "$pc" watchdog "$t/net" --once > /dev/null
+! grep -q '^paste' "$t/ledger" || fail "nudged a diplomat of a finished market"
+sh "$pc" watchdog "$t/net" --check | grep -q "watchdog: claude finished" || fail "--check names a finished market's diplomat"
+timeout 20 sh "$pc" watchdog "$t/net" > "$t/wd" 2>&1 || fail "the watchdog's loop didn't end for a finished market"
+grep -q "the market finished" "$t/wd" || fail "the watchdog says why it stops: $(cat "$t/wd")"
+printf 'height 43  term 2  leader grok\n' > "$t/net/claude/status.txt"
 
 # down
 sh "$pc" down "$t/net" > "$t/out3"

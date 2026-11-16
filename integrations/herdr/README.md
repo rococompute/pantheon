@@ -30,8 +30,9 @@ and its functions use host.sh's settings and helpers.
   from `herdr agent list` (or, for a VM agent, its screen). An agent idle for
   two checks in a row gets a message telling it to go back to its inbox,
   and then another every five minutes while it stays idle. It leaves alone
-  an agent whose node is holding requests for a usage limit, and one
-  blocked on a person's question.
+  an agent whose node is holding requests for a usage limit, one
+  blocked on a person's question, and every agent of a market that
+  finished (`finish=1`), whose nodes stopped: no request will come.
 
 ## What it relies on
 

@@ -89,6 +89,7 @@ matches a session by its tab's id.
 | `needs_input`, `blocked`, `waiting` | A person's call: an approval or a question. It sends one `cmux notify`, and nothing more. |
 | `working`, or no state (a CLI without hooks) | Leaves it alone. |
 | Node holding requests for a usage limit | Leaves it alone. |
+| The market finished (`finish=1`) | Nudges no one: no request will come. The watchdog's loop ends. |
 
 `--check` shows what it sees without nudging anyone. `--once` runs a single
 pass, nudges included, for a test or a cron job.

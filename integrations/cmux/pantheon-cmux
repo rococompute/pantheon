@@ -443,9 +443,20 @@ else:
     print("none")' "$s"
 }
 
+# a finishing market (genesis finish=1) that finished: its nodes stopped, and
+# no request will come, so a diplomat that stopped is done, not stuck
+market_finished() {
+  for a_ in $(agents_of "$NET"); do grep -q '^finished:' "$NET/$a_/status.txt" 2>/dev/null && return 0; done
+  return 1
+}
+
 watch_agent() {
   a=$1 st=$ST/$a/watchdog
   [ -f "$ST/$a/surface" ] || return 0
+  # the market finished: a nudge would only wake it to look for requests that won't come
+  if market_finished; then
+    rm -f "$st"; [ -z "${dry:-}" ] || say "watchdog: $a finished"; return 0
+  fi
   # its node holds requests for a usage limit: it's right to stop
   if grep -q '^LIMIT' "$NET/$a/status.txt" 2>/dev/null; then
     rm -f "$st"; [ -z "${dry:-}" ] || say "watchdog: $a limited"; return 0
@@ -479,7 +490,10 @@ cmd_watchdog() {
     --once) for a in $(agents_of "$NET"); do watch_agent "$a" || true; done; return 0 ;;
   esac
   say "watching the diplomats of $NET every minute"
-  while :; do for a in $(agents_of "$NET"); do watch_agent "$a" || true; done; sleep 60; done
+  while :; do
+    if market_finished; then say "the market finished, so the diplomats are done: the watchdog stops, and nudges no one"; return 0; fi
+    for a in $(agents_of "$NET"); do watch_agent "$a" || true; done; sleep 60
+  done
 }
 
 cmd_down() {

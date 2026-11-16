@@ -107,6 +107,12 @@ vm_pane() {
 watch_agent() {
   a=$1 st=$P/watchdog; mkdir -p "$st"
   if grep -q '^LIMIT' "$NET/$a/status.txt" 2>/dev/null; then rm -f "$st/$a"; return 0; fi
+  # a finishing market (genesis finish=1) that finished: its node stopped, and
+  # no request will come, so a session that stopped is done; a nudge would only
+  # wake it to look for one
+  if grep -q '^finished:' "$NET/$a/status.txt" 2>/dev/null; then
+    rm -f "$st/$a"; [ -z "${dry:-}" ] || say "watchdog: $a finished"; return 0
+  fi
   if in_vm_agents "$a"; then
     # while Muse runs a command or thinks, its screen says "esc to interrupt"
     p=$(vm_pane "$a") || return 0
