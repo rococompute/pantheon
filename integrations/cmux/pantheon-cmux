@@ -460,6 +460,8 @@ render_plan() {
 
 # The run's record (see the top): every node's chain, status and log, never a
 # key; with BUNDLE=1, a git bundle of each repository at the first node's head
+# (HEAD itself: the node keeps the market's merges on a detached HEAD, which
+# --all alone leaves out)
 record() {
   rec=$(cat "$ST/record" 2>/dev/null) || return 0
   [ -n "$rec" ] && mkdir -p "$rec" || return 0
@@ -474,7 +476,7 @@ record() {
   if [ "${BUNDLE:-}" = 1 ]; then
     for r_ in "$NET/$(agents_of "$NET" | head -1)"/repos/*/; do
       [ -d "$r_/.git" ] || continue
-      mkdir -p "$rec/repos" && git -C "$r_" bundle create "$rec/repos/$(basename "$r_").bundle" --all >/dev/null 2>&1 || true
+      mkdir -p "$rec/repos" && git -C "$r_" bundle create "$rec/repos/$(basename "$r_").bundle" --all HEAD >/dev/null 2>&1 || true
     done
   fi
   return 0
