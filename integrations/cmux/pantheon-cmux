@@ -329,11 +329,9 @@ status_of() {
 # changed, so the view doesn't redraw for nothing.
 render_plan() {
   a1=$(agents_of "$NET" | head -1) f=$NET/$a1/status.txt
+  # (no title or chain line: the height, term and leader are in the sidebar and
+  # the status tab, and with them here the file changed with every block)
   {
-    printf '# The market: %s\n\n' "$(basename "$NET")"
-    printf '**%s**' "$(status_of "$a1")"
-    [ -f "$f" ] && printf ' · as %s sees it, %s' "$a1" "$(date -r "$f" '+%H:%M:%S' 2>/dev/null || true)"
-    printf '\n\n'
     g=$(cat "$ST/goal" 2>/dev/null || true)
     if [ -n "$g" ] && [ -f "$g" ]; then printf '## Goal\n\n'; cat "$g"; printf '\n'; fi
     for r in "$NET/$a1"/repos/*/; do
@@ -357,6 +355,7 @@ EOF
       printf '\n'
     fi
   } > "$ST/plan.md.tmp"
+  [ -s "$ST/plan.md.tmp" ] || printf 'No goal, plan or tasks yet.\n' > "$ST/plan.md.tmp"
   if cmp -s "$ST/plan.md.tmp" "$ST/plan.md"; then rm -f "$ST/plan.md.tmp"; else mv "$ST/plan.md.tmp" "$ST/plan.md"; fi
 }
 

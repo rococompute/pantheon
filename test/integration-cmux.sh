@@ -112,8 +112,7 @@ for a in ("codex", "grok", "muse"):
 PY
 # the plan: goal, the .plan's marks, the tasks
 pm=$t/net/.cmux/plan.md
-grep -q '^# The market: net' "$pm" || fail "plan's title: $(cat "$pm")"
-grep -q '^\*\*h7 t1 · leader codex\*\*' "$pm" || fail "plan's chain line: $(cat "$pm")"
+head -1 "$pm" | grep -q '^## Goal' || fail "plan opens on its goal, with no title or chain line: $(cat "$pm")"
 grep -q '^## Goal' "$pm" && grep -q '^- add a sub command' "$pm" || fail "plan's goal"
 grep -q '^## Plan: calc' "$pm" || fail "plan's repository"
 grep -q '^### 2026-11-15' "$pm" || fail "plan's day"
