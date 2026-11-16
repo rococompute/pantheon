@@ -12,7 +12,7 @@
   `NET/AGENT/node.log`.
 - **Right half: the agents.** A tab per agent. An agent with a diplomat gets
   its diplomat's session there: the CLI of its provider (Claude Code, codex,
-  the Cursor CLI, or Muse), working the node's inbox. An agent without one
+  Grok Build, or Muse), working the node's inbox. An agent without one
   gets its node.
 - **Sidebar:** shows each node's height, term and leader.
 - **Watchdog:** nudges a diplomat that stopped working its inbox, and sends

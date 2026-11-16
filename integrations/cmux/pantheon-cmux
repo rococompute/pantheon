@@ -2,7 +2,7 @@
 # A Pantheon network as a cmux workspace: the market's plan on the left half
 # (the goal, each repository's .plan with its marks, the tasks; it follows
 # the chain), and on the right a tab per agent: its diplomat's session
-# (Claude Code, codex, the Cursor CLI, Muse) working its node's inbox, or,
+# (Claude Code, codex, Grok Build, Muse) working its node's inbox, or,
 # for an agent without one, its node. The workspace's sidebar shows each
 # node's height, term and leader. A watchdog nudges a diplomat that stopped
 # working its inbox, and notifies you when one waits on a person (an
@@ -38,7 +38,7 @@
 #   CMUX          the cmux CLI (default: cmux on PATH, else the one inside cmux.app)
 #   DIPLOMAT_CLI  a command to start every diplomat with instead of its provider's CLI (it gets
 #                 the prompt as its last argument); for another CLI, or for a test
-#   GROK_MODEL    the Cursor CLI's model for a grok diplomat (default: grok)
+#   GROK_MODEL    Grok Build's model for a grok diplomat (default: Grok Build's own)
 #
 # What it keeps lives in NET/.cmux: the workspace's id, and for each agent
 # its node's script, and a diplomat's inbox, desk (its inbox wrapper and
@@ -48,7 +48,7 @@ set -eu
 here=$(cd "$(dirname "$0")/../.." && pwd)
 self=$here/integrations/cmux/pantheon-cmux
 export CMUX_QUIET=1
-GROK_MODEL=${GROK_MODEL:-grok}
+GROK_MODEL=${GROK_MODEL:-}
 
 say() { printf 'pantheon-cmux: %s\n' "$*"; }
 die() { printf 'pantheon-cmux: %s\n' "$*" >&2; exit 1; }
@@ -122,7 +122,8 @@ diplomat_cli() {
   case $(kind "$1") in
     claude) printf 'claude%s' "${yolo:+ --dangerously-skip-permissions}" ;;
     codex)  printf 'codex%s' "${yolo:+ --dangerously-bypass-approvals-and-sandbox}" ;;
-    grok)   printf 'cursor-agent%s --model %s' "${yolo:+ --yolo --trust}" "$(q "$GROK_MODEL")" ;;
+    # Grok Build, xAI's CLI (grok login), as scripts/bidder.sh uses it
+    grok)   printf 'grok%s%s' "${yolo:+ --always-approve}" "${GROK_MODEL:+ --model $(q "$GROK_MODEL")}" ;;
     muse)   printf 'muse%s' "${yolo:+ --yolo}" ;;
     *) return 1 ;;
   esac
