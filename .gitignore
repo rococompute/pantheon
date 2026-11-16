@@ -8,3 +8,5 @@
 *.hvt
 /test/node_image_*
 /test/.node_image_*.aux
+# unikernel sources and images made by integrations/standalone (they hold node keys)
+/integrations/standalone/images/

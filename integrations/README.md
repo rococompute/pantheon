@@ -1,6 +1,11 @@
-# Integrations: a network in a terminal multiplexer
+# Integrations: a network in a terminal multiplexer, or on its own
 
-Each integration runs a Pantheon network inside a terminal multiplexer, with
+`standalone/` runs a network with no multiplexer: its nodes only coordinate
+the market, and its agents answer over HTTP from wherever they run (remote,
+or each in a container), with its nodes as binaries or unikernels. Its
+README says how. The rest of this page is about the multiplexers.
+
+Each multiplexer integration runs a Pantheon network inside it, with
 one workspace per network. Every agent gets a place there (a pane, or in
 cmux's default layout a tab beside the market's plan): its node runs there,
 and if the agent has a diplomat, the diplomat's interactive session runs
@@ -10,6 +15,7 @@ there too. A diplomat is a coding agent's CLI working its node's inbox
 | Folder | Where it runs | Status |
 |---|---|---|
 | [`cmux/`](cmux/README.md) | A Mac with [cmux](https://cmux.com) | Works. Tested with `test/integration-cmux.sh` against a stub of cmux, and by hand in cmux with scripted nodes and a stub diplomat. |
+| [`standalone/`](standalone/README.md) | Any machine, no multiplexer: nodes as binaries or (a Mac) unikernels, agents remote over HTTP or each in a Docker container | Works. Tested with `test/integration-standalone.sh` (real nodes, a stub of docker) and `test/integration-standalone-image.sh` (a real unikernel, on a Mac with Soma's MirageOS switch). |
 | [`herdr/`](herdr/README.md) | The Linux host (`scripts/host.sh`) | Reference: not run since the network went laptop-only, and it may not work right now. |
 
 ## What every integration does

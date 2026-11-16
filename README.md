@@ -209,7 +209,7 @@ file. Build as before with `soma build main.soma`.
 | `test/e2e.sh`, `test/edits.sh` | The scenarios, and the edit engine |
 | `install.sh` | The one-line install: Soma if it's missing, then Pantheon |
 | `scripts/` | Bidders with tools, the GitHub mirror, Linux setup, VPN configs |
-| `integrations/` | A network in a terminal multiplexer, a pane per agent: `cmux/` (a Mac) and `herdr/` (the Linux host's, for reference) |
+| `integrations/` | A network in a terminal multiplexer, a pane per agent: `cmux/` (a Mac) and `herdr/` (the Linux host's, for reference); or on its own, `standalone/`: nodes that only coordinate (binaries or unikernels), agents over HTTP, remote or each in a container |
 | `deploy/Dockerfile` | Soma and Pantheon built from source: a node, and the CI image |
 | `examples/` | The calculator, a network template, a dogfooding goal list |
 

@@ -1,0 +1,559 @@
+#!/bin/sh
+# A Pantheon network on its own: no terminal multiplexer and no model on the
+# host. Each node only coordinates the market: it votes, keeps the chain,
+# checks and merges bids, and asks its agent what to do through an inbox. The
+# agents answer over HTTP (scripts/inbox-http.py, a token each), from
+# wherever they run:
+#   remote   any coding agent pointed at its inbox (a cloud sandbox, another
+#            machine, a session here): `connect` prints what to give it
+#   docker   its CLI in a container of its own, which holds no key and sees
+#            nothing of NET: only its inbox, through its token
+# and each node runs as
+#   a binary on this machine, or
+#   a MirageOS unikernel (solo5-hvt on Hypervisor.framework, an agent of
+#            --image), its key and chain in the VM, its git, checks and
+#            inbox done for it by `pantheon service` on the host
+#
+#   pantheon-standalone init NET --repo NAME=DIR [--repo ...] [options]
+#                                  a network in NET, made as `pantheon init` makes one, with addresses
+#                                  a unikernel can reach: needed for --image, fine without it
+#       --agents "A B ..."         the agents (default: claude codex grok muse)
+#       --image "A B"|all          these agents' nodes will be unikernels (their addresses on the vmnet network)
+#       --gateway IP               the host's address on the vmnet network (default: the bridge's, found)
+#       --base-port P              the first agent's port (default 26700)
+#       --block-ms N, --param NAME=VALUE   as for pantheon init
+#   pantheon-standalone up NET [options] [-- NODE ARGS...]
+#                                  every node started, in the background, each agent's inbox served;
+#                                  NODE ARGS go to each node as to `pantheon up` (--goal FILE, --bid-window N, ...)
+#       --docker "A B"|all         these agents' CLIs run in containers (default: none; the rest are remote)
+#       --image "A B"|all          these agents' nodes run as unikernels (default: those init named)
+#       --backends A=B,...         these agents' nodes use backend B instead of an inbox (scripted, for a test)
+#       --inbox HOST:PORT          where the inbox server listens (default 127.0.0.1:8787)
+#       --url URL                  the inbox as remote agents reach it (default http://HOST:PORT; a tunnel's URL)
+#       --docker-url URL           the inbox as containers reach it (default http://host.docker.internal:PORT)
+#       --agent-image IMAGE        the containers' image (default pantheon-agent: build-agent makes it)
+#       --pass-env VAR,...         host environment variables every container gets (API keys, OAuth tokens)
+#       --memory SIZE              a container's memory (default 4g)
+#   pantheon-standalone connect NET AGENT [--env]
+#                                  what a remote agent needs: its inbox's URL, its token, and a prompt to give it
+#   pantheon-standalone status NET each node's height, term and leader, and how each agent and node runs
+#   pantheon-standalone login NET AGENT
+#                                  the agent's CLI login, in a container on its home volume (interactive)
+#   pantheon-standalone build-agent [IMAGE]
+#                                  build the agents' image from integrations/standalone/Dockerfile
+#   pantheon-standalone down NET   stop it all; the chain, keys, logins and unikernels' disks stay
+#
+# Isolation: a node's key is NET/AGENT/key.json, on this machine, or in its
+# unikernel. A remote or docker agent never sees it: it gets prompts and
+# checkouts over HTTP and hands in diffs, which its node checks as it checks
+# any bid. Read integrations/standalone/README.md for what each part can reach.
+#
+# Settings, from the environment:
+#   PANTHEON            the pantheon binary (default: pantheon on PATH, else this checkout's main.exe)
+#   DOCKER              a docker-compatible CLI (default: docker)
+#   SOMA_MIRAGE_SWITCH  the opam switch with solo5-hvt and solo5-vmnet, for unikernels (default: hvf)
+#   IMAGE_MEM           a unikernel's memory in MB (default 512)
+#   DIPLOMAT_CLI        the command a container runs a session with (its AGENT_CLI), for another CLI or a test
+#
+# What it keeps lives in NET/.standalone: the inbox server's config (0600)
+# and log, each agent's token (0600), backend and container settings, a
+# unikernel's disk (disk.img) and logs, and the processes it started.
+set -eu
+here=$(cd "$(dirname "$0")/../.." && pwd)
+self=$here/integrations/standalone/pantheon-standalone
+DOCKER=${DOCKER:-docker}
+SWITCH=${SOMA_MIRAGE_SWITCH:-hvf}
+
+say() { printf 'pantheon-standalone: %s\n' "$*"; }
+die() { printf 'pantheon-standalone: %s\n' "$*" >&2; exit 1; }
+# a word for sh, single-quoted
+q() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
+
+need_pantheon() {
+  if [ -z "${PANTHEON:-}" ]; then
+    if command -v pantheon >/dev/null 2>&1; then PANTHEON=$(command -v pantheon)
+    elif [ -x "$here/main.exe" ]; then PANTHEON=$here/main.exe
+    else die "no pantheon: install it, or build it here (soma build main.soma), or set PANTHEON"
+    fi
+  fi
+}
+need_docker() {
+  command -v "$DOCKER" >/dev/null 2>&1 || die "no $DOCKER CLI: install Docker (or set DOCKER to a docker-compatible CLI)"
+  "$DOCKER" info >/dev/null 2>&1 || die "$DOCKER doesn't answer: start Docker Desktop (or the daemon), then run this again"
+}
+# solo5-vmnet and solo5-hvt from Soma's MirageOS switch, by path
+need_solo5() {
+  sbin=$(opam var --switch="$SWITCH" bin 2>/dev/null) || sbin=""
+  [ -n "$sbin" ] && [ -x "$sbin/solo5-hvt" ] && [ -x "$sbin/solo5-vmnet" ] \
+    || die "no solo5-hvt and solo5-vmnet in opam switch $SWITCH: a unikernel needs Soma's MirageOS switch (Soma's dev/mirage-check.sh; set SOMA_MIRAGE_SWITCH)"
+  command -v soma >/dev/null 2>&1 || die "no soma on PATH: it builds the unikernels"
+}
+
+# The host's address on solo5-vmnet's network, macOS's shared vmnet network:
+# Shared_Net_Address in com.apple.vmnet if it's set; else the shared bridge
+# up now (a Lima VM's socket_vmnet in shared mode puts it at 192.168.105.1,
+# and solo5-vmnet's guests join it); else macOS's default, 192.168.64.1,
+# whose bridge appears once a guest runs.
+vmnet_gateway() {
+  if [ -n "${PANTHEON_VMNET_GATEWAY:-}" ]; then echo "$PANTHEON_VMNET_GATEWAY"; return 0; fi
+  g=$(defaults read /Library/Preferences/SystemConfiguration/com.apple.vmnet Shared_Net_Address 2>/dev/null || true)
+  [ -n "$g" ] || g=$(ifconfig 2>/dev/null | awk '/^bridge/ {b=1; next} /^[a-z]/ {b=0} b && /inet / {print $2}' | grep -v '^127\.' | head -1)
+  echo "${g:-192.168.64.1}"
+}
+bridge_has() { ifconfig 2>/dev/null | grep -q "inet $1 "; }
+
+agents_of() {
+  for d in "$1"/*/; do
+    [ -d "$d" ] || continue
+    a=$(basename "$d")
+    [ -f "$d/key.json" ] && [ -f "$d/genesis.json" ] && printf '%s\n' "$a"
+  done | sort
+}
+in_list() { case " $2 " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
+# "all" or a list, checked against the agents
+pick() {
+  if [ "$1" = all ]; then echo $agents; return 0; fi
+  for x in $1; do in_list "$x" "$(echo $agents)" || die "$2: $x isn't an agent of $NET ($(echo $agents))"; done
+  echo $1
+}
+backend_of() {
+  printf '%s\n' "$2" | tr ',' '\n' | while IFS= read -r pair; do
+    case $pair in "$1"=*) printf '%s' "${pair#*=}"; break ;; esac
+  done
+}
+net_arg() {
+  [ -n "${1:-}" ] || die "which network? pantheon-standalone $2 NET (a directory made by pantheon init or pantheon-standalone init)"
+  [ -d "$1" ] || die "no directory $1: make a network with pantheon-standalone init $1 first"
+  NET=$(cd "$1" && pwd) ST=$NET/.standalone
+  agents=$(agents_of "$NET")
+  [ -n "$agents" ] || die "$NET has no network (no agent with key.json and genesis.json): run pantheon-standalone init $1 first"
+}
+# a short id for the network, for container and file names
+net_id() { printf '%s' "$NET" | cksum | awk '{print $1}'; }
+# AGENT's address in its genesis, HOST:PORT
+addr_of() {
+  python3 - "$NET/$1/genesis.json" "$1" <<'PY'
+import json, sys
+for a in json.load(open(sys.argv[1]))["agents"]:
+    if a["name"] == sys.argv[2]: print(a["addr"]); break
+PY
+}
+
+# ---- processes it started: a pid file each, in a process group of its own ----
+start_bg() {
+  name=$1 log=$2 dir=$3; shift 3
+  mkdir -p "$ST/pids"
+  ( cd "$dir" || exit 1
+    set -m
+    nohup "$@" >> "$log" 2>&1 < /dev/null &
+    echo $! > "$ST/pids/$name.pid" )
+}
+alive() { p=$(cat "$ST/pids/$1.pid" 2>/dev/null) && [ -n "$p" ] && kill -0 "$p" 2>/dev/null; }
+stop_bg() {
+  p=$(cat "$ST/pids/$1.pid" 2>/dev/null) || return 0
+  rm -f "$ST/pids/$1.pid"
+  [ -n "$p" ] && kill -0 "$p" 2>/dev/null || return 0
+  kill -TERM "-$p" 2>/dev/null || kill -TERM "$p" 2>/dev/null || true
+  n=0
+  while kill -0 "$p" 2>/dev/null && [ "$n" -lt 20 ]; do n=$((n + 1)); sleep 0.5; done
+  if kill -0 "$p" 2>/dev/null; then kill -KILL "-$p" 2>/dev/null || kill -KILL "$p" 2>/dev/null || true; fi
+}
+running_any() { for f in "$ST"/pids/*.pid; do [ -f "$f" ] && alive "$(basename "$f" .pid)" && return 0; done; return 1; }
+wait_for() { # FILE PATTERN SECONDS WHAT
+  n=0
+  until grep -q "$2" "$1" 2>/dev/null; do
+    n=$((n + 1)); [ "$n" -lt "$(( $3 * 2 ))" ] || { tail -15 "$1" 2>/dev/null; die "$4"; }
+    sleep 0.5
+  done
+}
+
+# ---- init ----
+cmd_init() {
+  [ -n "${1:-}" ] || die "which directory? pantheon-standalone init NET --repo NAME=DIR"
+  dir=$1; shift
+  names="claude codex grok muse" images="" gw="" base=26700 block=1000 repos="" params=""
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --agents) names=${2:?--agents wants names}; shift 2 ;;
+      --image) images=${2:?--image wants agent names, or all}; shift 2 ;;
+      --gateway) gw=${2:?--gateway wants an IP address}; shift 2 ;;
+      --base-port) base=${2:?--base-port wants a port}; shift 2 ;;
+      --block-ms) block=${2:?--block-ms wants milliseconds}; shift 2 ;;
+      --repo) repos="$repos
+${2:?--repo wants NAME=DIR}"; shift 2 ;;
+      --param) params="$params
+${2:?--param wants NAME=VALUE}"; shift 2 ;;
+      *) die "unknown option $1" ;;
+    esac
+  done
+  [ -n "$repos" ] || die "no --repo: name the repositories the market governs (--repo NAME=GIT-CHECKOUT)"
+  need_pantheon
+  [ "$(set -- $names; echo $#)" -ge 4 ] || die "--agents: a network needs 4 agents at least (BFT), got: $names"
+  [ "$images" = all ] && images=$names
+  for a in $images; do in_list "$a" "$names" || die "--image: $a isn't one of --agents ($names)"; done
+  for a in $names; do printf '%s' "$a" | grep -Eqx '[a-z][a-z0-9-]*' || die "agent name $a: lowercase letters, digits and -"; done
+  if [ -n "$images" ]; then
+    gw=${gw:-$(vmnet_gateway)}
+    printf '%s' "$gw" | grep -Eqx '([0-9]{1,3}\.){3}[0-9]{1,3}' || die "--gateway $gw: an IPv4 address"
+  fi
+  [ ! -e "$dir" ] || [ -z "$(ls -A "$dir" 2>/dev/null)" ] || die "$dir isn't empty: give a new directory"
+  mkdir -p "$dir/.genesis/parts"
+  NET=$(cd "$dir" && pwd) ST=$NET/.standalone
+  mkdir -p "$ST"
+  # network.json, through Python's json: names and paths never meet a shell or a quote
+  printf '%s\n' "$repos" | R_BLOCK=$block R_PARAMS=$params python3 -c '
+import json, os, subprocess, sys
+repos = []
+for line in sys.stdin.read().split("\n"):
+    if not line.strip(): continue
+    name, _, d = line.partition("=")
+    if not name or not d: sys.exit("pantheon-standalone: --repo %s: NAME=DIR" % line)
+    d = os.path.abspath(d)
+    c = subprocess.run(["git", "-C", d, "rev-parse", "HEAD"], capture_output=True, text=True)
+    if c.returncode != 0: sys.exit("pantheon-standalone: --repo %s: %s is not a git checkout with a commit" % (name, d))
+    repos.append({"name": name, "url": d, "commit": c.stdout.strip()})
+params = {}
+for line in os.environ["R_PARAMS"].split("\n"):
+    if line.strip():
+        k, _, v = line.partition("="); params[k] = v
+print(json.dumps({"block_ms": int(os.environ["R_BLOCK"]), "params": params, "repos": repos}))
+' > "$NET/.genesis/network.json" || { rm -rf "$NET/.genesis"; exit 1; }
+  i=0 host=127.0.0.1
+  [ -z "$images" ] || host=$gw
+  for a in $names; do
+    port=$((base + i))
+    if in_list "$a" "$images"; then addr=${gw%.*}.$((200 + i)):$port; else addr=$host:$port; fi
+    "$PANTHEON" keygen "$NET/$a" --name "$a" --addr "$addr" >> "$ST/init.log" 2>&1 || { cat "$ST/init.log"; die "keygen $a failed"; }
+    cp "$NET/$a/public.json" "$NET/.genesis/parts/$a.json"
+    i=$((i + 1))
+  done
+  for a in $names; do
+    "$PANTHEON" genesis "$NET/$a" "$NET/.genesis" >> "$ST/init.log" 2>&1 || { cat "$ST/init.log"; die "genesis for $a failed"; }
+  done
+  echo $images > "$ST/images"
+  [ -z "$images" ] || echo "$gw" > "$ST/gateway"
+  say "made $NET: agents $names$([ -n "$images" ] && echo "; unikernels: $images, on the vmnet network at ${gw%.*}.0/24")"
+  say "start it with: pantheon-standalone up $dir [--docker ...] -- --goal FILE"
+}
+
+# ---- up ----
+# the inbox server's config: each inbox agent's token hash, inbox, URL and status file
+write_inbox_config() {
+  ( umask 077
+    for a in $inboxed; do
+      d=$ST/$a
+      if [ ! -s "$d/token" ]; then printf 'pti_%s\n' "$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')" > "$d/token"; fi
+      url=$url_remote; in_list "$a" "$dockered" && url=$url_docker
+      status=$NET/$a/status.txt
+      # a unikernel's status.txt is on its disk: another node's view of the same chain stands in
+      if in_list "$a" "$imaged"; then status=""; for b in $agents; do in_list "$b" "$imaged" || { status=$NET/$b/status.txt; break; }; done; fi
+      printf '%s\t%s\t%s\t%s\t%s\n' "$a" "$(cat "$d/token")" "$d/inbox" "$url" "$status"
+    done | R_LISTEN=$listen R_URL=$url_remote python3 -c '
+import hashlib, json, os, sys
+agents = {}
+for line in sys.stdin:
+    a, tok, inbox, url, status = line.rstrip("\n").split("\t")
+    agents[a] = {"token_sha256": hashlib.sha256(tok.encode()).hexdigest(), "inbox": inbox, "url": url}
+    if status: agents[a]["status"] = status
+print(json.dumps({"listen": os.environ["R_LISTEN"], "url": os.environ["R_URL"], "agents": agents}, indent=1))
+' > "$ST/inbox.json" )
+}
+
+prepare_inbox() {
+  a=$1 d=$ST/$1
+  mkdir -p "$d/inbox"
+  # requests left by an earlier run (none runs now: up checked)
+  find "$d/inbox" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+  # the inbox in your own group: bidder-inbox makes each request setgid,
+  # which fails in a directory of a group you're not in (wheel, under /tmp)
+  chgrp "$(id -g)" "$d/inbox"
+  url=$url_remote; in_list "$a" "$dockered" && url=$url_docker
+  # the node strips PANTHEON_* from a backend's environment: the backend sets its own
+  cat > "$d/backend.sh" <<B
+#!/bin/sh
+PANTHEON_INBOX=$(q "$d/inbox") INBOX_URL=$(q "$url") exec $(q "$here/scripts/bidder-inbox.sh")
+B
+  chmod 755 "$d/backend.sh"
+}
+
+# a unikernel's address, its service's, and its source and image
+image_paths() {
+  a=$1 d=$ST/$1
+  addr=$(addr_of "$a"); ip=${addr%:*} port=${addr##*:}
+  service=$gw:$((port + 1000))
+  mod=standalone_$(net_id)_$(printf '%s' "$a" | tr '-' '_')
+  src=$here/integrations/standalone/images/$mod.soma hvt=$here/integrations/standalone/images/$mod.hvt
+}
+
+# its source and image. The source holds the node's key, and so does the
+# image: they are the owner's alone, as key.json is
+image_build() {
+  image_paths "$1"; shift
+  case $ip in 127.*|localhost|"") die "$a's genesis address is $addr, which a unikernel can't have: make the network with pantheon-standalone init NET --image \"$a\"" ;; esac
+  case $ip in "${gw%.*}".*) ;; *) die "$a's genesis address is $addr, not on the vmnet network at $gw (made with another gateway? set PANTHEON_VMNET_GATEWAY)" ;; esac
+  ( umask 077; mkdir -p "$(dirname "$src")"
+    cd "$from_dir" && "$PANTHEON" image "$NET/$a" "$src" --service "$service" "$@" --backend "cmd:$d/backend.sh" > "$d/image.log" 2>&1 ) \
+    || { cat "$d/image.log"; die "pantheon image $a failed"; }
+  say "$a: building its unikernel (the first build fetches MirageOS's dependencies: minutes)"
+  ( umask 077; cd "$here" && SOMA_MIRAGE_SWITCH=$SWITCH soma build "integrations/standalone/images/$mod.soma" > "$d/build.log" 2>&1 ) \
+    || { tail -30 "$d/build.log"; die "the unikernel for $a doesn't build (its log: $d/build.log)"; }
+  [ -f "$hvt" ] || { tail -20 "$d/build.log"; die "soma build made no $hvt: is SOMA_MIRAGE_SWITCH an opam switch with MirageOS?"; }
+  chmod 600 "$src" "$hvt"
+}
+
+# booted, and booted again whenever it stops (its disk keeps its votes and
+# its consensus state, so it comes back where it was), until down
+image_boot() {
+  image_paths "$1"
+  [ -f "$d/disk.img" ] || { truncate -s 64M "$d/disk.img"; chmod 600 "$d/disk.img"; }
+  # what it may send to: the host (peers there, its service) and the other
+  # unikernels. The filter goes by destination, so it allows every port on
+  # the host (README: "Isolation"). Not --isolate: solo5-vmnet's isolation
+  # puts the guest on a network of its own, away from the host's bridge
+  allow="--allow=$gw/32"
+  for b in $imaged; do
+    [ "$b" = "$a" ] && continue
+    o=$(addr_of "$b"); allow="$allow --allow=${o%:*}/32"
+  done
+  # shellcheck disable=SC2086
+  start_bg "$a.image" "$d/boot.log" "$d" sh -c 'while :; do "$@"; echo "pantheon-standalone: the unikernel stopped ($?): booting it again in 2s"; sleep 2; done' sh \
+    "$sbin/solo5-vmnet" $allow -- "$sbin/solo5-hvt" --mem="${IMAGE_MEM:-512}" \
+    --block:storage="$d/disk.img" -- "$hvt" --ipv4="$ip/24" --ipv4-gateway="$gw"
+}
+
+# its service: the node's runtime on the host, for git, checks and its inbox
+# (its own peer listener on localhost, which no peer dials: the image is the
+# node). It listens on the gateway, which exists once a unikernel runs
+image_service() {
+  image_paths "$1"; shift
+  start_bg "$a.service" "$d/service.log" "$from_dir" "$PANTHEON" service "$NET/$a" "$service" --listen 127.0.0.1 "$@" --backend "cmd:$d/backend.sh"
+  wait_for "$d/service.log" 'service listening on' 15 "$a's service didn't start (its log: $d/service.log)"
+}
+
+container_name() { printf 'pantheon-%s-%s' "$(net_id)" "$1"; }
+container_up() {
+  a=$1 d=$ST/$1 name=$(container_name "$1")
+  "$DOCKER" rm -f "$name" >/dev/null 2>&1 || true
+  ( umask 077
+    { printf 'PANTHEON_AGENT=%s\nPANTHEON_URL=%s\nPANTHEON_TOKEN=%s\n' "$a" "$url_docker" "$(cat "$d/token")"
+      [ -z "${DIPLOMAT_CLI:-}" ] || printf 'AGENT_CLI=%s\n' "$DIPLOMAT_CLI"
+    } > "$d/agent.env" )
+  set -- run -d --name "$name" --label "pantheon.net=$NET" --label "pantheon.agent=$a" --restart unless-stopped \
+    --cap-drop=ALL --security-opt=no-new-privileges --pids-limit=512 --memory="$memory" \
+    --read-only --tmpfs /tmp:exec,size=1g \
+    -v "pantheon-$(net_id)-$a-home:/home/agent" \
+    -v "$here/integrations/standalone/agent-loop.sh:/opt/pantheon/agent-loop:ro" \
+    --env-file "$d/agent.env"
+  # Docker on Linux has no host.docker.internal of its own
+  [ "$(uname -s)" = Darwin ] || set -- "$@" --add-host=host.docker.internal:host-gateway
+  for v in $(printf '%s' "$pass_env" | tr ',' ' '); do set -- "$@" -e "$v"; done
+  "$DOCKER" "$@" "$agent_image" sh /opt/pantheon/agent-loop > "$d/container" 2> "$d/container.err" \
+    || { cat "$d/container.err"; die "$DOCKER couldn't start $a's container ($name): is the image $agent_image built? (pantheon-standalone build-agent)"; }
+  say "$a: its CLI runs in container $name, reaching its inbox at $url_docker"
+}
+
+cmd_up() {
+  net_arg "${1:-}" up; shift
+  dock="" imgs=$(cat "$ST/images" 2>/dev/null || true) backends="" listen=127.0.0.1:8787 url_remote="" url_docker=""
+  agent_image=pantheon-agent pass_env="" memory=4g
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --docker) dock=${2:?--docker wants agent names, or all}; shift 2 ;;
+      --image) imgs=${2?--image wants agent names, or all}; shift 2 ;;
+      --backends) backends=${2:?--backends wants agent=backend,...}; shift 2 ;;
+      --inbox) listen=${2:?--inbox wants HOST:PORT}; shift 2 ;;
+      --url) url_remote=${2:?--url wants a URL}; shift 2 ;;
+      --docker-url) url_docker=${2:?--docker-url wants a URL}; shift 2 ;;
+      --agent-image) agent_image=${2:?--agent-image wants an image}; shift 2 ;;
+      --pass-env) pass_env=${2:?--pass-env wants VAR,...}; shift 2 ;;
+      --memory) memory=${2:?--memory wants a size}; shift 2 ;;
+      --) shift; break ;;
+      *) die "unknown option $1 (node arguments go after --)" ;;
+    esac
+  done
+  case $listen in *:*) ;; *) die "--inbox $listen: HOST:PORT" ;; esac
+  url_remote=${url_remote:-http://$listen}
+  url_docker=${url_docker:-http://host.docker.internal:${listen##*:}}
+  need_pantheon
+  dockered=$(pick "$dock" --docker) imaged=$(pick "$imgs" --image)
+  for a in $agents; do
+    b=$(backend_of "$a" "$backends")
+    if [ -n "$b" ] && in_list "$a" "$dockered"; then die "$a is in --docker and --backends: an agent answers through its inbox or its backend, not both"; fi
+  done
+  if running_any || pgrep -f -- "node $NET/" >/dev/null 2>&1 || pgrep -f -- "service $NET/" >/dev/null 2>&1; then
+    die "$NET is running already ($(running_any && echo 'started by pantheon-standalone' || echo 'pantheon up, or cmux?')): pantheon-standalone down $NET first"
+  fi
+  [ -z "$dockered" ] || need_docker
+  if [ -n "$imaged" ]; then
+    need_solo5
+    gw=${PANTHEON_VMNET_GATEWAY:-$(cat "$ST/gateway" 2>/dev/null || vmnet_gateway)}
+  fi
+  mkdir -p "$ST/pids"
+  from_dir=$(pwd)
+  inboxed=""
+  for a in $agents; do
+    mkdir -p "$ST/$a"
+    [ -n "$(backend_of "$a" "$backends")" ] || inboxed="$inboxed $a"
+  done
+  for a in $inboxed; do prepare_inbox "$a"; done
+  write_inbox_config
+  if [ -n "$inboxed" ]; then
+    start_bg inbox "$ST/inbox.log" "$here" python3 "$here/scripts/inbox-http.py" serve "$ST/inbox.json"
+    wait_for "$ST/inbox.log" 'inbox-http: serving' 10 "the inbox server didn't start (its log: $ST/inbox.log)"
+  fi
+  backend() { b=$(backend_of "$1" "$backends"); printf '%s' "${b:-cmd:$ST/$1/backend.sh}"; }
+  # unikernels first: their network's bridge, where the binaries and the
+  # services are reached, exists once one runs
+  for a in $imaged; do image_build "$a" "$@"; done
+  for a in $imaged; do image_boot "$a"; done
+  if [ -n "$imaged" ]; then
+    n=0
+    until bridge_has "$gw"; do
+      n=$((n + 1)); [ "$n" -lt 60 ] || die "no bridge at $gw after the unikernels booted: is macOS's shared vmnet network elsewhere? (ifconfig; set PANTHEON_VMNET_GATEWAY and init again)"
+      sleep 0.5
+    done
+    for a in $imaged; do image_service "$a" "$@"; done
+    for a in $imaged; do
+      image_paths "$a"
+      wait_for "$d/boot.log" "$a listening; port" 60 "$a's unikernel didn't start (its log: $d/boot.log)"
+      say "$a: its node runs as a unikernel at $addr (egress: the host and its peers only), its service at $service"
+    done
+  fi
+  for a in $agents; do
+    in_list "$a" "$imaged" && continue
+    start_bg "$a.node" "$NET/$a/node.log" "$from_dir" "$PANTHEON" node "$NET/$a" --backend "$(backend "$a")" "$@"
+  done
+  for a in $agents; do
+    in_list "$a" "$imaged" && continue
+    wait_for "$NET/$a/node.log" "$a listening; port" 30 "$a's node didn't start (its log: $NET/$a/node.log)"
+  done
+  for a in $dockered; do container_up "$a"; done
+  remote=""
+  for a in $inboxed; do in_list "$a" "$dockered" || remote="$remote $a"; done
+  say "$NET is up: nodes $(echo $agents)$([ -n "$imaged" ] && echo " (unikernels: $(echo $imaged))"); inbox at $url_remote"
+  [ -z "$dockered" ] || say "in containers: $(echo $dockered)"
+  [ -z "$remote" ] || say "waiting for their agents:$remote. For each: pantheon-standalone connect $NET AGENT"
+  say "status: pantheon-standalone status $NET; stop: pantheon-standalone down $NET"
+}
+
+# ---- connect ----
+cmd_connect() {
+  net_arg "${1:-}" connect
+  a=${2:-}; [ -n "$a" ] || die "which agent? pantheon-standalone connect NET AGENT ($(echo $agents))"
+  in_list "$a" "$(echo $agents)" || die "$a isn't an agent of $NET ($(echo $agents))"
+  [ -s "$ST/$a/token" ] || die "$a has no inbox: start the network with pantheon-standalone up $NET (without a --backends for $a)"
+  url=$(python3 -c 'import json, sys; c = json.load(open(sys.argv[1])); print(c["agents"][sys.argv[2]].get("url") or c["url"])' "$ST/inbox.json" "$a")
+  tok=$(cat "$ST/$a/token")
+  far=""
+  case $url in http://127.*|http://localhost*) far="The inbox listens on this machine only. To reach it from elsewhere, give it a tunnel with TLS (cloudflared) and start with --url https://..." ;; esac
+  if [ "${3:-}" = --env ]; then printf 'PANTHEON_AGENT=%s\nPANTHEON_URL=%s\nPANTHEON_TOKEN=%s\n' "$a" "$url" "$tok"; return 0; fi
+  cat <<C
+$a's inbox: $url
+its token: $tok   (keep it secret: it answers for $a's node)
+
+Give a coding agent (with tools, and curl) this prompt:
+
+  You are $a, an agent in a Pantheon network. GET $url/v1/instructions with the header "Authorization: Bearer $tok", and follow them.
+
+Or run its CLI in a loop here or anywhere with sh and curl:
+
+  pantheon-standalone connect $NET $a --env > $a.env
+  env \$(cat $a.env) sh $here/integrations/standalone/agent-loop.sh
+
+$far
+C
+}
+
+# ---- status ----
+# a named file on a unikernel's disk (Soma's SOMAKV01 banks: the valid header with the newest generation)
+disk_file() {
+  python3 - "$1" "$2" <<'PY'
+import hashlib, struct, sys
+try: d = open(sys.argv[1], 'rb').read()
+except OSError: sys.exit(0)
+sector = 512
+bank = min(len(d) // sector // 2, 16 * 1024 * 1024 // sector)
+best = None
+for i in (0, 1):
+    h = d[i * bank * sector:(i * bank + 1) * sector]
+    if h[:8] != b'SOMAKV01' or hashlib.md5(h[:40]).digest() != h[40:56]: continue
+    gen, n = struct.unpack('>QQ', h[8:24])
+    body = d[(i * bank + 1) * sector:(i * bank + 1) * sector + n]
+    if hashlib.md5(body).digest() != h[24:40]: continue
+    if best is None or gen > best[0]: best = (gen, body)
+if best:
+    body, pos = best[1], 4
+    for _ in range(struct.unpack('>I', body[:4])[0]):
+        k = struct.unpack('>I', body[pos:pos + 4])[0]; name = body[pos + 4:pos + 4 + k].decode(); pos += 4 + k
+        k = struct.unpack('>I', body[pos:pos + 4])[0]; data = body[pos + 4:pos + 4 + k]; pos += 4 + k
+        if name == sys.argv[2]: sys.stdout.buffer.write(data); break
+PY
+}
+chain_line() {
+  head -1 | awk '{ for (i = 1; i < NF; i += 2) v[$i] = $(i + 1); if (v["height"] != "") printf "h%s t%s · leader %s", v["height"], v["term"], v["leader"] }'
+}
+cmd_status() {
+  net_arg "${1:-}" status
+  printf 'Pantheon network %s\n\n' "$NET"
+  for a in $agents; do
+    if [ -f "$ST/pids/$a.image.pid" ] || [ -f "$ST/$a/disk.img" ]; then
+      how="unikernel"; alive "$a.image" && how="$how, up" || how="$how, down"
+      line=$(disk_file "$ST/$a/disk.img" status.txt | chain_line)
+    else
+      how="binary"; alive "$a.node" && how="$how, up" || how="$how, down"
+      line=$(chain_line 2>/dev/null < "$NET/$a/status.txt" || true)
+    fi
+    if [ -s "$ST/$a/container" ]; then
+      st=$("$DOCKER" inspect -f '{{.State.Status}}' "$(container_name "$a")" 2>/dev/null || echo gone)
+      ag="agent in container ($st)"
+    elif [ -f "$ST/$a/backend.sh" ]; then
+      n=$(ls -1 "$ST/$a/inbox" 2>/dev/null | wc -l | tr -d ' ')
+      ag="agent remote ($n in its inbox)"
+    else ag="backend of its own"; fi
+    printf '  %-10s %-28s node %-16s %s\n' "$a" "${line:-starting}" "$how" "$ag"
+  done
+  if alive inbox; then printf '\n  inbox server up: %s\n' "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["url"])' "$ST/inbox.json")"; fi
+}
+
+# ---- login, build-agent ----
+cmd_login() {
+  net_arg "${1:-}" login
+  a=${2:-}; in_list "$a" "$(echo $agents)" || die "which agent? pantheon-standalone login NET AGENT ($(echo $agents))"
+  need_docker
+  case ${a%%-*} in
+    claude) cli="claude auth login --claudeai" ;;
+    codex)  cli="codex login --device-auth" ;;
+    grok)   cli="cursor-agent login" ;;
+    *) die "no login known for $a's provider: run its CLI's login yourself, in $DOCKER run -it -v pantheon-$(net_id)-$a-home:/home/agent ${3:-pantheon-agent}" ;;
+  esac
+  say "$a's login, kept in volume pantheon-$(net_id)-$a-home (its container's home)"
+  # shellcheck disable=SC2086
+  exec "$DOCKER" run -it --rm -v "pantheon-$(net_id)-$a-home:/home/agent" "${3:-pantheon-agent}" $cli
+}
+cmd_build_agent() {
+  need_docker
+  exec "$DOCKER" build -t "${1:-pantheon-agent}" "$here/integrations/standalone"
+}
+
+# ---- down ----
+cmd_down() {
+  net_arg "${1:-}" down
+  for a in $agents; do
+    if [ -s "$ST/$a/container" ]; then
+      "$DOCKER" rm -f "$(container_name "$a")" >/dev/null 2>&1 && say "removed $a's container" || true
+      rm -f "$ST/$a/container"
+    fi
+  done
+  for a in $agents; do stop_bg "$a.node"; stop_bg "$a.image"; stop_bg "$a.service"; done
+  stop_bg inbox
+  # a node started by an earlier copy whose pid file is gone
+  if pgrep -f -- "node $NET/" >/dev/null 2>&1; then pkill -TERM -f -- "node $NET/" || true; fi
+  say "$NET is stopped (its chain, keys, tokens, logins and disks stay)"
+}
+
+c=${1:-}; [ $# -gt 0 ] && shift
+case $c in
+  init|up|connect|status|login|down) "cmd_$c" "$@" ;;
+  build-agent) cmd_build_agent "$@" ;;
+  *) awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "$0"; [ -z "$c" ] || [ "$c" = help ] || [ "$c" = -h ] || exit 1 ;;
+esac

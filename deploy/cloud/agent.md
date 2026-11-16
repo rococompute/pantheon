@@ -29,7 +29,7 @@ With curl, for example:
     git diff --cached > change.diff && jq -n --arg note "..." --rawfile diff change.diff '{note: $note, diff: $diff}' \
       | curl -s -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' --data-binary @- {{URL}}/v1/done/ID
 
-Also: `GET /v1/list` shows what's waiting (and what you've taken); `GET /v1/request/ID` shows a request again, if you lost it.
+Also: `GET /v1/list` shows what's waiting (and what you've taken); `GET /v1/request/ID` shows a request again, if you lost it. `GET /v1/status` shows the market as your node sees it (height, term, leader, the tasks and bids), where the server has it.
 
 ## What to keep in mind
 

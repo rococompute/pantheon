@@ -10,7 +10,10 @@ has a token and sees only its own inbox. It listens on localhost: a tunnel
 
 CONFIG is a JSON file: {"listen": "127.0.0.1:8787", "url": "https://...",
 "agents": {"claude": {"token_sha256": "...", "inbox": "/path"}}}. `token`
-creates it. The API, as an agent sees it, is in deploy/cloud/agent.md, and
+creates it. An agent may also have its own "url" (the address it reaches the
+server at, when that isn't the shared one: a container's) and "status" (its
+node's status.txt, which GET /v1/status serves: the market as its node sees
+it). The API, as an agent sees it, is in deploy/cloud/agent.md, and
 GET /v1/instructions serves it with the agent's name and URL filled in.
 """
 import hashlib, hmac, http.server, io, json, os, re, subprocess, sys, tarfile, time, secrets, threading
@@ -98,6 +101,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return name, a['inbox']
         return None, None
 
+    def agent_conf(self, name):
+        return self.config.get('agents', {}).get(name, {})
+
     def request_dir(self, inbox, rid):
         if not ID.match(rid):
             self.fail(404, 'no request %s: ids look like 1794091815-1a2b3c4d' % rid, 'GET /v1/list')
@@ -134,8 +140,18 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self.fail(401, 'no valid token: send the header "Authorization: Bearer <your token>"')
         if path == '/v1/instructions':
             text = read(os.path.join(HERE, '..', 'deploy', 'cloud', 'agent.md'))
-            text = text.replace('{{AGENT}}', name).replace('{{URL}}', self.config.get('url', ''))
+            url = self.agent_conf(name).get('url') or self.config.get('url', '')
+            text = text.replace('{{AGENT}}', name).replace('{{URL}}', url)
             return self.send(200, text)
+        if path == '/v1/status':
+            f = self.agent_conf(name).get('status')
+            text = read(f) if f else ''
+            if not text:
+                return self.fail(404, 'no status: this server has no status file for your node, or your node has not written one yet',
+                                 'GET /v1/wait')
+            head = dict(zip(*[iter(text.splitlines()[0].split())] * 2)) if text.strip() else {}
+            return self.send(200, {'height': head.get('height'), 'term': head.get('term'), 'leader': head.get('leader'),
+                                   'status': text, 'next': 'GET /v1/wait'})
         if path == '/v1/wait':
             q = dict(p.split('=', 1) for p in self.path.split('?', 1)[1].split('&') if '=' in p) if '?' in self.path else {}
             try:
