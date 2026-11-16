@@ -1,5 +1,5 @@
 (** M-3 part: the roster by height, run as extracted code on fixed inputs
-    (core/market.proof checks the same in the kernel). No node, no timing. *)
+    (core/market.exp checks the same in the kernel). No node, no timing. *)
 Import core.util core.market.
 Require Soma.Host.
 

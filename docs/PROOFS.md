@@ -1,8 +1,8 @@
 # Proof inventory and remaining work
 
 `soma build main.soma` checks the proof files. This inventory includes every
-Theorem, Lemma, Corollary and Example in `core/consensus.proof` and `core/market.proof`
-(and the main statements of `core/agent.proof`, `runtime/node.proof`'s vote and snapshot sections, `runtime/node_service.proof`, `runtime/node_path.proof`, `runtime/node_file.proof`, `runtime/node_git.proof` and `app/cli.proof`, below),
+Theorem, Lemma, Corollary and Example in `core/consensus.exp` and `core/market.exp`
+(and the main statements of `core/agent.exp`, `runtime/node.exp`'s vote and snapshot sections, `runtime/node_service.exp`, `runtime/node_path.exp`, `runtime/node_file.exp`, `runtime/node_git.exp` and `app/cli.exp`, below),
 with its exact source name. These are statements about the pure definitions,
 not proofs of Soma.Host's primitives (the host's I/O), extraction to machine integers, cryptography,
 OS isolation, or deployed end-to-end safety. Soma.Host's I/O is trusted,
@@ -14,7 +14,7 @@ commands need not do so. Trusted toolchains and build-cache provenance matter.
 
 ## Checked statements
 
-### core/consensus.proof
+### core/consensus.exp
 
 | Name | What it proves; limits |
 |---|---|
@@ -59,7 +59,7 @@ commands need not do so. Trusted toolchains and build-cache provenance matter.
 | `precommitter_has_precommit`, `precommitters_on_roster` | A certificate name has a precommit in the log at this height, round and value; when the log holds only the roster's messages, every name is on the roster. |
 | `same_round_decisions_agree` | Two nodes on one roster at one height, logging only the roster's messages, with at most f faulty validators: when both decide and their decisions' proposals are of one round, they decide one `vid`, or a validator outside the faulty ones has a precommit for each of the two values in that round, one in each log, which `one_precommit_per_round` rules out for an honest node. Premises: that a logged precommit is its sender's (the node checks signatures before the log; not modelled) and a collision-free hash for one value per `vid`. Decisions in different rounds (locks carried across rounds) are not covered. |
 
-### core/market.proof
+### core/market.exp
 
 | Name | What it proves; limits |
 |---|---|
@@ -110,7 +110,7 @@ commands need not do so. Trusted toolchains and build-cache provenance matter.
 | `second_reveal_for_a_draw_is_refused` | Immediately after acceptance, another reveal from that agent is refused; does not cover a later draw. |
 | `accepted_reveals_for_a_draw_are_equal` | Two alternatives accepted from the same state hash to the same tip; equality requires the explicit unique-preimage premise, not proved SHA-256 injectivity. |
 
-### runtime/node.proof: never two votes at one slot
+### runtime/node.exp: never two votes at one slot
 
 An honest node signs at most one vote for a kind, height and round (a slot,
 `broadcast_key`): the guard that keeps one node from forging two validators'
@@ -128,7 +128,7 @@ is shown within a height's list (the AVL map's find-after-add is not proved).
 | `sign_prog_trace` | `sign_prog` is exactly the slot's look-up, then the signing when it is empty. |
 | `signed_slot_list_found`, `signed_slot_list_others`, `lookup_filter_other` | Within a height, signing a slot makes it found with that vote and leaves the other slots' votes as they were. |
 
-### runtime/node.proof: the snapshot reads back
+### runtime/node.exp: the snapshot reads back
 
 `snapshot_text_reads_back`: `snapshot_of (snapshot_text c) = Some c`. A node
 that saves its consensus state (`consensus.state`) and starts again from the
@@ -150,7 +150,7 @@ meets it. That the bytes on disk are the bytes written is Soma.Host's.
 | `snapshot_parse_reads_text`, `snapshot_text_reads_back` | The snapshot's text parses as its state, and `snapshot_of`'s re-check passes. |
 | `new_consensus_fits` | A new chain's state meets `snapshot_fits`. |
 
-### core/agent.proof
+### core/agent.exp
 
 The agent's policy before it signs an attestation (core/agent.soma's
 `attest_duty`), and its one transaction in flight (`flush`). Statements about the pure duty, over the market's view the
@@ -167,7 +167,7 @@ node gives it; the model's answer and the checks' results are not modelled.
 | `release_inflight_me`, `submits_next`, `flush_submits_next` | Releasing what landed keeps the agent's name; each branch of `flush`'s queue match (a merge's or a mark's check, or a submission) meets `submits_next`. |
 | `flush_one_in_flight` | When `flush` sends a transaction, none was in flight (after those that landed or sat 30 blocks are released), the one sent is recorded in flight, and it is at the agent's next nonce on the chain. That the chain accepts it at that nonce is the market's. |
 
-### runtime/node_service.proof
+### runtime/node_service.exp
 
 What the node's service carries out for an image (runtime/node_service.soma;
 docs/SHELL-IN-SOMA.md, "The node's service"). Statements about its
@@ -187,7 +187,7 @@ starts.
 | `checkout_git_is_served`, `merge_commit_is_served`, `tool_checkout_is_served`, `model_launches_are_served`, `check_job_is_served`, `ci_is_served`, `cmd_backend_is_served`, `service_environment_is_served`, `cleanup_is_served`, `temporary_names_are_served` | What runtime/node_host.soma and runtime/node.soma ask, on paths it allows, is allowed: the restriction takes nothing the node needs, given the service runs with the image's flags. |
 | `the_key_and_beyond_are_refused`, `programs_beyond_the_nodes_are_refused` | Examples on one service's world: the key, `..`, a root's sibling, git aliases and upload packs, `GIT_SSH_COMMAND`, `LD_PRELOAD`, another CI image, the clock. |
 
-### runtime/node_path.proof
+### runtime/node_path.exp
 
 What a path probe answers (runtime/node_path.soma), for any answers the host's
 lstat gives; the lstat itself is Soma.Host's, and a change between the
@@ -201,7 +201,7 @@ probe and the operation is outside it.
 | `probe_none_is_missing` | Answering "none", some part isn't there. |
 | `probe_answers` | It answers "symlink", "none", "dir" or "file". |
 
-### runtime/node_file.proof
+### runtime/node_file.exp
 
 How the binary writes its files (runtime/node_file.soma), for any answers the
 host's one-call primitives give; what the file system does with a
@@ -217,7 +217,7 @@ rename or a sync is the host's.
 | `failed_save_ends` | A save that failed is said and the binary ends: it never answers as if written. |
 | `remove_tree_starts_rm` | A tree's removal is one program started on its own, `rm -rf -- PATH`, the path its one operand; it always answers done. That rm removes the tree, later, is the host's. |
 
-### runtime/node_git.proof
+### runtime/node_git.exp
 
 Git and programs as the binary runs them (runtime/node_git.soma), for any
 answers the host's processes give; that a pipe's reads are the
@@ -235,7 +235,7 @@ program's output, and what the program does, are the host's.
 | `git_env_keeps_host_git_out` | Git's environment holds the entries asked for, the fixed three, and the host's without any `GIT_` one. |
 | `git_runs_only_git` | Git starts only "git", from where the binary is, with the fixed config flags and that environment; the rest is its input's file, its pipe and its wait. |
 
-### app/cli.proof
+### app/cli.exp
 
 Besides the commands' parsing and JSON examples:
 
@@ -255,7 +255,7 @@ Besides the commands' parsing and JSON examples:
 - Prove tree agreement through vote admission, settlement and shell application.
   Approval arithmetic and the finalize-origin result are only parts of this.
 - Prove exact conflict clearing and rotation fairness. Of the agent's policy
-  before signing, `attest_duty` and `flush` are proved (core/agent.proof);
+  before signing, `attest_duty` and `flush` are proved (core/agent.exp);
   the leader's merge and approval paths (`lead`) and what a model's answer
   becomes (`on_answer`) are not.
 - Use dependent types to represent validated paths and edits.

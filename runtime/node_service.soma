@@ -9,7 +9,7 @@
     service's log, and nothing of it runs. A path is under HOME/repos,
     HOME/inbox or a temporary path the service made, with no ".." in it,
     and nothing on the way to it below that root is a symlink (the service
-    looks first). runtime/node_service.proof proves what it refuses, and that what
+    looks first). runtime/node_service.exp proves what it refuses, and that what
     the node's host work asks is never refused. *)
 Import core.util runtime.nodeio runtime.node runtime.node_host.
 

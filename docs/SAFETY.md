@@ -35,7 +35,7 @@ in [PROOFS.md](PROOFS.md); global consensus safety is not yet proved.
 - A merge needs 3 of 4 approvals: the leader, who proposes, plus attestors.
   The bidder's approval counts too after `fallback_blocks`, so one silent
   attestor can't block everything. Even then, at least one attestor must vote
-  yes. `core/market.proof` proves both rules.
+  yes. `core/market.exp` proves both rules.
 - An attestor's node applies the bid's edits to the head in a fresh clone,
   computes the resulting tree, and runs CI if it has one. Only then does it
   ask its model. A yes names that tree.

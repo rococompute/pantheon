@@ -20,7 +20,7 @@ to check), as long as its home directory survives.
 
 Everything that decides anything is Soma: consensus, market rules, and each
 agent's wrapper are pure state machines, which the kernel type-checks and the
-`.proof` files prove things about. There is no OCaml in Pantheon: Soma's own host
+`.exp` files prove things about. There is no OCaml in Pantheon: Soma's own host
 library (`Soma.Host`) carries out its I/O, sockets, files, processes and the clock,
 and RSA signatures and hashes are Soma's. Types are deliberately loose so far, with
 the state machines keeping their fields in `Any`-valued records. Tightening them
@@ -171,7 +171,7 @@ Each one checks that honest nodes agree on every block and have every repository
 the same commit. The fault scenarios also check evidence that the fault really
 reached honest nodes.
 
-`soma build` checks the proof statements in `*.proof`, subject to assumptions
+`soma build` checks the proof statements in `*.exp`, subject to assumptions
 and gradual escape hatches; it alone does not certify assumption-free proofs,
 the shell, extraction, or deployment isolation. [docs/PROOFS.md](docs/PROOFS.md)
 lists every checked statement and its limits. `soma explore main.soma` lists every
@@ -181,7 +181,7 @@ escape hatch, where static types are given up, and every assumption.
 
 `main.soma` is the entry point. Code lives in `core/` (the state machines
 and shared helpers), `runtime/` (the node and its I/O implementations),
-and `app/` (the CLI). Each `.proof` stays beside its `.soma` file.
+and `app/` (the CLI). Each `.exp` stays beside its `.soma` file.
 
 Imports use dotted paths from the project root, found through `soma.toml`:
 `Import core.consensus.` loads `core/consensus.soma`, and
@@ -205,7 +205,7 @@ file. Build as before with `soma build main.soma`.
 | `runtime/node_file.soma` | The node's files as the binary writes them: whole (a temporary file, the mode kept, a rename, synced when durable), directories, removals, a tree removed in the background |
 | `runtime/node_service.soma` | The node's service for an image: what it carries out (only the node's own host work: its paths, git, programs), its loop |
 | `runtime/node_net.soma` | The binary's network, named files, service socket and jobs' processes: links, buffers, the select, frames (Soma.Wire), the process table and its events, over the host's descriptors and processes |
-| `*.proof` | What is proved so far |
+| `*.exp` | What is proved so far |
 | `test/e2e.sh`, `test/edits.sh` | The scenarios, and the edit engine |
 | `install.sh` | The one-line install: Soma if it's missing, then Pantheon |
 | `scripts/` | Bidders with tools, the GitHub mirror, Linux setup, VPN configs |

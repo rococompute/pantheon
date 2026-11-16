@@ -79,10 +79,10 @@ One task each, in order:
    that order as a pure Soma function from the event, the old and new
    state and the outputs to a list of effects (perform this output, save
    this snapshot, refuse this transaction), and have the loop body only
-   carry the effects out. Then the order is checked like `core/util.proof`:
+   carry the effects out. Then the order is checked like `core/util.exp`:
    `Example`s that a vote event's effects save before they send, and that
    a refused transaction is remembered and dropped next time, and,
-   past the floor, a theorem in a `.proof` for every event. The refused
+   past the floor, a theorem in a `.exp` for every event. The refused
    set can stay an OCaml table behind two bindings at the floor. The
    floor is the loop in Soma with its order checked by `Example`s; types
    can be loose (`Any` for the snapshot or the handle) where precise ones
@@ -166,9 +166,9 @@ hands each operation that reaches the host to the function
 primitives by name"); the wire form, `io_wire`, which `io_of_wire` reads
 back, proved for every operation, is what an image sends its service; `io_do`, the clock and the table reads
 are one-operation programs run that way, and the output actions are
-programs (`action_prog`, `actions_prog`). `runtime/nodeio.proof` says what a
+programs (`action_prog`, `actions_prog`). `runtime/nodeio.exp` says what a
 program does whoever interprets it (`ntrace`, the operations carried out
-for given answers; `nand_trace`), and `runtime/node.proof`'s
+for given answers; `nand_trace`), and `runtime/node.exp`'s
 `single_actions_trace` that a list of one-operation actions does exactly
 those operations, in order. Output handling is one program too (`output_prog`): the reads it needs
 (the draw, a stored block, the height, the peer count, the vote signed at
@@ -177,7 +177,7 @@ whose answers carry data (`nanswer`'s list), asked in the program's
 continuations after the operations before them, so they happen when they
 did. The status file is a program as well (`status_prog`): the checkouts'
 heads, the divergences, the clock, the model limit and, when a limit is
-on, its end as a time of day, read in the old order (`runtime/node.proof`'s
+on, its end as a time of day, read in the old order (`runtime/node.exp`'s
 `status_reads_in_order`). So is a decided merge (`merge_prog`): the
 gate's reads, the checkout's reset, each edit's look at its path, read,
 write or removal, and the commit are operations (`merge_trace`,
@@ -293,7 +293,7 @@ own path (`IoSelfExe`) started with its output appended to its log
 (`IoStartLogged`; one that can't start ends the command with why), and
 `up_wait` asks the shell to stop them all on an interrupt or a
 terminate (`IoStopOnSignal`), then waits for each in turn (`IoWaitPid`);
-app/cli.proof's `up_waits_for_what_it_started` says it waits for exactly
+app/cli.exp's `up_waits_for_what_it_started` says it waits for exactly
 the nodes it started, after the stop is set. The shell's `spawn_node`
 and `await_nodes`, which chose the program and did the waiting, are
 gone. One known difference: a float in network.json's params
@@ -466,7 +466,7 @@ forever can't hang it. shell.ml's git, clone and run, about 25 lines of
 environments and arguments, are gone, and so are `capture` and the
 `exec` primitive it was. `pantheon edits` on a 250-file checkout takes
 the same time as with `capture` (7.96 s against 7.95 s, alternating, on
-the laptop). runtime/node_git.proof proves, of any answers the processes give:
+the laptop). runtime/node_git.exp proves, of any answers the processes give:
 `spawn_fed_removes_its_file` (input made into a file: the text put, the
 start only when that worked, then the file removed), `exec_leaves_nothing` (its start, reads of its pipe, the pipe closed,
 the wait, nothing else), `exec_failed_start_ends`,
@@ -487,13 +487,13 @@ the checkout; a part that isn't there ends it, "none"; otherwise the
 last part's kind, "dir" or "file" (anything else that is there counts
 as a file). That is what shell.ml's `no_symlink` and `path_probe` did,
 which are gone; it keeps `path_stat`, the lstat itself.
-runtime/node_path.proof proves it of any answers the host's stat gives:
+runtime/node_path.exp proves it of any answers the host's stat gives:
 `probe_only_looks` (every operation is a stat of one of the path's
 parts, in order), `probe_finds_symlinks` (a symlink on the way, every
 part before it there, answers "symlink"), `probe_found_every_part`
 ("dir" or "file" only when every part is there and none is a symlink),
 `probe_none_is_missing` ("none" only when a part isn't there) and
-`probe_answers` (one of the four). With runtime/node_service.proof's
+`probe_answers` (one of the four). With runtime/node_service.exp's
 `symlink_never_followed`, the service runs nothing through a symlink the
 host's stat reports at the time it looks.
 
@@ -523,7 +523,7 @@ that fails ends the binary, as the exception did. shell.ml's `write_file`, `mkdi
 `rename`, `sync_dir`, `make_dir`, `remove_file`, `temp_new` and
 `start_detached` (a program forked twice, so its parent is the system's
 and nothing is left to reap, its input and output `/dev/null`).
-runtime/node_file.proof proves, of any answers those give:
+runtime/node_file.exp proves, of any answers those give:
 `failed_put_renames_nothing` (the file is as it was),
 `whole_write_order` (the put, the mode kept, the rename, then the
 directory synced), `whole_write_only_renames_onto_it` (nothing else
@@ -791,7 +791,7 @@ a field: the token, then the operation's wire form; an answer is one
 too: found, the float as `%.17g` text, then the data. The token is the
 node's, a hash of its private key (`service_token`), which the image and
 the service each have; the service answers `service_op` operations with
-it and refuses anything else (runtime/node.proof's `service_answers_only_its_own`).
+it and refuses anything else (runtime/node.exp's `service_answers_only_its_own`).
 A connection that fails is opened again for the next request; with no
 service, or none reachable, those operations answer that they aren't
 there, as before, and the image votes and keeps the chain but can't
@@ -831,7 +831,7 @@ removed one taken out). So a token alone isn't the host:
 
 A refused request runs nothing, is answered not found with the reason,
 and is said in the service's log (`service refused OP: why`).
-runtime/node_service.proof proves it of these functions, both ways. What it
+runtime/node_service.exp proves it of these functions, both ways. What it
 refuses: `refused_runs_nothing`, `allowed_are_host_ops`,
 `only_the_token_is_served`, `paths_stay_in_roots`,
 `roots_are_the_services`, `path_operations_are_looked_at`,
@@ -923,7 +923,7 @@ they serve edit/command code and never assemble model prompts.
 including a mixed open/done/dropped plan and all placeholder substitutions.
 It also pins complete leader draft, leader pick, bidder and attestor prompt
 bytes with SHA-256 goldens, including defanged placeholders inside untrusted
-text. Its `.proof` checks the fixed assembled result in Soma and proves the
+text. Its `.exp` checks the fixed assembled result in Soma and proves the
 plan's length bound, ordered-prefix property and open-source membership.
 These checks use no running node or timing. Steps 5 and 6 and U-1 remain
 separate work; this status does not mark `.plan`.
@@ -1048,7 +1048,7 @@ separate work; this status does not mark `.plan`.
   string, a block_ms that isn't an int, a non-string exclude, params
   missing) stops the start through `node_fail`. `test/genesis-boot.sh`
   runs real texts, including 12001 params and excludes;
-  `test/genesis_boot.proof` checks token streams.
+  `test/genesis_boot.exp` checks token streams.
 
 - Step 5, job buffer storage: output chunks now live in node_state's
   jbufs, through job_buffer, job_remember and job_forget. job_bytes uses
@@ -1089,7 +1089,7 @@ separate work; this status does not mark `.plan`.
   and its binding are gone. Byte and shape guards still precede tokenizing,
   and nonce validation still precedes signature verification.
   `test/tx-members.sh` checks fixed real JSON, including 20000 unrelated
-  members, and `test/tx_members.proof` checks tokens and the nonce guard.
+  members, and `test/tx_members.exp` checks tokens and the nonce guard.
   This is a partial step 5 bid; the plan remains open.
 
 - Step 5, a peer line's members: `from`, `sig` and `fields` are read in
@@ -1103,14 +1103,14 @@ separate work; this status does not mark `.plan`.
   still comes after the own/refused drop. The OCaml `node_line_parts`
   binding is gone. `test/peer-members.sh` checks real lines, including
   20000 unrelated keys before the three that count, and
-  `test/peer_members.proof` fixed token streams.
+  `test/peer_members.exp` fixed token streams.
 
 - Step 5, a reply's braces: where a model reply's JSON object starts and
   ends (the first `{` and the last `}`, by byte offset) is found in Soma by
   `reply_open_at` and `reply_close_at`, one tail-recursive `char_at` scan
   each way with no substring per step, still only after the output-cap
   check. The `node_reply_open` and `node_reply_close` bindings are gone;
-  the shell only reports the cap and yojson's tokens. `runtime/node.proof` checks
+  the shell only reports the cap and yojson's tokens. `runtime/node.exp` checks
   the offsets, and `test/reply-braces.sh` checks them on fixed inputs
   (none, only one brace, a close before the open, several objects, a
   200 KB reply) and the fields they lead to.
@@ -1126,7 +1126,7 @@ separate work; this status does not mark `.plan`.
   votes were read and there is no consensus.state, as before. The OCaml
   parser is gone, and so are the shell's unused `job_how` and `exit_code`
   (Soma's `ci_job_how`, `ci_exit_code`) and the dead `conn_buffer` branch.
-  `test/signed-log.sh` and `test/signed_log.proof` check fixed lines.
+  `test/signed-log.sh` and `test/signed_log.exp` check fixed lines.
 
 - Step 5, peer buffer storage: a connection's retained read chunks now
   live in Soma's `node_state` (`pbufs`, through `peer_buffer`,
@@ -1174,7 +1174,7 @@ separate work; this status does not mark `.plan`.
   reading for the turn, stores the timers and jobs, and signals only the
   job Soma names. Select and reading bytes stay in the shell.
   `test/clock-arm.sh` checks these on fixed inputs, with no running node.
-  `runtime/node.proof` checks the same edges and proves the due timers are exactly
+  `runtime/node.exp` checks the same edges and proves the due timers are exactly
   the partition, that a stopped job is not stopped again, and that a
   queued event does not wait. Step 5 is not marked complete.
 
@@ -1213,7 +1213,7 @@ separate work; this status does not mark `.plan`.
   the chunks Soma returns and signals the process once (`node_job_flood`);
   it no longer trims the buffer or compares it to the cap. `job_result`
   still formats the outcome, and `node_job_complete` still runs the
-  callback at the completion's original queue position. `runtime/node.proof`
+  callback at the completion's original queue position. `runtime/node.exp`
   checks a line split across chunks, several lines in one chunk, an empty
   line, a trailing partial, a malformed chunk kept without an event, and
   the cap at and past its edge, and proves the under-cap append, that the
@@ -1245,7 +1245,7 @@ separate work; this status does not mark `.plan`.
   `test/job-completion.sh` checks 21 fixed Soma results, including success,
   exits, signals, stops, flood/timeout precedence, exact tail boundaries,
   split peer chunks, multiple/empty lines, malformed peer input and the
-  strict kept-buffer cap. Its `.proof` includes exact-result Examples and
+  strict kept-buffer cap. Its `.exp` includes exact-result Examples and
   general success-byte and failure-priority theorems. This is a partial
   step: job deadlines and timer scheduling remain native; the output cap
   moved in the entry above. Step 5 is not marked complete.
@@ -1258,7 +1258,7 @@ separate work; this status does not mark `.plan`.
   operation and carries it out with `io_do`; those six bindings are gone,
   and shell.ml's `node_io` is the one interpreter. `action_io` and
   `output_io` give the operation a plan's action or an output is, and
-  `runtime/node.proof` checks them on concrete plans and proves each is carried
+  `runtime/node.exp` checks them on concrete plans and proves each is carried
   out as exactly its operation, and that the wire form reads back.
   The clock is the same interface: `IoClock` wires as `["clock"]`, and
   `node_io` returns `(true, Unix.gettimeofday ())`; `io_now` is that
@@ -1282,7 +1282,7 @@ separate work; this status does not mark `.plan`.
   socket and carries the mode out. After a read, a `conn_buffer` event
   reports the buffered bytes and `buffer_over` applies the cap Soma is
   given as a decimal string (no unary literal), closing through a
-  binding. `runtime/node.proof` checks both caps at and past their edges and
+  binding. `runtime/node.exp` checks both caps at and past their edges and
   the oldest choice. Peer framing and parsing are in Soma. Job output
   caps are in Soma too (`job_feed`); job deadlines and timer scheduling
   remain native.
@@ -1313,7 +1313,7 @@ separate work; this status does not mark `.plan`.
   is no object. `flatten_reply` turns the yojson binding's tokens into the
   old key, value, ... list (dotted names, list indices, left to right).
   The shell only reports the cap, finds the two bytes, and tokenizes;
-  its `json_in_reply` and `flatten_reply` are gone. `runtime/node.proof` checks
+  its `json_in_reply` and `flatten_reply` are gone. `runtime/node.exp` checks
   slices, nesting, absent objects and the flattened fields, and proves a
   reply with no object or past the cap never becomes a reply event, and
   that a parsed object becomes a reply with those fields. Left of step 5:
@@ -1333,7 +1333,7 @@ separate work; this status does not mark `.plan`.
   The shell keeps the limit's state (`node_limit_set`, `node_limit_clear`),
   reads a digit run with `float_of_string` (so big numbers cross as
   floats, not unary nat) and still parses the JSON: `node_reply_fields` is
-  `json_in_reply` and `flatten_reply`. `runtime/node.proof` checks limit and
+  `json_in_reply` and `flatten_reply`. `runtime/node.exp` checks limit and
   non-limit texts, deadlines past and future, units, the backoff's cap and
   each outcome, with theorems that a reply with no JSON object or a failed
   job never becomes a reply event. Left of step 5: lines into events
@@ -1346,7 +1346,7 @@ separate work; this status does not mark `.plan`.
   `run_event` drops those without a verify (so refused transactions
   resent every few seconds never pay for one), verifies the rest
   through `node_verify_line`, and turns a verified line into its
-  `tx` or `msg` event. `runtime/node.proof` checks the drops and both
+  `tx` or `msg` event. `runtime/node.exp` checks the drops and both
   events. Left of step 5: `decode_tx`, the line and connection
   limits, and the reply JSON.
 
@@ -1392,7 +1392,7 @@ separate work; this status does not mark `.plan`.
   retry-table insertion and socket writes are small bindings; silent-mode
   suppression is selected in Soma. Both cases use `perform_output` during
   startup/replay and runtime, and their old `handle` branches are gone.
-  `runtime/node.proof` checks exact status bytes, limit boundaries, log truncation,
+  `runtime/node.exp` checks exact status bytes, limit boundaries, log truncation,
   dispatch, flood ordering/count/range and silent sends. Merge, llm and
   check followed through the same dispatcher.
 
@@ -1401,7 +1401,7 @@ separate work; this status does not mark `.plan`.
   block reads in order; `catchup_send` selects an authenticated peer send
   only for present blocks, including empty blocks. The original two-second
   throttle, remembering silent/absent peers, and inclusive 51-block cap are
-  preserved. `runtime/node.proof` checks exact plans and message fields, malformed
+  preserved. `runtime/node.exp` checks exact plans and message fields, malformed
   arities, time/range boundaries, and missing/empty blocks. OCaml supplies
   only clock/table/metadata access and signing/socket writes. The other
   cases now also dispatch through `perform_output`.
@@ -1411,7 +1411,7 @@ separate work; this status does not mark `.plan`.
   when to withhold, queue a hash-chain link or do nothing, and
   `decided_plan` requests exactly one store for an unseen height. OCaml
   binds delay scheduling, logging, queue insertion, metadata/table reads
-  and the synced block store. `runtime/node.proof` checks concrete binding plans,
+  and the synced block store. `runtime/node.exp` checks concrete binding plans,
   malformed outputs, withhold/bounds behavior, and duplicate decisions.
   To use the same interpreter during startup and replay, `node_open` now
   returns setup/replay events and the saved consensus as data; Soma runs
@@ -1437,7 +1437,7 @@ separate work; this status does not mark `.plan`.
   named OCaml record and threads it through edit and command callers.
   `edit_once` serves edit application/diff replay, `contains` serves URL
   resolution and CI error classification, and `shell_safe_path` serves path
-  checks. `core/util.proof` checked all three packed callbacks on pure inputs.
+  checks. `core/util.exp` checked all three packed callbacks on pure inputs.
   With the edits machinery in Soma, no OCaml calls them: the record and
   `cli_open` are gone, and `node_open` takes only the setup.
   Prompt expansion calls `replace_all` directly in Soma; plan filtering
@@ -1466,7 +1466,7 @@ at the time; their `run` references are historical.
   output, save this snapshot, refuse this transaction): decided outputs
   first, then the snapshot when consensus changed (`cons_eq`), then the
   rest; a refused transaction is one whose raw form did not enter the
-  pool. `runtime/node.proof` checks that order with `Example`s (decided, snapshot
+  pool. `runtime/node.exp` checks that order with `Example`s (decided, snapshot
   and rest together; a refused and an accepted transaction; an empty
   step; steps with only some kinds; a vote saving before it sends), not
   by timing a node. Effects return `bool` and the loop keeps the new
@@ -1535,7 +1535,7 @@ at the time; their `run` references are historical.
   peer message and transaction, and now reads it by offset (`char_at`).
 
 The LLM migration's callback boundaries are also checked in
-`test/llm_prompt_isolation.proof`: an empty context is independent of the
+`test/llm_prompt_isolation.exp`: an empty context is independent of the
 task-repository reader for every prompt and every pair of readers, and
 plain/empty prompts are independent of all context readers. Fixed checks
 record replacement order: earlier fence markers inserted by a later section
@@ -1562,7 +1562,7 @@ theorems can come later. So each step has a floor and room past it:
   Types may be loose where precise ones are a fight, and there need be no
   theorems. A bid at the floor is mergeable.
 - **Past the floor** is welcome, not required: precise types instead of
-  `Any`, and theorems in a `.proof` about what the moved code does. Among
+  `Any`, and theorems in a `.exp` about what the moved code does. Among
   correct bids the leader prefers the one that goes further.
 - What fails either way: an `Admitted`, an axiom or a cast escape
   (`unk`, `err`) the CI policy refuses (`deploy/ci-command.py`). Leave a
@@ -1589,7 +1589,7 @@ The rest:
   diffs and files run to hundreds of kilobytes: such code reads by offset
   with `core/util.soma`'s `slen`, `substr`, `char_at` and `find_str` (which
   `main.soma` extracts to OCaml's `String` functions), or folds over
-  `chars s`, with an example in `core/util.proof` for what it computes. Before
+  `chars s`, with an example in `core/util.exp` for what it computes. Before
   that change, one edit applied to `shell.ml` took 8 s; now it's under
   10 ms, and 0.03 s on a 940 KB file.
 - Each task leaves `run`'s or `node`'s arguments no longer than it found

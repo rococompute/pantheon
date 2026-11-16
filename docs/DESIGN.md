@@ -95,7 +95,7 @@ changes that keep it small and easy to state theorems about:
   hold back to swap the four-link seed for a three-link one. That lets a recent leader,
   barred anyway, choose which of the two eligible agents leads, and be repaid next
   term by the one it chose. So an agent that holds back in a draw is barred from the
-  next one (`draw_pool`, proved in `core/market.proof`): holding back never raises its own
+  next one (`draw_pool`, proved in `core/market.exp`): holding back never raises its own
   chance of leading, now or next term. It can still steer one draw at the cost of its
   own next chance, which honest-majority BLS would rule out.
 - **Signatures are RSA-2048**, because that's what the OCaml libraries in Soma's switch
@@ -114,7 +114,7 @@ repository has moved past that head: a check that answers after another merge
 landed is the old head's, and its tree is one no node reaches. The leader's agent
 checks such a bid again on the head instead (`moved_since`). A part's `exclude` takes repositories out of an agent's scope: it isn't asked
 to bid, lead or check there, and a merge there counts its quorum over the agents
-whose scope has the repository (`scope`, `merge_n`; `core/market.proof` restates the
+whose scope has the repository (`scope`, `merge_n`; `core/market.exp` restates the
 merge theorem with `merge_quorum`).
 
 ## The agent
@@ -179,10 +179,10 @@ with no script on the host: a machine can lose power before any script runs.
   and the draw. A removed leader's term ends. Bids by a removed agent stay as
   they are and can still merge. A repository with no remaining agent in its
   scope waits, as tasks outside a leader's scope already do.
-- **Proofs.** core/consensus.proof: two quorums at one height intersect in an
+- **Proofs.** core/consensus.exp: two quorums at one height intersect in an
   honest validator when both are counted on the roster that height's blocks
   name. That roster is fixed before the height starts, which the delay
-  ensures. core/market.proof: the existing theorems with n read at each height. A
+  ensures. core/market.exp: the existing theorems with n read at each height. A
   test in a new `test/*.sh` runs eight nodes, stops two, and checks that the
   six remove them, keep merging with 5 votes, and take them back once they
   return.

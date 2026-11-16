@@ -1462,7 +1462,7 @@ llm_repo_prog (token r : string) (paths : list string) : nprog string :=
   else NDone (repo_text_of token r None [] 0 0)).
 
 (** [prompt_assemble] as a node program: a part's program runs only when
-    its placeholder is there (runtime/node.proof's prompt_prog_assembles: the
+    its placeholder is there (runtime/node.exp's prompt_prog_assembles: the
     same text). *)
 prompt_prog (token prompt : string) (ctx : list string) (repos plan : nprog string)
     (repo : string -> list string -> nprog string) : nprog string :=

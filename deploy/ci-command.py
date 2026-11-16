@@ -83,7 +83,7 @@ def manifest(root):
     proofs, pinned, deployment = {}, {}, {}
     for p in files(root):
         name = p.relative_to(root).as_posix()
-        if p.suffix in {'.soma', '.proof'}:
+        if p.suffix in {'.soma', '.exp'}:
             proofs[name] = dict(assumptions(p.read_text()))
         digest = hashlib.sha256(p.read_bytes()).hexdigest()
         if name.startswith('test/'):
@@ -117,7 +117,7 @@ def verify(root, baseline):
         if p.is_symlink() or not p.is_file() or hashlib.sha256(p.read_bytes()).hexdigest() != digest:
             raise ValueError('changed a test already there: ' + name + ' (a bid adds tests in new files; the ones there judge it)')
     for p in files(root):
-        if p.suffix in {'.soma', '.proof'}:
+        if p.suffix in {'.soma', '.exp'}:
             name = p.relative_to(root).as_posix()
             if p.is_symlink() or assumptions(p.read_text()) - collections.Counter(baseline['proofs'].get(name, {})):
                 raise ValueError('new unproved assumption: ' + name)

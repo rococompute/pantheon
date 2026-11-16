@@ -357,7 +357,7 @@ Fixpoint resend_fields (fields : list string) : list string :=
   match fields with [] => [] | field :: rest => "field" :: field :: resend_fields rest end.
 
 (** Lists of lists on one wire: each list's values tagged "field", then
-    "alternate"; [nio_lists] reads them back (runtime/node.proof's
+    "alternate"; [nio_lists] reads them back (runtime/node.exp's
     nio_lists_reads_frames). *)
 Fixpoint nio_frame_lists (ls : list (list string)) : list string :=
   match ls with

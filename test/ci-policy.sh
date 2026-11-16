@@ -6,7 +6,7 @@ t=$(mktemp -d)
 trap 'rm -rf "$t"' EXIT HUP INT TERM
 mkdir -p "$t/head/test" "$t/head/deploy"
 printf 'p := 1.\n' > "$t/head/main.soma"
-printf 'Lemma good : True. Proof. exact I. Qed.\n' > "$t/head/main.proof"
+printf 'Lemma good : True. Proof. exact I. Qed.\n' > "$t/head/main.exp"
 printf '#!/bin/sh\ntest -f main.soma\n' > "$t/head/test/check.sh"
 cp "$here/deploy/ci-command.py" "$t/head/deploy/ci-command.py"
 python3 "$here/deploy/ci-command.py" "$t/head" 'sh test/check.sh' > "$t/command"
@@ -15,7 +15,7 @@ reset() { rm -rf "$t/bid"; cp -R "$t/head" "$t/bid"; }
 refuse() { if run > "$t/output" 2>&1; then echo "FAIL accepted $1"; exit 1; fi; grep -q 'CI policy:' "$t/output"; echo "ok refuses $1"; }
 for assumption in 'Lemma hole : False. Admitted.' 'Axiom hole : False.' 'hole : False := unk.'; do
   reset
-  case "$assumption" in Lemma*) file=main.proof ;; *) file=main.soma ;; esac
+  case "$assumption" in Lemma*) file=main.exp ;; *) file=main.soma ;; esac
   printf '%s\n' "$assumption" >> "$t/bid/$file"
   refuse "$assumption"
 done

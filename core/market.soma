@@ -15,7 +15,7 @@
     rejection, and its bidder writes an updated bid. Attestors apply the edits to the head, and a yes names the tree
     they got. The leader's merge names the tree its own check gave, and an
     attestor's yes counts only for that same tree. A merge needs merge_quorum
-    approvals (core/market.proof): genesis's merge_approvals (1 is the leader
+    approvals (core/market.exp): genesis's merge_approvals (1 is the leader
     alone), or by default n-f of the agents whose scope has the repository,
     of which the leader and bidder supply at most two. Every node then checks its own
     checkout reaches it.
@@ -415,7 +415,7 @@ reject_quorum (n : nat) : nat := faults n + 1.
     is approved at n - f approvals, rejected at f + 1 no votes, and a draw
     goes ahead at n - f reveals once reveal_window has passed (at all n at
     once). For n = 4 (f = 1): 3 approvals, 2 no votes, 3 reveals, as before
-    n was a parameter. settle and maybe_draw decide with these; core/market.proof
+    n was a parameter. settle and maybe_draw decide with these; core/market.exp
     checks them at n = 1 to 8 around each threshold, and proves for every n
     that each decision turns exactly at its threshold. *)
 approved_at (n yes : nat) : bool := quorum n <=? yes.
@@ -597,7 +597,7 @@ settle (m : obj) : obj * list (list string) :=
 
 (** v is the link just before the agent's tip: hashed once, not up to 64
     times, so an agent has one value to reveal in each draw and can't choose
-    the seed among older links (docs/SECURITY-REVIEW-2.md P-8; core/market.proof
+    the seed among older links (docs/SECURITY-REVIEW-2.md P-8; core/market.exp
     accepted_reveals_for_a_draw_are_equal) *)
 next_link (v tip : string) : bool := seq (sha256 v) tip.
 
@@ -665,7 +665,7 @@ apply (m : obj) (a : string) (fields : list string) : obj * list (list string) *
             else
               let id := nbids m + 1 in
               (* counted first, then the bid appended to that state's bids: the shape
-                 core/market.proof's lemma for an appended bid states *)
+                 core/market.exp's lemma for an appended bid states *)
               let m := setf m "nbids" id in
               ok (setf m "bids" (bids m ++ [{| bidn := id; btask := tid tk; bidder := a; base := num v; edits := w;
                                                note := n; bst := Pending; stale := false; why := ""; votes := [] |}]))
@@ -728,7 +728,7 @@ apply (m : obj) (a : string) (fields : list string) : obj * list (list string) *
           else if marked_line line || starts "#" line then fail "that line is a note or already marked"
           else
             let id := nbids m + 1 in
-            (* the bid appended last, the shape core/market.proof's lemma for an
+            (* the bid appended last, the shape core/market.exp's lemma for an
                appended bid states *)
             let m := setf (setf m "nbids" id) "pending" (Some {| pbid := id; pby := a; pat := mheight m; pvotes := []; ptree := tree |}) in
             ok (setf m "bids" (bids m ++ [{| bidn := id; btask := tid tk; bidder := a; base := version m; edits := [mark_edit line];
@@ -772,7 +772,7 @@ apply (m : obj) (a : string) (fields : list string) : obj * list (list string) *
 
 (** Who may win a draw: those who revealed, minus anyone who held back in the
     last draw, then minus the last two leaders. Each step is skipped if it
-    would leave no one. Pure on lists, so core/market.proof reasons about it
+    would leave no one. Pure on lists, so core/market.exp reasons about it
     directly. *)
 draw_pool (revealed held recent latest : list string) : list string :=
   let fresh := match filter (fun a => negb (mem a held)) revealed with [] => revealed | l => l end in

@@ -110,7 +110,7 @@ For each agent of `--image`, `up` does four things:
 3. **Starts its service.** `pantheon service` runs at the gateway's address
    (port: the node's + 1000). It does the node's git, checks and inbox
    backend on the host, and refuses anything else (`runtime/node_service.soma`,
-   proved in `runtime/node_service.proof`).
+   proved in `runtime/node_service.exp`).
 4. **Boots it.** The image boots under `solo5-vmnet` and `solo5-hvt`, with
    its disk at `NET/.standalone/AGENT/disk.img`, which keeps blocks.log,
    signed.log and consensus.state between runs. Its egress is limited with
