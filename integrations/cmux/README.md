@@ -22,7 +22,7 @@
   and you get a notification. `down` closes the workspace.
 
 ```
-pantheon-cmux up NET [--diplomats "A B"] [--backends A=B,...] [--yolo] [--layout plan|grid] [-- NODE ARGS...]
+pantheon-cmux up NET [--diplomats "A B"] [--backends A=B,...] [--layout plan|grid] [-- NODE ARGS...]
 pantheon-cmux status NET          # the sidebar's and the plan's loop (up starts it)
 pantheon-cmux watchdog NET [--check|--once]
 pantheon-cmux down NET            # close the workspace: nodes and sessions stop
@@ -97,12 +97,11 @@ pass, nudges included, for a test or a cron job.
 ## Isolation, and what's next
 
 Every pane runs as you, and the node homes in `NET` hold the agents' keys.
-Grok Build and Muse always run without asking (`grok --always-approve`,
-`muse --yolo`), so nothing stands between them and every node's key. Without
-`--yolo`, Claude Code and codex ask before they run a command: you answer in
-its tab, and the watchdog's notification tells you when one is waiting. With
-`--yolo`, their approvals are off too. Use it only on a network whose keys and repositories don't
-matter (docs/SAFETY.md).
+Every diplomat runs without asking: `claude --dangerously-skip-permissions`,
+`codex --dangerously-bypass-approvals-and-sandbox`, `grok --always-approve`
+and `muse --yolo` (`--yolo` is still accepted, and changes nothing). So
+nothing stands between a diplomat and every node's key. Run diplomats only
+on a network whose keys and repositories don't matter (docs/SAFETY.md).
 
 The next step is isolation like the Linux host's: each diplomat in its own
 Lima VM, the way `scripts/host.sh vm` runs Muse. The diplomat's tab would run

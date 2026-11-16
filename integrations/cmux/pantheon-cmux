@@ -15,7 +15,7 @@
 #                                  to `pantheon up` (--goal FILE, --bid-window N, --ci CMD, ...)
 #       --diplomats "A B"          these agents answer through an interactive session (default: none)
 #       --backends A=B,...         the other agents' backends, as for `pantheon up` (default: scripted)
-#       --yolo                     start Claude Code and codex with their approvals off too (read "Isolation")
+#       --yolo                     accepted, and the default: every diplomat runs with approvals off (read "Isolation")
 #       --layout plan|grid         plan (default): the left half the network's (the market's plan, live,
 #                                  with status and the watchdog as tabs), the right a pane per agent (its
 #                                  diplomat's session, then its node's tab); grid: a pane per agent
@@ -27,12 +27,10 @@
 #   pantheon-cmux down NET         close the workspace, which stops its nodes and sessions
 #
 # Isolation: every pane runs as you, and the node homes in NET hold the
-# agents' keys. Grok Build and Muse always run without asking (grok
-# --always-approve, muse --yolo): nothing stands between them and the keys.
-# Without --yolo, Claude Code and codex ask before they run a command (Claude
-# Code in --permission-mode manual, whatever its saved default), and you answer
-# in its tab (the watchdog notifies you). With --yolo nothing stands between
-# any diplomat and the keys: use it only for a network whose
+# agents' keys. Every diplomat runs without asking (claude
+# --dangerously-skip-permissions, codex
+# --dangerously-bypass-approvals-and-sandbox, grok --always-approve, muse
+# --yolo), so nothing stands between any of them and the keys: use it only for a network whose
 # keys and repositories don't matter. integrations/cmux/README.md says what
 # would isolate them (a Lima VM per diplomat, as scripts/host.sh does for Muse).
 #
@@ -123,12 +121,11 @@ backend_of() {
 diplomat_cli() {
   if [ -n "${DIPLOMAT_CLI:-}" ]; then printf '%s' "$DIPLOMAT_CLI"; return 0; fi
   case $(kind "$1") in
-    # without --yolo, the asking mode, whatever the CLI's saved default (a saved
-    # auto or always-approve would let it run commands unasked)
-    claude) if [ -n "$yolo" ]; then printf 'claude --dangerously-skip-permissions'; else printf 'claude --permission-mode manual'; fi ;;
-    codex)  printf 'codex%s' "${yolo:+ --dangerously-bypass-approvals-and-sandbox}" ;;
-    # Grok Build, xAI's CLI (grok login), as scripts/bidder.sh uses it. Grok
-    # Build and Muse run without asking, --yolo or not: the operator's choice
+    # every CLI in its mode that runs without asking: the operator's choice
+    # (read "Isolation")
+    claude) printf 'claude --dangerously-skip-permissions' ;;
+    codex)  printf 'codex --dangerously-bypass-approvals-and-sandbox' ;;
+    # Grok Build, xAI's CLI (grok login), as scripts/bidder.sh uses it
     grok)   printf 'grok --always-approve%s' "${GROK_MODEL:+ --model $(q "$GROK_MODEL")}" ;;
     muse)   printf 'muse --yolo' ;;
     *) return 1 ;;
@@ -251,12 +248,12 @@ layout_grid() {
 
 cmd_up() {
   net_arg "${1:-}" up; shift
-  dips="" backends="" yolo="" layout=plan
+  dips="" backends="" layout=plan
   while [ $# -gt 0 ]; do
     case $1 in
       --diplomats) dips=${2:?--diplomats wants agent names}; shift 2 ;;
       --backends) backends=${2:?--backends wants agent=backend,...}; shift 2 ;;
-      --yolo) yolo=1; shift ;;
+      --yolo) shift ;;   # the default now; kept so older commands still work
       --layout) layout=${2:?--layout wants plan or grid}; shift 2 ;;
       --) shift; break ;;
       *) die "unknown option $1 (node arguments go after --)" ;;
@@ -313,7 +310,7 @@ for x in json.load(sys.stdin)["workspaces"]:
   s1=$(cm --json --id-format both list-panes --workspace "$w" | python3 -c 'import json,sys; print(json.load(sys.stdin)["panes"][0]["surface_ids"][0])')
   if [ "$layout" = plan ]; then layout_plan; else layout_grid; fi
   say "$NET is up in cmux workspace \"pantheon: $(basename "$NET")\" ($w): $([ "$layout" = plan ] && echo "the market's plan on the left with status and the watchdog, a pane per agent on the right (the agent, then its node)" || echo "a pane per agent") ($(echo $agents))"
-  [ -z "$sessions" ] || say "diplomats:$sessions, in their agents' tabs$([ -n "$yolo" ] && echo ', approvals off' || echo '; answer their approvals there')"
+  [ -z "$sessions" ] || say "diplomats:$sessions, in their agents' tabs, with approvals off"
   say "stop it with: pantheon-cmux down $NET"
 }
 
