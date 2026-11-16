@@ -98,6 +98,12 @@ matches a session by its tab's id.
 | Node holding requests for a usage limit | Leaves it alone. |
 | The market finished (`finish=1`) | Nudges no one: no request will come. The watchdog's loop ends. |
 
+It also says each term's leader as the term starts (`term 4: claude leads
+(seen at h218)`), from the `history` line of `status.txt`, which lists the last
+8 terms' leaders, so a term shorter than a pass is still said. It keeps them in
+`NET/.cmux/leaders.log`, a line a term: `TERM LEADER HEIGHT TIME`, the height
+and time it saw the term at.
+
 `--check` shows what it sees without nudging anyone. `--once` runs a single
 pass, nudges included, for a test or a cron job.
 

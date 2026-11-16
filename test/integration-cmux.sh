@@ -193,6 +193,20 @@ sh "$pc" watchdog "$t/net" --once > /dev/null; sh "$pc" watchdog "$t/net" --once
 sh "$pc" watchdog "$t/net" --check | grep -q "watchdog: claude limited" || fail "--check names a limited agent"
 printf 'height 43  term 2  leader grok\n' > "$t/net/claude/status.txt"
 sh "$pc" watchdog "$t/net" --check | grep -q "watchdog: claude idle" || fail "--check names the state"
+# each term's leader, from the history line: said once, and kept in leaders.log
+rm -f "$t/net/.cmux/leaders.log"
+printf 'height 50  term 2  leader grok\nhistory  codex grok\n' > "$t/net/claude/status.txt"
+sh "$pc" watchdog "$t/net" --once > "$t/wd"
+grep -q '^pantheon-cmux: term 1: codex leads (seen at h50)$' "$t/wd" && grep -q '^pantheon-cmux: term 2: grok leads (seen at h50)$' "$t/wd" || fail "the watchdog says each term's leader: $(cat "$t/wd")"
+printf 'height 61  term 4  leader claude\nhistory  codex grok muse claude\n' > "$t/net/claude/status.txt"
+sh "$pc" watchdog "$t/net" --once > "$t/wd"
+! grep -q 'term [12]:' "$t/wd" || fail "a leader said twice: $(cat "$t/wd")"
+grep -q 'term 3: muse leads (seen at h61)' "$t/wd" && grep -q 'term 4: claude leads (seen at h61)' "$t/wd" || fail "a term shorter than a pass is said too: $(cat "$t/wd")"
+[ "$(cut -d' ' -f1-3 "$t/net/.cmux/leaders.log" | tr '\n' ,)" = "1 codex 50,2 grok 50,3 muse 61,4 claude 61," ] || fail "leaders.log: $(cat "$t/net/.cmux/leaders.log")"
+# the history line holds the last 8 terms' leaders: numbered back from the term
+printf 'height 140  term 12  leader (drawing)\nhistory  grok muse claude codex grok muse claude codex\n' > "$t/net/claude/status.txt"
+sh "$pc" watchdog "$t/net" --once > "$t/wd"
+[ "$(grep -c 'leads' "$t/wd")" = 8 ] && grep -q 'term 5: grok leads (seen at h140)' "$t/wd" && grep -q 'term 12: codex leads' "$t/wd" || fail "terms numbered back from the term: $(cat "$t/wd")"
 # a finished market: an idle diplomat is done, so no nudge, and the loop ends
 printf 'height 44  term 3  leader \nfinished: every agent, as leader, found no more tasks\n' > "$t/net/claude/status.txt"; : > "$t/ledger"
 sh "$pc" watchdog "$t/net" --once > /dev/null; sh "$pc" watchdog "$t/net" --once > /dev/null; sh "$pc" watchdog "$t/net" --once > /dev/null

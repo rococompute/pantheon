@@ -525,15 +525,32 @@ watch_agent() {
     && say "watchdog: $a's session had stopped (idle for $n checks): nudged it back to its inbox"
 }
 
+# Each term's leader, from status.txt's history line (the last 8 terms'
+# leaders, in order, the last the term's on the first line; so a term shorter
+# than a pass isn't missed): a new one is said, and kept in
+# NET/.cmux/leaders.log, a line a term: TERM LEADER HEIGHT TIME, the height
+# and time the watchdog saw it at
+note_leaders() {
+  f=$NET/$(agents_of "$NET" | head -1)/status.txt
+  [ -f "$f" ] || return 0
+  seen=0; [ -s "$ST/leaders.log" ] && seen=$(tail -1 "$ST/leaders.log" | cut -d' ' -f1)
+  awk -v seen="$seen" -v now="$(date '+%H:%M:%S')" '
+    NR == 1 { for (i = 1; i < NF; i++) { if ($i == "height") h = $(i + 1); if ($i == "term") t = $(i + 1) } }
+    $1 == "history" { for (i = 2; i <= NF; i++) { k = t - (NF - i); if (k > seen) printf "%d %s %s %s\n", k, $i, h, now }; exit }' "$f" > "$ST/leaders.new"
+  while read -r term ldr hh tm; do say "term $term: $ldr leads (seen at h$hh)"; done < "$ST/leaders.new"
+  cat "$ST/leaders.new" >> "$ST/leaders.log"; rm -f "$ST/leaders.new"
+}
+
 cmd_watchdog() {
   net_arg "${1:-}" watchdog; need_cmux
   [ -n "$(workspace)" ] || die "$NET isn't up in cmux: pantheon-cmux up $NET"
   case ${2:-} in
     --check) for a in $(agents_of "$NET"); do dry=1 watch_agent "$a"; done; return 0 ;;
-    --once) for a in $(agents_of "$NET"); do watch_agent "$a" || true; done; return 0 ;;
+    --once) note_leaders; for a in $(agents_of "$NET"); do watch_agent "$a" || true; done; return 0 ;;
   esac
-  say "watching the diplomats of $NET every minute"
+  say "watching the diplomats of $NET every minute, and saying each term's leader (all of them in $ST/leaders.log)"
   while :; do
+    note_leaders
     if market_finished; then say "the market finished, so the diplomats are done: the watchdog stops, and nudges no one"; return 0; fi
     for a in $(agents_of "$NET"); do watch_agent "$a" || true; done; sleep 60
   done
