@@ -42,6 +42,12 @@ cmd_diplomats() {
       u=pantheon-$a
       sudo -n -iu "$u" command -v "$exe" >/dev/null 2>&1 \
         || { say "$a: $u has no $exe: install it where $u finds it, log it in (scripts/host.sh login $a), then run this again"; continue; }
+      # the Cursor CLI's model names change (there's no "grok" now, but grok-4.7-high
+      # and the like): a name it doesn't list would end the session at once
+      if [ "$exe" = cursor-agent ] && ! sudo -n -iu "$u" cursor-agent models 2>/dev/null | awk '{print $1}' | grep -qxF "$GROK_MODEL"; then
+        say "$a: the Cursor CLI, as $u, has no model $GROK_MODEL, or isn't logged in (scripts/host.sh login $a). Set GROK_MODEL to one it lists: $(sudo -n -iu "$u" cursor-agent models 2>/dev/null | awk '$1 ~ /grok/ {printf "%s ", $1}')"
+        continue
+      fi
       p=$(herdr tab create --workspace "$ws" --label "$a" --cwd / --no-focus | jq -r .result.root_pane.pane_id)
       # the pane's shell becomes the diplomat's login shell (its .profile: its desk, its wrappers first)
       herdr pane run "$p" "exec sudo -iu $u" >/dev/null

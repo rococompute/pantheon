@@ -49,7 +49,8 @@
 #   VM_AGENTS     the agents that work from a VM on this host (default: muse)
 #   REMOTE        the GitHub repository workers share (default: this checkout's origin)
 #   CODEX_ENV     the Codex Cloud environment for codex's workers (codex cloud lists them)
-#   GROK_MODEL    the Cursor CLI's model for grok (default: grok; cursor-agent models lists them)
+#   GROK_MODEL    the Cursor CLI's model for grok (default: grok-4.7-high; cursor-agent models lists them,
+#                 and diplomats checks it's one)
 #   SOMA_REMOTE   Soma's repository, for the agents to read (default: https://github.com/yevbar/soma.git)
 #   BRANCH        the branch of REMOTE the market publishes to and workers start from (default: its default branch)
 #   SOMA_REF      the branch there at the commit SOMA_DIR is built from (default: gradual, Soma's default branch)
@@ -97,7 +98,7 @@ valid_branch() {
 }
 valid_branch "$BRANCH" || { printf 'host: BRANCH %s is not a plain git branch name (letters, digits, . _ / -): set BRANCH to one\n' "$(printf '%s' "$BRANCH" | tr -c 'A-Za-z0-9._/-' '?')" >&2; exit 1; }
 CODEX_ENV=${CODEX_ENV:-}
-GROK_MODEL=${GROK_MODEL:-grok}
+GROK_MODEL=${GROK_MODEL:-grok-4.7-high}
 SOMA_REMOTE=${SOMA_REMOTE:-https://github.com/yevbar/soma.git}
 SOMA_REF=${SOMA_REF:-gradual}
 soma_commit() { git -C "$SOMA" rev-parse HEAD 2>/dev/null || echo unknown; }
