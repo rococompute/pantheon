@@ -1,8 +1,9 @@
 #!/bin/sh
 # integrations/cmux/pantheon-cmux against a stub of cmux's CLI (no cmux, no
 # Mac needed): up makes one workspace with the market's plan on the left (the
-# goal, a .plan with its marks, the tasks) and a tab per agent on the right,
-# or with --layout grid a pane per agent; a diplomat's tab and inbox are wired
+# goal, a .plan with its marks, the tasks) beside status and the watchdog, and a
+# pane per agent on the right (its diplomat, then its node), or with --layout
+# grid a pane per agent; a diplomat's tab and inbox are wired
 # to its node's backend; the status and watchdog tabs; it
 # refuses a second up and a network whose nodes run outside it; the sidebar's
 # line is read from status.txt; the watchdog nudges a diplomat idle for two
@@ -80,7 +81,7 @@ pc=$here/integrations/cmux/pantheon-cmux
 grep -q 'is up in cmux workspace "pantheon: net"' "$t/out" || fail "up's summary: $(cat "$t/out")"
 grep -q "the market's plan on the left" "$t/out" || fail "up names its layout: $(cat "$t/out")"
 n=$(grep -c '^new-workspace' "$t/ledger" || true); [ "$n" = 1 ] || fail "one workspace, not $n"
-n=$(grep -c '^new-split' "$t/ledger" || true); [ "$n" = 0 ] || fail "the plan layout splits only for the plan: $n splits"
+n=$(grep -c '^new-split' "$t/ledger" || true); [ "$n" = 3 ] || fail "the plan layout splits a pane for each agent after the first: $n splits"
 grep -q -- "--name pantheon: net" "$t/ledger" || fail "the workspace's name"
 grep -q -- "--description - add a sub command" "$t/ledger" || fail "the goal's first line as its description"
 grep -q "^new-workspace .*--command sh '$t/net/.cmux/claude/session.sh'" "$t/ledger" || fail "the first tab is claude's diplomat"
@@ -89,22 +90,25 @@ for a in claude codex grok muse; do
   grep -q "rename-tab .* $a\$" "$t/ledger" || fail "$a's tab"
   [ -x "$t/net/.cmux/$a/node.sh" ] || fail "$a's node script"
 done
-grep -q "^new-surface .*--command sh '$t/net/.cmux/codex/node.sh'" "$t/ledger" || fail "codex's tab runs its node"
+grep -q "^new-split .*--command sh '$t/net/.cmux/codex/node.sh'" "$t/ledger" || fail "codex's pane runs its node"
 grep -q "rename-tab .* claude node" "$t/ledger" || fail "claude's node tab"
 ! grep -q "codex node" "$t/ledger" || fail "codex's node is its agent's tab"
 grep -q "rename-tab .* status" "$t/ledger" && grep -q "rename-tab .* watchdog" "$t/ledger" || fail "status and watchdog tabs"
-n=$(grep -c '^new-surface' "$t/ledger" || true); [ "$n" = 6 ] || fail "6 tabs beside the first (3 agents, claude's node, status, watchdog), not $n"
-# the left half is the network's: the plan, then claude's node, status and the
-# watchdog; the right half the agents': claude's diplomat, then the other three
+n=$(grep -c '^new-surface' "$t/ledger" || true); [ "$n" = 3 ] || fail "3 tabs (claude's node, status, watchdog), not $n"
+# the left half is the network's: the plan, status and the watchdog; the right
+# half a pane per agent: claude's diplomat with its node's tab, and the other
+# three agents' nodes (no diplomat: their node is their agent's tab)
 python3 - "$t/cmux.json" "$t/net/.cmux" <<'PY' || fail "the halves"
 import json, sys
-st = json.load(open(sys.argv[1])); d = sys.argv[2]
-left, right = st["panes"][0]["cmds"], st["panes"][1]["cmds"]
-want_left = ["markdown " + d + "/plan.md", "sh '" + d + "/claude/node.sh'"]
-assert left[:2] == want_left, left
-assert len(left) == 4 and left[2].endswith(" status '" + d.rsplit("/.cmux", 1)[0] + "'") and " watchdog " in left[3], left
-assert right == ["sh '" + d + "/claude/session.sh'"] + ["sh '" + d + "/" + a + "/node.sh'" for a in ("codex", "grok", "muse")], right
-assert len(st["panes"]) == 2, st["panes"]
+st = json.load(open(sys.argv[1])); d = sys.argv[2]; net = d.rsplit("/.cmux", 1)[0]
+panes = [p["cmds"] for p in st["panes"]]
+assert len(panes) == 5, panes
+left = panes[0]
+assert left[0] == "markdown " + d + "/plan.md" and left[1].endswith(" status '" + net + "'") and " watchdog " in left[2] and len(left) == 3, left
+agents = {p[0]: p for p in panes[1:]}
+assert agents["sh '" + d + "/claude/session.sh'"] == ["sh '" + d + "/claude/session.sh'", "sh '" + d + "/claude/node.sh'"], agents
+for a in ("codex", "grok", "muse"):
+    assert agents["sh '" + d + "/" + a + "/node.sh'"] == ["sh '" + d + "/" + a + "/node.sh'"], (a, agents)
 PY
 # the plan: goal, the .plan's marks, the tasks
 pm=$t/net/.cmux/plan.md
@@ -181,4 +185,4 @@ grep -q "rename-tab .* claude diplomat" "$t/ledger" || fail "claude's diplomat t
 if sh "$pc" up "$t/net" --layout tiles > "$t/out4" 2>&1; then fail "--layout tiles"; fi
 grep -q -- "--layout tiles: plan" "$t/out4" || fail "--layout tiles refused: $(cat "$t/out4")"
 sh "$pc" down "$t/net" > /dev/null
-echo "PASS pantheon-cmux: a network as a cmux workspace (the plan beside a tab per agent, or a grid), its sidebar, watchdog and down"
+echo "PASS pantheon-cmux: a network as a cmux workspace (the plan beside a pane per agent, or a grid), its sidebar, watchdog and down"
