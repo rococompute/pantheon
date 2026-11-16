@@ -4,9 +4,15 @@
 [cmux](https://cmux.com) workspace on a Mac.
 
 - **Left half: the network.** A live markdown view of `NET/.cmux/plan.md`,
-  which the status loop rewrites when it changes: the goal, each
-  repository's `.plan` at the market's head (done items checked, dropped ones
-  struck through), and the tasks with their state. The chain's height, term
+  which the status loop rewrites when it changes: the goal under **Market**
+  (**Done** once a finishing market finished) and each repository's `.plan`
+  at the market's head, every item led by its status (✅ done, ⏳ being bid on,
+  🟡 not picked up yet; dropped ones struck through), then the last 20
+  **Bids**. A bid is a details block: in its summary its outcome (🟢 merged,
+  🟡 pending, 🔴 rejected, ⚪ cleared or withdrawn) and its title, the
+  leader's for a merge or a rejection (what it does for the goal, or why not),
+  else its bidder's; inside, its bidder's title and note and the leader's
+  reason. The tasks the bids answer stay out of the view. The chain's height, term
   and leader are in the sidebar and the `status` tab. Beside it, as tabs: `status` and `watchdog`.
 - **Right half: a pane per agent,** in a grid of two rows. An agent with a
   diplomat has two tabs there: its diplomat's session, the CLI of its

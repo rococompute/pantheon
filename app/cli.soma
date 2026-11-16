@@ -1004,9 +1004,12 @@ cmd_edits (dir : string) (rest : list string) : nprog unit :=
   match r with
   | ScanFailed why => cli_fail why
   | Scanned edits skipped =>
+      (* edits DIR [--title TITLE] NOTE...: the bid's title, for people *)
+      let '(title, rest) := match rest with "--title" :: t :: r => (t, r) | _ => ("", rest) end in
       let note := append (join " " rest)
                     (match skipped with [] => "" | _ => cat [" (skipped, can't be edits: ", join ", " skipped, ")"] end) in
-      cli_do (IoPrint (append (json_text (JObj [("edits", JList (edits_items edits)), ("note", JStr (trim note))])) newline))
+      cli_do (IoPrint (append (json_text (JObj ([("edits", JList (edits_items edits)), ("note", JStr (trim note))]
+                                               ++ (if seq (trim title) "" then [] else [("title", JStr (trim title))])))) newline))
         (fun _ => NDone tt)
   end).
 
@@ -1057,7 +1060,8 @@ usage : string := "pantheon: a private BFT labor market where LLM agents take tu
                      [--ci CMD] [--ci-repo NAME CMD] [--ci-image IMAGE | --ci-sandbox PROGRAM] [--ci-memory 8g] [--bid-window N] [--perspective TEXT] [--max-llm-calls N]
   pantheon status HOME
   pantheon tx HOME post REPO ""spec"" [CONTEXT-PATH...]   (or any market transaction's fields)
-  pantheon edits CHECKOUT [NOTE]     a checkout's changes as a patch reply (for models with tools)
+  pantheon edits CHECKOUT [--title TITLE] [NOTE]
+                                     a checkout's changes as a patch reply (for models with tools)
   pantheon plan [FILE]              a .plan's open items (default ./.plan; see docs/PLAN.md)
   pantheon apply-edits DIR EDITS.json
   pantheon image HOME FILE [--service HOST:PORT] [node flags]   the node as a MirageOS unikernel's source (soma build FILE)

@@ -369,6 +369,34 @@ items == "plan" {
   printf "%s %s\n\n", icon($0, ""), $0
 }'
 
+# The bids, the last 20 (the tasks they answer stay out of the view), each a
+# details block: its outcome's icon and its title in the summary (the leader's for a merge or a rejection, else its
+# bidder's, else the start of its note), then the bidder's title and note and
+# the leader's reason inside. Green, merged; yellow, pending; red, rejected;
+# white, cleared or withdrawn. Their text is HTML-escaped: other agents wrote it.
+BIDS_AWK='
+function esc(s) { gsub(/&/, "\\&amp;", s); gsub(/</, "\\&lt;", s); gsub(/>/, "\\&gt;", s); return s }
+function rest(n,   s) { s = $0; sub("^[a-z]+ " n " ?", "", s); return s }
+$1 == "bid" { n++; id[n] = $2; st = $3; gsub(/[^a-z]/, "", st); state[$2] = st
+  for (i = 3; i < NF; i++) if ($i == "task") { by[$2] = $(i + 3); w = $0; sub("^.* task [0-9]+ by [^ ]+ ?", "", w); why[$2] = w; break } }
+$1 == "title" { title[$2] = rest($2) }
+$1 == "verdict" { verdict[$2] = rest($2) }
+$1 == "note" { note[$2] = rest($2) }
+END {
+  for (j = (n > 20 ? n - 19 : 1); j <= n; j++) { b = id[j]; s = state[b]
+    icon = s == "merged" ? "🟢" : s == "pending" ? "🟡" : s == "rejected" ? "🔴" : "⚪"
+    t = (s == "merged" || s == "rejected") && verdict[b] != "" ? verdict[b] : title[b] != "" ? title[b] : note[b]
+    if (s == "rejected" && verdict[b] == "" && title[b] == "" && why[b] != "") t = why[b]
+    if (t == "") t = "bid " b " by " by[b]
+    if (length(t) > 60) t = substr(t, 1, 59) "…"
+    printf "<details>\n<summary>%s %s</summary>\n\n_bid %s by %s, %s_\n\n", icon, esc(t), b, by[b], s
+    if (title[b] != "" && title[b] != t) printf "**%s**\n\n", esc(title[b])
+    if (note[b] != "") printf "%s\n\n", esc(note[b])
+    if (why[b] != "") printf "_%s: %s_\n\n", (s == "rejected" ? "Rejected" : "Why"), esc(why[b])
+    printf "</details>\n\n"
+  }
+}'
+
 render_plan() {
   a1=$(agents_of "$NET" | head -1) f=$NET/$a1/status.txt
   sf=$f; [ -f "$sf" ] || sf=/dev/null
@@ -391,17 +419,9 @@ render_plan() {
       printf '%s\n' "$plan" | awk -v items=plan "$ITEMS_AWK" "$sf" -
       printf '\n'
     done
-    if [ -f "$f" ] && grep -q '^task ' "$f"; then
+    if [ -f "$f" ] && grep -q '^bid ' "$f"; then
       printf '## Bids\n\n'
-      # each led by its bids' best outcome: one merged (green), one pending
-      # (yellow), rejected ones (red), else none yet (white)
-      awk '$1 == "bid" { for (i = 3; i < NF; i++) if ($i == "task") { t = $(i + 1); s = $3; gsub(/[^a-z]/, "", s)
-                           if (s == "merged") m[t] = 1; else if (s == "pending") p[t] = 1; else if (s == "rejected") r[t] = 1; break } }
-           $1 == "task" { n++; id[n] = $2; line[n] = $0 }
-           END { for (j = (n > 20 ? n - 19 : 1); j <= n; j++) { t = id[j]; l = line[j]
-                   st = l; sub(/^task [0-9]+ \[/, "", st); sub(/\].*/, "", st); sub(/^task [0-9]+ \[[a-z]+\] /, "", l)
-                   printf "%s **#%s** `%s` %s\n\n", (m[t] ? "🟢" : p[t] ? "🟡" : r[t] ? "🔴" : "⚪"), t, st, l } }' "$f"
-      printf '\n'
+      awk "$BIDS_AWK" "$f"
     fi
   } > "$ST/plan.md.tmp"
   [ -s "$ST/plan.md.tmp" ] || printf 'No goal, plan or tasks yet.\n' > "$ST/plan.md.tmp"

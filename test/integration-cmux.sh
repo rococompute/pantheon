@@ -73,7 +73,7 @@ printf -- '- add a sub command\n2. add a mul command\nKeep it small.\n' > "$t/go
 # a repository's .plan in a node's checkout (not a git repository here: read as the file is)
 mkdir -p "$t/net/claude/repos/calc"
 printf '# a note\n\n2026-11-15\n* add a sub command\nadd a mul command\nadd a div command\n- add a pow command\n' > "$t/net/claude/repos/calc/.plan"
-printf 'height 7  term 1  leader codex\ntask 1 [closed] calc: - add a sub command\ntask 2 [open] calc: - add a mul command\ntask 3 [closed] calc: add a mod command\ntask 4 [open] calc: add a neg command\nbid 1 [merged] task 1 by grok \nbid 2 [pending stale] task 2 by muse \nbid 3 [rejected] task 3 by codex \nbid 4 [rejected] task 2 by codex \n' > "$t/net/claude/status.txt"
+printf 'height 7  term 1  leader codex\ntask 1 [closed] calc: - add a sub command\ntask 2 [open] calc: - add a mul command\ntask 3 [closed] calc: add a mod command\ntask 4 [open] calc: add a neg command\nbid 1 [merged] task 1 by grok \nbid 2 [pending stale] task 2 by muse \nbid 3 [rejected] task 3 by codex it breaks <test.sh>\nbid 4 [cleared] task 2 by codex its edits no longer apply\ntitle 1 Adds a sub case to calc.sh\nverdict 1 Fulfills goal step 1: calc can subtract\nnote 1 sub & its test\ntitle 2 Adds mul\nnote 2 a mul case\nverdict 3 Breaks the existing tests\nnote 3 mod\nnote 4 old mul\n' > "$t/net/claude/status.txt"
 pc=$here/integrations/cmux/pantheon-cmux
 
 # the plan layout (the default)
@@ -124,7 +124,7 @@ grep -q '^### 2026-11-15' "$pm" || fail "plan's day"
 grep -q '^🟡 add a div command$' "$pm" || fail "plan's item not picked up: $(cat "$pm")"
 # a finished market's goal is headed Done
 cp "$t/net/claude/status.txt" "$t/status.keep"; echo 'finished: every agent, as leader, found no more tasks' >> "$t/net/claude/status.txt"
-( sed -n "/^ITEMS_AWK='/,/^}'\$/p" "$pc"; sed -n '/^status_of()/,/^}/p; /^render_plan()/,/^}/p; /^agents_of()/,/^}/p' "$pc" ) > "$t/fn0.sh"
+( sed -n "/^ITEMS_AWK='/,/^}'\$/p; /^BIDS_AWK='/,/^}'\$/p" "$pc"; sed -n '/^status_of()/,/^}/p; /^render_plan()/,/^}/p; /^agents_of()/,/^}/p' "$pc" ) > "$t/fn0.sh"
 ( NET=$t/net ST=$t/net/.cmux; . "$t/fn0.sh"; render_plan )
 head -1 "$pm" | grep -q '^## Done$' || fail "a finished market's goal headed Done: $(head -3 "$pm")"
 ! grep -q 'Finished' "$pm" || fail "a finished market's plan has no Finished line"
@@ -132,15 +132,18 @@ cp "$t/status.keep" "$t/net/claude/status.txt"; ( NET=$t/net ST=$t/net/.cmux; . 
 head -1 "$pm" | grep -q '^## Market$' || fail "goal headed Market again"
 grep -q '^~~add a pow command~~$' "$pm" || fail "plan's dropped item"
 ! grep -q 'a note' "$pm" || fail "plan shows a # note"
-# each task led by its bids' best outcome: merged, pending, rejected, none
-grep -q '^## Bids$' "$pm" || fail "the tasks headed Bids"
-grep -q '^🟢 \*\*#1\*\* `closed` calc: - add a sub command$' "$pm" || fail "a task with a merged bid: $(cat "$pm")"
-grep -q '^🟡 \*\*#2\*\* `open` calc: - add a mul command$' "$pm" || fail "a task with a pending bid (and a rejected one)"
-grep -q '^🔴 \*\*#3\*\* `closed` calc: add a mod command$' "$pm" || fail "a task whose bids were rejected"
-grep -q '^⚪ \*\*#4\*\* `open` calc: add a neg command$' "$pm" || fail "a task with no bids yet"
+# the bids, not the tasks: each a details block, its icon and title in the summary
+grep -q '^## Bids$' "$pm" || fail "the bids headed Bids"
+! grep -q '#1\*\*' "$pm" || fail "the tasks stay out of the view: $(cat "$pm")"
+grep -q '^<summary>🟢 Fulfills goal step 1: calc can subtract</summary>$' "$pm" || fail "a merged bid, under the leader's title: $(cat "$pm")"
+grep -q '^\*\*Adds a sub case to calc.sh\*\*$' "$pm" && grep -q '^sub &amp; its test$' "$pm" || fail "a merged bid's own title and its note, escaped, inside"
+grep -q '^<summary>🟡 Adds mul</summary>$' "$pm" || fail "a pending bid, under its bidder's title"
+grep -q '^<summary>🔴 Breaks the existing tests</summary>$' "$pm" && grep -q '^_Rejected: it breaks &lt;test.sh&gt;_$' "$pm" || fail "a rejected bid, under the leader's title, its reason inside"
+grep -q '^<summary>⚪ old mul</summary>$' "$pm" || fail "a cleared bid, under its note"
+[ "$(grep -c '^<details>$' "$pm")" = 4 ] && [ "$(grep -c '^</details>$' "$pm")" = 4 ] || fail "a details block per bid"
 # unchanged, it isn't rewritten (the view doesn't redraw for nothing)
 touch -t 202001010000 "$pm"
-( sed -n "/^ITEMS_AWK='/,/^}'\$/p" "$pc"; sed -n '/^status_of()/,/^}/p; /^render_plan()/,/^}/p' "$pc"; sed -n '/^agents_of()/,/^}/p' "$pc" ) > "$t/fn.sh"
+( sed -n "/^ITEMS_AWK='/,/^}'\$/p; /^BIDS_AWK='/,/^}'\$/p" "$pc"; sed -n '/^status_of()/,/^}/p; /^render_plan()/,/^}/p' "$pc"; sed -n '/^agents_of()/,/^}/p' "$pc" ) > "$t/fn.sh"
 ( NET=$t/net ST=$t/net/.cmux; . "$t/fn.sh"; render_plan )
 [ -z "$(find "$pm" -newer "$t/goal.txt")" ] || fail "an unchanged plan was rewritten"
 # the node scripts: run from where up ran, each with its backend and the node arguments

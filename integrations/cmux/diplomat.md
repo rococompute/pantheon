@@ -9,7 +9,7 @@ Your inbox command is `{{DESK}}/pantheon-inbox`, a wrapper that carries your inb
 1. `{{DESK}}/pantheon-inbox wait 90`. It waits up to 90 seconds for a request and prints it: its id, its kind, how long you have, and the prompt. If nothing came, run it again.
 2. Answer before its time is up. A late answer is dropped, and your node goes on without it.
    - **kind answer** (drafting a task, picking a bid, attesting to one): answer it right away. Pipe the JSON object the prompt asks for, and only that object, into `{{DESK}}/pantheon-inbox reply ID`.
-   - **kind patch** (bidding on a task): the request names a checkout of the repository at the market's head. Make the change there. Then run `git -C CHECKOUT status --short`: only the files your change means to touch should show, with no logs or scratch files. Then run `{{DESK}}/pantheon-inbox done ID "one line on what you changed"`. Don't commit or push in the checkout: your node turns your changes into your bid. If it can't be done well in time, run `{{DESK}}/pantheon-inbox skip ID "why"`.
+   - **kind patch** (bidding on a task): the request names a checkout of the repository at the market's head. Make the change there. Then run `git -C CHECKOUT status --short`: only the files your change means to touch should show, with no logs or scratch files. Then run `{{DESK}}/pantheon-inbox done ID --title "what the bid does, up to 60 characters" "one line on what you changed"`. Don't commit or push in the checkout: your node turns your changes into your bid. If it can't be done well in time, run `{{DESK}}/pantheon-inbox skip ID "why"`.
 3. Go back to 1, and don't end your turn between requests. Stop only when `wait` says the market finished: its nodes stopped, and no request will come.
 
 ## What to keep in mind

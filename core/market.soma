@@ -238,6 +238,12 @@ excluded (m : obj) : list (string * string) := getf m "excluded".
     has, with no task posted since the first of them. Without finish=1 a
     market runs until it's stopped: its plans are a standing source of work. *)
 finish_votes (m : obj) : list string := getf m "finish_votes".
+(** Bids' titles, for people (the plan view): bid number -> its bidder's
+    title, and -> the leader's on a merge or a rejection (what it does for
+    the goal, or why not). Up to 60 characters each, kept apart from the
+    bids: no rule reads them. *)
+titles (m : obj) : list (string * string) := getf m "titles".
+verdicts (m : obj) : list (string * string) := getf m "verdicts".
 finished (m : obj) : bool := getf m "finished".
 excludes (m : obj) (a r : string) : bool := existsb (fun x => seq (fst x) a && seq (snd x) r) (excluded m).
 
@@ -305,7 +311,8 @@ new_market (agents : list string) : obj :=
    ("roster_changes", ([] : list (string * bool * nat)) : Any),
    (* the chain's id and each agent's genesis key: [size in bytes, n, e] *)
    ("chain", "" : Any), ("keys", ([] : list (string * list string)) : Any),
-   ("finish_votes", ([] : list string) : Any), ("finished", false : Any)].
+   ("finish_votes", ([] : list string) : Any), ("finished", false : Any),
+   ("titles", ([] : list (string * string)) : Any), ("verdicts", ([] : list (string * string)) : Any)].
 
 (** Rotate a task's two-worker window through the nonleaders whose scope
     has the task's repository. A worker is
@@ -793,6 +800,31 @@ apply (m : obj) (a : string) (fields : list string) : obj * list (list string) *
   | _ => fail "unknown transaction"
   end.
 
+(** A transaction with a title: a bid's (tbid T V TITLE NOTE EDITS...), or
+    the leader's on a merge (merge BID TREE HEAD TITLE) or a rejection (reject
+    BID WHY TITLE). The transaction without it, whether the title is the
+    bid's own (true) or the leader's, the bid it names, and the title. *)
+titled_fields (fields : list string) : list string * bool * string * string :=
+  match fields with
+  | "tbid" :: t :: v :: ti :: n :: es => ("bid" :: t :: v :: n :: es, true, "", ti)
+  | ["merge", i, tr, on, ti] => (["merge", i, tr, on], false, i, ti)
+  | ["reject", i, why, ti] => (["reject", i, why], false, i, ti)
+  | _ => (fields, false, "", "")
+  end.
+
+title_ok (s : string) : bool := negb (seq s "") && plain_text s && (slen s <=? 60).
+
+(** The transaction, then its title kept if it took effect: the bid's
+    under the bid's number, the leader's under the bid it names. A title
+    that isn't plain text of 1 to 60 characters is dropped, the transaction
+    kept. *)
+apply_titled (m : obj) (a : string) (fields : list string) : obj * list (list string) * string :=
+  let '(f, own, ref, ti) := titled_fields fields in
+  let '(m', o, why) := apply m a f in
+  if negb (seq why "") || negb (title_ok ti) then (m', o, why)
+  else if own then (setf m' "titles" (put (show (nbids m')) ti (titles m')), o, why)
+  else (setf m' "verdicts" (put (show (num ref)) ti (verdicts m')), o, why).
+
 (** Who may win a draw: those who revealed, minus anyone who held back in the
     last draw, then minus the last two leaders. Each step is skipped if it
     would leave no one. Pure on lists, so core/market.exp reasons about it
@@ -872,7 +904,7 @@ apply_block (m : obj) (h : nat) (txs : list string) : obj * list (list string) :
       | a :: n :: fields =>
           if num n =? nonce_of m a + 1 then
             let m := setf m "nonces" (put a (num n) (nonces m)) in
-            let '(m', o, why) := apply m a fields in
+            let '(m', o, why) := apply_titled m a fields in
             let m' := if seq why "" && is_leader m' a then setf m' "active" h else m' in
             let note := if seq why "" then [] else [["log", append a (append ": " why)]] in
             (m', outs ++ o ++ note)
@@ -913,5 +945,10 @@ status_lines (m : obj) : list string :=
   ++ map (fun b => append "bid " (append (show (bidn b)) (append " [" (append (status_name (bst b)) (append (if stale b then " stale] task " else "] task ")
                     (append (show (btask b)) (append " by " (append (bidder b) (append " " (why b)))))))))) (bids m)
   ++ map (fun c => append "count " (append (fst c) (append " " (show (snd c))))) (counters m)
+  (* for the plan view: the last 20 bids' titles, the leader's, and notes *)
+  ++ flat_map (fun b => let i := show (bidn b) in
+       (match get_or "" i (titles m) with "" => [] | t => [append "title " (append i (append " " t))] end)
+       ++ (match get_or "" i (verdicts m) with "" => [] | t => [append "verdict " (append i (append " " t))] end)
+       ++ [append "note " (append i (append " " (note b)))]) (last_n 20 (bids m))
   ++ (if finished m then ["finished: every agent, as leader, found no more tasks"]
       else match finish_votes m with [] => [] | vs => [append "no more tasks, say" (fold_left (fun s a => append s (append " " a)) vs "")] end).

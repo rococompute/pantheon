@@ -265,7 +265,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self.fail(400, 'the diff does not apply to the checkout: ' + chk.stderr.decode('utf-8', 'replace')[-2000:],
                              'make it against an unchanged copy of GET /v1/checkout/%s.tar.gz and send it again' % rid)
         subprocess.run(['git', '-C', wt, 'apply', '--whitespace=nowarn', '-'], input=diff.encode(), check=True, capture_output=True)
-        write_atomic(os.path.join(r, 'done'), note.splitlines()[0][:500] + '\n')
+        title = ' '.join(str(obj.get('title', '')).split())[:60]
+        write_atomic(os.path.join(r, 'done'), note.splitlines()[0][:500] + '\n' + title + '\n')
         return self.send(200, {'ok': True, 'next': 'handed in: your node turns the change into your bid. GET /v1/wait'})
 
 

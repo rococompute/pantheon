@@ -53,10 +53,10 @@ patch_asks (o : list (list string)) : nat :=
   length (filter (fun x => match x with "llm" :: _ :: "patch" :: _ => true | _ => false end) o).
 
 bid_submits (o : list (list string)) : nat :=
-  length (filter (fun x => match x with "submit" :: _ :: "bid" :: _ => true | _ => false end) o).
+  length (filter (fun x => match x with "submit" :: _ :: "bid" :: _ => true | "submit" :: _ :: "tbid" :: _ => true | _ => false end) o).
 
 queued (a : obj) (t : string) : nat :=
-  length (filter (fun q => match q with "bid" :: id :: _ => seq id t | _ => false end) (queue a)).
+  length (filter (fun q => match q with "bid" :: id :: _ => seq id t | "tbid" :: id :: _ => seq id t | _ => false end) (queue a)).
 
 mine (m : obj) (who : string) : nat :=
   length (filter (fun b => (btask b =? 1) && seq (bidder b) who) (bids m)).

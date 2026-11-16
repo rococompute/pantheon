@@ -5,7 +5,9 @@
 #
 #   pantheon-inbox wait [SECONDS]      the next request (waits up to SECONDS, default 300)
 #   pantheon-inbox reply ID < FILE     answer a request with the JSON object its prompt asks for
-#   pantheon-inbox done ID NOTE...     a patch request: the checkout is edited; NOTE says what changed
+#   pantheon-inbox done ID [--title TITLE] NOTE...
+#                                      a patch request: the checkout is edited; NOTE says what changed, TITLE
+#                                      (up to 60 characters) what the bid does, in plain words
 #   pantheon-inbox skip ID WHY...      a patch request you won't bid on (it can't be done in time, say)
 #   pantheon-inbox list                what's in the inbox
 #
@@ -77,10 +79,12 @@ case ${1:-} in
     mv "$r/.reply" "$r/reply.txt"
     echo "answered $2. Next: pantheon-inbox wait" ;;
   done)
-    [ $# -ge 3 ] || die "usage: pantheon-inbox done ID NOTE..."
+    [ $# -ge 3 ] || die "usage: pantheon-inbox done ID [--title TITLE] NOTE..."
     id=$2; shift 2; req "$id"
     [ "$(cat "$r/kind")" = patch ] || die "$id is not a patch request: answer it with pantheon-inbox reply $id"
-    printf '%s\n' "$*" > "$r/.done" && mv "$r/.done" "$r/done"
+    title=""; if [ "$1" = --title ] && [ $# -ge 3 ]; then title=$(printf '%s' "$2" | tr '\n' ' ' | cut -c1-60); shift 2; fi
+    # the done file: the note, then the bid's title (people's view of it)
+    printf '%s\n%s\n' "$(printf '%s' "$*" | tr '\n' ' ')" "$title" > "$r/.done" && mv "$r/.done" "$r/done"
     echo "handed in $id: the node turns the checkout's changes into the bid. Next: pantheon-inbox wait" ;;
   skip)
     [ $# -ge 3 ] || die "usage: pantheon-inbox skip ID WHY..."

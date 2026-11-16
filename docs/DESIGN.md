@@ -89,6 +89,14 @@ changes that keep it small and easy to state theorems about:
   votes), the market is `finished`: no more terms are drawn, `pantheon status`
   says so, and each node stops 10 seconds later, with status 0, so its peers
   still get its last votes. `test/finish.sh` checks both kinds.
+- **Bids have titles, for people.** A bidder titles its bid (up to 60
+  characters, `tbid`), and a leader that merges or rejects one gives it a
+  title of its own: what it does for the goal in plain words, or why not
+  (`merge BID TREE HEAD TITLE`, `reject BID WHY TITLE`). The market keeps them
+  apart from the bids (`titles`, `verdicts`), no rule reads them, and one that
+  isn't plain text of 1 to 60 characters is dropped while its transaction
+  stands. `pantheon status` shows the last 20 bids' titles and notes, which
+  cmux's plan view lists.
 - **Merges are attested trees.** An attestor's node applies the edits to the head in
   a fresh clone, gets a tree, runs CI, and only then asks its model. The leader's
   merge names the tree its own check gave, and a yes counts only for that tree. So

@@ -31,6 +31,10 @@ bid_window (a : obj) : nat := getf a "bid_window".
 (** a leader's judgment that a task is done: task id to the bid that finishes
     it, "0" when what's merged already does *)
 done_marks (a : obj) : list (string * string) := getf a "done_marks".
+merge_titles (a : obj) : list (string * string) := getf a "merge_titles".
+
+(** a title as the market takes it: plain, up to 60 characters *)
+short_title (s : string) : string := trim (take_str 60 (clean_text s)).
 (** when this agent first saw a task's latest merge: task id and merge count
     to the height *)
 merge_seen (a : obj) : list (string * nat) := getf a "merge_seen".
@@ -46,7 +50,9 @@ new_agent (me : string) : obj :=
    ("asked", ([] : list string) : Any), ("attempts", ([] : list (string * nat)) : Any), ("attempt_v", ([] : list (string * nat)) : Any), ("retry_keys", ([] : list (string * string)) : Any),
    ("reqs", ([] : list (string * list string)) : Any), ("nreq", 0 : Any), ("bid_window", 30 : Any),
    ("done_marks", ([] : list (string * string)) : Any), ("merge_seen", ([] : list (string * nat)) : Any),
-   ("plan_lines", ([] : list (string * string)) : Any)].
+   ("plan_lines", ([] : list (string * string)) : Any),
+   (* the leader's title for each bid it picked to merge, sent with the merge *)
+   ("merge_titles", ([] : list (string * string)) : Any)].
 
 is_merged (b : bid) : bool := match bst b with Merged => true | _ => false end.
 
@@ -165,7 +171,8 @@ patch_prompt (a m : obj) (t : task) : string :=
 {{REPO}}
 "
   "Do as much of the task as you can do correctly in one patch: all of it if you can. A smaller patch is welcome too when it's a correct step on its own (it builds, the tests pass, nothing is left half-done); say in the note what it does and what of the task remains. Partial progress is how most tasks get done: the leader merges any correct part, and the task stays open for the rest. Don't mark the plan item done in .plan: the leader does, when it judges the task finished. Don't change a test already in test/ (CI refuses the bid): put new tests in new files. The floor is code that works: in Soma, a bare implementation with loose types (Any) and no theorems is a bid, and so is one with precise types and proofs; don't state a theorem you can't prove (Admitted and axioms fail CI). Write it as edits. Each edit replaces one exact piece of a file: copy ""old"" character for character from the file, with enough lines that it appears exactly once, and give ""new"" to put in its place. To write a whole file, new or not, give ""old"": """"; to delete one, give ""old"": """" and ""new"": """". Paths are relative to the repository.
-Reply format: {""edits"": [{""path"": ""dir/name"", ""old"": ""exact text"", ""new"": ""replacement""}], ""note"": ""one line""}")))).
+Give the bid a title: what it does, in plain words, up to 60 characters.
+Reply format: {""edits"": [{""path"": ""dir/name"", ""old"": ""exact text"", ""new"": ""replacement""}], ""title"": ""up to 60 characters"", ""note"": ""one line""}")))).
 
 pick_prompt (a m : obj) (t : task) (bs : list bid) : string :=
   append (preamble a "term leader, reviewing the bids for a task")
@@ -178,7 +185,8 @@ pick_prompt (a m : obj) (t : task) (bs : list bid) : string :=
   (append "Each repository's plan, its open items:
 {{PLAN}}"
   "Pick the bid that takes the task furthest correctly, if one is good enough, and reject wrong ones. A correct part of the task is good enough: the task stays open for the rest. A bid at the task's floor is good enough, and among correct bids prefer the one that goes further, in the task or past the floor. Weigh each bid on several measures, not one: how much of the task and of the goal it does (for a move from one language to another, how much code it moves), whether its tests and checks show it working, how much of its code is typed precisely rather than Any, what it proves (Examples and theorems), how simple it is (less branching and duplication), and that it keeps the program as fast. A bid that does much more of the goal at the floor can be worth more than a smaller one past it. Don't reject a bid for lacking what the task calls welcome but not required, for doing only part of the task (say what's left in your reasons for the next bids), or for edits that no longer apply because of a merge since it was made (the merge check finds those and clears them as conflicts, which isn't a rejection). A bid can't change a test already in test/, so a new test in a new file is the right form, even where the task names an existing file. Reject what is wrong: it breaks the build or a test, it is unsafe or unrelated, or its own edits overlap. Marking the plan item done is yours (done and plan_line), not a bid's: if a bid marks it, reject it saying only that, so its bidder sends the same work without the mark. merge 0 means none yet. Then judge whether the task is done: done is true only when the whole task is finished with the bid you merge (or with what's merged already, if you merge none). When it's done and the task is a plan item still open above, give that item's line as plan_line, copied exactly from its start as it's shown above, and you'll mark it done in .plan (for a line shown cut with ..., what's shown before the ... names it).
-Reply format: {""merge"": <bid number or 0>, ""reject"": [{""bid"": <number>, ""reason"": ""why""}], ""done"": true or false, ""plan_line"": ""the item's line, or empty""}"))))).
+People follow the market by short titles. For the bid you merge, give title: what it does for the goal, in plain words rather than its technical terms, up to 60 characters (say, ""Fulfills goal step 1: calc can subtract""). For each bid you reject, give title: why not, in up to 60 characters; reason can say more.
+Reply format: {""merge"": <bid number or 0>, ""title"": ""the merged bid's, up to 60 characters"", ""reject"": [{""bid"": <number>, ""reason"": ""why"", ""title"": ""up to 60 characters""}], ""done"": true or false, ""plan_line"": ""the item's line, or empty""}"))))).
 
 attest_prompt (a m : obj) (t : string) (b : bid) : string :=
   append (preamble a "attestor, deciding whether a proposed merge is safe")
@@ -203,8 +211,8 @@ scripted_answer (a m : obj) (data : list string) : list string :=
   | "patch" :: t :: _ =>
       let s := match task_by m (num t) with Some tk => spec tk | None => "" end in
       ["edits.0.path", append "work/task-" (append t ".txt"), "edits.0.old", "", "edits.0.new", append s (append "
-implemented by " (me a)), "note", append "scripted patch from " (me a)]
-  | "pick" :: _ :: first :: _ => if seq (behavior a) "deny" then ["merge", "0", "done", "false"] else ["merge", first, "done", "true"]
+implemented by " (me a)), "title", append "task " (append t (append " by " (me a))), "note", append "scripted patch from " (me a)]
+  | "pick" :: _ :: first :: _ => if seq (behavior a) "deny" then ["merge", "0", "done", "false"] else ["merge", first, "title", append "fulfills a goal line: bid " first, "done", "true"]
   | ["pick", _] => ["merge", "0", "done", if seq (behavior a) "deny" then "false" else "true"]
   | "attest" :: _ => ["approve", if seq (behavior a) "deny" then "false" else "true", "reason", append "scripted " (behavior a)]
   | _ => []
@@ -236,9 +244,20 @@ Fixpoint rejects_from (kv : list string) (i fuel : nat) : list (string * string)
       if seq b "" then [] else (b, kv_at kv (append "reject." (append (show i) ".reason"))) :: rejects_from kv (i + 1) f
   end.
 
+(** the title a pick's reply gives the rejection of bid [b] *)
+Fixpoint reject_title_at (kv : list string) (b : string) (i fuel : nat) : string :=
+  match fuel with
+  | 0 => ""
+  | Succ f =>
+      let k := append "reject." (show i) in
+      let x := kv_at kv (append k ".bid") in
+      if seq x "" then "" else if seq x b then kv_at kv (append k ".title") else reject_title_at kv b (i + 1) f
+  end.
+reject_title (kv : list string) (b : string) : string := reject_title_at kv b 0 10.
+
 (** [tx] is a bid for task [t], the task id in decimal. *)
 bid_for (tx : list string) (t : string) : bool :=
-  match tx with "bid" :: id :: _ => seq id t | _ => false end.
+  match tx with "bid" :: id :: _ => seq id t | "tbid" :: id :: _ => seq id t | _ => false end.
 
 (** A bid for task [t] this agent already has out: pending on the chain, sent
     and not yet in a block, or waiting in the queue. One agent never keeps
@@ -277,10 +296,18 @@ on_answer (a m : obj) (data kv : list string) : obj :=
          would be a second bid on the same task. *)
       if seq (hash_list es) (hash_list []) then a
       else if pending_bid a m t then a
-      else enqueue a ("bid" :: t :: v :: clean_text (kv_at kv "note") :: es)
+      else
+        let ti := short_title (kv_at kv "title") in
+        enqueue a (if seq ti "" then "bid" :: t :: v :: clean_text (kv_at kv "note") :: es
+                   else "tbid" :: t :: v :: ti :: clean_text (kv_at kv "note") :: es)
   | "pick" :: t :: cands =>
-      let a := fold_left (fun a r => if mem (fst r) cands then enqueue a ["reject", fst r, clean_text (snd r)] else a) (rejects_from kv 0 10) a in
+      let a := fold_left (fun a r =>
+                 if mem (fst r) cands then
+                   let ti := short_title (reject_title kv (fst r)) in
+                   enqueue a (if seq ti "" then ["reject", fst r, clean_text (snd r)] else ["reject", fst r, clean_text (snd r), ti])
+                 else a) (rejects_from kv 0 10) a in
       let pick := kv_at kv "merge" in
+      let a := match short_title (kv_at kv "title") with "" => a | ti => setf a "merge_titles" (firstn 50 (put pick ti (merge_titles a))) end in
       let merging := mem pick cands && negb (mem pick (map fst (rejects_from kv 0 10))) in
       let a := if seq (kv_at kv "done") "true"
                then setf (setf a "done_marks" (put t (if merging then pick else "0") (done_marks a)))
@@ -578,7 +605,8 @@ answered (a m : obj) (id : string) (kv : list string) : obj * list (list string)
          bid is checked again on the head *)
       else if match bid_by m (num b) with Some bd => moved_since m (bid_repo m bd) on | None => false end
       then flush (enqueue a ["merge", b]) m
-      else if seq (kv_at kv "ok") "true" then flush (enqueue a ["merge", b, kv_at kv "tree", on]) m
+      else if seq (kv_at kv "ok") "true" then
+        flush (enqueue a (["merge", b, kv_at kv "tree", on] ++ match get_or "" b (merge_titles a) with "" => [] | ti => [ti] end)) m
       else if seq (kv_at kv "stage") "node" then abstain a kv
       (* edits that don't apply to the head, on a bid made before a merge
          since, conflict with that merge: the bid is cleared, not rejected,

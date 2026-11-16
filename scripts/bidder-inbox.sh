@@ -57,13 +57,13 @@ if [ -n "${PANTHEON_WORKTREE:-}" ]; then
     cat >> "$r/.prompt" <<I
 
 You have tools. Get the repository at the market's head: GET $INBOX_URL/v1/checkout/$id.tar.gz (a directory named checkout/). Make it a git repository before you change anything (git init -q && git add -A && git commit -qm head), so you can diff against it. Make the change by editing the files there, instead of writing edits in a reply. Keep it to what the task asks. If you have soma, check your work with \`soma build\` on the project's main file (main.soma, or the file you changed) and run the tests if there are any; if you don't, your node's CI builds it and a rejection says why.
-Ignore the reply format above: when you're done, \`git add -A\` and POST $INBOX_URL/v1/done/$id with {"note": "a short note on what you changed", "diff": "<the output of git diff --cached>"}.
+Ignore the reply format above: when you're done, \`git add -A\` and POST $INBOX_URL/v1/done/$id with {"title": "what the bid does, up to 60 characters", "note": "a short note on what you changed", "diff": "<the output of git diff --cached>"}.
 I
   else
   cat >> "$r/.prompt" <<I
 
 You have tools, and $PANTHEON_WORKTREE is a checkout of the repository at the market's head. Make the change by editing the files there, instead of writing edits in a reply. Keep it to what the task asks. If there is a soma.toml, check your work with \`soma build\` on the project's main file (main.soma, or the file you changed), and run the tests if there are any. Don't commit, don't push, and don't touch anything outside that directory.
-Ignore the reply format above: when you're done, run \`pantheon-inbox done $id "a short note on what you changed"\`.
+Ignore the reply format above: when you're done, run \`pantheon-inbox done $id --title "what the bid does, up to 60 characters" "a short note on what you changed"\`.
 I
   fi
 else
@@ -81,7 +81,13 @@ while [ "$(date +%s)" -lt "$end" ]; do
     echo "!usage limit reached, as the interactive agent reports: $said"; exit 0
   fi
   if [ -f "$r/reply.txt" ]; then cat "$r/reply.txt"; exit 0; fi
-  if [ -f "$r/done" ]; then "$PANTHEON_BIN" edits "$PANTHEON_WORKTREE" "$(head -n 1 "$r/done")"; exit $?; fi
+  if [ -f "$r/done" ]; then
+    # the done file: the note, then the bid's title, if it gave one
+    t=$(sed -n 2p "$r/done")
+    if [ -n "$t" ]; then "$PANTHEON_BIN" edits "$PANTHEON_WORKTREE" --title "$t" "$(head -n 1 "$r/done")"
+    else "$PANTHEON_BIN" edits "$PANTHEON_WORKTREE" "$(head -n 1 "$r/done")"; fi
+    exit $?
+  fi
   sleep 2
 done
 : > "$r/expired"

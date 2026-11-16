@@ -213,6 +213,33 @@ Definition q7_attest (who : list string) (vote : string) : obj :=
 Definition q7_status (m : obj) : string :=
   match bid_by m 1 with Some b => status_name (bst b) | None => "none" end.
 
+(** Titles: a bidder's comes with its bid (tbid), under the bid's number; the
+    leader's with a rejection, under the bid it rejects; one too long or on a
+    refused transaction is dropped, the transaction kept. *)
+Definition q7_titled_bid : obj :=
+  let '(m, _, _) := apply q7_base "a1" ["post", "calc", "seven agent task"] in
+  fst (fst (apply_titled m (q7_bidder m) ["tbid", "1", "0", "Adds a seven", "seven bid", "f.txt", "", "x"])).
+
+Example q7_a_bid_keeps_its_title : titles q7_titled_bid = [("1", "Adds a seven")].
+Proof. reflexivity. Qed.
+
+Example q7_a_rejection_keeps_the_leaders_title :
+  verdicts (fst (fst (apply_titled q7_titled_bid "a1" ["reject", "1", "it adds nothing", "Adds nothing"])))
+  = [("1", "Adds nothing")] /\
+  q7_status (fst (fst (apply_titled q7_titled_bid "a1" ["reject", "1", "it adds nothing", "Adds nothing"]))) = "rejected".
+Proof. split; reflexivity. Qed.
+
+Example q7_a_title_from_a_nonleader_is_dropped :
+  verdicts (fst (fst (apply_titled q7_titled_bid "a2" ["reject", "1", "no", "Not mine to say"]))) = [].
+Proof. reflexivity. Qed.
+
+Example q7_a_title_over_60_characters_is_dropped :
+  verdicts (fst (fst (apply_titled q7_titled_bid "a1"
+    ["reject", "1", "no", "This title runs past the sixty characters a title may have, so it goes"]))) = [] /\
+  q7_status (fst (fst (apply_titled q7_titled_bid "a1"
+    ["reject", "1", "no", "This title runs past the sixty characters a title may have, so it goes"]))) = "rejected".
+Proof. split; reflexivity. Qed.
+
 Example q7_five_attestors : length q7_attestors = 5.
 Proof. reflexivity. Qed.
 Example q7_three_yes_do_not_merge : q7_status (q7_attest (firstn 3 q7_attestors) "yes") = "pending".
@@ -475,6 +502,23 @@ Proof.
     | match goal with |- context [if ?c then _ else _] => destruct c end].
 Qed.
 
+(** A title is kept apart from the bids, so a titled transaction keeps
+    merged bids merged exactly as the transaction does. *)
+Lemma apply_titled_preserves_merged : forall P,
+  (forall m p, pending m = Some p -> merged_satisfy P m ->
+    merge_quorum m p <= counted_approvals m p ->
+    merged_satisfy P (fst (finalize m p))) ->
+  forall m a fields, merged_satisfy P m ->
+    merged_satisfy P (fst (fst (apply_titled m a fields))).
+Proof.
+  intros P Hfinal m a fields Hm. unfold apply_titled.
+  destruct (titled_fields fields) as [[[f own] ref] ti].
+  pose proof (apply_preserves_merged P Hfinal m a f Hm) as H.
+  destruct (apply m a f) as [[m' o] why]. cbn [fst] in H |- *.
+  destruct (negb (seq why "") || negb (title_ok ti)); [exact H|].
+  destruct own; cbn [fst]; apply merged_setf_other; [reflexivity|exact H|reflexivity|exact H].
+Qed.
+
 Lemma draw_preserves_merged : forall P m,
   merged_satisfy P m -> merged_satisfy P (maybe_draw m).
 Proof.
@@ -524,8 +568,8 @@ Proof.
       destruct (num n =? nonce_of s a + 1); cbn [fst]; [|exact Hs].
       assert (Hn : merged_satisfy P (setf s "nonces" (put a (num n) (nonces s))))
         by (apply merged_setf_other; [reflexivity|exact Hs]).
-      pose proof (apply_preserves_merged P Hfinal _ a fields Hn) as Ha.
-      destruct (apply (setf s "nonces" (put a (num n) (nonces s))) a fields)
+      pose proof (apply_titled_preserves_merged P Hfinal _ a fields Hn) as Ha.
+      destruct (apply_titled (setf s "nonces" (put a (num n) (nonces s))) a fields)
         as [[s' o] why] eqn:E.
       cbn [fst] in Ha |- *.
       destruct (seq why "" && is_leader s' a); cbn [fst];

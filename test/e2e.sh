@@ -164,7 +164,7 @@ for line in open(blocks):
         tx = json.loads(raw); f = tx["fields"]
         if f[0] == "merge":
             version += 1
-        elif f[0] == "bid":
+        elif f[0] in ("bid", "tbid"):
             # a bid the market refused (its task closed a block before,
             # say) stays in its block but gets no number: the next numbered
             # bid is the next chain bid that is status.txt's next
