@@ -6,7 +6,9 @@
 - **Left half: the network.** A live markdown view of `NET/.cmux/plan.md`,
   which the watchdog rewrites when it changes: the goal under **Market
   (X leader)**, X the term's leader (**Market** while one is drawn, **Done**
-  once a finishing market finished), and each repository's `.plan`
+  once a finishing market finished; in a finishing market whose leaders have
+  begun to say there are no more tasks, **Market (X leader, N/K to done)**, N
+  of the roster's K agents having said so), and each repository's `.plan`
   at the market's head, every item led by its status (✅ a bid for it merged, ⏳ being bid on,
   🟡 not picked up yet; dropped ones struck through), then the last 20
   **Bids**. A bid is a details block: in its summary its outcome (🟢 merged,
@@ -21,7 +23,9 @@
   then its node (`AGENT node`). An agent without one has its node. A node's
   output also goes to `NET/AGENT/node.log`.
 - **Its name:** the market's title, as the plan heads it: **Market**, then
-  **Market (X leader)**, then **Done**. Nothing else goes in the sidebar.
+  **Market (X leader)**, **Market (X leader, N/K to done)** as a finishing
+  market's leaders say there are no more tasks, then **Done**. Nothing else
+  goes in the sidebar.
 - **Watchdog:** keeps the name and the plan, says each term's leader,
   nudges a diplomat that stopped working its inbox, and sends you a
   notification when one waits on you.

@@ -399,14 +399,20 @@ END {
 
 # The market's title, the goal's heading and the workspace's name: Market (X
 # leader) while X leads, Market while a leader is drawn, and Done once the
-# market finished. (No height or term: with them it changed with every
-# block; the leader changes once a term.)
+# market finished. In a finishing market (genesis finish=1) whose leaders
+# have begun to say there are no more tasks, the count joins it: Market (X
+# leader, N/K to done), N of the K agents on the roster having said so.
+# (No height or term: with them it changed with every block; the leader
+# changes once a term.)
 market_title() {
   f_=$NET/$(agents_of "$NET" | head -1)/status.txt
   [ -f "$f_" ] || { printf 'Market'; return 0; }
   grep -q '^finished:' "$f_" && { printf 'Done'; return 0; }
-  head -1 "$f_" | awk '{ for (i = 1; i < NF; i++) if ($i == "leader") l = $(i + 1) }
-    END { if (l == "" || l ~ /^\(/) printf "Market"; else printf "Market (%s leader)", l }'
+  awk 'NR == 1 { for (i = 1; i < NF; i++) if ($i == "leader") l = $(i + 1) }
+    /^no more tasks: [0-9]+ of [0-9]+/ { v = $4 "/" $6; sub(/,$/, "", v); v = v " to done" }
+    END { p = (l == "" || l ~ /^\(/) ? "" : l " leader"
+          if (v != "") p = (p == "" ? v : p ", " v)
+          printf "%s", (p == "" ? "Market" : "Market (" p ")") }' "$f_"
 }
 
 render_plan() {

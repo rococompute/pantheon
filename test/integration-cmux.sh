@@ -221,6 +221,13 @@ head -1 "$t/net/.cmux/plan.md" | grep -q '^## Done$' || fail "the watchdog rende
 printf 'height 45  term 4  leader muse\n' > "$t/net/claude/status.txt"; rm -f "$t/net/.cmux/finished"; : > "$t/ledger"
 ( timeout 3 sh "$pc" watchdog "$t/net" > /dev/null 2>&1 || true )
 [ "$(grep -c '^rename-workspace --workspace .* Market (muse leader)$' "$t/ledger")" = 1 ] || fail "the watchdog names the workspace for its leader, once: $(grep rename-workspace "$t/ledger")"
+# a finishing market whose leaders begin to say there are no more tasks: the count
+title() { ( NET=$t/net ST=$t/net/.cmux; . "$t/fn0.sh"; market_title ); }
+printf 'height 46  term 5  leader grok\nno more tasks: 1 of 4, say muse\n' > "$t/net/claude/status.txt"
+[ "$(title)" = "Market (grok leader, 1/4 to done)" ] || fail "the title with a leader and the count: $(title)"
+printf 'height 47  term 5  leader (drawing)\nno more tasks: 2 of 4, say muse grok\n' > "$t/net/claude/status.txt"
+[ "$(title)" = "Market (2/4 to done)" ] || fail "the title while a leader is drawn, with the count: $(title)"
+( NET=$t/net ST=$t/net/.cmux; . "$t/fn0.sh"; render_plan ); head -1 "$t/net/.cmux/plan.md" | grep -q '^## Market (2/4 to done)$' || fail "the plan headed with the count: $(head -1 "$t/net/.cmux/plan.md")"
 printf 'height 43  term 2  leader grok\n' > "$t/net/claude/status.txt"
 
 # down

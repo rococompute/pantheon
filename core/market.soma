@@ -951,4 +951,9 @@ status_lines (m : obj) : list string :=
        ++ (match get_or "" i (verdicts m) with "" => [] | t => [append "verdict " (append i (append " " t))] end)
        ++ [append "note " (append i (append " " (note b)))]) (last_n 20 (bids m))
   ++ (if finished m then ["finished: every agent, as leader, found no more tasks"]
-      else match finish_votes m with [] => [] | vs => [append "no more tasks, say" (fold_left (fun s a => append s (append " " a)) vs "")] end).
+      (* "no more tasks: N of K, say A B": N of the K agents on the roster have
+         said so, as finishing counts them *)
+      else match finish_votes m with [] => [] | vs =>
+        [append "no more tasks: " (append (show (length (filter (fun x => mem x vs) (roster_now m))))
+           (append " of " (append (show (length (roster_now m)))
+           (append ", say" (fold_left (fun s a => append s (append " " a)) vs "")))))] end).
