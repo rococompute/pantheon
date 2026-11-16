@@ -328,7 +328,7 @@ Theorem maybe_draw_bars_who_held_back :
     maybe_draw m = m \/ leader (maybe_draw m) <> a.
 Proof.
   intros m a b Ha Hb Hbh. unfold maybe_draw.
-  destruct (awaiting m && draw_ready (length (roster_now m)) (length (revealed m))
+  destruct (awaiting m && negb (finished m) && draw_ready (length (roster_now m)) (length (revealed m))
     (asince m + param m "reveal_window" <=? mheight m));
     [right|left; reflexivity].
   cbv zeta. unfold count.
@@ -479,7 +479,7 @@ Lemma draw_preserves_merged : forall P m,
   merged_satisfy P m -> merged_satisfy P (maybe_draw m).
 Proof.
   intros P m Hm. unfold maybe_draw.
-  destruct (awaiting m && draw_ready (length (roster_now m)) (length (revealed m))
+  destruct (awaiting m && negb (finished m) && draw_ready (length (roster_now m)) (length (revealed m))
     (asince m + param m "reveal_window" <=? mheight m));
     [|exact Hm].
   cbv zeta. merged_steps.
@@ -535,8 +535,14 @@ Proof.
     destruct acc as [s outs] eqn:E
   end.
   cbn [fst] in HF |- *.
-  pose proof (settle_preserves_merged P Hfinal s HF) as HS.
-  destruct (settle s) as [s' o]. cbn [fst] in HS |- *.
+  (* a posted task clears the finish votes: another field than bids *)
+  match goal with |- context [settle (if ?c then ?x else s)] =>
+    assert (HV : merged_satisfy P (if c then x else s))
+      by (destruct c; [apply merged_setf_other; [reflexivity|exact HF]|exact HF]);
+    remember (if c then x else s) as s0 eqn:Es0; clear Es0 HF; rename s0 into s'', HV into HF
+  end.
+  pose proof (settle_preserves_merged P Hfinal s'' HF) as HS.
+  destruct (settle s'') as [s' o]. cbn [fst] in HS |- *.
   apply prune_preserves_merged. apply draw_preserves_merged.
   apply end_term_preserves_merged. exact HS.
 Qed.

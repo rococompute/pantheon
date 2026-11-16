@@ -93,6 +93,12 @@ the leader reads `.plan` at the repository's head each time it drafts.
   the mark failed) is logged once with why: an unmarked item is drafted
   again by a later leader, or after a new genesis, though its work merged.
   `test/plan-marks.sh` checks all of this.
+- **When it runs out:** a leader with no item left to draft, and the goal
+  met, gives null. In a market made with `--param finish=1`, that's its
+  `finish` vote, and once every agent has given it in its own term, the
+  market finishes and its nodes stop (docs/DESIGN.md). Without it, the market
+  waits for new items: add them to `.plan` (from an issue tracker, say) and
+  the next leader drafts them.
 - **Operator goals:** `--goal FILE` lines still work. They come first in the
   leader's prompt, as the operator's direction. A leader drafts only when the
   node has at least one goal line, so give a line such as "Work through each

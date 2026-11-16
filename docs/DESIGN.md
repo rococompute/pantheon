@@ -79,6 +79,16 @@ changes that keep it small and easy to state theorems about:
   The leader drafts another while there's room, when it judges one can run beside
   the open ones (other files, not needing their result), and picks each task's
   bids on their own.
+- **A market can finish, or run on.** By default a market runs until it's
+  stopped: its plans are a standing source of work, which can be refilled at
+  any time (a `.plan` kept in sync with an issue tracker, say). With
+  `--param finish=1` at `pantheon init`, it works toward a deliverable and
+  stops when that's done: a leader that finds no task to post, with none open,
+  sends `finish`, and its term ends at once. Once every agent on the roster has
+  said so, with no task posted since the first of them (a post clears the
+  votes), the market is `finished`: no more terms are drawn, `pantheon status`
+  says so, and each node stops 10 seconds later, with status 0, so its peers
+  still get its last votes. `test/finish.sh` checks both kinds.
 - **Merges are attested trees.** An attestor's node applies the edits to the head in
   a fresh clone, gets a tree, runs CI, and only then asks its model. The leader's
   merge names the tree its own check gave, and a yes counts only for that tree. So

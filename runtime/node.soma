@@ -98,7 +98,12 @@ and_status (n : node_state) (outs : list (list string)) : node_state * list (lis
 (** A decided block: apply it, drop what it used from the pool, and let the
     agent react. *)
 on_decided (n : node_state) (h : nat) (txs : list string) : node_state * list (list string) :=
+  let was := finished (mkt n) in
   let (m, o) := apply_block (mkt n) h txs in
+  (* the market finished in this block: the node stops 10 seconds on *)
+  let o := if finished m && negb was
+           then o ++ [["log", append "the market finished at height " (append (show h) ": every agent, as leader, found no more tasks. This node stops in 10 seconds")], ["finish", "10000"]]
+           else o in
   (* M-3: consensus counts the next height on that height's roster *)
   let n := with_cons n (enter_roster (cons n) (roster_at (agents m) (roster_changes m) (h + 1))) in
   let n := with_pool (with_mkt n m) (filter (fun raw => negb (mem raw txs) && poolable m raw) (pool n)) in
@@ -182,6 +187,7 @@ step (n : node_state) (ev : list string) : node_state * list (list string) :=
   | "llm_reply" :: id :: kv => agent_event n (answered (ag n) (mkt n) id kv)
   | "check_result" :: id :: kv => agent_event n (answered (ag n) (mkt n) id kv)
   | ["llm_error", id, why] => (with_ag n (failed (ag n) id), [["log", append "model call failed: " why]])
+  | ["finished"] => (n, [["exit", "0"]])
   | _ => (n, [])
   end.
 
@@ -352,6 +358,9 @@ Inductive output_request :=
 | CheckRequest (id repo head : string) (edits : list string)
 | MergeRequest (r v tree bid task bidder spec : string) (edits : list string)
 | LlmRequest (id kind prompt : string) (ctx : list string)
+(* the market finished: stop after ms, so peers still get this node's votes *)
+| FinishNode (ms : string)
+| ExitNode (code : string)
 | LegacyOutput (out : list string).
 
 plan_output (out : list string) : output_request :=
@@ -369,6 +378,8 @@ plan_output (out : list string) : output_request :=
   | "merge" :: r :: v :: tree :: bid :: task :: bidder :: spec :: edits =>
       MergeRequest r v tree bid task bidder spec edits
   | "llm" :: id :: kind :: prompt :: ctx => LlmRequest id kind prompt ctx
+  | ["finish", ms] => FinishNode ms
+  | ["exit", code] => ExitNode code
   | _ => LegacyOutput out
   end.
 
@@ -1717,6 +1728,8 @@ output_prog (out : list string) : nprog bool :=
       nexec (check_request_op id r head edits denied excluded))
   | MergeRequest r v tree bid task bidder spec edits => merge_prog r v tree bid task bidder spec edits
   | LlmRequest id kind prompt ctx => llm_prog id kind prompt ctx
+  | FinishNode ms => nexec (IoTimer ms ["finished"])
+  | ExitNode code => nexec (IoExit code)
   | LegacyOutput _ => NDone true
   end.
 

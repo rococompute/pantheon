@@ -232,6 +232,13 @@ params (m : obj) : list (string * nat) := getf m "params".
     attest them, and a merge there needs a quorum of the agents whose scope
     has it. Empty unless genesis says *)
 excluded (m : obj) : list (string * string) := getf m "excluded".
+(** A finishing market (genesis param finish=1): each agent that, as
+    leader, finds no task to post with none open says so with a finish
+    transaction, and the market is finished once every agent on the roster
+    has, with no task posted since the first of them. Without finish=1 a
+    market runs until it's stopped: its plans are a standing source of work. *)
+finish_votes (m : obj) : list string := getf m "finish_votes".
+finished (m : obj) : bool := getf m "finished".
 excludes (m : obj) (a r : string) : bool := existsb (fun x => seq (fst x) a && seq (snd x) r) (excluded m).
 
 (** M-3: the roster by height. A change: the agent, true to join (false to
@@ -277,7 +284,10 @@ default_params : list (string * nat) :=
    (* a task's two-worker window moves on by one this often, so a chosen
       worker that never bids (out of credit, offline) can't hold a task until
       task_blocks closes it: past a patch request's deadline with room to spare *)
-   ("bid_blocks", 2400)].
+   ("bid_blocks", 2400),
+   (* 1: the market finishes once every agent, as leader, found no task to
+      post (finish_votes); 0: it runs until it's stopped *)
+   ("finish", 0)].
 
 param (m : obj) (k : string) : nat := get_or (get_or 0 k default_params) k (params m).
 
@@ -294,7 +304,8 @@ new_market (agents : list string) : obj :=
    ("excluded", ([] : list (string * string)) : Any),
    ("roster_changes", ([] : list (string * bool * nat)) : Any),
    (* the chain's id and each agent's genesis key: [size in bytes, n, e] *)
-   ("chain", "" : Any), ("keys", ([] : list (string * list string)) : Any)].
+   ("chain", "" : Any), ("keys", ([] : list (string * list string)) : Any),
+   ("finish_votes", ([] : list string) : Any), ("finished", false : Any)].
 
 (** Rotate a task's two-worker window through the nonleaders whose scope
     has the task's repository. A worker is
@@ -762,6 +773,18 @@ apply (m : obj) (a : string) (fields : list string) : obj * list (list string) *
             ok (fold_left (fun m b => if (btask b =? tid tk) && is_pending (bst b) then count (set_bid m (with_status b Cleared "task closed")) (bidder b) "cleared" else m) (bids m) m)
       | None => fail "no such task"
       end
+  (* finish: this leader finds no task to post, and none is open. Its term
+     ends at once, for the next leader to look; once every agent on the
+     roster has said so, with no task posted since, the market is finished *)
+  | ["finish"] =>
+      if param m "finish" =? 0 then fail "this market doesn't finish: its genesis doesn't set finish=1"
+      else if negb lead then fail "only the term leader says there are no more tasks"
+      else if negb (length (open_tasks m) =? 0) || negb (pending_bid_id m =? 0) then fail "a task is open: a leader says there are no more tasks only when none is"
+      else
+        let vs := if mem a (finish_votes m) then finish_votes m else finish_votes m ++ [a] in
+        let m := setf m "finish_votes" vs in
+        let m := setf m "finished" (forallb (fun x => mem x vs) (roster_now m) : Any) in
+        ok (setf (setf (setf m "leader" "") "awaiting" true) "asince" (mheight m))
   | ["reveal", v] =>
       if negb (awaiting m) then fail "no draw under way"
       else if existsb (fun r => seq (fst r) a) (reveals m) then fail "already revealed"
@@ -796,7 +819,7 @@ eligible (m : obj) : list string :=
     agents can't stop it. The seed hashes the reveals in roster order, so no
     proposer can choose among them. *)
 maybe_draw (m : obj) : obj :=
-  if awaiting m && draw_ready (length (roster_now m)) (length (revealed m)) (asince m + param m "reveal_window" <=? mheight m) then
+  if awaiting m && negb (finished m) && draw_ready (length (roster_now m)) (length (revealed m)) (asince m + param m "reveal_window" <=? mheight m) then
     let el := eligible m in
     let seed := hash_list (map (fun a => get_or "" a (reveals m)) (roster_now m)) in
     let l := nth (hexnum seed 12 0 mod length el) el "" in
@@ -842,6 +865,7 @@ prune (m : obj) : obj :=
     a failing one, uses the nonce up, so it can't be replayed later. *)
 apply_block (m : obj) (h : nat) (txs : list string) : obj * list (list string) :=
   let m := setf m "h" h in
+  let posted := length (tasks m) in
   let '(m, outs) := fold_left (fun acc raw =>
       let '(m, outs) := acc in
       match decode_tx m raw with
@@ -855,6 +879,8 @@ apply_block (m : obj) (h : nat) (txs : list string) : obj * list (list string) :
           else (m, outs)
       | _ => (m, outs)
       end) txs (m, []) in
+  (* a task posted: whoever said there were no more looks again *)
+  let m := if posted <? length (tasks m) then setf m "finish_votes" ([] : list string) else m in
   let '(m, o) := settle m in
   (prune (maybe_draw (maybe_end_term m)), outs ++ o).
 
@@ -886,4 +912,6 @@ status_lines (m : obj) : list string :=
   ++ map (fun t => append "task " (append (show (tid t)) (append (if topen t then " [open] " else " [closed] ") (append (trepo t) (append ": " (spec t)))))) (tasks m)
   ++ map (fun b => append "bid " (append (show (bidn b)) (append " [" (append (status_name (bst b)) (append (if stale b then " stale] task " else "] task ")
                     (append (show (btask b)) (append " by " (append (bidder b) (append " " (why b)))))))))) (bids m)
-  ++ map (fun c => append "count " (append (fst c) (append " " (show (snd c))))) (counters m).
+  ++ map (fun c => append "count " (append (fst c) (append " " (show (snd c))))) (counters m)
+  ++ (if finished m then ["finished: every agent, as leader, found no more tasks"]
+      else match finish_votes m with [] => [] | vs => [append "no more tasks, say" (fold_left (fun s a => append s (append " " a)) vs "")] end).

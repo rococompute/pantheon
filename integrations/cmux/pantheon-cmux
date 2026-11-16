@@ -320,6 +320,7 @@ status_of() {
   f=$NET/$1/status.txt
   [ -f "$f" ] || { echo "starting"; return 0; }
   if grep -q '^LIMIT' "$f"; then echo "limited: $(grep '^LIMIT' "$f" | head -1 | cut -c7-60)"; return 0; fi
+  if grep -q '^finished:' "$f"; then head -1 "$f" | awk '{ printf "finished at h%s", $2 }'; return 0; fi
   head -1 "$f" | awk '{ for (i = 1; i < NF; i += 2) v[$i] = $(i + 1); printf "h%s t%s · leader %s", v["height"], v["term"], v["leader"] }'
 }
 
@@ -332,6 +333,7 @@ render_plan() {
   # (no title or chain line: the height, term and leader are in the sidebar and
   # the status tab, and with them here the file changed with every block)
   {
+    if [ -f "$f" ] && grep -q '^finished:' "$f"; then printf '**Finished:** every agent, as leader, found no more tasks.\n\n'; fi
     g=$(cat "$ST/goal" 2>/dev/null || true)
     if [ -n "$g" ] && [ -f "$g" ]; then printf '## Goal\n\n'; cat "$g"; printf '\n'; fi
     for r in "$NET/$a1"/repos/*/; do
@@ -372,6 +374,14 @@ cmd_status() {
       cm set-status "pantheon.$a" "$line" --workspace "$w" >/dev/null 2>&1 || true
     done
     render_plan
+    # a finishing market (genesis finish=1) that finished: its nodes stop on
+    # their own; tell the diplomats (their inbox wait says so) and you, once
+    a1=$(agents_of "$NET" | head -1)
+    if [ ! -e "$ST/finished" ] && grep -q '^finished:' "$NET/$a1/status.txt" 2>/dev/null; then
+      : > "$ST/finished"
+      for a in $(agents_of "$NET"); do [ -d "$ST/$a/inbox" ] && : > "$ST/$a/inbox/finished"; done
+      cm notify --title "Pantheon: the market finished" --body "Every agent, as leader, found no more tasks: the nodes stopped. pantheon-cmux down $NET closes the workspace." --workspace "$w" >/dev/null 2>&1 || true
+    fi
     sleep 10
   done
 }

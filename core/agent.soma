@@ -263,7 +263,10 @@ on_answer (a m : obj) (data kv : list string) : obj :=
   | "draft" :: _ =>
       let t := kv_at kv "task" in
       let r := match kv_at kv "repo", repos m with "", [(r, _)] => r | r, _ => r end in
-      if seq t "" || seq t "null" then a else enqueue a ("post" :: r :: clean_text t :: firstn 8 (list_from kv "context" 0 8))
+      (* no task, with none open, in a finishing market: say so (finish) *)
+      if seq t "" || seq t "null" then
+        (if negb (param m "finish" =? 0) && (length (open_tasks m) =? 0) && is_leader m (me a) then enqueue a ["finish"] else a)
+      else enqueue a ("post" :: r :: clean_text t :: firstn 8 (list_from kv "context" 0 8))
   | "patch" :: t :: v :: _ =>
       let a := release_inflight a m in
       let es := edits_from kv 0 (5 * param m "max_files") in

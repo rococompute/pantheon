@@ -46,6 +46,8 @@ case ${1:-} in
   wait)
     limit=${2:-300}; end=$(( $(now) + limit ))
     while :; do
+      # a finishing market that finished: its node stopped (pantheon-cmux's status loop marks it)
+      [ ! -e "$INBOX/finished" ] || { echo "the market finished: every agent, as leader, found no more tasks, and the nodes stopped. There will be no more requests: stop here."; exit 0; }
       for d in $(open_requests); do
         r=$INBOX/$d
         [ -e "$r/claimed" ] && continue

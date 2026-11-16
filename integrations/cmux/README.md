@@ -16,6 +16,10 @@
 - **Sidebar:** shows each node's height, term and leader.
 - **Watchdog:** nudges a diplomat that stopped working its inbox, and sends
   you a notification when one waits on you.
+- **A finishing market** (`pantheon init ... --param finish=1`): when it
+  finishes, its nodes stop on their own, the plan view says **Finished**, the
+  sidebar says `finished at hN`, each diplomat's inbox wait tells it to stop,
+  and you get a notification. `down` closes the workspace.
 
 ```
 pantheon-cmux up NET [--diplomats "A B"] [--backends A=B,...] [--yolo] [--layout plan|grid] [-- NODE ARGS...]
