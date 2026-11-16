@@ -1,9 +1,9 @@
 (** These results are checked in Soma, independently of extraction and I/O. *)
 Example prompt_fixed_result : assembled fixture_template ["calc", "a.txt", "missing"] = fixture_expected.
-Proof. reflexivity. Qed.
+Proof. computed. Qed.
 
 Example prompt_mixed_plan_result : plan_open fixture_plan = ["first open", "second open", "third open"].
-Proof. reflexivity. Qed.
+Proof. computed. Qed.
 
 Theorem prompt_plan_at_most_sixty : forall text, length (plan_open text) <= 60.
 Proof. intro text. unfold plan_open. apply firstn_le_length. Qed.

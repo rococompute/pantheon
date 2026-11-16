@@ -4,28 +4,28 @@
     offset"); these pin the results the character-at-a-time versions gave. *)
 
 Example substr_is_total : substr "abc" 1 5 = "bc" /\ substr "abc" 7 1 = "" /\ substr "abc" 0 0 = "".
-Proof. repeat split; reflexivity. Qed.
+Proof. repeat split; computed. Qed.
 
 Example find_str_finds : find_str "b" "abcb" 0 = Some 1 /\ find_str "b" "abcb" 2 = Some 3
   /\ find_str "x" "abc" 0 = None /\ find_str "abcd" "abc" 0 = None /\ find_str "" "ab" 0 = Some 0.
-Proof. repeat split; reflexivity. Qed.
+Proof. repeat split; computed. Qed.
 
 Example starts_and_contains : starts "ab" "abc" = true /\ starts "abc" "ab" = false /\ starts "" "" = true
   /\ contains "/./" "/a/./b/" = true /\ contains ".." "a.b" = false /\ contains "" "" = true.
-Proof. repeat split; reflexivity. Qed.
+Proof. repeat split; computed. Qed.
 
 Example trim_drops_blanks : trim "  a b  " = "a b" /\ trim "   " = "" /\ trim "" = "" /\ trim "a" = "a".
-Proof. repeat split; reflexivity. Qed.
+Proof. repeat split; computed. Qed.
 
 Example split_lines_as_ocaml : split_lines "" = [""] /\ split_lines "a" = ["a"]
   /\ split_lines (append "a" (append newline "b")) = "a" :: "b" :: []
   /\ split_lines (append "a" newline) = "a" :: "" :: [].
-Proof. repeat split; reflexivity. Qed.
+Proof. repeat split; computed. Qed.
 
 Example replace_all_is_literal : replace_all "{{F}} x {{F}}" "{{F}}" "T" = "T x T"
   /\ replace_all "aaa" "aa" "b" = "ba" /\ replace_all "abc" "" "x" = "abc"
   /\ replace_all "abc" "{{F}}" "x" = "abc" /\ replace_all "ab" "b" "{{b}}" = "a{{b}}".
-Proof. repeat split; reflexivity. Qed.
+Proof. repeat split; computed. Qed.
 
 (** The prompt's placeholders: overlapping matches go left to right without
     overlap, an empty pattern changes nothing, an absent one changes
@@ -37,7 +37,7 @@ Example replace_all_overlapping_empty_absent :
   /\ replace_all "x {{F}}" "" "T" = "x {{F}}"
   /\ replace_all "no placeholder here" "{{PLAN}}" "P" = "no placeholder here"
   /\ replace_all "{{F}}{{F}}" "{{F}}" "{{F}}" = "{{F}}{{F}}".
-Proof. repeat split; reflexivity. Qed.
+Proof. repeat split; computed. Qed.
 
 Theorem replace_all_empty_pattern : forall s r, replace_all s "" r = s.
 Proof. intros s r. reflexivity. Qed.
@@ -73,17 +73,17 @@ Example plan_open_open_marked_dropped :
     (append "  second open  " (append newline (append "" (append newline "-"))))))))))))))))
   = ["first open", "second open"]
   /\ plan_open "" = [] /\ plan_open "+done" = ["+done"].
-Proof. repeat split; reflexivity. Qed.
+Proof. repeat split; computed. Qed.
 
 (** overlapping places count: "aa" is twice in "aaa", so an edit of it is ambiguous *)
 Example positions_two_at_most : positions "abab" "ab" = 0 :: 2 :: [] /\ positions "aaa" "aa" = 0 :: 1 :: []
   /\ positions "ababab" "ab" = 0 :: 2 :: [] /\ positions "abc" "c" = [2] /\ positions "abc" "x" = []
   /\ positions "abc" "" = [].
-Proof. repeat split; reflexivity. Qed.
+Proof. repeat split; computed. Qed.
 
 Example edit_once_needs_one_place : edit_once "let x = 1" "1" "2" = Some "let x = 2"
   /\ edit_once "a a" "a" "b" = None /\ edit_once "abc" "x" "y" = None.
-Proof. repeat split; reflexivity. Qed.
+Proof. repeat split; computed. Qed.
 
 (** What a merge's edit promises: when edit_once gives a text, the old text
     occurs at exactly one offset [i] (the first find finds it, and none is
@@ -111,11 +111,11 @@ Proof.
 Qed.
 
 Example defang_breaks_braces : defang "{{F}}" = "{ {F}}" /\ defang "{{{" = "{ { {" /\ defang "{" = "{".
-Proof. repeat split; reflexivity. Qed.
+Proof. repeat split; computed. Qed.
 
 Example text_checks : plain_text "a b" = true /\ clean_text "ab" = "ab" /\ lower "A/.Git" = "a/.git"
   /\ shell_safe_path "src/a..b" = true /\ shell_safe_path "a/../b" = false /\ safe_path "a/.GIT/x" = false.
-Proof. repeat split; reflexivity. Qed.
+Proof. repeat split; computed. Qed.
 
 (** a failed check's output on chain: secrets out, errors and paths as they were (P-12) *)
 Example redact_hides_secrets :
@@ -127,23 +127,23 @@ Example redact_hides_secrets :
   /\ redact "got 3f2a9c4b5d6e7f8091a2b3c4d5e6f708 here" = "got [redacted] here"
   /\ redact "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
   /\ redact "secret:" = "secret:" /\ redact "" = "".
-Proof. repeat split; reflexivity. Qed.
+Proof. repeat split; computed. Qed.
 
 Example numbers : digits "120" 0 = 120 /\ short_digits "123" 3 = true /\ short_digits "1234" 3 = false
   /\ short_digits "" 0 = true /\ hexnum "ff0" 2 0 = 255 /\ nth_char 1 "ab" = 98 /\ nth_char 5 "ab" = 256.
-Proof. repeat split; reflexivity. Qed.
+Proof. repeat split; computed. Qed.
 
 Example plan_lines : is_date_line "2026-11-09" = true /\ is_date_line "2026-11-0" = false
   /\ truncate_line "abc" = "abc"
   /\ plan_line_start "abc..." = "abc" /\ plan_line_start " abc " = "abc"
   /\ plan_line_start (append "abc " ellipsis) = "abc" /\ plan_line_start "abc" = "abc".
-Proof. repeat split; reflexivity. Qed.
+Proof. repeat split; computed. Qed.
 
 (** the scan before JSON parsing: depth and items capped, strings skipped *)
 Example shallow_json_caps : shallow_json "1" "10" "[1,2]" = true /\ shallow_json "1" "10" "[[1]]" = false
   /\ shallow_json "4" "2" "[1,2,3]" = false /\ shallow_json "1" "10" "[""[[""]" = true
   /\ shallow_json "1" "10" "[""\""[[""]" = true /\ shallow_json "1" "10" "" = true.
-Proof. repeat split; reflexivity. Qed.
+Proof. repeat split; computed. Qed.
 
 (** what the edits machinery (app/cli.soma) leans on: one edit's replacement,
     including failures, contains' pattern-first arguments, and the paths
@@ -155,4 +155,4 @@ Example edit_helpers_work :
   contains "bc" "abc" = true /\ contains "abc" "bc" = false /\
   shell_safe_path "src/a..b" = true /\ shell_safe_path "../escape" = false /\
   shell_safe_path "sub/.GiT/config" = false.
-Proof. repeat split; reflexivity. Qed.
+Proof. repeat split; computed. Qed.

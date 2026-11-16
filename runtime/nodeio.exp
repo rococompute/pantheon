@@ -52,4 +52,4 @@ Proof. intro z. repeat split; reflexivity. Qed.
 Example ndo_stops_when_refused : forall z,
   ntrace (fun _ => (false,(z,[])))
     (ndo (IoLog "a") (fun _ => nexec (IoLog "b"))) = [IoLog "a"].
-Proof. reflexivity. Qed.
+Proof. computed. Qed.

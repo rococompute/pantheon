@@ -10,7 +10,7 @@ Example genesis_boot_order :
   Some [["agents", "a", "b"], ["tip", "a", "ta"], ["tip", "b", "tb"],
         ["param", "block_ms", "500"], ["param", "x", "1"], ["param", "x", "2"],
         ["repo", "r1", "t1"], ["exclude", "a", "r2"]].
-Proof. reflexivity. Qed.
+Proof. computed. Qed.
 
 (** What the old reads refused: no event list, so the node doesn't start. *)
 Example genesis_boot_refusals :
@@ -26,7 +26,7 @@ Example genesis_boot_refusals :
       "A", "3", "name", "S", "a", "tip", "S", "t", "exclude", "L", "1", "I", "1",
       "block_ms", "I", "500", "params", "A", "0", "repos", "L", "0"]) = None /\
   genesis_events (Some ["A", "3", "agents", "L", "0", "block_ms", "I", "500", "repos", "L", "0"]) = None.
-Proof. repeat split; reflexivity. Qed.
+Proof. repeat split; computed. Qed.
 
 (** The first of a repeated key wins, as Yojson's member read it, and an
     exclude that isn't a list is none. *)
@@ -35,4 +35,4 @@ Example genesis_boot_first_key :
       "A", "4", "name", "S", "a", "name", "S", "z", "tip", "S", "t", "exclude", "S", "r",
       "block_ms", "I", "9", "params", "A", "0", "repos", "L", "0"]) =
   Some [["agents", "a"], ["tip", "a", "t"], ["param", "block_ms", "7"]].
-Proof. reflexivity. Qed.
+Proof. computed. Qed.

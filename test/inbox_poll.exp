@@ -13,4 +13,4 @@ Example inbox_suffix_and_order :
   inbox_json_name ".json" = true /\
   inbox_json_name "x.JSON" = false /\
   inbox_paths "/inbox" ["z.json", "skip", "a.json"] = ["/inbox/z.json", "/inbox/a.json"].
-Proof. repeat split; reflexivity. Qed.
+Proof. repeat split; computed. Qed.

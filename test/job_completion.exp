@@ -3,7 +3,7 @@ Example completed_job_exact_outcomes :
   job_result (JobExit "2") None false "4" "oops" = "!process failed (exit 2): oops" /\
   job_result (JobSignal "SIGKILL") (Some "600") true "4" "" =
     "!process failed (it printed more than 4 MB, so the node stopped it): ".
-Proof. repeat split; reflexivity. Qed.
+Proof. repeat split; computed. Qed.
 
 Example completed_job_and_peer_framing :
   feed_chunks ["hel"] "lo
@@ -14,7 +14,7 @@ two
 " = (["one", "", "two"], []) /\
   buffer_over (chunks_len ["abc", "de"]) 4 = true /\
   job_status_of "unknown" "0" = None.
-Proof. repeat split; reflexivity. Qed.
+Proof. repeat split; computed. Qed.
 
 Theorem job_success_bytes_unchanged : forall out seconds cap,
   out <> "" -> job_result (JobExit "0") seconds false cap out = out.

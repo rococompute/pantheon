@@ -22,13 +22,13 @@ Qed.
 (** Pure quorum regressions, including the seven-agent scenario and the
     current eight-agent deployment: approvals, rejecting no votes, reveals. *)
 Example quorum_four : (quorum 4, reject_quorum 4, quorum 4) = (3, 2, 3).
-Proof. reflexivity. Qed.
+Proof. computed. Qed.
 Example quorum_seven : (quorum 7, reject_quorum 7, quorum 7) = (5, 3, 5).
-Proof. reflexivity. Qed.
+Proof. computed. Qed.
 Example quorum_eight : (quorum 8, reject_quorum 8, quorum 8) = (6, 3, 6).
-Proof. reflexivity. Qed.
+Proof. computed. Qed.
 Example quorum_one : (quorum 1, reject_quorum 1, quorum 1) = (1, 1, 1).
-Proof. reflexivity. Qed.
+Proof. computed. Qed.
 
 (** The threshold decisions at, just below and just above each threshold,
     for n = 1, 4, 7 and 8: approvals, no votes, and reveals (after the
@@ -38,25 +38,25 @@ Example thresholds_one :
   map (rejected_at 1) [0, 1, 2] = [false, true, true] /\
   map (fun k => draw_ready 1 k true) [0, 1, 2] = [false, true, true] /\
   map (fun k => draw_ready 1 k false) [0, 1] = [false, true].
-Proof. repeat split; reflexivity. Qed.
+Proof. repeat split; computed. Qed.
 Example thresholds_four :
   map (approved_at 4) [2, 3, 4] = [false, true, true] /\
   map (rejected_at 4) [1, 2, 3] = [false, true, true] /\
   map (fun k => draw_ready 4 k true) [2, 3, 4] = [false, true, true] /\
   map (fun k => draw_ready 4 k false) [3, 4] = [false, true].
-Proof. repeat split; reflexivity. Qed.
+Proof. repeat split; computed. Qed.
 Example thresholds_seven :
   map (approved_at 7) [4, 5, 6] = [false, true, true] /\
   map (rejected_at 7) [2, 3, 4] = [false, true, true] /\
   map (fun k => draw_ready 7 k true) [4, 5, 6] = [false, true, true] /\
   map (fun k => draw_ready 7 k false) [5, 6, 7] = [false, false, true].
-Proof. repeat split; reflexivity. Qed.
+Proof. repeat split; computed. Qed.
 Example thresholds_eight :
   map (approved_at 8) [5, 6, 7] = [false, true, true] /\
   map (rejected_at 8) [2, 3, 4] = [false, true, true] /\
   map (fun k => draw_ready 8 k true) [5, 6, 7] = [false, true, true] /\
   map (fun k => draw_ready 8 k false) [6, 7, 8] = [false, false, true].
-Proof. repeat split; reflexivity. Qed.
+Proof. repeat split; computed. Qed.
 
 (** The other roster sizes the network runs at, the current six among them:
     n = 2 and 3 tolerate no fault (every agent approves, one no rejects); 5
@@ -66,27 +66,27 @@ Example thresholds_two :
   map (approved_at 2) [1, 2] = [false, true] /\
   map (rejected_at 2) [0, 1] = [false, true] /\
   map (fun k => draw_ready 2 k true) [1, 2] = [false, true].
-Proof. repeat split; reflexivity. Qed.
+Proof. repeat split; computed. Qed.
 Example thresholds_three :
   (quorum 3, reject_quorum 3) = (3, 1) /\
   map (approved_at 3) [2, 3] = [false, true] /\
   map (rejected_at 3) [0, 1] = [false, true] /\
   map (fun k => draw_ready 3 k true) [2, 3] = [false, true].
-Proof. repeat split; reflexivity. Qed.
+Proof. repeat split; computed. Qed.
 Example thresholds_five :
   (quorum 5, reject_quorum 5) = (4, 2) /\
   map (approved_at 5) [3, 4, 5] = [false, true, true] /\
   map (rejected_at 5) [1, 2, 3] = [false, true, true] /\
   map (fun k => draw_ready 5 k true) [3, 4, 5] = [false, true, true] /\
   map (fun k => draw_ready 5 k false) [4, 5] = [false, true].
-Proof. repeat split; reflexivity. Qed.
+Proof. repeat split; computed. Qed.
 Example thresholds_six :
   (quorum 6, reject_quorum 6) = (5, 2) /\
   map (approved_at 6) [4, 5, 6] = [false, true, true] /\
   map (rejected_at 6) [1, 2, 3] = [false, true, true] /\
   map (fun k => draw_ready 6 k true) [4, 5, 6] = [false, true, true] /\
   map (fun k => draw_ready 6 k false) [5, 6] = [false, true].
-Proof. repeat split; reflexivity. Qed.
+Proof. repeat split; computed. Qed.
 
 (** Each threshold, for every n, is exactly where the decision turns: below
     it no, at or above it yes. *)
@@ -221,35 +221,35 @@ Definition q7_titled_bid : obj :=
   fst (fst (apply_titled m (q7_bidder m) ["tbid", "1", "0", "Adds a seven", "seven bid", "f.txt", "", "x"])).
 
 Example q7_a_bid_keeps_its_title : titles q7_titled_bid = [("1", "Adds a seven")].
-Proof. reflexivity. Qed.
+Proof. computed. Qed.
 
 Example q7_a_rejection_keeps_the_leaders_title :
   verdicts (fst (fst (apply_titled q7_titled_bid "a1" ["reject", "1", "it adds nothing", "Adds nothing"])))
   = [("1", "Adds nothing")] /\
   q7_status (fst (fst (apply_titled q7_titled_bid "a1" ["reject", "1", "it adds nothing", "Adds nothing"]))) = "rejected".
-Proof. split; reflexivity. Qed.
+Proof. split; computed. Qed.
 
 Example q7_a_title_from_a_nonleader_is_dropped :
   verdicts (fst (fst (apply_titled q7_titled_bid "a2" ["reject", "1", "no", "Not mine to say"]))) = [].
-Proof. reflexivity. Qed.
+Proof. computed. Qed.
 
 Example q7_a_title_over_60_characters_is_dropped :
   verdicts (fst (fst (apply_titled q7_titled_bid "a1"
     ["reject", "1", "no", "This title runs past the sixty characters a title may have, so it goes"]))) = [] /\
   q7_status (fst (fst (apply_titled q7_titled_bid "a1"
     ["reject", "1", "no", "This title runs past the sixty characters a title may have, so it goes"]))) = "rejected".
-Proof. split; reflexivity. Qed.
+Proof. split; computed. Qed.
 
 Example q7_five_attestors : length q7_attestors = 5.
-Proof. reflexivity. Qed.
+Proof. computed. Qed.
 Example q7_three_yes_do_not_merge : q7_status (q7_attest (firstn 3 q7_attestors) "yes") = "pending".
-Proof. reflexivity. Qed.
+Proof. computed. Qed.
 Example q7_four_yes_merge : q7_status (q7_attest (firstn 4 q7_attestors) "yes") = "merged".
-Proof. reflexivity. Qed.
+Proof. computed. Qed.
 Example q7_two_no_do_not_reject : q7_status (q7_attest (firstn 2 q7_attestors) "no") = "pending".
-Proof. reflexivity. Qed.
+Proof. computed. Qed.
 Example q7_three_no_reject : q7_status (q7_attest (firstn 3 q7_attestors) "no") = "rejected".
-Proof. reflexivity. Qed.
+Proof. computed. Qed.
 
 Definition q7_draw (k : nat) : obj :=
   let m := setf q7_base "leader" "" in
@@ -259,15 +259,15 @@ Definition q7_draw (k : nat) : obj :=
   setf m "reveals" (map (fun a => (a, append "v-" a)) (firstn k q7_agents)).
 
 Example q7_four_reveals_do_not_draw : awaiting (maybe_draw (q7_draw 4)) = true.
-Proof. reflexivity. Qed.
+Proof. computed. Qed.
 Example q7_five_reveals_draw : awaiting (maybe_draw (q7_draw 5)) = false.
-Proof. reflexivity. Qed.
+Proof. computed. Qed.
 (** inside reveal_window, five of seven wait for the other two; all seven
     draw at once *)
 Example q7_five_reveals_wait_inside_the_window : awaiting (maybe_draw (setf (q7_draw 5) "h" 5)) = true.
-Proof. reflexivity. Qed.
+Proof. computed. Qed.
 Example q7_seven_reveals_draw_at_once : awaiting (maybe_draw (setf (q7_draw 7) "h" 5)) = false.
-Proof. reflexivity. Qed.
+Proof. computed. Qed.
 
 (** Holding back your link in one draw bars you from the next, as long as
     anyone who didn't hold back revealed. So withholding never raises your own
@@ -831,14 +831,14 @@ Example nonce_ok_cases :
   nonce_ok "0" = true /\ nonce_ok "12345678901234567" = true /\
   nonce_ok "123456789012345678" = false /\ nonce_ok "" = false /\
   nonce_ok "1a" = false /\ nonce_ok "-1" = false.
-Proof. repeat split; reflexivity. Qed.
+Proof. repeat split; computed. Qed.
 
 Example tx_shape_cases :
   tx_shape_ok "10" "100" "{}" = true /\
   tx_shape_ok "1" "100" "{}" = false /\
   tx_shape_ok "100" "100" "[[[[[1]]]]]" = false /\
   tx_shape_ok "100" "100" "[[[[1]]]]" = true.
-Proof. repeat split; reflexivity. Qed.
+Proof. repeat split; computed. Qed.
 
 Example tx_decision_cases :
   tx_decision None (fun _ _ _ _ => true) = [] /\
@@ -846,7 +846,7 @@ Example tx_decision_cases :
   tx_decision (Some ("a", ("7", (["post", "x"], "sig")))) (fun _ _ _ _ => false) = [] /\
   tx_decision (Some ("a", ("x7", (["post"], "sig")))) (fun _ _ _ _ => true) = [] /\
   tx_decision (Some ("a", ("", (["post"], "sig")))) (fun _ _ _ _ => true) = [].
-Proof. repeat split; reflexivity. Qed.
+Proof. repeat split; computed. Qed.
 
 (** A transaction whose nonce isn't digits is refused whatever its signature. *)
 Theorem bad_nonce_refused : forall agent nonce fields sg verified,
@@ -896,7 +896,7 @@ Example absent_blocks_boundary :
   removal_due 3 "a1" [["a1", "a2"], ["a2"], ["a2"]] = false /\
   removal_due 0 "a3" [["a1"], ["a1"]] = false /\
   effective_height 10 1 = 12.
-Proof. repeat split; reflexivity. Qed.
+Proof. repeat split; computed. Qed.
 
 Example roster_seven_to_six :
   roster_at ["a1", "a2", "a3", "a4", "a5", "a6", "a7"] [("a7", false, effective_height 10 1)] 11
@@ -907,7 +907,7 @@ Example roster_seven_to_six :
    reject_quorum_at ["a1", "a2", "a3", "a4", "a5", "a6", "a7"] [("a7", false, 12)] 11) = (5, 3) /\
   (quorum_at ["a1", "a2", "a3", "a4", "a5", "a6", "a7"] [("a7", false, 12)] 12,
    reject_quorum_at ["a1", "a2", "a3", "a4", "a5", "a6", "a7"] [("a7", false, 12)] 12) = (5, 2).
-Proof. repeat split; reflexivity. Qed.
+Proof. repeat split; computed. Qed.
 
 Example roster_four_to_three_and_back :
   (quorum_at ["a1", "a2", "a3", "a4"] [("a4", false, 10), ("a4", true, 20)] 9,
@@ -919,7 +919,7 @@ Example roster_four_to_three_and_back :
   (quorum_at ["a1", "a2", "a3", "a4"] [("a4", false, 10), ("a4", true, 20)] 20,
    reject_quorum_at ["a1", "a2", "a3", "a4"] [("a4", false, 10), ("a4", true, 20)] 20) = (3, 2) /\
   roster_at ["a1", "a2", "a3"] [("a2", true, 5)] 6 = ["a1", "a2", "a3"].
-Proof. repeat split; reflexivity. Qed.
+Proof. repeat split; computed. Qed.
 
 (** M-3 admission checks, reusing the merged delayed schedule. *)
 Theorem admitted_roster_intent_is_authorized : forall p cs certs h l s intent change,

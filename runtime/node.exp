@@ -7,14 +7,14 @@ Example model_env_drops_only_the_nodes_own_settings :
   model_env_entries ["PANTHEON_X=1", "HOME=/h", "PANTHEON_", "PANTHEON=1", "APANTHEON_X=2", "PATH=/bin"] =
     ["HOME=/h", "PANTHEON_", "PANTHEON=1", "APANTHEON_X=2", "PATH=/bin"] /\
   model_env_entries [] = [].
-Proof. repeat split; reflexivity. Qed.
+Proof. repeat split; computed. Qed.
 
 Example backend_launches_are_fixed_data :
   backend_launch "claude" = ["claude", "600", "prompt", "-p", "--tools", "", "--strict-mcp-config", "--no-session-persistence", "--setting-sources", "", "--output-format", "text"] /\
   hd "" (tl (tl (backend_launch "codex"))) = "codex" /\ backend_launch "cmd:my-model" = ["my-model", "", "cmd"] /\
   backend_launch "cmd:" = [] /\ backend_launch "Claude" = [] /\ backend_launch "" = [] /\
   backend_launch "scripted" = [] /\ backend_launch "grok" = ["curl", "600", "grok", "-s", "-m", "600", "-H", "@HDR@", "-d", "@-", "https://api.x.ai/v1/chat/completions"].
-Proof. repeat split; reflexivity. Qed.
+Proof. repeat split; computed. Qed.
 
 Example feed_chunks_splits_lines_and_keeps_the_partial :
   feed_chunks [] "one
@@ -32,7 +32,7 @@ c
 " = ([""], []) /\
   feed_chunks [] "no newline at all" = ([], ["no newline at all"]) /\
   chunks_len ["ab", "cde"] = 5 /\ chunks_len [] = 0.
-Proof. repeat split; reflexivity. Qed.
+Proof. repeat split; computed. Qed.
 
 Example peer_buffers_live_in_node_state :
   peer_buffer empty_node "7" = [] /\
@@ -43,7 +43,7 @@ Example peer_buffers_live_in_node_state :
   peer_buffer (peer_forget (peer_remember empty_node "7" ["tw"]) "7") "7" = [] /\
   pbufs (peer_forget (peer_remember (peer_remember empty_node "7" ["tw"]) "8" ["x"]) "8") =
     [("7", ["tw"])].
-Proof. repeat split; reflexivity. Qed.
+Proof. repeat split; computed. Qed.
 
 Example connection_admission_and_line_cap_edges :
   admit_decision_of 15 63 = AdmitNew /\ admit_decision_of 16 0 = AdmitRefuse /\
@@ -53,7 +53,7 @@ Example connection_admission_and_line_cap_edges :
   oldest_conn [("a", 5%float), ("b", 3%float), ("c", 3%float)] = "b" /\
   oldest_conn [("a", 1%float), ("b", 2%float)] = "a" /\
   buffer_over 10 10 = false /\ buffer_over 11 10 = true /\ buffer_over 0 0 = false.
-Proof. repeat split; reflexivity. Qed.
+Proof. repeat split; computed. Qed.
 
 (** A job's output bytes. Two reads join to the same text as one read while
     the first stays under the cap, including once the cap trims the tail.
@@ -90,7 +90,7 @@ par"], false) /\
   job_feed ["ghij"] "xyzABC" 8 4 = (["zABC"], true) /\
   job_feed ["ab"] "" 8 4 = (["ab", ""], false) /\
   seq job_keep_text "65536" = true.
-Proof. repeat split; reflexivity. Qed.
+Proof. repeat split; computed. Qed.
 
 Theorem job_feed_under_cap_appends : forall chunks chunk limit keep,
   (chunks_len chunks + slen chunk <=? limit) = true ->
@@ -145,18 +145,18 @@ Example decided_snapshot_rest :
   order_effects ["msg", "peer", "x"] empty_node (with_cons empty_node (new_consensus "me" ["me"] 2))
     [["broadcast", "vote"], ["decided", "1", "tx"], ["status", "s"]]
   = [["perform", "decided", "1", "tx"], ["save_snapshot"], ["perform", "broadcast", "vote"], ["perform", "status", "s"]].
-Proof. reflexivity. Qed.
+Proof. computed. Qed.
 
 Example refused_tx_is_remembered :
   order_effects ["tx", "raw"] empty_node empty_node []
   = [["refuse", "raw"]]
   /\ order_effects ["tx", "raw"] empty_node (with_pool empty_node ["raw"]) []
   = [].
-Proof. repeat split; reflexivity. Qed.
+Proof. repeat split; computed. Qed.
 
 Example empty_step_has_no_effects :
   order_effects ["timeout", "commit", "1", "0"] empty_node empty_node [] = [].
-Proof. reflexivity. Qed.
+Proof. computed. Qed.
 
 Example only_some_kinds :
   order_effects ["msg", "peer"] empty_node empty_node [["status", "s"], ["log", "hi"]]
@@ -165,12 +165,12 @@ Example only_some_kinds :
   = [["save_snapshot"], ["perform", "broadcast", "vote"]]
   /\ order_effects ["msg", "peer"] empty_node empty_node [["decided", "3", "tx"]]
   = [["perform", "decided", "3", "tx"]].
-Proof. repeat split; reflexivity. Qed.
+Proof. repeat split; computed. Qed.
 
 Example vote_saves_before_it_sends :
   order_effects ["msg", "peer"] empty_node (with_cons empty_node (new_consensus "me" ["me"] 2)) [["broadcast", "prevote", "1"]]
   = [["save_snapshot"], ["perform", "broadcast", "prevote", "1"]].
-Proof. reflexivity. Qed.
+Proof. computed. Qed.
 
 (** A vote is signed before the snapshot that says it was cast, and sent
     after it; a block ([done]) is no vote. *)
@@ -181,31 +181,31 @@ Example vote_signs_saves_then_sends :
      ["perform", "broadcast", "precommit", "4", "0", "0", "v"], ["perform", "broadcast", "done", "3", "0", "0", "h"]] /\
   startup_effects [["broadcast", "proposal", "4", "1", "0", "v", "tx"]] =
     [["sign", "proposal", "4", "1", "0", "v", "tx"], ["save_snapshot"], ["perform", "broadcast", "proposal", "4", "1", "0", "v", "tx"]].
-Proof. split; reflexivity. Qed.
+Proof. split; computed. Qed.
 
 (** Step 4's output decisions are pure plans for the actual bindings. *)
 Example timer_selects_delay_and_timeout_fields :
   plan_output ["timer", "commit", "7", "2", "350"] =
     SetTimer "350" ["timeout", "commit", "7", "2"].
-Proof. reflexivity. Qed.
+Proof. computed. Qed.
 
 Example log_selects_exact_text :
   plan_output ["log", "line one
 line two"] = WriteLog "line one
 line two".
-Proof. reflexivity. Qed.
+Proof. computed. Qed.
 
 Example height_selects_the_new_height :
   plan_output ["height", "12"] = SetHeight "12" /\
   plan_output ["height"] = LegacyOutput ["height"] /\
   plan_output ["height", "1", "2"] = LegacyOutput ["height", "1", "2"].
-Proof. repeat split; reflexivity. Qed.
+Proof. repeat split; computed. Qed.
 
 Example decided_selects_height_and_all_transactions :
   plan_output ["decided", "7", "tx one", "tx two"] =
     DecidedBlock "7" ["tx one", "tx two"] /\
   plan_output ["decided", "8"] = DecidedBlock "8" [].
-Proof. split; reflexivity. Qed.
+Proof. split; computed. Qed.
 
 Example malformed_outputs_keep_the_old_fallback :
   plan_output ["timer", "commit", "7", "2"] =
@@ -213,108 +213,108 @@ Example malformed_outputs_keep_the_old_fallback :
   plan_output ["log", "one", "two"] = LegacyOutput ["log", "one", "two"] /\
   plan_output ["decided"] = LegacyOutput ["decided"] /\
   plan_output ["reveal"] = LegacyOutput ["reveal"].
-Proof. repeat split; reflexivity. Qed.
+Proof. repeat split; computed. Qed.
 
 Example reveal_selects_draw_policy :
   plan_output ["reveal", "3"] = RevealLink "3".
-Proof. reflexivity. Qed.
+Proof. computed. Qed.
 
 Example honest_reveal_queues_the_exact_link :
   reveal_plan "" "4" "secret" "2" =
     [QueueAction ["local_tx", "reveal", sha256 (sha256 "secret")]].
-Proof. reflexivity. Qed.
+Proof. computed. Qed.
 
 Example withhold_odd_draw_only_logs :
   reveal_plan "withhold" "4" "secret" "3" =
     [LogAction "FAULT INJECTION: holding back my link for draw 3"] /\
   reveal_plan "withhold" "4" "secret" "5" =
     [LogAction "FAULT INJECTION: holding back my link for draw 5"].
-Proof. split; reflexivity. Qed.
+Proof. split; computed. Qed.
 
 Example withhold_even_draw_reveals :
   reveal_plan "withhold" "4" "secret" "2" =
     [QueueAction ["local_tx", "reveal", sha256 (sha256 "secret")]].
-Proof. reflexivity. Qed.
+Proof. computed. Qed.
 
 Example exhausted_chain_queues_nothing :
   reveal_plan "" "4" "secret" "4" = [] /\
   reveal_plan "" "4" "secret" "5" = [] /\
   draw_link 0 "secret" = "secret".
-Proof. repeat split; reflexivity. Qed.
+Proof. repeat split; computed. Qed.
 
 Example new_decision_requests_one_store :
   decided_plan "7" ["tx"] None = [StoreAction "7" ["tx"]] /\
   decided_plan "8" [] None = [StoreAction "8" []].
-Proof. split; reflexivity. Qed.
+Proof. split; computed. Qed.
 
 Example repeated_decision_requests_no_store :
   decided_plan "7" ["tx"] (Some ["tx"]) = [] /\
   decided_plan "7" ["different"] (Some []) = [].
-Proof. split; reflexivity. Qed.
+Proof. split; computed. Qed.
 
 Example startup_saves_before_votes_even_without_a_changed_snapshot :
   startup_effects [["broadcast", "vote"], ["decided", "7", "tx"], ["timer", "commit", "8", "0", "0"]] =
     [["perform", "decided", "7", "tx"], ["save_snapshot"],
      ["perform", "broadcast", "vote"], ["perform", "timer", "commit", "8", "0", "0"]] /\
   startup_effects [] = [["save_snapshot"]].
-Proof. split; reflexivity. Qed.
+Proof. split; computed. Qed.
 
 (** Catch-up decisions name the actual table writes, reads, and sends. *)
 Example behind_selects_catchup_and_malformed_arity_is_unchanged :
   plan_output ["behind", "peer", "3"] = CatchupPeer "peer" "3" /\
   plan_output ["behind", "peer"] = LegacyOutput ["behind", "peer"] /\
   plan_output ["behind", "peer", "3", "extra"] = LegacyOutput ["behind", "peer", "3", "extra"].
-Proof. repeat split; reflexivity. Qed.
+Proof. repeat split; computed. Qed.
 
 Example catchup_remembers_before_reading_each_block :
   catchup_plan "peer" "3" "6" 10%float None true false =
     [RememberPeer "peer" "3" 10%float, ReadPeerBlock "peer" 3,
      ReadPeerBlock "peer" 4, ReadPeerBlock "peer" 5].
-Proof. reflexivity. Qed.
+Proof. computed. Qed.
 
 Example catchup_duplicate_requests_no_bindings :
   catchup_plan "peer" "3" "6" 10%float (Some 9%float) true false = [].
-Proof. reflexivity. Qed.
+Proof. computed. Qed.
 
 Example catchup_at_two_seconds_can_send_again :
   catchup_plan "peer" "3" "4" 10%float (Some 8%float) true false =
     [RememberPeer "peer" "3" 10%float, ReadPeerBlock "peer" 3, SendSigned "peer" 3].
-Proof. reflexivity. Qed.
+Proof. computed. Qed.
 
 Example catchup_backward_clock_still_throttles :
   catchup_plan "peer" "3" "6" 10%float (Some 11%float) true false = [].
-Proof. reflexivity. Qed.
+Proof. computed. Qed.
 
 Example catchup_silent_or_absent_peer_still_remembers :
   catchup_plan "peer" "3" "6" 10%float None true true =
     [RememberPeer "peer" "3" 10%float] /\
   catchup_plan "peer" "3" "6" 10%float None false false =
     [RememberPeer "peer" "3" 10%float].
-Proof. split; reflexivity. Qed.
+Proof. split; computed. Qed.
 
 Example catchup_empty_range_still_remembers :
   catchup_plan "peer" "6" "6" 10%float None true false =
     [RememberPeer "peer" "6" 10%float] /\
   catchup_plan "peer" "7" "6" 10%float None true false =
     [RememberPeer "peer" "7" 10%float].
-Proof. split; reflexivity. Qed.
+Proof. split; computed. Qed.
 
 Example catchup_caps_reads_at_fifty_one :
   catchup_plan "peer" "3" "100" 10%float None true false =
     RememberPeer "peer" "3" 10%float :: map (ReadPeerBlock "peer") (List.seq 3 51).
-Proof. reflexivity. Qed.
+Proof. computed. Qed.
 
 Example catchup_one_behind_also_gets_the_signed_messages :
   catchup_plan "peer" "5" "6" 10%float None true false =
     [RememberPeer "peer" "5" 10%float, ReadPeerBlock "peer" 5, SendSigned "peer" 5] /\
   catchup_plan "peer" "5" "6" 10%float None true true = [RememberPeer "peer" "5" 10%float].
-Proof. split; reflexivity. Qed.
+Proof. split; computed. Qed.
 
 Example signed_slots_by_height :
   nio_slot_at "5" "precommit/5/0" = true /\ nio_slot_at "5" "proposal/5/12" = true /\
   nio_slot_at "5" "precommit/50/0" = false /\ nio_slot_at "5" "prevote/15/1" = false /\
   nio_slot_at "5" "5/1" = false /\ nio_slot_at "5" "" = false.
-Proof. repeat split; reflexivity. Qed.
+Proof. repeat split; computed. Qed.
 
 Example started_again_sends_its_signed_votes_again :
   resume_plan "" 3 [["prevote", "5", "0", "0", "v"]] =
@@ -322,18 +322,18 @@ Example started_again_sends_its_signed_votes_again :
      SendEveryone ["prevote", "5", "0", "0", "v"]] /\
   resume_plan "silent" 3 [["prevote", "5", "0", "0", "v"]] = [] /\
   resume_plan "" 3 [] = [].
-Proof. repeat split; reflexivity. Qed.
+Proof. repeat split; computed. Qed.
 
 Example catchup_missing_block_requests_no_send :
   catchup_send "peer" 4 None = None.
-Proof. reflexivity. Qed.
+Proof. computed. Qed.
 
 Example catchup_existing_and_empty_blocks_request_exact_peer_send :
   catchup_send "peer" 4 (Some ["one", "two"]) =
     Some ("peer", ["done", "4", "0", "0", hash_list ["one", "two"], "one", "two"]) /\
   catchup_send "peer" 4 (Some []) =
     Some ("peer", ["done", "4", "0", "0", hash_list []]).
-Proof. split; reflexivity. Qed.
+Proof. split; computed. Qed.
 
 Example check_selects_the_ci_job :
   plan_output ["check", "9", "calc", "head1", "e1", "e2"] =
@@ -341,7 +341,7 @@ Example check_selects_the_ci_job :
   plan_output ["check", "9", "calc", "head1"] = CheckRequest "9" "calc" "head1" [] /\
   plan_output ["check", "9", "calc"] = LegacyOutput ["check", "9", "calc"] /\
   plan_output ["check"] = LegacyOutput ["check"].
-Proof. repeat split; reflexivity. Qed.
+Proof. repeat split; computed. Qed.
 
 Example peer_line_drops_and_events :
   line_dropped "1" "0" = true /\ line_dropped "0" "1" = true /\
@@ -349,7 +349,7 @@ Example peer_line_drops_and_events :
   line_event "peer" ["tx", "raw"] = ["tx", "raw"] /\
   line_event "peer" ["prevote", "7", "0"] = ["msg", "peer", "prevote", "7", "0"] /\
   line_event "peer" [] = ["msg", "peer"].
-Proof. repeat split; reflexivity. Qed.
+Proof. repeat split; computed. Qed.
 
 Example status_and_submit_select_the_shared_interpreter :
   plan_output ["status"] = WriteStatus [] /\
@@ -357,7 +357,7 @@ Example status_and_submit_select_the_shared_interpreter :
   plan_output ["submit", "7"] = SubmitTransaction "7" [] /\
   plan_output ["submit", "7", "reveal", "link"] = SubmitTransaction "7" ["reveal", "link"] /\
   plan_output ["submit"] = LegacyOutput ["submit"].
-Proof. repeat split; reflexivity. Qed.
+Proof. repeat split; computed. Qed.
 
 Example status_preserves_line_order_and_final_newline :
   status_output ["height 3", "version 2"] [("calc", "abc"), ("notes", "def")]
@@ -365,45 +365,45 @@ Example status_preserves_line_order_and_final_newline :
   Stdlib.Strings.String.concat newline
     ["height 3", "version 2", "checkout calc abc", "checkout notes def",
      "DIVERGED calc at merge bad tree", "LIMIT codex until 09:05, 2 model requests held: quota", ""].
-Proof. reflexivity. Qed.
+Proof. computed. Qed.
 
 Example status_without_a_limit_omits_all_limit_fields :
   status_output ["pool 0"] [] [] false "ignored" "ignored" "7" "ignored" =
     append "pool 0" newline /\
   status_output [] [] [] false "" "" "" "" = newline.
-Proof. split; reflexivity. Qed.
+Proof. split; computed. Qed.
 
 Example status_limit_uses_a_strict_wall_clock_boundary :
   status_limit_active 9%float 10%float = true /\
   status_limit_active 10%float 10%float = false /\
   status_limit_active 11%float 10%float = false.
-Proof. repeat split; reflexivity. Qed.
+Proof. repeat split; computed. Qed.
 
 Example submission_log_keeps_empty_and_short_fields :
   submission_message ["bid", "", "multi word"] = "sending bid  multi word" /\
   submission_message [] = "sending ".
-Proof. split; reflexivity. Qed.
+Proof. split; computed. Qed.
 
 Example submission_log_truncates_only_past_sixty_bytes :
   submission_message ["012345678901234567890123456789012345678901234567890123456789"] =
     "sending 012345678901234567890123456789012345678901234567890123456789" /\
   submission_message ["012345678901234567890123456789012345678901234567890123456789X"] =
     "sending 012345678901234567890123456789012345678901234567890123456789...".
-Proof. split; reflexivity. Qed.
+Proof. split; computed. Qed.
 
 Example ordinary_submission_publishes_once_with_its_original_nonce :
   submission_plan "" false "007" ["reveal", "link"] =
     [PublishTransaction "007" ["reveal", "link"] (Some "sending reveal link")] /\
   submission_plan "future-nonce" true "7" ["withdraw", "0"] =
     [PublishTransaction "7" ["withdraw", "0"] (Some "sending withdraw 0")].
-Proof. split; reflexivity. Qed.
+Proof. split; computed. Qed.
 
 Example future_nonce_marks_before_its_six_hundred_extra_submissions :
   submission_plan "future-nonce" false "7" ["withdraw", "0"] =
     PublishTransaction "7" ["withdraw", "0"] (Some "sending withdraw 0") ::
     MarkNonceFlood :: LogAction "FAULT INJECTION: flooding 600 future-nonce transactions" ::
     map (fun k => PublishTransaction (show (7 + k)) ["withdraw", "0"] None) (List.seq 4 600).
-Proof. reflexivity. Qed.
+Proof. computed. Qed.
 
 Example future_nonce_range_is_four_through_six_hundred_three :
   length (submission_plan "future-nonce" false "7" []) = 603 /\
@@ -411,14 +411,14 @@ Example future_nonce_range_is_four_through_six_hundred_three :
     PublishTransaction "11" ["withdraw", "0"] None /\
   nth 602 (submission_plan "future-nonce" false "7" []) MarkNonceFlood =
     PublishTransaction "610" ["withdraw", "0"] None.
-Proof. repeat split; reflexivity. Qed.
+Proof. repeat split; computed. Qed.
 
 Example submission_silence_only_suppresses_the_peer_send :
   submission_send "silent" "signed tx" = None /\
   submission_send "" "signed tx" = Some ["tx", "signed tx"] /\
   submission_plan "silent" false "7" ["withdraw", "0"] =
     [PublishTransaction "7" ["withdraw", "0"] (Some "sending withdraw 0")].
-Proof. repeat split; reflexivity. Qed.
+Proof. repeat split; computed. Qed.
 
 Example storage_ops_travel_the_one_interface :
   io_wire (IoStore "7" ["tx1", "tx2"]) = ["store", "7", "tx1", "tx2"] /\
@@ -430,14 +430,14 @@ Example storage_ops_travel_the_one_interface :
   io_of_wire ["write_status", "height 3"] = Some (IoWriteStatus "height 3") /\
   action_io (StoreAction "7" ["tx1"]) = Some (IoStore "7" ["tx1"]) /\
   io_of_wire ["store"] = None.
-Proof. repeat split; reflexivity. Qed.
+Proof. repeat split; computed. Qed.
 
 Example broadcast_selects_its_fields_and_leaves_other_outputs :
   plan_output ["broadcast", "prevote", "1", "0", "-1", "v", "nil"] =
     Broadcast ["prevote", "1", "0", "-1", "v", "nil"] /\
   plan_output ["broadcast"] = Broadcast [] /\
   plan_output ["not-broadcast"] = LegacyOutput ["not-broadcast"].
-Proof. repeat split; reflexivity. Qed.
+Proof. repeat split; computed. Qed.
 
 Example broadcast_records_a_new_vote_then_sends_it_to_every_peer :
   broadcast_plan "" 2 ["prevote", "1", "0", "-1", "v", "nil"]
@@ -446,13 +446,13 @@ Example broadcast_records_a_new_vote_then_sends_it_to_every_peer :
      RememberBroadcast "1" "all" ["prevote", "1", "0", "-1", "v", "nil"]
        ["prevote", "1", "0", "-1", "v", "nil"],
      SendEveryone ["prevote", "1", "0", "-1", "v", "nil"]].
-Proof. reflexivity. Qed.
+Proof. computed. Qed.
 
 Example broadcast_refuses_a_second_value_when_nothing_was_stored :
   broadcast_plan "" 2 ["prevote", "1", "0", "-1", "w", "nil"]
     (Some ("prevote", "1", "0", "w")) (Some "v") None =
     [LogAction "refusing to sign a second prevote at prevote/1/0: already signed v"].
-Proof. reflexivity. Qed.
+Proof. computed. Qed.
 
 Example broadcast_resends_the_stored_vote :
   broadcast_plan "" 1 ["prevote", "1", "0", "-1", "w", "nil"]
@@ -462,7 +462,7 @@ Example broadcast_resends_the_stored_vote :
      RememberBroadcast "1" "all" ["prevote", "1", "0", "-1", "v", "nil"]
        ["prevote", "1", "0", "-1", "v", "nil"],
      SendEveryone ["prevote", "1", "0", "-1", "v", "nil"]].
-Proof. reflexivity. Qed.
+Proof. computed. Qed.
 
 Example broadcast_silent_records_the_vote_and_sends_nothing :
   broadcast_plan "silent" 2 ["prevote", "1", "0", "-1", "v", "nil"]
@@ -470,7 +470,7 @@ Example broadcast_silent_records_the_vote_and_sends_nothing :
     [RememberVote "prevote/1/0" "v" ["prevote", "1", "0", "-1", "v", "nil"]] /\
   broadcast_subject ["done", "4", "0", "0", "abc", "tx"] = None /\
   broadcast_plan "" 1 ["ping"] None None None = [SendEveryone ["ping"]].
-Proof. repeat split; reflexivity. Qed.
+Proof. repeat split; computed. Qed.
 
 Example broadcast_equivocates_and_double_votes_per_peer :
   broadcast_plan "equivocate" 2 ["proposal", "3", "1", "0", "vid", "val"] None None None =
@@ -484,7 +484,7 @@ Example broadcast_equivocates_and_double_votes_per_peer :
        ["prevote", "3", "1", "0", "", "val", "tail"],
      SendPeer "0" ["prevote", "3", "1", "0", "vid", "val", "tail"],
      SendPeer "1" ["prevote", "3", "1", "0", "", "val", "tail"]].
-Proof. repeat split; reflexivity. Qed.
+Proof. repeat split; computed. Qed.
 
 (** A decided merge's pure part: its gate, its edits and the texts said. *)
 Example merge_output_selects_merge_and_short_forms_stay_legacy :
@@ -492,7 +492,7 @@ Example merge_output_selects_merge_and_short_forms_stay_legacy :
     MergeRequest "calc" "2" "tree" "7" "3" "codex" "spec" ["a.txt", "x", "y"] /\
   plan_output ["merge", "calc", "2", "tree", "7", "3", "codex"] =
     LegacyOutput ["merge", "calc", "2", "tree", "7", "3", "codex"].
-Proof. split; reflexivity. Qed.
+Proof. split; computed. Qed.
 
 Example merge_gate_unknown_applied_newer_and_diverged :
   merge_gate_of None "2" false = MergeUnknown /\
@@ -500,11 +500,11 @@ Example merge_gate_unknown_applied_newer_and_diverged :
   merge_gate_of (Some "3") "2" false = MergeSkip /\
   merge_gate_of (Some "1") "2" true = MergeSkip /\
   merge_gate_of (Some "1") "2" false = MergeApply.
-Proof. repeat split; reflexivity. Qed.
+Proof. repeat split; computed. Qed.
 
 Example edit_triples_in_order_dropping_a_short_tail :
   edit_triples ["a", "o", "n", "b", "", "whole", "c", "x"] = [("a", "o", "n"), ("b", "", "whole")].
-Proof. reflexivity. Qed.
+Proof. computed. Qed.
 
 Example edit_plan_of_cases :
   edit_plan_of "../x" "o" "n" "file" = EditFail "unsafe path ../x" /\
@@ -515,13 +515,13 @@ Example edit_plan_of_cases :
   edit_plan_of "a" "" "whole" "none" = EditWrite "a" "whole" /\
   edit_plan_of "a" "o" "n" "none" = EditFail "a: no such file to edit" /\
   edit_plan_of "a" "o" "n" "file" = EditRead "a".
-Proof. repeat split; reflexivity. Qed.
+Proof. repeat split; computed. Qed.
 
 Example merge_edit_once_zero_one_several :
   edit_apply "a" "x" "y" "abc" = EditFail "a: the old text isn't in the file" /\
   edit_apply "a" "b" "y" "abc" = EditWrite "a" "ayc" /\
   edit_apply "a" "b" "y" "abcb" = EditFail "a: the old text appears more than once, so give more of it".
-Proof. repeat split; reflexivity. Qed.
+Proof. repeat split; computed. Qed.
 
 Example merge_tree_check_and_texts :
   merge_tree_check "t" None = Some "git commit failed" /\
@@ -536,14 +536,14 @@ Example llm_output_selects_a_model_request :
   plan_output ["llm", "3", "patch", "P", "calc", "a.txt"] = LlmRequest "3" "patch" "P" ["calc", "a.txt"] /\
   plan_output ["llm", "3", "draft", "P"] = LlmRequest "3" "draft" "P" [] /\
   plan_output ["llm", "3", "draft"] = LegacyOutput ["llm", "3", "draft"].
-Proof. repeat split; reflexivity. Qed.
+Proof. repeat split; computed. Qed.
 
 Example llm_gate_budget_then_a_strict_limit :
   llm_gate_of "101" "100" 0%float 50%float = LlmOverBudget /\
   llm_gate_of "100" "100" 5%float 10%float = LlmHeld /\
   llm_gate_of "100" "100" 10%float 10%float = LlmAsk /\
   llm_gate_of "1" "0" 0%float 0%float = LlmOverBudget.
-Proof. repeat split; reflexivity. Qed.
+Proof. repeat split; computed. Qed.
 
 Theorem llm_over_budget_whatever_the_limit : forall calls max now until,
   (num max <? num calls) = true -> llm_gate_of calls max now until = LlmOverBudget.
@@ -553,7 +553,7 @@ Example llm_log_lines :
   llm_budget_text "100" = "model call budget of 100 used up: restart with a higher --max-llm-calls" /\
   llm_hold_text "4" "pick" "claude" "15" = "holding request 4 (a pick): claude is limited for 15 more minutes" /\
   llm_ask_text "codex" "patch" "7" "3" "100" = "asking codex for a patch (request 7, call 3 of 100)".
-Proof. repeat split; reflexivity. Qed.
+Proof. repeat split; computed. Qed.
 
 Example llm_fence_and_listing :
   shell_fence "T" "file a" "x" = "<<<UNTRUSTED T file a>>>
@@ -569,7 +569,7 @@ b
 b" 2 = "a
 b" /\
   listing_text "" 2 = "".
-Proof. repeat split; reflexivity. Qed.
+Proof. repeat split; computed. Qed.
 
 Example llm_plan_text_open_none_and_absent :
   plan_text_of "T" [("calc", None)] = "(no repository has a .plan)
@@ -580,7 +580,7 @@ Example llm_plan_text_open_none_and_absent :
 + done
 two")] = shell_fence "T" "plan of calc: open items" "one
 two".
-Proof. repeat split; reflexivity. Qed.
+Proof. repeat split; computed. Qed.
 
 (** Each file is cut at the cap, and the budget spends what was quoted,
     the cut note included: once it's spent, a file is only the note. *)
@@ -591,14 +591,14 @@ Example llm_repo_files_cap_and_budget :
       (append (shell_fence "T" "file b" (append newline "(cut here: the file goes on)"))
         (shell_fence "T" "file c" "")) /\
   repo_files_text "T" 100 100 [("b", None)] = shell_fence "T" "file b" "(no such file at the head)".
-Proof. repeat split; reflexivity. Qed.
+Proof. repeat split; computed. Qed.
 
 Example llm_repo_text_known_and_unknown :
   repo_text_of "T" "nope" None [] 1 1 = "(no repository nope)
 " /\
   repo_text_of "T" "calc" (Some "x.txt") [("x.txt", Some "hi")] 10 100 =
     append (shell_fence "T" "files in calc" "x.txt") (shell_fence "T" "file x.txt" "hi").
-Proof. repeat split; reflexivity. Qed.
+Proof. repeat split; computed. Qed.
 
 (** Placeholders in order; {{REPO}} needs a context, and text put in for a
     placeholder already done isn't replaced again. *)
@@ -608,7 +608,7 @@ Example llm_prompt_assembly :
   prompt_assemble "T" "{{REPO}} {{F}}" [] (fun _ => "R") (fun _ => "P") (fun r _ => r) = "{{REPO}} T" /\
   prompt_assemble "T" "{{REPOS}}" [] (fun _ => "{{F}}") (fun _ => "P") (fun r _ => r) = "{{F}}" /\
   prompt_assemble "T" "plain" ["calc"] (fun _ => "R") (fun _ => "P") (fun r _ => r) = "plain".
-Proof. repeat split; reflexivity. Qed.
+Proof. repeat split; computed. Qed.
 
 (** The incremental reader preserves ordering, missing files, and the
     exhausted-budget note, including an empty file after exhaustion. *)
@@ -619,7 +619,7 @@ Example llm_incremental_context :
     (append (shell_fence "T" "file b" (append newline "(cut here: the file goes on)"))
       (shell_fence "T" "file c" "")) /\
   repo_read_text "T" 4 6 (fun p => (p, Some "unused")) [] = "".
-Proof. split; reflexivity. Qed.
+Proof. split; computed. Qed.
 
 (** Held model requests' release: when, how many, and what is said. *)
 Example release_plan_cases :
@@ -629,12 +629,12 @@ Example release_plan_cases :
   release_plan_of 2 true false true = ReleaseOne /\
   release_plan_of 2 true false false = ReleaseAll /\
   release_plan_of 1 true false false = ReleaseAll.
-Proof. repeat split; reflexivity. Qed.
+Proof. repeat split; computed. Qed.
 
 Example release_texts :
   release_one_text "claude" "3" = "the limit's wait is over: asking claude one held request first (3 held)" /\
   release_all_text "claude" "3" = "claude answers again: asking its 3 held requests".
-Proof. split; reflexivity. Qed.
+Proof. split; computed. Qed.
 
 (** What a model's output becomes (step 5): a limit noticed, when it
     resets, how long it holds, and a reply's outcome. *)
@@ -645,7 +645,7 @@ Example is_limit_words_any_case :
   is_limit "RESOURCE_EXHAUSTED" = true /\
   is_limit "all good" = false /\
   is_limit "" = false.
-Proof. repeat split; reflexivity. Qed.
+Proof. repeat split; computed. Qed.
 
 Example is_limit_429_only_as_its_own_number :
   is_limit "429" = true /\
@@ -655,7 +655,7 @@ Example is_limit_429_only_as_its_own_number :
   is_limit "14290" = false /\
   is_limit "4290 k429 x" = false /\
   is_limit "k429 then 429" = true.
-Proof. repeat split; reflexivity. Qed.
+Proof. repeat split; computed. Qed.
 
 Example reset_in_claude_deadline :
   reset_in digits_float 1735999000%float "Claude AI usage limit reached|1736000000" = Some 1000%float /\
@@ -664,7 +664,7 @@ Example reset_in_claude_deadline :
   reset_in digits_float 1736000001%float "Claude AI usage limit reached|1736000000" = None /\
   reset_in digits_float 0%float "limit|1736000000 more" = None /\
   reset_in digits_float 0%float "limit|" = None.
-Proof. repeat split; reflexivity. Qed.
+Proof. repeat split; computed. Qed.
 
 Example reset_in_phrases_and_units :
   reset_in digits_float 0%float "Rate limit: try again in 5 minutes" = Some 300%float /\
@@ -675,7 +675,7 @@ Example reset_in_phrases_and_units :
   reset_in digits_float 0%float "try again in a bit" = None /\
   reset_in digits_float 0%float "usage limit" = None /\
   reset_in digits_float 0%float "resets in 3 hours" = Some 10800%float.
-Proof. repeat split; reflexivity. Qed.
+Proof. repeat split; computed. Qed.
 
 Example limit_wait_and_backoff :
   limit_wait (Some 300%float) 900%float = 310%float /\
@@ -684,12 +684,12 @@ Example limit_wait_and_backoff :
   limit_next_backoff 900%float = 1800%float /\
   limit_next_backoff 3600%float = 7200%float /\
   limit_next_backoff 7200%float = 7200%float.
-Proof. repeat split; reflexivity. Qed.
+Proof. repeat split; computed. Qed.
 
 Example limit_log_line :
   limit_log_text "claude" "15" "usage limit" =
     "LIMIT: claude says it has hit its limit, so its model calls are held for 15 minutes: usage limit".
-Proof. reflexivity. Qed.
+Proof. computed. Qed.
 
 Example reply_outcomes :
   reply_outcome_of "!process failed (exit 1): usage limit reached" (fun _ => None) =
@@ -703,14 +703,14 @@ there " (fun _ => None) = ReplyError "the reply had no JSON object: hello there"
   reply_outcome_of "
  " (fun _ => None) = ReplyError "the reply was empty" /\
   reply_outcome_of "" (fun _ => None) = ReplyError "the reply was empty".
-Proof. repeat split; reflexivity. Qed.
+Proof. repeat split; computed. Qed.
 
 Example reply_no_json_cut_at_two_hundred :
   reply_no_json_text (append (Stdlib.Strings.String.concat "" (repeat "0123456789" 20)) "X") =
     append "the reply had no JSON object: " (append (Stdlib.Strings.String.concat "" (repeat "0123456789" 20)) "...") /\
   reply_no_json_text (Stdlib.Strings.String.concat "" (repeat "0123456789" 20)) =
     append "the reply had no JSON object: " (Stdlib.Strings.String.concat "" (repeat "0123456789" 20)).
-Proof. split; reflexivity. Qed.
+Proof. split; computed. Qed.
 
 (** A reply with no JSON object never becomes a reply event. *)
 Theorem no_json_no_reply : forall text kv,
@@ -751,7 +751,7 @@ Example json_in_reply_slice_bounds_and_depth :
   json_in_reply " pre {""k"":""v""} " "100" (Some "5") (Some "13") = Some "{""k"":""v""}" /\
   json_in_reply "{{{{{x}}}}}" "100" (Some "0") (Some "10") = None /\
   json_in_reply "{{{{x}}}}" "100" (Some "0") (Some "8") = Some "{{{{x}}}}".
-Proof. repeat split; reflexivity. Qed.
+Proof. repeat split; computed. Qed.
 
 (** The braces are found in Soma: the first "{" and the last "}", by
     byte offset, as OCaml's index_opt and rindex_opt found them. *)
@@ -762,7 +762,7 @@ Example reply_brace_offsets :
   reply_open_at "" = None /\ reply_close_at "" = None /\
   reply_open_at "}{" = Some "1" /\ reply_close_at "}{" = Some "0" /\
   reply_close_at "{}" = Some "1".
-Proof. repeat split; reflexivity. Qed.
+Proof. repeat split; computed. Qed.
 
 (** Flattened tokens: nested objects, list indices, scalars, empty and
     duplicate keys, in the old left-to-right order. *)
@@ -779,7 +779,7 @@ Example flatten_reply_shapes :
   flatten_reply ["A", "2", "a", "S", "1", "a", "S", "2"] = ["a", "1", "a", "2"] /\
   flatten_reply ["L", "2", "I", "7", "S", "q"] = [".0", "7", ".1", "q"] /\
   flatten_reply ["A", "1", "a", "S", ""] = ["a", ""].
-Proof. repeat split; reflexivity. Qed.
+Proof. repeat split; computed. Qed.
 
 (** The slice and the tokens together are the fields. A slice yojson
     refuses, or no slice at all, is no fields. *)
@@ -790,7 +790,7 @@ Example reply_fields_of_nested_and_absent :
   reply_fields_of "no json here" "100" None None (fun _ => Some ["A", "0"]) = None /\
   reply_fields_of "{}" "1" (Some "0") (Some "1") (fun _ => Some ["A", "0"]) = None /\
   reply_fields_of "{}" "2" (Some "0") (Some "1") (fun _ => Some ["A", "0"]) = Some [].
-Proof. repeat split; reflexivity. Qed.
+Proof. repeat split; computed. Qed.
 
 (** No braces: there is no object, so the job is not a reply event. *)
 Theorem reply_without_braces_is_not_a_reply : forall text limit tokens kv,
@@ -836,14 +836,14 @@ Example peer_shape_item_and_depth_boundaries :
   peer_line_shape "3" "{""x"":0,""y"":1}" = false /\
   peer_line_shape "100" "{""x"":[[[]]]}" = true /\
   peer_line_shape "100" "{""x"":[[[[]]]]}" = false.
-Proof. repeat split; reflexivity. Qed.
+Proof. repeat split; computed. Qed.
 
 Example peer_wire_fields_preserve_sender_signature_and_field_order :
   peer_wire_fields "me" (fun _ => false) (Some ("peer", ("sig", ["prevote", "3", "2"]))) =
     ["peer_line", "0", "0", "peer", "sig", "prevote", "3", "2"] /\
   peer_wire_fields "me" (fun _ => false) (Some ("peer", ("sig", []))) =
     ["peer_line", "0", "0", "peer", "sig"].
-Proof. split; reflexivity. Qed.
+Proof. split; computed. Qed.
 
 Example peer_own_and_refused_flags_precede_signature_verification :
   peer_wire_fields "me" (fun _ => false) (Some ("me", ("sig", ["tx", "raw"]))) =
@@ -853,14 +853,14 @@ Example peer_own_and_refused_flags_precede_signature_verification :
   peer_wire_fields "me" (fun _ => true) (Some ("peer", ("sig", ["tx", "raw", "extra"]))) =
     ["peer_line", "0", "0", "peer", "sig", "tx", "raw", "extra"] /\
   line_dropped "1" "0" = true /\ line_dropped "0" "1" = true.
-Proof. repeat split; reflexivity. Qed.
+Proof. repeat split; computed. Qed.
 
 Example peer_bad_members_produce_no_event :
   peer_wire_fields "me" (fun _ => false) None = [] /\
   peer_raw_event "100" "me" "{bad}" (fun _ => None) (fun _ => false) = [] /\
   peer_raw_event "1" "me" "{""x"":0}"
     (fun _ => Some ("peer", ("sig", ["tx", "raw"]))) (fun _ => false) = [].
-Proof. repeat split; reflexivity. Qed.
+Proof. repeat split; computed. Qed.
 
 Theorem malformed_peer_shape_needs_no_json_members : forall cap me raw parts refused,
   peer_line_shape cap raw = false -> peer_raw_event cap me raw parts refused = [].
@@ -962,14 +962,14 @@ Example io_wire_forms :
   io_of_wire ["clock", "extra"] = None /\
   io_of_wire ["log"] = None /\ io_of_wire ["log", "a", "b"] = None /\
   io_of_wire ["timer"] = None /\ io_of_wire [] = None /\ io_of_wire ["nope", "x"] = None.
-Proof. repeat split; reflexivity. Qed.
+Proof. repeat split; computed. Qed.
 
 Example outputs_become_operations :
   output_io ["timer", "commit", "7", "2", "350"] = Some (IoTimer "350" ["timeout", "commit", "7", "2"]) /\
   output_io ["log", "line"] = Some (IoLog "line") /\
   output_io ["timer", "commit", "7", "2"] = None /\
   output_io ["height", "3"] = None.
-Proof. repeat split; reflexivity. Qed.
+Proof. repeat split; computed. Qed.
 
 Example plans_become_operations :
   map action_io (reveal_plan "withhold" "4" "secret" "3") =
@@ -983,7 +983,7 @@ Example plans_become_operations :
      Some (IoSendPeer "1" ["proposal", "3", "1", "0", hash_list ["equivocation", "3", "1"], "equivocation", "3", "1"])] /\
   map action_io (broadcast_plan "" 2 ["ping"] None None None) = [Some (IoSendAll ["ping"])] /\
   action_io (StoreAction "7" []) = Some (IoStore "7" []).
-Proof. repeat split; reflexivity. Qed.
+Proof. repeat split; computed. Qed.
 
 (** U-1: the signed-vote log, the own-transaction table, the nonce-flood
     mark, the CI check and a merge's records are operations too. *)
@@ -999,7 +999,7 @@ Example writes_and_check_travel_the_one_interface :
   io_wire (IoMergeApplied "calc" "2") = ["merge_applied", "calc", "2"] /\
   io_wire (IoMergeDiverged "calc" "2: boom") = ["merge_diverged", "calc", "2: boom"] /\
   io_of_wire ["merge_applied", "calc"] = None.
-Proof. repeat split; reflexivity. Qed.
+Proof. repeat split; computed. Qed.
 
 Example votes_floods_and_checks_become_operations :
   map action_io (broadcast_plan "" 2 ["prevote", "1", "0", "-1", "v", "nil"]
@@ -1011,7 +1011,7 @@ Example votes_floods_and_checks_become_operations :
     [None, Some IoMarkNonceFlood, Some (IoLog "FAULT INJECTION: flooding 600 future-nonce transactions")] /\
   check_request_op "9" "calc" "head1" ["e1", "e2"] [] [] = IoCheck "9" "calc" "head1" ["e1", "e2"] /\
   output_io ["check", "9", "calc"] = None.
-Proof. repeat split; reflexivity. Qed.
+Proof. repeat split; computed. Qed.
 
 (** An action that is one operation is the program of exactly that
     operation, and the timer and log outputs are carried out as theirs. *)
@@ -1040,7 +1040,7 @@ Example inbox_tx_shapes :
   inbox_tx (Some ["L", "1", "S", "a", "S", "b"]) = None /\
   inbox_tx (Some ["L", "2", "S", "a"]) = None /\
   inbox_tx (Some ["S", "x"]) = None.
-Proof. repeat split; reflexivity. Qed.
+Proof. repeat split; computed. Qed.
 
 (** A job past its limit is stopped once. The same instant as the limit,
     a time before it, and a clock behind the start are not. *)
@@ -1050,7 +1050,7 @@ Example job_deadline_is_strict_and_once :
   job_should_expire 11%float 0%float 10%float true = false /\
   job_should_expire 9%float 0%float 10%float false = false /\
   job_should_expire 0%float 5%float 10%float false = false.
-Proof. repeat split; reflexivity. Qed.
+Proof. repeat split; computed. Qed.
 
 Theorem marked_job_is_kept : forall now started limit,
   job_should_expire now started limit true = false.
@@ -1080,7 +1080,7 @@ Example timer_edges_and_old_sort_order :
   str_ord "" "a" = OrdLt /\
   strs_ord ["timeout"] ["timeout", "commit"] = OrdLt /\
   strs_ord ["timeout", "a"] ["timeout", "b"] = OrdLt.
-Proof. repeat split; reflexivity. Qed.
+Proof. repeat split; computed. Qed.
 
 (** No wait while an event is already queued. An empty timer list waits
     the old fifth of a second. A sooner timer waits that gap, and a
@@ -1093,7 +1093,7 @@ Example select_wait_cap_gap_and_queued :
   select_wait 100%float true [(99%float, ["past"])] = 0%float /\
   select_wait 100%float true [(PrimFloat.add 100%float 0.5%float, ["late"]),
                               (PrimFloat.add 100%float 0.125%float, ["soon"])] = 0.125%float.
-Proof. repeat split; reflexivity. Qed.
+Proof. repeat split; computed. Qed.
 
 Theorem select_does_not_wait_on_a_queued_event : forall now timers,
   select_wait now false timers = 0%float.
@@ -1112,7 +1112,7 @@ Example ci_outcome_cases :
   ci_outcome "!couldn't start" false "3g" = (false, ("node problem: docker: !couldn't start", "node")) /\
   ci_outcome "!process failed (signal 9): x" false "3g" = (false, ("CI failed: !process failed (signal 9): x", "ci")) /\
   ci_outcome "!process failed (printed more than 4 MB): x" false "3g" = (false, ("CI printed more than 4 MB: a check has to print less than that", "ci")).
-Proof. repeat split; reflexivity. Qed.
+Proof. repeat split; computed. Qed.
 
 Example ci_exit_codes_and_tail :
   ci_exit_code "exit 0" = Some 0 /\ ci_exit_code "exit 12x" = None /\ ci_exit_code "exit " = None /\
@@ -1121,7 +1121,7 @@ Example ci_exit_codes_and_tail :
   ci_node_problem false (Some "exit 86") = false /\ ci_node_problem true None = false /\
   ci_tail "  a
 b  " = "CI failed: a b".
-Proof. repeat split; reflexivity. Qed.
+Proof. repeat split; computed. Qed.
 
 (** A check that failed applying a bid: the bid's (exit 1, or a signal),
     or this node's (couldn't run, or another exit code). *)
@@ -1131,7 +1131,7 @@ Example check_apply_stage_cases :
   check_apply_stage "!process failed (exit 2): x" = "node" /\
   check_apply_stage "!process failed (exit 0): x" = "node" /\
   check_apply_stage "!couldn't start the check" = "node".
-Proof. repeat split; reflexivity. Qed.
+Proof. repeat split; computed. Qed.
 
 (** A check's output: "!" is a failure even when this node lies about trees
     or has CI; otherwise the tree is the trim, and CI emits nothing yet. *)
@@ -1150,14 +1150,14 @@ Example check_apply_plan_cases :
   check_apply_choice "HASH" "id" "ab" (CheckApplyTree false true "ab") =
     [["check_result", "id", "ok", "true", "tree", "HASH", "why", "", "stage", ""]] /\
   check_apply_choice "HASH" "id" "ab" (CheckApplyTree true true "ab") = [].
-Proof. repeat split; reflexivity. Qed.
+Proof. repeat split; computed. Qed.
 
 Example goal_events_cases :
   goal_events "" = [] /\
   goal_events "stay open" = [["agent", "goal", "stay open"]] /\
   goal_events (append "a" (append newline (append newline (append "b" newline)))) =
     [["agent", "goal", "a"], ["agent", "goal", "b"]].
-Proof. repeat split; reflexivity. Qed.
+Proof. repeat split; computed. Qed.
 
 Theorem check_apply_bang_is_failed : forall byz ci raw,
   starts "!" raw = true ->
@@ -1188,12 +1188,12 @@ Example backend_flag_cases :
   backend_behavior_event "scripted:stay" = [["agent", "behavior", "stay"]] /\
   backend_kind_name "scripted:" = "llm" /\ backend_behavior_event "scripted:" = [] /\
   backend_kind_name "llm" = "llm" /\ backend_behavior_event "scripted:a:b" = [["agent", "behavior", "a:b"]].
-Proof. repeat split; reflexivity. Qed.
+Proof. repeat split; computed. Qed.
 
 Example check_eligibility_scope_precedence :
   check_request_op "9" "calc" "head" [] ["calc"] ["calc"] =
     IoQueue ["check_unchecked_repo", "9", "calc", "true"].
-Proof. reflexivity. Qed.
+Proof. computed. Qed.
 
 Theorem wait_exit_preserves_code : forall codes code,
   job_wait_status codes "exit" code = Some (JobExit code).
@@ -1252,7 +1252,7 @@ Example merge_trace :
   [IoIsDiverged "calc", IoAppliedVersion "calc", IoMergeReset "calc", IoMergeProbe "calc" "a.txt",
    IoMergeWrite "calc" "a.txt" "hi", IoMergeCommit "calc" "1" "t1" "b" "task" "codex" "spec",
    IoMergeApplied "calc" "1", IoLog "merged bid b into calc: abc1234"].
-Proof. reflexivity. Qed.
+Proof. computed. Qed.
 
 Example merge_wrong_tree_diverges :
   ntrace (merge_answers "t2") (merge_prog "calc" "1" "t1" "b" "task" "codex" "spec" ["a.txt", "", "hi"]) =
@@ -1260,7 +1260,7 @@ Example merge_wrong_tree_diverges :
    IoMergeWrite "calc" "a.txt" "hi", IoMergeCommit "calc" "1" "t1" "b" "task" "codex" "spec",
    IoLog (merge_diverged_text "calc" "1" "got tree t2, attested t1"),
    IoMergeDiverged "calc" "1: got tree t2, attested t1"].
-Proof. reflexivity. Qed.
+Proof. computed. Qed.
 
 (** The prompt a model call's program assembles is [prompt_assemble]'s,
     for the texts its parts' programs end with: the placeholders, their
@@ -1297,14 +1297,14 @@ llm_answers (calls : string) (op : node_op) : nanswer :=
 Example llm_over_budget_trace :
   ntrace (llm_answers "4") (llm_prog "7" "ask" "p" []) =
   [IoLlmBudget, IoClock, IoLimitInfo, IoQueue ["llm_error", "7", llm_budget_text "3"]].
-Proof. reflexivity. Qed.
+Proof. computed. Qed.
 
 Example llm_asked_trace :
   ntrace (llm_answers "1") (llm_prog "7" "ask" "p" []) =
   [IoLlmBudget, IoClock, IoLimitInfo, IoLog (llm_ask_text "claude" "ask" "7" "1" "3"),
    IoRandomHex "8", IoLimitInfo, IoEnvEntries,
    IoLlmStart "7" "ask" "p" "p" [] [] (backend_launch "claude") ["A=1"]].
-Proof. reflexivity. Qed.
+Proof. computed. Qed.
 
 (** A task's files, read by operations, are [repo_read_text]'s, reading
     each with the answer to [IoHeadFile]. *)
@@ -1343,7 +1343,7 @@ Example fresh_boot_reads :
                               | _ => (true,(0%float,[]))
                               end) (boot_prog None)) =
   [IoSignedText, IoBootEvents, IoReplayCount].
-Proof. reflexivity. Qed.
+Proof. computed. Qed.
 
 Theorem remember_peer_is_served_operation : forall who first now,
   action_prog (RememberPeer who first now) =
@@ -1373,7 +1373,7 @@ Example honest_vote_trace :
   [IoSignVote "prevote/1/0" "v" ["prevote", "1", "0", "-1", "v", "nil"],
    IoRememberBroadcast "1" "all" ["prevote", "1", "0", "-1", "v", "nil"] ["prevote", "1", "0", "-1", "v", "nil"],
    IoSendAll ["prevote", "1", "0", "-1", "v", "nil"]].
-Proof. reflexivity. Qed.
+Proof. computed. Qed.
 
 (** consensus.state's text reads back as the state it was written from,
     lock, valid value and log included; anything else is refused *)
@@ -1412,7 +1412,7 @@ Example service_answers_only_its_own :
   service_request_of "tok" ["tok", "write_file", "/etc/x", "y"] = ServeRefused /\
   service_request_of "tok" ["tok", "nonsense"] = ServeRefused /\
   service_request_of "tok" [] = ServeRefused.
-Proof. repeat split; reflexivity. Qed.
+Proof. repeat split; computed. Qed.
 
 Example service_keeps_job_events_and_batches :
   service_kept [["job_bytes", "1", "x"], ["conn_offer", "0", "h"], ["peer_bytes", "1", "y"], ["ci_done", "2"]] =
@@ -1420,7 +1420,7 @@ Example service_keeps_job_events_and_batches :
   service_batch 0 [] = ([], []) /\
   service_batch 0 [["a"], ["b"]] = ([["a"], ["b"]], []) /\
   service_address "192.168.105.1:39990" = ("192.168.105.1", "39990").
-Proof. repeat split; reflexivity. Qed.
+Proof. repeat split; computed. Qed.
 
 (** ---- Never two votes at one slot ----
     An honest node signs at most one vote for a kind, height and round (a

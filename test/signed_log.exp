@@ -9,7 +9,7 @@ Example signed_log_fixed_lines :
   signed_cut_text "s" "w" = "signed.log: skipping s, a line cut short (w): that vote was never sent" /\
   signed_needs_snapshot true true = true /\ signed_needs_snapshot true false = false /\
   signed_needs_snapshot false true = false.
-Proof. repeat split; reflexivity. Qed.
+Proof. repeat split; computed. Qed.
 
 (** A line with no space is never a vote and never said. *)
 Theorem signed_no_space_is_skipped : forall tokens line,

@@ -14,4 +14,4 @@ Example codex_guard_fixed_inputs :
   codex_reply_of "!failed" (fun _ => Some "stale") = "!failed" /\
   codex_reply_of "pending" (fun _ => Some "") = "" /\
   codex_reply_of "pending" (fun _ => None) = "!codex wrote no reply".
-Proof. repeat split; reflexivity. Qed.
+Proof. repeat split; computed. Qed.

@@ -17,4 +17,4 @@ Example held_release_one_oldest :
   {| held_remaining := [((("new", "pick"), "p"), [])];
      held_probe := true;
      held_events := [["llm_release", "old", "patch", "q", "calc"]] |}.
-Proof. reflexivity. Qed.
+Proof. computed. Qed.

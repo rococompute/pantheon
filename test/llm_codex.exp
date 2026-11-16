@@ -1,12 +1,12 @@
 Example codex_failure_keeps_bytes :
   codex_reply_of "!process failed (exit 1): diagnostic" (fun _ => Some "stale") =
   "!process failed (exit 1): diagnostic".
-Proof. reflexivity. Qed.
+Proof. computed. Qed.
 
 Example codex_empty_file_keeps_bytes :
   codex_reply_of "pending" (fun _ => Some "") = "".
-Proof. reflexivity. Qed.
+Proof. computed. Qed.
 
 Example codex_unreadable_file :
   codex_reply_of "pending" (fun _ => None) = "!codex wrote no reply".
-Proof. reflexivity. Qed.
+Proof. computed. Qed.

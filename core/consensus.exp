@@ -4,9 +4,9 @@
 (** Peer messages' numbers: digits only, at most 18 of them, so a Byzantine
     node's "999...9" is refused before it's read (docs/SECURITY-REVIEW.md, C2). *)
 Example num_opt_reads_digits : num_opt "120" = Some 120.
-Proof. reflexivity. Qed.
+Proof. computed. Qed.
 Example num_opt_refuses_19_digits : num_opt "9999999999999999999" = None.
-Proof. reflexivity. Qed.
+Proof. computed. Qed.
 Example num_opt_refuses_non_digits : num_opt "12a" = None /\ num_opt "" = None /\ num_opt "-1" = None.
 Proof. split; [|split]; reflexivity. Qed.
 
@@ -919,7 +919,7 @@ Example resume_timers_of_a_round :
     = [timer "prevote" 4 0 1000, timer "precommit" 4 0 1000] /\
   resume_timers {| me := "a"; nodes := ["a", "b", "c", "d"]; height := 4; round := 0; step := 2;
     lockr := 1; lockv := []; validr := 1; validv := []; log := []; once := ["lock0"]; block_ms := 200 |} = [].
-Proof. repeat split; reflexivity. Qed.
+Proof. repeat split; computed. Qed.
 
 (** ---- Agreement within one round ----
     Two nodes on one roster that decide at one height on a proposal of
