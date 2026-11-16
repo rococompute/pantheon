@@ -15,7 +15,7 @@
 #                                  to `pantheon up` (--goal FILE, --bid-window N, --ci CMD, ...)
 #       --diplomats "A B"          these agents answer through an interactive session (default: none)
 #       --backends A=B,...         the other agents' backends, as for `pantheon up` (default: scripted)
-#       --yolo                     start the diplomats' CLIs with their approvals off (read "Isolation")
+#       --yolo                     start Claude Code and codex with their approvals off too (read "Isolation")
 #       --layout plan|grid         plan (default): the left half the network's (the market's plan, live,
 #                                  with status and the watchdog as tabs), the right a pane per agent (its
 #                                  diplomat's session, then its node's tab); grid: a pane per agent
@@ -27,11 +27,12 @@
 #   pantheon-cmux down NET         close the workspace, which stops its nodes and sessions
 #
 # Isolation: every pane runs as you, and the node homes in NET hold the
-# agents' keys. Without --yolo each CLI asks before it runs a command (Claude
-# Code in --permission-mode manual, Grok Build in default, whatever their
-# saved defaults), and
-# you answer in its tab (the watchdog notifies you). With --yolo nothing
-# stands between a diplomat and the keys: use it only for a network whose
+# agents' keys. Grok Build and Muse always run without asking (grok
+# --always-approve, muse --yolo): nothing stands between them and the keys.
+# Without --yolo, Claude Code and codex ask before they run a command (Claude
+# Code in --permission-mode manual, whatever its saved default), and you answer
+# in its tab (the watchdog notifies you). With --yolo nothing stands between
+# any diplomat and the keys: use it only for a network whose
 # keys and repositories don't matter. integrations/cmux/README.md says what
 # would isolate them (a Lima VM per diplomat, as scripts/host.sh does for Muse).
 #
@@ -126,9 +127,10 @@ diplomat_cli() {
     # auto or always-approve would let it run commands unasked)
     claude) if [ -n "$yolo" ]; then printf 'claude --dangerously-skip-permissions'; else printf 'claude --permission-mode manual'; fi ;;
     codex)  printf 'codex%s' "${yolo:+ --dangerously-bypass-approvals-and-sandbox}" ;;
-    # Grok Build, xAI's CLI (grok login), as scripts/bidder.sh uses it
-    grok)   printf 'grok %s%s' "$([ -n "$yolo" ] && echo --always-approve || echo '--permission-mode default')" "${GROK_MODEL:+ --model $(q "$GROK_MODEL")}" ;;
-    muse)   printf 'muse%s' "${yolo:+ --yolo}" ;;
+    # Grok Build, xAI's CLI (grok login), as scripts/bidder.sh uses it. Grok
+    # Build and Muse run without asking, --yolo or not: the operator's choice
+    grok)   printf 'grok --always-approve%s' "${GROK_MODEL:+ --model $(q "$GROK_MODEL")}" ;;
+    muse)   printf 'muse --yolo' ;;
     *) return 1 ;;
   esac
 }

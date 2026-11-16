@@ -97,10 +97,11 @@ pass, nudges included, for a test or a cron job.
 ## Isolation, and what's next
 
 Every pane runs as you, and the node homes in `NET` hold the agents' keys.
-Without `--yolo`, each CLI asks before it runs a command: you answer in its
-tab, and the watchdog's notification tells you when one is waiting. With
-`--yolo`, approvals are off and nothing stands between a diplomat and every
-node's key. Use it only on a network whose keys and repositories don't
+Grok Build and Muse always run without asking (`grok --always-approve`,
+`muse --yolo`), so nothing stands between them and every node's key. Without
+`--yolo`, Claude Code and codex ask before they run a command: you answer in
+its tab, and the watchdog's notification tells you when one is waiting. With
+`--yolo`, their approvals are off too. Use it only on a network whose keys and repositories don't
 matter (docs/SAFETY.md).
 
 The next step is isolation like the Linux host's: each diplomat in its own
