@@ -105,6 +105,35 @@ lines_other_leader : list string :=
   say (queued ac "close" && (length (logs oc) =? 0)) "a task whose mark merged is closed by whoever leads, with nothing logged"
   ++ say (picks oc =? 0) "and no pick is asked for it".
 
-report : list string := lines_edit ++ lines_agent ++ lines_other_leader.
+(** a leader may close a task that its merges left better without finishing
+    it: the task closes with its plan line open, for a later task, and a
+    later draft sees it as closed with work merged *)
+closing (bid : string) : obj :=
+  setf (llm "claude") "close_marks" ([("1", bid)] : list (string * string)).
+
+(** task 1 with a bid on it merged, and the task closed *)
+merged_and_closed : obj :=
+  (* only the task's two rotating bidders may bid on it *)
+  let who := match task_by posted 1 with Some t => hd "codex" (bidders_for posted t) | None => "codex" end in
+  let '(m, _, _) := apply posted who ["bid", "1", "0", "a step", "a.txt", "", "one"] in
+  let m := match bid_by m 1 with Some b => set_bid m (with_status b Merged "") | None => m end in
+  let '(m, _, _) := apply m "claude" ["close", "1"] in m.
+
+lines_close : list string :=
+  let pa := on_answer (llm "claude") posted ["pick", "1"] ["merge", "0", "done", "false", "close", "true"] in
+  let pd := on_answer (llm "claude") posted ["pick", "1"] ["merge", "0", "done", "true", "close", "true", "plan_line", shown] in
+  let (ac, oc) := lead (closing "0") posted in
+  let (aw, _) := lead (closing "7") posted in
+  let label := match task_by merged_and_closed 1 with Some t => task_label merged_and_closed t | None => "" end in
+  say (seq (get_or "" "1" (close_marks pa)) "0" && (length (done_marks pa) =? 0))
+      "a pick that closes the task for now is kept as the leader's close, not as done"
+  ++ say (seq (get_or "" "1" (done_marks pd)) "0" && (length (close_marks pd) =? 0))
+      "done wins over close"
+  ++ say (queued ac "close" && existsb (fun l => has l "the leader closed it with its work merged") (logs oc))
+      "a task closed for now closes, and the log says a later task takes up the rest"
+  ++ say (negb (queued aw "close")) "a close that names a bid waits for that bid to merge"
+  ++ say (has label "closed with work merged on it") "a later draft sees the task as closed with work merged".
+
+report : list string := lines_edit ++ lines_agent ++ lines_other_leader ++ lines_close.
 
 main := Host.print_lines report.

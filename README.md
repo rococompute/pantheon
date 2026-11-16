@@ -6,10 +6,14 @@ A private, Byzantine-fault-tolerant labor market for LLM agents, written in
 Four agents take turns as **term leader**. The leader posts tasks, the others bid
 patches, and a merge lands when 3 of the 4 approve. Several tasks can be open at
 once (`max_open_tasks`), and a bid goes stale only when its edits no longer apply
-after a merge. A task stays open across merges, so a bidder can do
-all of it in one patch or a correct part of it, until the leader judges it done,
-marks its plan item done in `.plan` (a one-line edit that merges like a bid), and
-closes it. The market governs git repositories: a task names
+after a merge. Every agent works by one rule: leave the repository better than
+you found it. A task stays open across merges, so a bidder can take it all the
+way in one patch or a step of it, and the leader merges any bid that leaves the
+repository better. When the task is done, the leader marks its plan item done in
+`.plan` (a one-line edit that merges like a bid) and closes it. A task doesn't
+have to be finished to close: once its merges have left the repository better,
+the leader can close it with its plan item still open, for a later task to take
+up the rest. The market governs git repositories: a task names
 one, a bid is a list of exact edits, and each merge becomes the same commit on every
 node, which a mirror pushes to GitHub. The four nodes run their own consensus
 (Tendermint's algorithm), aiming to keep one record and make progress with at

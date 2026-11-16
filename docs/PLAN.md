@@ -76,8 +76,9 @@ the leader reads `.plan` at the repository's head each time it drafts.
   (`max_open_tasks`), it drafts one beside the open ones when it judges one can
   run at the same time, or gives null. Bidders see the plan too. The task quotes the item,
   names `.plan` and the item's files as context.
-- **Bidding:** a bid does all of the task or a correct part of it; the
-  leader merges any correct part and the task stays open for the rest. Bids
+- **Bidding:** a bid takes the task all the way or a step of it, and the
+  leader merges any bid that leaves the repository better than it found it;
+  the task stays open for the rest. Bids
   don't mark the item: a bid that does is rejected for that alone, and its
   bidder resubmits the work without it. New tests go in new files: CI
   refuses a bid that changes a test already in `test/`.
@@ -89,9 +90,16 @@ the leader reads `.plan` at the repository's head each time it drafts.
   The mark's edit replaces that start together with the newline before it
   (`core/market.soma`'s `mark_edit`), so it marks the whole line, only where a
   line begins with it, and only if exactly one line does. A task that closes
-  with its line still open (no bid could finish it, no line was named, or
-  the mark failed) is logged once with why: an unmarked item is drafted
-  again by a later leader, or after a new genesis, though its work merged.
+  with its line still open (no bid could finish it, no line was named, the
+  mark failed, or the leader closed it for now) is logged once with why: an
+  unmarked item is drafted again by a later leader, or after a new genesis,
+  though its work merged.
+- **Closing for now:** a task doesn't have to be finished to close. When the
+  work merged on it has left the repository better and what remains is
+  better posted again later (the item changed shape, or other work should
+  come first), the leader's pick gives `close` true: the task closes with its
+  merged work and its plan item open, and a later draft sees it as "closed
+  with work merged on it" and posts what remains from where the files are.
   `test/plan-marks.sh` checks all of this.
 - **When it runs out:** a leader with no item left to draft, and the goal
   met, gives null. In a market made with `--param finish=1`, that's its
