@@ -13,20 +13,21 @@
   🟡 pending, 🔴 rejected, ⚪ cleared or withdrawn) and its title, the
   leader's for a merge or a rejection (what it does for the goal, or why not),
   else its bidder's; inside, its bidder's title and note and the leader's
-  reason. The tasks the bids answer stay out of the view. The chain's height, term
-  and leader are in the sidebar, and each term's leader in the `watchdog` tab beside it.
+  reason. The tasks the bids answer stay out of the view. Each term's leader
+  is in the `watchdog` tab beside it.
 - **Right half: a pane per agent,** in a grid of two rows. An agent with a
   diplomat has two tabs there: its diplomat's session, the CLI of its
   provider (Claude Code, codex, Grok Build, or Muse) working the node's inbox,
   then its node (`AGENT node`). An agent without one has its node. A node's
   output also goes to `NET/AGENT/node.log`.
-- **Sidebar:** shows each node's height, term and leader.
-- **Watchdog:** keeps the sidebar and the plan, says each term's leader,
+- **Its name:** the market's title, as the plan heads it: **Market**, then
+  **Market (X leader)**, then **Done**. Nothing else goes in the sidebar.
+- **Watchdog:** keeps the name and the plan, says each term's leader,
   nudges a diplomat that stopped working its inbox, and sends you a
   notification when one waits on you.
 - **A finishing market** (`pantheon init ... --param finish=1`): when it
-  finishes, its nodes stop on their own, the plan view heads its goal **Done**, the
-  sidebar says `finished at hN`, each diplomat's inbox wait tells it to stop,
+  finishes, its nodes stop on their own, the plan view heads its goal and the
+  workspace is named **Done**, each diplomat's inbox wait tells it to stop,
   and you get a notification. `down` closes the workspace.
 
 ```
@@ -48,10 +49,9 @@ printf -- '- add a sub command\n' > .net/goal.txt
 integrations/cmux/pantheon-cmux up .net -- --goal .net/goal.txt --bid-window 8
 ```
 
-That gives a workspace named "pantheon: .net": on the left the plan, with a
-`watchdog` tab beside it (it keeps the sidebar and the plan), and on the right
-a pane for each of `claude`, `codex`, `grok` and `muse` (their nodes). The sidebar shows
-`pantheon.AGENT  hN tN · leader X`. Close it all with
+That gives a workspace named **Market** (then **Market (X leader)**): on the left the plan, with a
+`watchdog` tab beside it (it keeps the name and the plan), and on the right
+a pane for each of `claude`, `codex`, `grok` and `muse` (their nodes). Close it all with
 `integrations/cmux/pantheon-cmux down .net`.
 
 To make one agent a diplomat, add `--diplomats claude`. Claude's node then
@@ -87,7 +87,7 @@ All its state is in `NET/.cmux/`:
 ## The watchdog
 
 The `watchdog` tab runs with or without diplomats. Every 10 seconds it sets
-each node's line in the sidebar, rewrites the plan view when it changed, and
+names the workspace for the market, rewrites the plan view when it changed, and
 says each new term's leader; once a finishing market finished, it tells the
 diplomats and you, and stops. Once a minute it watches the diplomats.
 

@@ -3,8 +3,8 @@
 # (the goal, each repository's .plan with its marks, the tasks; it follows
 # the chain), and on the right a tab per agent: its diplomat's session
 # (Claude Code, codex, Grok Build, Muse) working its node's inbox, or,
-# for an agent without one, its node. The workspace's sidebar shows each
-# node's height, term and leader. A watchdog keeps the sidebar and the plan,
+# for an agent without one, its node. The workspace is named for the market:
+# Market (X leader), then Done. A watchdog keeps the name and the plan,
 # says each term's leader, nudges a diplomat that stopped working its inbox,
 # and notifies you when one waits on a person (an approval, a question).
 # Run it on a Mac with cmux; it follows integrations/herdr's plan.
@@ -20,7 +20,7 @@
 #                                  with the watchdog as a tab), the right a pane per agent (its
 #                                  diplomat's session, then its node's tab); grid: a pane per agent
 #   pantheon-cmux watchdog NET [--check|--once]
-#                                  the watchdog's loop (up starts it in a "watchdog" tab): the sidebar,
+#                                  the watchdog's loop (up starts it in a "watchdog" tab): the name,
 #                                  the plan and each term's leader every 10 seconds, the diplomats a
 #                                  pass a minute; --check: what it sees of the diplomats now, nudging
 #                                  no one; --once: one pass, nudging
@@ -290,7 +290,7 @@ cmd_up() {
   # what an agent's tab runs in the plan layout: its diplomat, else its node
   main_of() { if in_list "$1" "$sessions"; then echo "$ST/$1/session.sh"; else echo "$ST/$1/node.sh"; fi; }
   if [ "$layout" = plan ]; then start=$(main_of "$first"); else start=$ST/$first/node.sh; fi
-  out=$(cm --id-format both new-workspace --name "pantheon: $(basename "$NET")" --description "${goal:-a Pantheon network}" \
+  out=$(cm --id-format both new-workspace --name Market --description "${goal:-a Pantheon network}" \
     --cwd "$NET" --command "sh $(q "$start")") || die "cmux couldn't make the workspace: $out"
   # new-workspace names it by ref only: its id, for later
   ref=$(printf '%s' "$out" | grep -o 'workspace:[0-9]*' | head -1)
@@ -307,18 +307,9 @@ for x in json.load(sys.stdin)["workspaces"]:
   printf '%s\n' "$w" > "$ST/workspace"
   s1=$(cm --json --id-format both list-panes --workspace "$w" | python3 -c 'import json,sys; print(json.load(sys.stdin)["panes"][0]["surface_ids"][0])')
   if [ "$layout" = plan ]; then layout_plan; else layout_grid; fi
-  say "$NET is up in cmux workspace \"pantheon: $(basename "$NET")\" ($w): $([ "$layout" = plan ] && echo "the market's plan on the left with the watchdog, a pane per agent on the right (the agent, then its node)" || echo "a pane per agent") ($(echo $agents))"
+  say "$NET is up in a cmux workspace named for its market (Market, then Market (X leader), then Done) ($w): $([ "$layout" = plan ] && echo "the market's plan on the left with the watchdog, a pane per agent on the right (the agent, then its node)" || echo "a pane per agent") ($(echo $agents))"
   [ -z "$sessions" ] || say "diplomats:$sessions, in their agents' tabs, with approvals off"
   say "stop it with: pantheon-cmux down $NET"
-}
-
-# a node's line for the sidebar, from its status.txt
-status_of() {
-  f=$NET/$1/status.txt
-  [ -f "$f" ] || { echo "starting"; return 0; }
-  if grep -q '^LIMIT' "$f"; then echo "limited: $(grep '^LIMIT' "$f" | head -1 | cut -c7-60)"; return 0; fi
-  if grep -q '^finished:' "$f"; then head -1 "$f" | awk '{ printf "finished at h%s", $2 }'; return 0; fi
-  head -1 "$f" | awk '{ for (i = 1; i < NF; i += 2) v[$i] = $(i + 1); printf "h%s t%s · leader %s", v["height"], v["term"], v["leader"] }'
 }
 
 # The market as markdown, for the plan's view: the chain, the goal, each
@@ -406,21 +397,23 @@ END {
   }
 }'
 
+# The market's title, the goal's heading and the workspace's name: Market (X
+# leader) while X leads, Market while a leader is drawn, and Done once the
+# market finished. (No height or term: with them it changed with every
+# block; the leader changes once a term.)
+market_title() {
+  f_=$NET/$(agents_of "$NET" | head -1)/status.txt
+  [ -f "$f_" ] || { printf 'Market'; return 0; }
+  grep -q '^finished:' "$f_" && { printf 'Done'; return 0; }
+  head -1 "$f_" | awk '{ for (i = 1; i < NF; i++) if ($i == "leader") l = $(i + 1) }
+    END { if (l == "" || l ~ /^\(/) printf "Market"; else printf "Market (%s leader)", l }'
+}
+
 render_plan() {
   a1=$(agents_of "$NET" | head -1) f=$NET/$a1/status.txt
   sf=$f; [ -f "$sf" ] || sf=/dev/null
-  # (no title or chain line: the height and term are in the sidebar, and with
-  # them here the file changed with every block; the leader, in the heading,
-  # changes once a term)
   {
-    # the goal is headed Market (X leader) while X leads, Market while a
-    # leader is drawn, and Done once the market finished
-    head=Market
-    if [ -f "$f" ]; then
-      ldr=$(head -1 "$f" | awk '{ for (i = 1; i < NF; i++) if ($i == "leader") print $(i + 1) }')
-      case $ldr in ""|"("*) ;; *) head="Market ($ldr leader)" ;; esac
-      grep -q '^finished:' "$f" && head=Done
-    fi
+    head=$(market_title)
     g=$(cat "$ST/goal" 2>/dev/null || true)
     if [ -n "$g" ] && [ -f "$g" ]; then
       printf '## %s\n\n' "$head"
@@ -444,16 +437,15 @@ render_plan() {
   if cmp -s "$ST/plan.md.tmp" "$ST/plan.md"; then rm -f "$ST/plan.md.tmp"; else mv "$ST/plan.md.tmp" "$ST/plan.md"; fi
 }
 
-# One pass of what the watchdog keeps: each node's line in the sidebar, the
-# plan, and, once a finishing market (genesis finish=1) finished (its nodes
-# stop on their own), word to the diplomats (their inbox wait says so) and
-# to you, once
+# One pass of what the watchdog keeps: the workspace's name (the market's
+# title, renamed when it changes), the plan, and, once a finishing market
+# (genesis finish=1) finished (its nodes stop on their own), word to the
+# diplomats (their inbox wait says so) and to you, once
 status_pass() {
-  w=$(workspace)
-  for a in $(agents_of "$NET"); do
-    # keyed pantheon.AGENT: cmux keeps some agents' names (codex, grok) for its own
-    cm set-status "pantheon.$a" "$(status_of "$a")" --workspace "$w" >/dev/null 2>&1 || true
-  done
+  w=$(workspace) title=$(market_title)
+  if [ "$title" != "$(cat "$ST/title" 2>/dev/null || true)" ]; then
+    cm rename-workspace --workspace "$w" "$title" >/dev/null 2>&1 && printf '%s\n' "$title" > "$ST/title"
+  fi
   render_plan
   a1=$(agents_of "$NET" | head -1)
   if [ ! -e "$ST/finished" ] && grep -q '^finished:' "$NET/$a1/status.txt" 2>/dev/null; then
@@ -541,7 +533,7 @@ cmd_watchdog() {
     --check) for a in $(agents_of "$NET"); do dry=1 watch_agent "$a"; done; return 0 ;;
     --once) note_leaders; for a in $(agents_of "$NET"); do watch_agent "$a" || true; done; return 0 ;;
   esac
-  say "keeping $NET's sidebar and plan, saying each term's leader (all of them in $ST/leaders.log), and watching its diplomats every minute"
+  say "keeping $NET's workspace name and plan, saying each term's leader (all of them in $ST/leaders.log), and watching its diplomats every minute"
   p=0
   while :; do
     status_pass; note_leaders

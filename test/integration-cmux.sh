@@ -5,8 +5,8 @@
 # pane per agent on the right (its diplomat, then its node), or with --layout
 # grid a pane per agent; a diplomat's tab and inbox are wired
 # to its node's backend; the watchdog's tab, and no status tab; it
-# refuses a second up and a network whose nodes run outside it; the sidebar's
-# line is read from status.txt; the watchdog nudges a diplomat idle for two
+# refuses a second up and a network whose nodes run outside it; the
+# workspace is named for the market, and no node lines go in its sidebar; the watchdog nudges a diplomat idle for two
 # passes, and leaves alone one that waits on a person (notified once) or is
 # limited; down closes the workspace.
 set -eu
@@ -78,11 +78,11 @@ pc=$here/integrations/cmux/pantheon-cmux
 
 # the plan layout (the default)
 ( cd "$t" && sh "$pc" up net --diplomats "claude" --backends codex=cmd:/x/bid.sh -- --goal goal.txt --bid-window 8 ) > "$t/out" || fail "up"
-grep -q 'is up in cmux workspace "pantheon: net"' "$t/out" || fail "up's summary: $(cat "$t/out")"
+grep -q 'is up in a cmux workspace named for its market' "$t/out" || fail "up's summary: $(cat "$t/out")"
 grep -q "the market's plan on the left" "$t/out" || fail "up names its layout: $(cat "$t/out")"
 n=$(grep -c '^new-workspace' "$t/ledger" || true); [ "$n" = 1 ] || fail "one workspace, not $n"
 n=$(grep -c '^new-split' "$t/ledger" || true); [ "$n" = 3 ] || fail "the plan layout splits a pane for each agent after the first: $n splits"
-grep -q -- "--name pantheon: net" "$t/ledger" || fail "the workspace's name"
+grep -q -- "^new-workspace --name Market --description" "$t/ledger" || fail "the workspace named Market: $(grep new-workspace "$t/ledger")"
 grep -q -- "--description - add a sub command" "$t/ledger" || fail "the goal's first line as its description"
 grep -q "^new-workspace .*--command sh '$t/net/.cmux/claude/session.sh'" "$t/ledger" || fail "the first tab is claude's diplomat"
 grep -q "^markdown open $t/net/.cmux/plan.md --workspace .* --direction left" "$t/ledger" || fail "the plan's view on the left"
@@ -128,7 +128,7 @@ grep -q '^### 2026-11-15' "$pm" || fail "plan's day"
 grep -q '^🟡 add a div command$' "$pm" || fail "plan's item not picked up: $(cat "$pm")"
 # a finished market's goal is headed Done
 cp "$t/net/claude/status.txt" "$t/status.keep"; echo 'finished: every agent, as leader, found no more tasks' >> "$t/net/claude/status.txt"
-( sed -n "/^ITEMS_AWK='/,/^}'\$/p; /^BIDS_AWK='/,/^}'\$/p" "$pc"; sed -n '/^status_of()/,/^}/p; /^render_plan()/,/^}/p; /^agents_of()/,/^}/p' "$pc" ) > "$t/fn0.sh"
+( sed -n "/^ITEMS_AWK='/,/^}'\$/p; /^BIDS_AWK='/,/^}'\$/p" "$pc"; sed -n '/^market_title()/,/^}/p; /^render_plan()/,/^}/p; /^agents_of()/,/^}/p' "$pc" ) > "$t/fn0.sh"
 ( NET=$t/net ST=$t/net/.cmux; . "$t/fn0.sh"; render_plan )
 head -1 "$pm" | grep -q '^## Done$' || fail "a finished market's goal headed Done: $(head -3 "$pm")"
 ! grep -q 'Finished' "$pm" || fail "a finished market's plan has no Finished line"
@@ -150,7 +150,7 @@ grep -q '^<summary>⚪ old mul</summary>$' "$pm" || fail "a cleared bid, under i
 [ "$(grep -c '^<details>$' "$pm")" = 7 ] && [ "$(grep -c '^</details>$' "$pm")" = 7 ] || fail "a details block per bid"
 # unchanged, it isn't rewritten (the view doesn't redraw for nothing)
 touch -t 202001010000 "$pm"
-( sed -n "/^ITEMS_AWK='/,/^}'\$/p; /^BIDS_AWK='/,/^}'\$/p" "$pc"; sed -n '/^status_of()/,/^}/p; /^render_plan()/,/^}/p' "$pc"; sed -n '/^agents_of()/,/^}/p' "$pc" ) > "$t/fn.sh"
+( sed -n "/^ITEMS_AWK='/,/^}'\$/p; /^BIDS_AWK='/,/^}'\$/p" "$pc"; sed -n '/^market_title()/,/^}/p; /^render_plan()/,/^}/p' "$pc"; sed -n '/^agents_of()/,/^}/p' "$pc" ) > "$t/fn.sh"
 ( NET=$t/net ST=$t/net/.cmux; . "$t/fn.sh"; render_plan )
 [ -z "$(find "$pm" -newer "$t/goal.txt")" ] || fail "an unchanged plan was rewritten"
 # the node scripts: run from where up ran, each with its backend and the node arguments
@@ -170,10 +170,6 @@ grep -q "^exec echo diplomat '" "$t/net/.cmux/claude/session.sh" || fail "the se
 if ( cd "$t" && sh "$pc" up net ) > "$t/out2" 2>&1; then fail "a second up"; fi
 grep -q "is up already" "$t/out2" || fail "a second up's refusal: $(cat "$t/out2")"
 
-# the sidebar's line
-printf 'height 42  term 2  leader grok\nversion 1\n' > "$t/net/claude/status.txt"
-line=$(sed -n '/^status_of()/,/^}/p' "$pc" > "$t/fn.sh"; NET=$t/net; . "$t/fn.sh"; status_of claude)
-[ "$line" = "h42 t2 · leader grok" ] || fail "sidebar line: $line"
 
 # the watchdog: idle twice gets a nudge; a person's call gets one notice
 cp "$t/net/.cmux/claude/surface" "$t/watched"
@@ -216,10 +212,15 @@ sh "$pc" watchdog "$t/net" --once > /dev/null; sh "$pc" watchdog "$t/net" --once
 sh "$pc" watchdog "$t/net" --check | grep -q "watchdog: claude finished" || fail "--check names a finished market's diplomat"
 timeout 20 sh "$pc" watchdog "$t/net" > "$t/wd" 2>&1 || fail "the watchdog's loop didn't end for a finished market"
 grep -q "the market finished" "$t/wd" || fail "the watchdog says why it stops: $(cat "$t/wd")"
-# the watchdog keeps what the status tab did: the sidebar, the plan, the finish notice
-grep -q '^set-status pantheon.claude finished at h44' "$t/ledger" || fail "the watchdog sets the sidebar: $(grep set-status "$t/ledger" | tail -2)"
+# the watchdog keeps the workspace's name, the plan and the finish notice, and
+# puts no node lines in the sidebar
+grep -q "^rename-workspace --workspace .* Done$" "$t/ledger" || fail "the watchdog names the workspace Done: $(grep rename-workspace "$t/ledger")"
+! grep -q '^set-status' "$t/ledger" || fail "the watchdog put a line in the sidebar"
 head -1 "$t/net/.cmux/plan.md" | grep -q '^## Done$' || fail "the watchdog renders the plan: $(head -1 "$t/net/.cmux/plan.md")"
 [ -e "$t/net/.cmux/finished" ] && [ -e "$t/net/.cmux/claude/inbox/finished" ] && grep -q '^notify --title Pantheon: the market finished' "$t/ledger" || fail "the watchdog tells the diplomats and you the market finished"
+printf 'height 45  term 4  leader muse\n' > "$t/net/claude/status.txt"; rm -f "$t/net/.cmux/finished"; : > "$t/ledger"
+( timeout 3 sh "$pc" watchdog "$t/net" > /dev/null 2>&1 || true )
+[ "$(grep -c '^rename-workspace --workspace .* Market (muse leader)$' "$t/ledger")" = 1 ] || fail "the watchdog names the workspace for its leader, once: $(grep rename-workspace "$t/ledger")"
 printf 'height 43  term 2  leader grok\n' > "$t/net/claude/status.txt"
 
 # down
@@ -238,4 +239,4 @@ grep -q "rename-tab .* watchdog" "$t/ledger" && ! grep -q "rename-tab .* status"
 if sh "$pc" up "$t/net" --layout tiles > "$t/out4" 2>&1; then fail "--layout tiles"; fi
 grep -q -- "--layout tiles: plan" "$t/out4" || fail "--layout tiles refused: $(cat "$t/out4")"
 sh "$pc" down "$t/net" > /dev/null
-echo "PASS pantheon-cmux: a network as a cmux workspace (the plan beside a pane per agent, or a grid), its sidebar, watchdog and down"
+echo "PASS pantheon-cmux: a network as a cmux workspace (the plan beside a pane per agent, or a grid), its name, watchdog and down"
