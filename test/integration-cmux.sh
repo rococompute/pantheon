@@ -112,7 +112,7 @@ for a in ("codex", "grok", "muse"):
 PY
 # the plan: goal, the .plan's marks, the tasks
 pm=$t/net/.cmux/plan.md
-head -1 "$pm" | grep -q '^## Market$' || fail "plan opens on its goal, with no title or chain line: $(cat "$pm")"
+head -1 "$pm" | grep -q '^## Market (codex leader)$' || fail "plan opens on its goal, headed by its leader, with no title or chain line: $(cat "$pm")"
 # each item leads with its icon: its task merged and closed, open with bids, or none
 grep -q '^✅ add a sub command$' "$pm" || fail "goal's done item: $(cat "$pm")"
 grep -q '^⏳ add a mul command$' "$pm" || fail "goal's numbered item being bid on: $(cat "$pm")"
@@ -130,8 +130,11 @@ cp "$t/net/claude/status.txt" "$t/status.keep"; echo 'finished: every agent, as 
 ( NET=$t/net ST=$t/net/.cmux; . "$t/fn0.sh"; render_plan )
 head -1 "$pm" | grep -q '^## Done$' || fail "a finished market's goal headed Done: $(head -3 "$pm")"
 ! grep -q 'Finished' "$pm" || fail "a finished market's plan has no Finished line"
+# while a leader is drawn, Market alone
+sed '1s/leader codex/leader (drawing)/' "$t/status.keep" > "$t/net/claude/status.txt"; ( NET=$t/net ST=$t/net/.cmux; . "$t/fn0.sh"; render_plan )
+head -1 "$pm" | grep -q '^## Market$' || fail "goal headed Market while a leader is drawn: $(head -1 "$pm")"
 cp "$t/status.keep" "$t/net/claude/status.txt"; ( NET=$t/net ST=$t/net/.cmux; . "$t/fn0.sh"; render_plan )
-head -1 "$pm" | grep -q '^## Market$' || fail "goal headed Market again"
+head -1 "$pm" | grep -q '^## Market (codex leader)$' || fail "goal headed by its leader again"
 grep -q '^~~add a pow command~~$' "$pm" || fail "plan's dropped item"
 ! grep -q 'a note' "$pm" || fail "plan shows a # note"
 # the bids, not the tasks: each a details block, its icon and title in the summary

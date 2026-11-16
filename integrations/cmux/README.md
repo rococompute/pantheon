@@ -4,8 +4,9 @@
 [cmux](https://cmux.com) workspace on a Mac.
 
 - **Left half: the network.** A live markdown view of `NET/.cmux/plan.md`,
-  which the status loop rewrites when it changes: the goal under **Market**
-  (**Done** once a finishing market finished) and each repository's `.plan`
+  which the status loop rewrites when it changes: the goal under **Market
+  (X leader)**, X the term's leader (**Market** while one is drawn, **Done**
+  once a finishing market finished), and each repository's `.plan`
   at the market's head, every item led by its status (✅ done, ⏳ being bid on,
   🟡 not picked up yet; dropped ones struck through), then the last 20
   **Bids**. A bid is a details block: in its summary its outcome (🟢 merged,

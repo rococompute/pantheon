@@ -410,11 +410,18 @@ END {
 render_plan() {
   a1=$(agents_of "$NET" | head -1) f=$NET/$a1/status.txt
   sf=$f; [ -f "$sf" ] || sf=/dev/null
-  # (no title or chain line: the height, term and leader are in the sidebar and
-  # the status tab, and with them here the file changed with every block)
+  # (no title or chain line: the height and term are in the sidebar, and with
+  # them here the file changed with every block; the leader, in the heading,
+  # changes once a term)
   {
-    # the goal is headed Market, and Done once the market finished
-    head=Market; [ -f "$f" ] && grep -q '^finished:' "$f" && head=Done
+    # the goal is headed Market (X leader) while X leads, Market while a
+    # leader is drawn, and Done once the market finished
+    head=Market
+    if [ -f "$f" ]; then
+      ldr=$(head -1 "$f" | awk '{ for (i = 1; i < NF; i++) if ($i == "leader") print $(i + 1) }')
+      case $ldr in ""|"("*) ;; *) head="Market ($ldr leader)" ;; esac
+      grep -q '^finished:' "$f" && head=Done
+    fi
     g=$(cat "$ST/goal" 2>/dev/null || true)
     if [ -n "$g" ] && [ -f "$g" ]; then
       printf '## %s\n\n' "$head"
