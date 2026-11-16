@@ -29,7 +29,8 @@ if [ -z "${AGENT_CLI:-}" ]; then
   case ${agent%%-*} in
     claude) AGENT_CLI='claude --dangerously-skip-permissions -p' ;;
     codex)  AGENT_CLI='codex exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check' ;;
-    grok)   AGENT_CLI="cursor-agent --force --model ${GROK_MODEL:-grok} -p" ;;
+    # Grok Build, xAI's CLI; GROK_MODEL picks its model (default: its own)
+    grok)   AGENT_CLI="grok --always-approve${GROK_MODEL:+ --model $GROK_MODEL} -p" ;;
     *) say "no CLI known for $agent's provider (${agent%%-*}): set AGENT_CLI"; exit 2 ;;
   esac
 fi

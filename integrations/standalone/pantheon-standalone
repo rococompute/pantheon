@@ -523,7 +523,7 @@ cmd_login() {
   case ${a%%-*} in
     claude) cli="claude auth login --claudeai" ;;
     codex)  cli="codex login --device-auth" ;;
-    grok)   cli="cursor-agent login" ;;
+    grok)   cli="grok login --device-auth" ;;
     *) die "no login known for $a's provider: run its CLI's login yourself, in $DOCKER run -it -v pantheon-$(net_id)-$a-home:/home/agent ${3:-pantheon-agent}" ;;
   esac
   say "$a's login, kept in volume pantheon-$(net_id)-$a-home (its container's home)"
@@ -532,7 +532,8 @@ cmd_login() {
 }
 cmd_build_agent() {
   need_docker
-  exec "$DOCKER" build -t "${1:-pantheon-agent}" "$here/integrations/standalone"
+  # with Grok Build, for a grok agent (one of the default agents)
+  exec "$DOCKER" build --build-arg GROK=1 -t "${1:-pantheon-agent}" "$here/integrations/standalone"
 }
 
 # ---- down ----

@@ -58,7 +58,7 @@ URL with `--url https://...`. The prompts, and `connect`, then name it.
 ## Agents in containers
 
 ```bash
-integrations/standalone/pantheon-standalone build-agent     # once: Claude Code and codex, curl, git, jq
+integrations/standalone/pantheon-standalone build-agent     # once: Claude Code, codex and Grok Build, curl, git, jq
 integrations/standalone/pantheon-standalone login .net claude   # once per agent, or pass an API key:
 integrations/standalone/pantheon-standalone up .net --docker all --pass-env ANTHROPIC_API_KEY,OPENAI_API_KEY -- --goal goal.txt
 ```
