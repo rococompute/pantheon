@@ -7,7 +7,7 @@
   which the watchdog rewrites when it changes: the goal under **Market
   (X leader)**, X the term's leader (**Market** while one is drawn, **Done**
   once a finishing market finished), and each repository's `.plan`
-  at the market's head, every item led by its status (✅ done, ⏳ being bid on,
+  at the market's head, every item led by its status (✅ a bid for it merged, ⏳ being bid on,
   🟡 not picked up yet; dropped ones struck through), then the last 20
   **Bids**. A bid is a details block: in its summary its outcome (🟢 merged,
   🟡 pending, 🔴 rejected, ⚪ cleared or withdrawn) and its title, the

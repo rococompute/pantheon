@@ -326,8 +326,9 @@ status_of() {
 # the same commits) with its marks, and the tasks. Written only when it
 # changed, so the view doesn't redraw for nothing.
 # An item's icon, from the task that covers it (status.txt: "task N [state]
-# SPEC", "bid N [state ...] task N by A"): done, a task for it merged and
-# closed; being bid on, a task for it open with bids; else not picked up yet. A
+# SPEC", "bid N [state ...] task N by A"): done, a bid for it merged (its
+# task closes some blocks later); being bid on, a task for it open with bids;
+# else not picked up yet. A
 # task covers an item when its spec holds the item's words, nearly all of them
 # (a leader quotes an item, not always word for word: without its backticks,
 # with "to calc.sh" put in), or else, for a numbered goal line, when the spec
@@ -353,7 +354,7 @@ function icon(text, num,   j, id, by_text, st) {
     for (j = 1; j <= n; j++) { id = ids[j]; if (raw[id] ~ ("^[^:]*: *(goal )?step " num "([^0-9]|$)")) st = st state(id) }
   return st ~ /D/ ? "✅" : st ~ /B/ ? "⏳" : "🟡"
 }
-function state(id) { return (st_[id] == "closed" && merged[id]) ? "D" : (st_[id] == "open" && bids[id]) ? "B" : "-" }
+function state(id) { return merged[id] ? "D" : (st_[id] == "open" && bids[id]) ? "B" : "-" }
 FNR == NR {
   if ($1 == "task") { id = $2; s = $3; gsub(/[^a-z]/, "", s); st_[id] = s
     line = $0; sub(/^task [0-9]+ \[[a-z]+\] /, "", line); spec[id] = norm(line); raw[id] = tolower(line); ids[++n] = id
