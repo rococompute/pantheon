@@ -27,7 +27,9 @@
 #   pantheon-cmux down NET         close the workspace, which stops its nodes and sessions
 #
 # Isolation: every pane runs as you, and the node homes in NET hold the
-# agents' keys. Without --yolo each CLI asks before it runs a command, and
+# agents' keys. Without --yolo each CLI asks before it runs a command (Claude
+# Code in --permission-mode manual, Grok Build in default, whatever their
+# saved defaults), and
 # you answer in its tab (the watchdog notifies you). With --yolo nothing
 # stands between a diplomat and the keys: use it only for a network whose
 # keys and repositories don't matter. integrations/cmux/README.md says what
@@ -120,10 +122,12 @@ backend_of() {
 diplomat_cli() {
   if [ -n "${DIPLOMAT_CLI:-}" ]; then printf '%s' "$DIPLOMAT_CLI"; return 0; fi
   case $(kind "$1") in
-    claude) printf 'claude%s' "${yolo:+ --dangerously-skip-permissions}" ;;
+    # without --yolo, the asking mode, whatever the CLI's saved default (a saved
+    # auto or always-approve would let it run commands unasked)
+    claude) if [ -n "$yolo" ]; then printf 'claude --dangerously-skip-permissions'; else printf 'claude --permission-mode manual'; fi ;;
     codex)  printf 'codex%s' "${yolo:+ --dangerously-bypass-approvals-and-sandbox}" ;;
     # Grok Build, xAI's CLI (grok login), as scripts/bidder.sh uses it
-    grok)   printf 'grok%s%s' "${yolo:+ --always-approve}" "${GROK_MODEL:+ --model $(q "$GROK_MODEL")}" ;;
+    grok)   printf 'grok %s%s' "$([ -n "$yolo" ] && echo --always-approve || echo '--permission-mode default')" "${GROK_MODEL:+ --model $(q "$GROK_MODEL")}" ;;
     muse)   printf 'muse%s' "${yolo:+ --yolo}" ;;
     *) return 1 ;;
   esac
