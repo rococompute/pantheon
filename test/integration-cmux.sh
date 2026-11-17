@@ -128,7 +128,7 @@ grep -q '^### 2026-11-15' "$pm" || fail "plan's day"
 grep -q '^🟡 add a div command$' "$pm" || fail "plan's item not picked up: $(cat "$pm")"
 # a finished market's goal is headed Done
 cp "$t/net/claude/status.txt" "$t/status.keep"; echo 'finished: every agent, as leader, found no more tasks' >> "$t/net/claude/status.txt"
-( sed -n "/^ITEMS_AWK='/,/^}'\$/p; /^TASKS_AWK='/,/^}'\$/p; /^BIDS_AWK='/,/^}'\$/p" "$pc"; sed -n '/^market_title()/,/^}/p; /^render_plan()/,/^}/p; /^agents_of()/,/^}/p' "$pc" ) > "$t/fn0.sh"
+( sed -n "/^ITEMS_AWK='/,/^}'\$/p; /^BIDS_AWK='/,/^}'\$/p" "$pc"; sed -n '/^market_title()/,/^}/p; /^render_plan()/,/^}/p; /^agents_of()/,/^}/p' "$pc" ) > "$t/fn0.sh"
 ( NET=$t/net ST=$t/net/.cmux; . "$t/fn0.sh"; render_plan )
 head -1 "$pm" | grep -q '^## Done$' || fail "a finished market's goal headed Done: $(head -3 "$pm")"
 ! grep -q 'Finished' "$pm" || fail "a finished market's plan has no Finished line"
@@ -139,21 +139,11 @@ cp "$t/status.keep" "$t/net/claude/status.txt"; ( NET=$t/net ST=$t/net/.cmux; . 
 head -1 "$pm" | grep -q '^## Market (codex leader)$' || fail "goal headed by its leader again"
 grep -q '^~~add a pow command~~$' "$pm" || fail "plan's dropped item"
 ! grep -q 'a note' "$pm" || fail "plan shows a # note"
-# Tasks retain their full text, with open work first and explicit closure semantics.
-grep -q '^## Tasks$' "$pm" || fail "tasks are visible"
-grep -q '^<summary>⏳ Task 8 — open: Audit &lt;script&gt;display&lt;/script&gt;</summary>$' "$pm" || fail "task title is escaped"
-grep -q '^Keep this multiline task specification.$' "$pm" || fail "multiline task body retained"
-grep -q '^&lt;/details&gt; is task text.$' "$pm" || fail "task body cannot close its details block"
-grep -q '^<summary>⚪ Task 1 — closed:' "$pm" || fail "closed task is not presented as completed"
-grep -q '_1 merged bid; 0 pending bids.' "$pm" || fail "task shows merged work"
+# Internal task records stay hidden; the plan still reflects their progress.
+! grep -q '^## Tasks$' "$pm" || fail "internal tasks section is visible"
+! grep -q 'Task 8 —' "$pm" || fail "internal task row is visible"
+! grep -q 'Keep this multiline task specification' "$pm" || fail "internal task body leaked"
 grep -q '^🔧 add a cube command$' "$pm" || fail "merged partial work is not a plan checkmark"
-python3 - "$pm" <<'PYTASKS' || fail "open tasks come before closed history"
-import re, sys
-text = open(sys.argv[1]).read()
-tasks = re.findall(r"<summary>[^<]* Task (\d+) — (open|closed):", text)
-assert tasks == [("8", "open"), ("7", "open"), ("6", "open"), ("4", "open"), ("2", "open"), ("5", "closed"), ("3", "closed"), ("1", "closed")], tasks
-assert text.index("## Plan:") < text.index("## Tasks") < text.index("## Bids")
-PYTASKS
 # The bids: each a details block, its icon and title in the summary
 grep -q '^## Bids$' "$pm" || fail "the bids headed Bids"
 grep -q '^<summary>🟢 Fulfills goal step 1: calc can subtract</summary>$' "$pm" || fail "a merged bid, under the leader's title: $(cat "$pm")"
@@ -161,10 +151,10 @@ grep -q '^\*\*Adds a sub case to calc.sh\*\*$' "$pm" && grep -q '^sub &amp; its 
 grep -q '^<summary>🟡 Adds mul</summary>$' "$pm" || fail "a pending bid, under its bidder's title"
 grep -q '^<summary>🔴 Breaks the existing tests</summary>$' "$pm" && grep -q '^_Rejected: it breaks &lt;test.sh&gt;_$' "$pm" || fail "a rejected bid, under the leader's title, its reason inside"
 grep -q '^<summary>⚪ old mul</summary>$' "$pm" || fail "a cleared bid, under its note"
-[ "$(grep -c '^<details>$' "$pm")" = 15 ] && [ "$(grep -c '^</details>$' "$pm")" = 15 ] || fail "a details block per task and bid"
+[ "$(grep -c '^<details>$' "$pm")" = 7 ] && [ "$(grep -c '^</details>$' "$pm")" = 7 ] || fail "a details block per bid"
 # unchanged, it isn't rewritten (the view doesn't redraw for nothing)
 touch -t 202001010000 "$pm"
-( sed -n "/^ITEMS_AWK='/,/^}'\$/p; /^TASKS_AWK='/,/^}'\$/p; /^BIDS_AWK='/,/^}'\$/p" "$pc"; sed -n '/^market_title()/,/^}/p; /^render_plan()/,/^}/p' "$pc"; sed -n '/^agents_of()/,/^}/p' "$pc" ) > "$t/fn.sh"
+( sed -n "/^ITEMS_AWK='/,/^}'\$/p; /^BIDS_AWK='/,/^}'\$/p" "$pc"; sed -n '/^market_title()/,/^}/p; /^render_plan()/,/^}/p' "$pc"; sed -n '/^agents_of()/,/^}/p' "$pc" ) > "$t/fn.sh"
 ( NET=$t/net ST=$t/net/.cmux; . "$t/fn.sh"; render_plan )
 [ -z "$(find "$pm" -newer "$t/goal.txt")" ] || fail "an unchanged plan was rewritten"
 # the node scripts: run from where up ran, each with its backend and the node arguments

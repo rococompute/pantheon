@@ -11,14 +11,13 @@
   of the roster's K agents having said so), and each repository's `.plan`
   at the market's head, every item led by its status (✅ explicitly marked done,
   🔧 work merged with the plan item still open, ⏳ being bid on,
-  🟡 not picked up yet; dropped ones struck through), then **Tasks** and the last 20
+  🟡 not picked up yet; dropped ones struck through), then the last 20
   **Bids**. A bid is a details block: in its summary its outcome (🟢 merged,
   🟡 pending, 🔴 rejected, ⚪ cleared or withdrawn) and its title, the
   leader's for a merge or a rejection (what it does for the goal, or why not),
   else its bidder's; inside, its bidder's title and note and the leader's
-  reason. Tasks are expandable blocks with their full specification and counts
-  of merged and pending bids. Open tasks come first, newest first; closed tasks
-  follow. A closed task can leave its plan item unfinished. Each term's leader
+  reason. Internal task records stay hidden; their activity is reflected in
+  the goal and plan items. Each term's leader
   is in the `watchdog` tab beside it.
 - **Right half: a pane per agent,** in a grid of two rows. An agent with a
   diplomat has two tabs there: its diplomat's session, the CLI of its
