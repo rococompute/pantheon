@@ -179,7 +179,7 @@ grep -q '^~~add a pow command~~$' "$pm" || fail "plan's dropped item"
 grep -q '^🪴 add a cube command$' "$pm" || fail "merged partial work is not a plan checkmark"
 # The bids: each a details block, its icon and title in the summary
 grep -q '^## Bids$' "$pm" || fail "the bids headed Bids"
-grep -q '^<summary>🌋 Fulfills goal step 1: calc can subtract</summary>$' "$pm" || fail "a merged bid, under the leader's title: $(cat "$pm")"
+grep -q '^<summary>📈 Fulfills goal step 1: calc can subtract</summary>$' "$pm" || fail "a merged bid, under the leader's title: $(cat "$pm")"
 grep -q '^\*\*Adds a sub case to calc.sh\*\*$' "$pm" && grep -q '^sub &amp; its test$' "$pm" || fail "a merged bid's own title and its note, escaped, inside"
 grep -q '^<summary>⛰️ Adds mul</summary>$' "$pm" || fail "a pending bid, under its bidder's title"
 grep -q '^<summary>🔴 Breaks the existing tests</summary>$' "$pm" && grep -q '^_Rejected: it breaks &lt;test.sh&gt;_$' "$pm" || fail "a rejected bid, under the leader's title, its reason inside"
