@@ -124,7 +124,7 @@ grep -q '^Keep it small.$' "$pm" || fail "goal's prose line, as it is"
 grep -q '^## Goals$' "$pm" || fail "Goals heading"
 ! grep -q '^## Plan:' "$pm" || fail "repository name in Goals heading"
 grep -q '^### 2026-11-15' "$pm" || fail "plan's day"
-[ "$(grep -c '^✅ add a sub command$' "$pm")" = 2 ] || fail "plan's done item"
+grep -q '^🌳 add a sub command$' "$pm" || fail "plan's done item"
 grep -q '^🌱 add a mul command$' "$pm" || fail "plan's item being bid on"
 grep -q '^🫘 add a div command$' "$pm" || fail "plan's item not picked up: $(cat "$pm")"
 # a finished market's goal is headed Done

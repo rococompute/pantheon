@@ -379,7 +379,7 @@ items == "goal" {
 items == "plan" {
   if (/^#/ || /^[ \t]*$/) next
   if (/^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]/) { printf "%s### %s\n\n", (days++ ? "\n" : ""), $0; next }
-  if (/^[+*] /) { printf "✅ %s\n\n", substr($0, 3); next }
+  if (/^[+*] /) { printf "🌳 %s\n\n", substr($0, 3); next }
   if (/^- /) { printf "~~%s~~\n\n", substr($0, 3); next }
   printf "%s %s\n\n", icon($0, ""), $0
 }'
@@ -464,7 +464,7 @@ render_plan() {
       plan=$(git -C "$r" show HEAD:.plan 2>/dev/null || cat "$r/.plan" 2>/dev/null) || continue
       [ -n "$plan" ] || continue
       printf '## Goals\n\n'
-      printf '_✅ marked done · 🪴 work merged · 🌱 bidding · 🫘 open._\n\n'
+      printf '_🌳 marked done · 🪴 work merged · 🌱 bidding · 🫘 open._\n\n'
       # .plan: "# " comments, a date per day, an item a line: "+ " or "* " done, "- " dropped
       printf '%s\n' "$plan" | awk -v items=plan "$ITEMS_AWK" "$sf" -
       printf '\n'
