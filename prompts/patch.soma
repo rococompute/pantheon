@@ -1,0 +1,48 @@
+(** Named patch prompt text. Keep wording changes separate from assembly logic. *)
+Import prompts.common.
+
+patch_rejection_guidance : string := prompt_text [
+  "Earlier bids on this task weren't merged, and the leader said why. What they ran into may help",
+  " you:
+"
+].
+
+patch_rejected_bid_label : string := "rejected bid ".
+
+patch_by_label : string := " by ".
+
+patch_rejection_label : string := "
+Rejected: ".
+
+patch_role_prefix : string := "bidder, writing a patch for a task in the repository ".
+
+patch_task_label : string := "task".
+
+patch_plan_context : string := prompt_text [
+  "Each repository's plan, its open items (the task is one of them; the rest are context):
+",
+  "{{PLAN}}Files from the repository:
+{{REPO}}
+"
+].
+
+patch_instructions : string := prompt_text [
+  "Leave the repository better than you found it. Take the task as far as you can in one patch: ",
+  "all the way, or a step that stands on its own and leaves nothing worse. Say in the note what ",
+  "it does and what of the task remains. Most tasks get done in steps: the leader merges any bid ",
+  "that leaves the repository better, and the task stays open for the rest. A small tidy-up in ",
+  "the code you touch, toward the goal, is welcome too; say so in the note, and leave unrelated ",
+  "work for a task of its own. Don't mark the plan item done in .plan: the leader does, when it ",
+  "judges the task finished. Don't change a test already in test/ (CI refuses the bid): put new ",
+  "tests in new files. In Soma, plain code with loose types (Any) and no theorems is a fine bid, ",
+  "and precise types and proofs make it better still; a theorem left unproved (Admitted, or an ",
+  "axiom) fails CI, so state only what you prove. Write it as edits. Each edit replaces one exact",
+  " piece of a file: copy ""old"" character for character from the file, with enough lines that it ",
+  "appears exactly once, and give ""new"" to put in its place. To write a whole file, new or not, ",
+  "give ""old"": """"; to delete one, give ""old"": """" and ""new"": """". Paths are relative to the ",
+  "repository.
+Give the bid a title: what it does, in plain words, up to 60 characters.
+Reply ",
+  "format: {""edits"": [{""path"": ""dir/name"", ""old"": ""exact text"", ""new"": ""replacement""}], ""title"": ",
+  """up to 60 characters"", ""note"": ""one line""}"
+].

@@ -1,0 +1,66 @@
+(** Named draft prompt text. Keep wording changes separate from assembly logic. *)
+Import prompts.common.
+
+draft_parallel_count_label : string := "Tasks open now: ".
+
+draft_parallel_limit_label : string := " of up to ".
+
+draft_parallel_guidance : string := prompt_text [
+  ", each being worked by its own bidders. Another task can be open beside them, and is worth it ",
+  "when it can be done at the same time: a different plan item, in either repository, whose work ",
+  "changes other files than theirs and doesn't need their result. Bids on it then don't go stale ",
+  "when theirs merge, nor theirs when its do. If no open item is like that, give null: this is ",
+  "asked again when a task closes.
+"
+].
+
+draft_role : string := "term leader, choosing the next task".
+
+draft_goal_heading : string := "Project goal, from the operator:
+".
+
+draft_plan_context : string := prompt_text [
+  "Each repository's plan: the open items of the .plan file at its root, in John Carmack's .plan ",
+  "format (one item per line; an unmarked line is open, * and + mark it done, - dropped). Its ",
+  "order is its priority, a guide rather than a rule, and an item points at the files with its ",
+  "details, so read those rather than expecting them here.
+{{PLAN}}"
+].
+
+draft_closed_task_guidance : string := prompt_text [
+  "A task closed unfinished had nothing merged on it: rather than post it again as it was, post ",
+  "what would move it forward, given why its bids weren't merged, or move on. A task closed with ",
+  "work merged on it left its item better without finishing it: when the item is still the best ",
+  "next step, post what remains of it, from where the files are now.
+"
+].
+
+draft_repository_context : string := "The repositories, and their files:
+{{REPOS}}
+".
+
+draft_task_instructions : string := prompt_text [
+  "Write the next task: the open plan item no task above already covers that you judge the best ",
+  "to work on next, in one repository. Usually that is the first; take another when it is the ",
+  "better next step: it unblocks the first, the first can't move yet or keeps stalling, or ",
+  "another moves the goal further for the work it takes. Say in the task why you took it if it ",
+  "isn't the first. Describe the whole item and where it's headed, and what having it done looks ",
+  "like, so that every bidder can tell which way leaves the repository better. Each bid is a ",
+  "step, and a step is welcome when it leaves the repository better than it found it: the item ",
+  "further along, and nothing left worse. Name what else would make it better without asking for ",
+  "it; in a gradually typed language such as Soma, that's more precise types than Any and proofs ",
+  "of what the code does. Ask for tests a bidder can write and run: a pure function's results ",
+  "checked in the repository's own language, not a timing race against a running program. Bidders",
+  " may take the item all the way in one patch or a step of it, and the task stays open across ",
+  "merges until its leader judges it done; the leader then marks the item done in .plan, so ask ",
+  "no bid to mark it. A bid can't change a test already in the repository's test/ (CI refuses ",
+  "it): ask for new tests in new files, never for a change to an existing test file. Quote the ",
+  "item at the start of the task and name .plan and the files the item points at as context (up ",
+  "to 8). If no plan item is left and the goal is met, give null. Repositories:"
+].
+
+draft_reply_format : string := prompt_text [
+  "
+Reply format: {""task"": ""what to do, and what having it done looks like"", ""repo"": ""name"", ",
+  """context"": [""path"", ...]} or {""task"": null}"
+].

@@ -302,7 +302,7 @@ Reply format: {""task"": ""what to do, and what having it done looks like"", ""r
       (append task_fence (append "Each repository's plan, its open items (the task is one of them; the rest are context):
 " (append plan_block (append "Files from the repository:
 " (append repo_block "
-Do as much of the task")))))) patch_p)) "yes",
+Leave the repository better than you found it.")))))) patch_p)) "yes",
   check "patch: no placeholder left" (no_placeholder patch_p) "yes",
   check "patch: without its context the files stay a placeholder"
     (yes (contains "Files from the repository:

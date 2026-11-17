@@ -122,10 +122,10 @@ checks : list string := [
     The complete prompts include real role templates, repository listings,
     open plan lines, edit fences and literal placeholder-looking source text. *)
 role_goldens : list (string * string) := [
-  ("leader draft", "420dd42ffa75a520b42ed172ec5689228c44092d18f9986f5d3ac4e052e06691"),
-  ("leader pick", "555e4b072668aee10af1ee0bb69cfc195825eee060d76ac999793fc145fba01f"),
-  ("bidder", "90f9d074c2d1d9d6f42b774221f30c754138d08435b776a22b7f357f9c8ba842"),
-  ("attestor", "84eb93d8933bdafc4b222f9ab5ecb0abb66ae37eedb9d0ae6fd8104d90a67171")
+  ("leader draft", "4104fbcebd8690533bf59ffa0e26a7c09c7118cef8b3ec7331a2661b5dd2a12e"),
+  ("leader pick", "99785cce31b11886eed370edd3329781a9c0fd6b1b782dff41bc1af4bec90b67"),
+  ("bidder", "05e646308c9bffe3de833653287f55663af09b4c9c57c4d0291bcdc1ddacd22b"),
+  ("attestor", "b33236d48d961637854f70f41c4d9666f7f51b4fe1674443163438327eb1d158")
 ].
 role_checks : list string := map (fun p => check_prompt (append (fst p) " prompt bytes")
   (sha256 (snd p)) (get_or "missing golden" (fst p) role_goldens)) role_prompts.

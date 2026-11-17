@@ -1,7 +1,7 @@
 (** A node: consensus, the market it orders blocks for, its agent, and a
     pool of transactions waiting for a block. [step] is everything the shell
     runs: it takes one event and gives back what to do. *)
-Import core.util runtime.nodeio core.consensus core.market core.agent app.cli.
+Import core.util runtime.nodeio core.consensus core.market core.agent app.cli prompts.context.
 (* [float] and its literals, OCaml's (Soma.OCaml) *)
 From Soma Require Import OCaml.
 From Stdlib Require Import Ascii.
@@ -745,20 +745,20 @@ llm_ask_text (backend kind id calls max : string) : string :=
     (append id (append ", call " (append calls (append " of " (append max ")"))))))))).
 
 shell_fence (token label body : string) : string :=
-  append "<<<UNTRUSTED " (append token (append " " (append label (append ">>>" (append newline
-    (append body (append newline (append "<<<END UNTRUSTED " (append token (append ">>>" newline)))))))))).
+  append context_fence_open (append token (append context_fence_space (append label (append context_fence_body (append newline
+    (append body (append newline (append context_fence_close (append token (append context_fence_body newline)))))))))).
 
 (** git ls-files' output, at most [cap] names, then how many more *)
 listing_text (files : string) (cap : nat) : string :=
   let fs := filter (fun l => negb (seq l "")) (split_lines files) in
   append (Stdlib.Strings.String.concat newline (firstn cap fs))
     (if cap <? length fs
-     then append newline (append "(and " (append (show (length fs - cap)) " more)"))
+     then append newline (append context_listing_more_start (append (show (length fs - cap)) context_listing_more_end))
      else "").
 
 repos_text_of (token : string) (listings : list (string * string)) : string :=
   Stdlib.Strings.String.concat ""
-    (map (fun p => shell_fence token (append "files in " (fst p)) (listing_text (snd p) 200)) listings).
+    (map (fun p => shell_fence token (append context_files_label (fst p)) (listing_text (snd p) 200)) listings).
 
 (** each repository's .plan at its head (None: it has none) *)
 plan_text_of (token : string) (plans : list (string * option string)) : string :=
@@ -766,14 +766,14 @@ plan_text_of (token : string) (plans : list (string * option string)) : string :
       match snd p with
       | None => []
       | Some c =>
-          [shell_fence token (append "plan of " (append (fst p) ": open items"))
+          [shell_fence token (append context_plan_label (append (fst p) context_open_items_label))
              (match plan_open c with
-              | [] => "(none: every item is done or dropped)"
+              | [] => context_plan_closed
               | items => Stdlib.Strings.String.concat newline items
               end)]
       end) plans in
   match parts with
-  | [] => append "(no repository has a .plan)" newline
+  | [] => append context_plan_absent newline
   | _ => Stdlib.Strings.String.concat "" parts
   end.
 
@@ -787,10 +787,10 @@ Fixpoint repo_read_text {A : Type} (token : string) (cap budget : nat)
   | [] => ""
   | file :: rest =>
       let (p, got) := read file in
-      let c := match got with Some t => t | None => "(no such file at the head)" end in
+      let c := match got with Some t => t | None => context_file_absent end in
       let lim := Nat.min budget cap in
-      let c := if lim <? slen c then append (substr c 0 lim) (append newline "(cut here: the file goes on)") else c in
-      append (shell_fence token (append "file " p) c)
+      let c := if lim <? slen c then append (substr c 0 lim) (append newline context_file_truncated) else c in
+      append (shell_fence token (append context_file_label p) c)
         (repo_read_text token cap (budget - slen c) read rest)
   end.
 
@@ -801,8 +801,8 @@ repo_files_text (token : string) (cap budget : nat) (files : list (string * opti
 repo_text_of (token r : string) (listing : option string) (files : list (string * option string))
     (cap budget : nat) : string :=
   match listing with
-  | None => append "(no repository " (append r (append ")" newline))
-  | Some l => append (shell_fence token (append "files in " r) (listing_text l 300))
+  | None => append context_repo_absent_start (append r (append context_repo_absent_end newline))
+  | Some l => append (shell_fence token (append context_files_label r) (listing_text l 300))
                      (repo_files_text token cap budget files)
   end.
 

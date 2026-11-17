@@ -1,0 +1,34 @@
+(** Named context prompt text. Keep wording changes separate from assembly logic. *)
+Import prompts.common.
+
+context_fence_open : string := "<<<UNTRUSTED ".
+
+context_fence_space : string := " ".
+
+context_fence_body : string := ">>>".
+
+context_fence_close : string := "<<<END UNTRUSTED ".
+
+context_listing_more_start : string := "(and ".
+
+context_listing_more_end : string := " more)".
+
+context_files_label : string := "files in ".
+
+context_plan_label : string := "plan of ".
+
+context_open_items_label : string := ": open items".
+
+context_plan_closed : string := "(none: every item is done or dropped)".
+
+context_plan_absent : string := "(no repository has a .plan)".
+
+context_file_absent : string := "(no such file at the head)".
+
+context_file_truncated : string := "(cut here: the file goes on)".
+
+context_file_label : string := "file ".
+
+context_repo_absent_start : string := "(no repository ".
+
+context_repo_absent_end : string := ")".

@@ -1,0 +1,24 @@
+(** Named attest prompt text. Keep wording changes separate from assembly logic. *)
+Import prompts.common.
+
+attest_role : string := "attestor, deciding whether a proposed merge is safe".
+
+attest_task_label : string := "task".
+
+attest_note_label : string := "note".
+
+attest_plan_mark_guidance : string := prompt_text [
+  "This is the leader's mark: it only puts ""+ "" before the plan item's line in .plan. Approve it ",
+  "only if the task is done, judging by what merged on it, and the line is the task's plan item.
+"
+].
+
+attest_instructions : string := prompt_text [
+  "The edits apply cleanly to the current head, and its CI passed if it has one. Approve if the ",
+  "repository is better off with them than without: they take the task forward, even part of the ",
+  "way, and have nothing harmful or unrelated in them. Plain code (loosely typed, without ",
+  "theorems) is fine; don't refuse it for lacking what the task only calls welcome. If you can't ",
+  "tell that they leave it better, don't approve.
+Reply format: {""approve"": true or false, ",
+  """reason"": ""one line""}"
+].

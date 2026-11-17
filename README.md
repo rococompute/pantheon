@@ -197,7 +197,8 @@ file. Build as before with `soma build main.soma`.
 |---|---|
 | `core/consensus.soma` | Tendermint, one definition per rule of the paper's Algorithm 1 |
 | `core/market.soma` | Tasks, bids, 3-of-4 merges, conflict clearing, terms and the leader draw |
-| `core/agent.soma` | Each agent's wrapper: duties, prompts, policy, the scripted backend |
+| `core/agent.soma` | Each agent's wrapper: duties, prompt assembly, policy, the scripted backend |
+| `prompts/` | Named model-prompt strings and templates, separated by role; see [the prompt guide](prompts/README.md) |
 | `runtime/node.soma` | Consensus, market and agent together: the one `step` the shell runs |
 | `core/util.soma` | Helpers, and `obj`, the loosely typed record the state machines use |
 | `app/cli.soma` | The commands, the node's setup, and the edits machinery: applying edits, a bid's tree, a checkout's changes as edits |

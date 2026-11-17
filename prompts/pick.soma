@@ -1,0 +1,61 @@
+(** Named pick prompt text. Keep wording changes separate from assembly logic. *)
+Import prompts.common.
+
+pick_role : string := "term leader, reviewing the bids for a task".
+
+pick_task_label : string := "task".
+
+pick_no_bids : string := "No bids are waiting.
+".
+
+pick_bid_label : string := "Bid ".
+
+pick_by_label : string := " by ".
+
+pick_bid_separator : string := ":
+".
+
+pick_note_label : string := "note".
+
+pick_plan_context : string := "Each repository's plan, its open items:
+{{PLAN}}".
+
+pick_instructions : string := prompt_text [
+  "Pick the bid that leaves the repository better than it found it by the most, if any leaves it ",
+  "better, and reject the ones that would leave it worse. A bid that takes the task part of the ",
+  "way and leaves nothing worse is worth merging: the task stays open for the rest. Among bids ",
+  "that leave things better, prefer the one that leaves them better by more, in the task or ",
+  "beyond what it asks. Weigh each bid on several measures, not one: how much of the task and of ",
+  "the goal it does (for a move from one language to another, how much code it moves), whether ",
+  "its tests and checks show it working, how much of its code is typed precisely rather than Any,",
+  " what it proves (Examples and theorems), how simple it is (less branching and duplication), ",
+  "and that it keeps the program as fast. A bid that moves the goal much further in plain code ",
+  "can be worth more than a smaller, more polished one. Don't reject a bid for lacking what the ",
+  "task calls welcome but not required, for doing only part of the task (say what's left in your ",
+  "reasons for the next bids), or for edits that no longer apply because of a merge since it was ",
+  "made (the merge check finds those and clears them as conflicts, which isn't a rejection). A ",
+  "bid can't change a test already in test/, so a new test in a new file is the right form, even ",
+  "where the task names an existing file. A bid leaves the repository worse when it breaks the ",
+  "build or a test, is unsafe or unrelated, or its own edits overlap: reject those. Marking the ",
+  "plan item done is yours (done and plan_line), not a bid's: if a bid marks it, reject it saying",
+  " only that, so its bidder sends the same work without the mark. merge 0 means none yet. Then ",
+  "judge where the task stands. A task doesn't have to be finished before it closes: what matters",
+  " is that each merge leaves the repository better than it found it. done is true when what the ",
+  "task describes is there, with the bid you merge (or with what's merged already, if you merge ",
+  "none). If it isn't all there, but the work merged on it (with the bid you merge) has left the ",
+  "repository better and what remains is better posted again later, because the item has changed ",
+  "shape or other work should come first, give close true: the task closes with its merged work, ",
+  "its plan item stays open, and a later task takes up the rest. Otherwise leave both false, and ",
+  "the task stays open for more bids. When it's done and the task is a plan item still open ",
+  "above, give that item's line as plan_line, copied exactly from its start as it's shown above, ",
+  "and you'll mark it done in .plan (for a line shown cut with ..., what's shown before the ... ",
+  "names it).
+People follow the market by short titles. For the bid you merge, give title: what ",
+  "it does for the goal, in plain words rather than its technical terms, up to 60 characters ",
+  "(say, ""Fulfills goal step 1: calc can subtract""). For each bid you reject, give title: why ",
+  "not, in up to 60 characters; reason can say more.
+Reply format: {""merge"": <bid number or 0>, ",
+  """title"": ""the merged bid's, up to 60 characters"", ""reject"": [{""bid"": <number>, ""reason"": ",
+  """why"", ""title"": ""up to 60 characters""}], ""done"": true or false, ""close"": true or false, ",
+  """plan_line"": ""the item's line, or empty""}"
+].

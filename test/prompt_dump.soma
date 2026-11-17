@@ -1,0 +1,8 @@
+(** Render fixed example prompts for reading or byte-for-byte comparisons.
+    No running node, credentials or live repository content is consulted. *)
+Import test.prompt_assembly.
+Require Soma.Host.
+
+main := Host.print_lines (flat_map (fun p =>
+  [append "<<<FIXTURE PROMPT " (append (fst p) ">>>"), snd p, "<<<END FIXTURE PROMPT>>>"])
+  role_prompts).
