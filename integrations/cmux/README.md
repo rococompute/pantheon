@@ -115,11 +115,17 @@ matches a session by its tab's id.
 
 | State | What the watchdog does |
 |---|---|
-| `idle`, `done`, `completed` | After two passes in this state, it pastes a message telling the agent to go back to its inbox, and does it again every five passes. |
+| `idle`, `done`, `completed` | Nudges only when the same live, unanswered inbox request persists for two idle passes, then every five passes. Empty inboxes and active background waits are left alone. |
 | `needs_input`, `blocked`, `waiting` | A person's call: an approval or a question. It sends one `cmux notify`, and nothing more. |
 | `working`, or no state (a CLI without hooks) | Leaves it alone. |
 | Node holding requests for a usage limit | Leaves it alone. |
 | The market finished (`finish=1`) | Nudges no one: no request will come. The watchdog's loop ends. |
+
+`pantheon-inbox wait` publishes a lease with its process ID and deadline,
+and removes it when the wait ends or is cancelled. The watchdog verifies both,
+so stale files cannot indefinitely hide a stopped diplomat. This also handles
+Muse background waits whose cmux lifecycle state continues to say `idle`.
+Answered, expired and incomplete requests do not count as pending work.
 
 It also says each term's leader as the term starts (`term 4: claude leads
 (seen at h218)`), from the `history` line of `status.txt`, which lists the last

@@ -6,7 +6,7 @@
 # grid a pane per agent; a diplomat's tab and inbox are wired
 # to its node's backend; the watchdog's tab, and no status tab; it
 # refuses a second up and a network whose nodes run outside it; the
-# workspace is named for the market, and no node lines go in its sidebar; the watchdog nudges a diplomat idle for two
+# workspace is named for the market, and no node lines go in its sidebar; the watchdog nudges a diplomat idle with unanswered work for two
 # passes, and leaves alone one that waits on a person (notified once) or is
 # limited; down closes the workspace.
 set -eu
@@ -176,14 +176,62 @@ if ( cd "$t" && sh "$pc" up net ) > "$t/out2" 2>&1; then fail "a second up"; fi
 grep -q "is up already" "$t/out2" || fail "a second up's refusal: $(cat "$t/out2")"
 
 
-# the watchdog: idle twice gets a nudge; a person's call gets one notice
+# Idle alone is not a stall: an empty inbox must never wake a diplomat.
 cp "$t/net/.cmux/claude/surface" "$t/watched"
 echo idle > "$t/state"; : > "$t/ledger"
+echo 99 > "$t/net/.cmux/claude/watchdog"
+for pass in 1 2 3; do sh "$pc" watchdog "$t/net" --once > /dev/null; done
+! grep -q '^paste' "$t/ledger" || fail "nudged an idle diplomat with no request"
+[ ! -e "$t/net/.cmux/claude/watchdog" ] || fail "empty inbox retained an old idle count"
+
+# Only live unanswered requests count; malformed/expired/already-answered
+# request directories can remain briefly while the backend cleans them up.
+inbox=$t/net/.cmux/claude/inbox
+request() {
+  mkdir -p "$inbox/$1"
+  echo $(( $(date +%s) + 3600 )) > "$inbox/$1/deadline"
+  echo fixture > "$inbox/$1/prompt.txt"
+}
+request 1794000000-abcd; echo 1 > "$inbox/1794000000-abcd/deadline"
+request 1794000001-abcd; : > "$inbox/1794000001-abcd/reply.txt"
+request 1794000002-abcd; : > "$inbox/1794000002-abcd/done"
+request 1794000003-abcd; : > "$inbox/1794000003-abcd/expired"
+request 1794000004-abcd; echo invalid > "$inbox/1794000004-abcd/deadline"
+for pass in 1 2; do sh "$pc" watchdog "$t/net" --once > /dev/null; done
+! grep -q '^paste' "$t/ledger" || fail "nudged for a resolved or invalid request"
+
+request 1794000005-abcd
 sh "$pc" watchdog "$t/net" --once > /dev/null
 ! grep -q '^paste' "$t/ledger" || fail "nudged after one idle pass"
 sh "$pc" watchdog "$t/net" --once > "$t/wd"
-grep -q "^paste .*--submit You stopped working your inbox" "$t/ledger" || fail "no nudge after two idle passes"
+grep -q "^paste .*--submit Your inbox still has an unanswered request (1794000005-abcd)" "$t/ledger" || fail "no nudge for a persistent unanswered request"
 grep -q "nudged it back" "$t/wd" || fail "the nudge isn't reported"
+
+# A new request starts its own grace period, regardless of the old counter.
+: > "$inbox/1794000005-abcd/reply.txt"
+request 1794000006-abcd
+: > "$t/ledger"
+sh "$pc" watchdog "$t/net" --once > /dev/null
+! grep -q '^paste' "$t/ledger" || fail "a new request inherited the old idle count"
+sh "$pc" watchdog "$t/net" --once > /dev/null
+grep -q '^paste' "$t/ledger" || fail "the new unanswered request never got a nudge"
+
+# Muse-style background waits remain live even when cmux says idle.
+# The real wait command's lease lifecycle is covered by test/inbox-wait.sh.
+echo $(( $(date +%s) + 3600 )) > "$inbox/.waiting.$$"
+: > "$t/ledger"
+for pass in 1 2 3; do sh "$pc" watchdog "$t/net" --once > /dev/null; done
+! grep -q '^paste' "$t/ledger" || fail "nudged a live background wait"
+[ ! -e "$t/net/.cmux/claude/watchdog" ] || fail "background wait retained an idle count"
+sh "$pc" watchdog "$t/net" --check | grep -q 'idle (waiting for inbox)' || fail "--check does not explain the background wait"
+# A dead PID or expired lease cannot suppress recovery.
+rm "$inbox/.waiting.$$"
+echo $(( $(date +%s) + 3600 )) > "$inbox/.waiting.99999999"
+echo 1 > "$inbox/.waiting.$$"
+for pass in 1 2; do sh "$pc" watchdog "$t/net" --once > /dev/null; done
+grep -q '^paste' "$t/ledger" || fail "stale wait leases suppressed a needed nudge"
+rm "$inbox/.waiting.99999999" "$inbox/.waiting.$$"
+
 echo working > "$t/state"; : > "$t/ledger"; sh "$pc" watchdog "$t/net" --once > /dev/null
 ! grep -q '^paste' "$t/ledger" || fail "nudged a working session"
 echo needs_input > "$t/state"

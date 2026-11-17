@@ -47,6 +47,15 @@ open_requests() { t=$(now); ls -1 "$INBOX" 2>/dev/null | sort | while read -r d;
 case ${1:-} in
   wait)
     limit=${2:-300}; end=$(( $(now) + limit ))
+    # Backgrounded waits can look idle to a provider's cmux hooks. Publish
+    # a bounded lease so the watchdog can distinguish waiting from stopped.
+    # The PID check and deadline make a marker left by SIGKILL harmless.
+    inbox_wait_marker=$INBOX/.waiting.$$
+    printf '%s\n' "$end" > "$inbox_wait_marker"
+    trap 'rm -f "$inbox_wait_marker"' EXIT
+    trap 'exit 129' HUP
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
     while :; do
       # a finishing market that finished: its node stopped (pantheon-cmux's status loop marks it)
       [ ! -e "$INBOX/finished" ] || { echo "the market finished: every agent, as leader, found no more tasks, and the nodes stopped. There will be no more requests: stop here."; exit 0; }

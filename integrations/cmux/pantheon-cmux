@@ -525,20 +525,63 @@ market_finished() {
   return 1
 }
 
+# An unanswered request whose backend is still waiting. Claimed requests
+# count too: a diplomat can stop after taking one. Replies and expired or
+# malformed requests must never cause a wake-up.
+pending_inbox_request() {
+  ir_now=$(date +%s)
+  for ir_dir in "$ST/$1/inbox"/*; do
+    [ -f "$ir_dir/prompt.txt" ] || continue
+    [ ! -e "$ir_dir/expired" ] && [ ! -e "$ir_dir/reply.txt" ] && [ ! -e "$ir_dir/done" ] || continue
+    ir_deadline=$(cat "$ir_dir/deadline" 2>/dev/null) || continue
+    case $ir_deadline in ''|*[!0-9]*) continue ;; esac
+    if [ "$ir_deadline" -gt "$ir_now" ]; then basename "$ir_dir"; return 0; fi
+  done
+  return 1
+}
+
+# pantheon-inbox wait owns this lease only while its process is alive.
+# No provider-specific screen scraping is needed for background waits.
+inbox_waiting() {
+  iw_now=$(date +%s)
+  for iw_marker in "$ST/$1/inbox"/.waiting.*; do
+    [ -f "$iw_marker" ] || continue
+    iw_pid=${iw_marker##*.}
+    case $iw_pid in ''|*[!0-9]*) continue ;; esac
+    [ "$iw_pid" -gt 1 ] || continue
+    iw_deadline=$(cat "$iw_marker" 2>/dev/null) || continue
+    case $iw_deadline in ''|*[!0-9]*) continue ;; esac
+    if [ "$iw_deadline" -gt "$iw_now" ] && kill -0 "$iw_pid" 2>/dev/null; then return 0; fi
+  done
+  return 1
+}
+
 watch_agent() {
   a=$1 st=$ST/$a/watchdog
   [ -f "$ST/$a/surface" ] || return 0
   # the market finished: a nudge would only wake it to look for requests that won't come
   if market_finished; then
-    rm -f "$st"; [ -z "${dry:-}" ] || say "watchdog: $a finished"; return 0
+    [ -n "${dry:-}" ] || rm -f "$st" "$st.request"
+    [ -z "${dry:-}" ] || say "watchdog: $a finished"; return 0
   fi
   # its node holds requests for a usage limit: it's right to stop
   if grep -q '^LIMIT' "$NET/$a/status.txt" 2>/dev/null; then
-    rm -f "$st"; [ -z "${dry:-}" ] || say "watchdog: $a limited"; return 0
+    [ -n "${dry:-}" ] || rm -f "$st" "$st.request"
+    [ -z "${dry:-}" ] || say "watchdog: $a limited"; return 0
   fi
   state=$(session_state "$a")
   case $state in
-    idle|done|completed) idle=1 ;;
+    idle|done|completed)
+      idle=1
+      reason=""
+      if inbox_waiting "$a"; then reason="waiting for inbox"
+      elif request=$(pending_inbox_request "$a"); then :
+      else reason="no unanswered request"; fi
+      if [ -n "$reason" ]; then
+        [ -n "${dry:-}" ] || rm -f "$st" "$st.request" "$st.asked"
+        [ -z "${dry:-}" ] || say "watchdog: $a $state ($reason)"
+        return 0
+      fi ;;
     needs_input|blocked|waiting)
       # a person's call: say so once, and nudge no one
       if [ ! -f "$st.asked" ] && [ -z "${dry:-}" ]; then
@@ -549,12 +592,18 @@ watch_agent() {
     *) rm -f "$st.asked"; idle=0 ;;
   esac
   [ -z "${dry:-}" ] || { say "watchdog: $a $state"; return 0; }
-  [ "$idle" = 1 ] || { rm -f "$st"; return 0; }
+  [ "$idle" = 1 ] || { rm -f "$st" "$st.request"; return 0; }
+  # Count consecutive idle passes for the same outstanding request, not
+  # time spent legitimately waiting or an earlier request already answered.
+  if [ "$(cat "$st.request" 2>/dev/null || true)" != "$request" ]; then
+    rm -f "$st"
+    printf '%s\n' "$request" > "$st.request"
+  fi
   n=$(( $(cat "$st" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$st"
   [ "$n" -ge 2 ] && [ $(( (n - 2) % 5 )) -eq 0 ] || return 0
-  msg="You stopped working your inbox, and your node keeps sending requests that nothing answers. Keep at it for as long as this session runs: wait, answer, repeat, and don't end your turn between requests (your instructions: $ST/$a/desk/instructions.md). If your provider says you've hit a usage limit, report it with limited as they say, then stop. Start now."
+  msg="Your inbox still has an unanswered request ($request). Check it and continue the wait, answer, repeat loop (your instructions: $ST/$a/desk/instructions.md). If your provider says you've hit a usage limit, report it with limited as they say, then stop."
   cm paste --workspace "$(workspace)" --surface "$(cat "$ST/$a/surface")" --submit "$msg" >/dev/null \
-    && say "watchdog: $a's session had stopped (idle for $n checks): nudged it back to its inbox"
+    && say "watchdog: $a idle with request $request unanswered for $n checks: nudged it back to its inbox"
 }
 
 # Each term's leader, from status.txt's history line (the last 8 terms'
