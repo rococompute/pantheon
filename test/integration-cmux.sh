@@ -126,7 +126,7 @@ grep -q '^## Goals$' "$pm" || fail "Goals heading"
 grep -q '^### 2026-11-15' "$pm" || fail "plan's day"
 [ "$(grep -c '^✅ add a sub command$' "$pm")" = 2 ] || fail "plan's done item"
 [ "$(grep -c '^⏳ add a mul command$' "$pm")" = 2 ] || fail "plan's item being bid on"
-grep -q '^🟡 add a div command$' "$pm" || fail "plan's item not picked up: $(cat "$pm")"
+grep -q '^🫘 add a div command$' "$pm" || fail "plan's item not picked up: $(cat "$pm")"
 # a finished market's goal is headed Done
 cp "$t/net/claude/status.txt" "$t/status.keep"; echo 'finished: every agent, as leader, found no more tasks' >> "$t/net/claude/status.txt"
 ( sed -n "/^ITEMS_AWK='/,/^}'\$/p; /^GOAL_AWK='/,/^}'\$/p; /^BIDS_AWK='/,/^}'\$/p" "$pc"; sed -n '/^market_title()/,/^}/p; /^render_plan()/,/^}/p; /^agents_of()/,/^}/p' "$pc" ) > "$t/fn0.sh"

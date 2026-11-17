@@ -13,7 +13,7 @@
   collapsed **Details** section, and each repository's `.plan` under **Goals**
   at the market's head, every item led by its status (✅ explicitly marked done,
   🔧 work merged with the plan item still open, ⏳ being bid on,
-  🟡 not picked up yet; dropped ones struck through), then the last 20
+  🫘 not picked up yet; dropped ones struck through), then the last 20
   **Bids**. A bid is a details block: in its summary its outcome (🟢 merged,
   🟡 pending, 🔴 rejected, ⚪ cleared or withdrawn) and its title, the
   leader's for a merge or a rejection (what it does for the goal, or why not),
