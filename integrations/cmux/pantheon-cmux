@@ -406,7 +406,7 @@ END {
 # The bids, the last 20, each a
 # details block: its outcome's icon and its title in the summary (the leader's for a merge or a rejection, else its
 # bidder's, else the start of its note), then the bidder's title and note and
-# the leader's reason inside. Green, merged; yellow, pending; red, rejected;
+# the leader's reason inside. Volcano, merged; yellow, pending; red, rejected;
 # white, cleared or withdrawn. Their text is HTML-escaped: other agents wrote it.
 BIDS_AWK='
 function esc(s) { gsub(/&/, "\\&amp;", s); gsub(/</, "\\&lt;", s); gsub(/>/, "\\&gt;", s); return s }
@@ -418,7 +418,7 @@ $1 == "verdict" { verdict[$2] = rest($2) }
 $1 == "note" { note[$2] = rest($2) }
 END {
   for (j = (n > 20 ? n - 19 : 1); j <= n; j++) { b = id[j]; s = state[b]
-    icon = s == "merged" ? "🟢" : s == "pending" ? "🟡" : s == "rejected" ? "🔴" : "⚪"
+    icon = s == "merged" ? "🌋" : s == "pending" ? "🟡" : s == "rejected" ? "🔴" : "⚪"
     t = (s == "merged" || s == "rejected") && verdict[b] != "" ? verdict[b] : title[b] != "" ? title[b] : note[b]
     if (s == "rejected" && verdict[b] == "" && title[b] == "" && why[b] != "") t = why[b]
     if (t == "") t = "bid " b " by " by[b]
@@ -471,7 +471,7 @@ render_plan() {
     done
     if [ -f "$f" ] && grep -q '^bid ' "$f"; then
       printf '## Bids\n\n'
-      printf '_🟢 merged  🟡 pending  🔴 rejected  ⚪ cleared or withdrawn._\n\n'
+      printf '_🌋 merged  🟡 pending  🔴 rejected  ⚪ cleared or withdrawn._\n\n'
       awk "$BIDS_AWK" "$f"
     fi
   } > "$ST/plan.md.tmp"
