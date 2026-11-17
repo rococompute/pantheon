@@ -463,7 +463,7 @@ render_plan() {
       # at the node's head (its checkout follows it), else as the file is
       plan=$(git -C "$r" show HEAD:.plan 2>/dev/null || cat "$r/.plan" 2>/dev/null) || continue
       [ -n "$plan" ] || continue
-      printf '## Plan: %s\n\n' "$(basename "$r")"
+      printf '## Goals\n\n'
       printf '_✅ marked done · 🔧 work merged · ⏳ bidding · 🟡 open._\n\n'
       # .plan: "# " comments, a date per day, an item a line: "+ " or "* " done, "- " dropped
       printf '%s\n' "$plan" | awk -v items=plan "$ITEMS_AWK" "$sf" -

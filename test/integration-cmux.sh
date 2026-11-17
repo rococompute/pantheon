@@ -121,7 +121,8 @@ grep -q '^✅ Add an `abs` command, with a new test file tests/test_abs.sh.$' "$
 grep -q '^⏳ Add a `sqrt` command.$' "$pm" || fail "a numbered item a task names by its step at its start"
 grep -q '^✅ Add a `cube` command.$' "$pm" || fail "an item done once a bid for it merged, its task still open"
 grep -q '^Keep it small.$' "$pm" || fail "goal's prose line, as it is"
-grep -q '^## Plan: calc' "$pm" || fail "plan's repository"
+grep -q '^## Goals$' "$pm" || fail "Goals heading"
+! grep -q '^## Plan:' "$pm" || fail "repository name in Goals heading"
 grep -q '^### 2026-11-15' "$pm" || fail "plan's day"
 [ "$(grep -c '^✅ add a sub command$' "$pm")" = 2 ] || fail "plan's done item"
 [ "$(grep -c '^⏳ add a mul command$' "$pm")" = 2 ] || fail "plan's item being bid on"
@@ -136,7 +137,7 @@ head -1 "$pm" | grep -q '^## Done$' || fail "a finished market's goal headed Don
 python3 - "$pm" <<'PYGOAL' || fail "goal summary and details"
 import sys
 text = open(sys.argv[1]).read()
-goal = text[:text.index("## Plan:")]
+goal = text[:text.index("## Goals")]
 summary, details = goal.split("<details>", 1)
 assert "✅ add a sub command" in summary
 assert "add a mul command" not in summary
@@ -150,7 +151,7 @@ printf '\nBuild a compact project.\nA wrapped summary line.\n\nDetailed rules.\n
 ( NET=$t/net ST=$t/net/.cmux; . "$t/fn0.sh"; render_plan )
 python3 - "$pm" <<'PYGOAL' || fail "prose summary"
 import sys
-text = open(sys.argv[1]).read().split("## Plan:", 1)[0]
+text = open(sys.argv[1]).read().split("## Goals", 1)[0]
 summary, details = text.split("<details>", 1)
 assert "Build a compact project.\nA wrapped summary line." in summary
 assert "Detailed rules." in details and "More rules." in details
@@ -159,7 +160,7 @@ printf 'Only the summary.\n\n' > "$t/goal.txt"
 ( NET=$t/net ST=$t/net/.cmux; . "$t/fn0.sh"; render_plan )
 python3 - "$pm" <<'PYGOAL' || fail "short goal has no empty details"
 import sys
-text = open(sys.argv[1]).read().split("## Plan:", 1)[0]
+text = open(sys.argv[1]).read().split("## Goals", 1)[0]
 assert "Only the summary." in text and "<details>" not in text
 PYGOAL
 cp "$t/goal.keep" "$t/goal.txt"

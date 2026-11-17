@@ -10,7 +10,7 @@
   once a finishing market finished; in a finishing market whose leaders have
   begun to say there are no more tasks, **Market (X leader, N/K to done)**, N
   of the roster's K agents having said so), with the remaining goal text in a
-  collapsed **Details** section, and each repository's `.plan`
+  collapsed **Details** section, and each repository's `.plan` under **Goals**
   at the market's head, every item led by its status (✅ explicitly marked done,
   🔧 work merged with the plan item still open, ⏳ being bid on,
   🟡 not picked up yet; dropped ones struck through), then the last 20
