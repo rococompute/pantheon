@@ -39,24 +39,69 @@ draft_repository_context : string := "The repositories, and their files:
 {{REPOS}}
 ".
 
+(** Separate the direction of a plan item from the acceptance gate for a bid. *)
+draft_choose_item : string := prompt_text [
+  "Write the next task for the best open plan item not already covered by an open task, in one ",
+  "repository. Usually choose the first item; choose another when it unblocks it, it is stalled, ",
+  "or another advances the goal more for the work. Explain a different choice. "
+].
+
+draft_direction : string := prompt_text [
+  "Quote the plan item at the start. Distinguish Direction (the eventual whole item), Useful next",
+  " step (one concrete, independently useful change from the current head), Required for this ",
+  "step (its acceptance checks), and Remaining work (future steps). Keep the task concise; refer ",
+  "to existing instructions rather than repeating them. "
+].
+
+draft_incremental_acceptance : string := prompt_text [
+  "Make partial progress an explicit acceptance rule, not just a welcome suggestion: merge a bid ",
+  "that implements a correct, useful subset and leaves nothing worse. Do not require the whole ",
+  "plan item, all future integrations, or all eventual tests in every bid. The task and plan item",
+  " stay open for remaining work; completing one step is not permission to mark the whole item ",
+  "done. "
+].
+
+draft_required_safety : string := prompt_text [
+  "Partial scope does not excuse broken or unsafe implemented behavior, failing checks, or ",
+  "claiming an unimplemented feature works. A tested foundation with later functionality ",
+  "explicitly disabled can stand on its own. "
+].
+
+draft_optional_quality : string := prompt_text [
+  "Label optional improvements as optional, not rejection criteria: for Soma, more precise types ",
+  "than Any and proofs can improve a bid without being required unless the operator's policy says",
+  " otherwise. "
+].
+
+draft_test_guidance : string := prompt_text [
+  "Require tests for what the step implements and its regressions, not for features listed under ",
+  "Remaining work. Prefer pure expectations for pure behavior and bounded integration checks for ",
+  "actual I/O. A bid cannot change existing test/ files: require new tests in new files. "
+].
+
+draft_constraints : string := prompt_text [
+  "Respect operator and repository policy. Avoid blanket file bans invented just to separate ",
+  "parallel work; protect paths only for a real policy or conflict. If a required path is ",
+  "protected, identify the blocker rather than asking for an impossible deliverable. Repeated ",
+  "failures call for a smaller next step or a concrete blocker, not the same whole-item ",
+  "specification. "
+].
+
+draft_context_and_completion : string := prompt_text [
+  "The leader marks .plan done only when the whole item is implemented. Name .plan and the ",
+  "relevant existing files as context (up to 8). If no plan item remains and the goal is met, ",
+  "give null. Repositories:"
+].
+
 draft_task_instructions : string := prompt_text [
-  "Write the next task: the open plan item no task above already covers that you judge the best ",
-  "to work on next, in one repository. Usually that is the first; take another when it is the ",
-  "better next step: it unblocks the first, the first can't move yet or keeps stalling, or ",
-  "another moves the goal further for the work it takes. Say in the task why you took it if it ",
-  "isn't the first. Describe the whole item and where it's headed, and what having it done looks ",
-  "like, so that every bidder can tell which way leaves the repository better. Each bid is a ",
-  "step, and a step is welcome when it leaves the repository better than it found it: the item ",
-  "further along, and nothing left worse. Name what else would make it better without asking for ",
-  "it; in a gradually typed language such as Soma, that's more precise types than Any and proofs ",
-  "of what the code does. Ask for tests a bidder can write and run: a pure function's results ",
-  "checked in the repository's own language, not a timing race against a running program. Bidders",
-  " may take the item all the way in one patch or a step of it, and the task stays open across ",
-  "merges until its leader judges it done; the leader then marks the item done in .plan, so ask ",
-  "no bid to mark it. A bid can't change a test already in the repository's test/ (CI refuses ",
-  "it): ask for new tests in new files, never for a change to an existing test file. Quote the ",
-  "item at the start of the task and name .plan and the files the item points at as context (up ",
-  "to 8). If no plan item is left and the goal is met, give null. Repositories:"
+  draft_choose_item,
+  draft_direction,
+  draft_incremental_acceptance,
+  draft_required_safety,
+  draft_optional_quality,
+  draft_test_guidance,
+  draft_constraints,
+  draft_context_and_completion
 ].
 
 draft_reply_format : string := prompt_text [

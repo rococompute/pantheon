@@ -40,3 +40,17 @@ The dump uses fixed fixture data, not a live network or credentials. Full role
 fingerprints guard wording and assembly together. The initial extraction was also
 compared against complete pre-refactor dumps, byte for byte. The old fingerprints
 were already stale before extraction and were refreshed from that captured text.
+
+## Task-writing contract
+
+`draft.soma` names task selection, direction, incremental acceptance, required
+safety, optional quality, tests, constraints and completion separately. A task
+must distinguish its full plan-item direction from an independently useful next
+step and that step's acceptance checks. Future integration belongs under remaining
+work, not an all-or-nothing rejection gate for every bid. A useful subset still
+has to be correct and safe within what it implements and pass its applicable
+checks; absent future functionality must remain honestly unavailable.
+
+The task and plan item can remain open across useful merges. Finishing a small
+step does not mark the whole plan item done. Operator/repository restrictions
+still apply, and optional improvements must not silently become requirements.

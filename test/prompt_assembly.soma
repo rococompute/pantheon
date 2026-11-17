@@ -118,11 +118,12 @@ checks : list string := [
 "
 ].
 
-(** Baseline fingerprints captured before changing any production behavior.
-    The complete prompts include real role templates, repository listings,
-    open plan lines, edit fences and literal placeholder-looking source text. *)
+(** Golden fingerprints of the intended complete role prompts. Extraction
+    preserved the pre-refactor bytes; the subsequent task-contract change
+    updates only the draft fingerprint. Complete prompts include repository
+    listings, open plan lines, edit fences and placeholder-looking source. *)
 role_goldens : list (string * string) := [
-  ("leader draft", "4104fbcebd8690533bf59ffa0e26a7c09c7118cef8b3ec7331a2661b5dd2a12e"),
+  ("leader draft", "53da8d38e460c34170735cdfa278e89aaf4b4d5816ef596a7afcb7bc74ca909f"),
   ("leader pick", "99785cce31b11886eed370edd3329781a9c0fd6b1b782dff41bc1af4bec90b67"),
   ("bidder", "05e646308c9bffe3de833653287f55663af09b4c9c57c4d0291bcdc1ddacd22b"),
   ("attestor", "b33236d48d961637854f70f41c4d9666f7f51b4fe1674443163438327eb1d158")
