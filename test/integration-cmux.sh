@@ -124,9 +124,9 @@ grep -q '^Keep it small.$' "$pm" || fail "goal's prose line, as it is"
 grep -q '^## Goals$' "$pm" || fail "Goals heading"
 ! grep -q '^## Plan:' "$pm" || fail "repository name in Goals heading"
 grep -q '^### 2026-11-15' "$pm" || fail "plan's day"
-grep -q '^🌳 add a sub command$' "$pm" || fail "plan's done item"
-grep -q '^🌱 add a mul command$' "$pm" || fail "plan's item being bid on"
-grep -q '^🫘 add a div command$' "$pm" || fail "plan's item not picked up: $(cat "$pm")"
+grep -q '^<summary>🌳 add a sub command</summary>$' "$pm" || fail "plan's done item"
+grep -q '^<summary>🌱 add a mul command</summary>$' "$pm" || fail "plan's item being bid on"
+grep -q '^<summary>🫘 add a div command</summary>$' "$pm" || fail "plan's item not picked up: $(cat "$pm")"
 # a finished market's goal is headed Done
 cp "$t/net/claude/status.txt" "$t/status.keep"; echo 'finished: every agent, as leader, found no more tasks' >> "$t/net/claude/status.txt"
 ( sed -n "/^ITEMS_AWK='/,/^}'\$/p; /^GOAL_AWK='/,/^}'\$/p; /^BIDS_AWK='/,/^}'\$/p" "$pc"; sed -n '/^market_title()/,/^}/p; /^render_plan()/,/^}/p; /^agents_of()/,/^}/p' "$pc" ) > "$t/fn0.sh"
@@ -176,7 +176,15 @@ grep -q '^~~add a pow command~~$' "$pm" || fail "plan's dropped item"
 ! grep -q '^## Tasks$' "$pm" || fail "internal tasks section is visible"
 ! grep -q 'Task 8 —' "$pm" || fail "internal task row is visible"
 ! grep -q 'Keep this multiline task specification' "$pm" || fail "internal task body leaked"
-grep -q '^🪴 add a cube command$' "$pm" || fail "merged partial work is not a plan checkmark"
+grep -q '^<summary>🪴 add a cube command</summary>$' "$pm" || fail "merged partial work is not a plan checkmark"
+python3 - "$pm" <<'PYPLAN' || fail "expandable plan items"
+import sys
+text = open(sys.argv[1]).read().split("## Goals", 1)[1].split("## Contributions", 1)[0]
+for title in ("add a sub command", "add a mul command", "add a div command", "add a cube command"):
+    assert "\n\n" + title + "\n\n</details>" in text, text
+assert "<summary><s>add a pow command</s></summary>" in text
+assert text.count("<details>") == 5 and text.count("</details>") == 5
+PYPLAN
 # The bids: each a details block, its icon and title in the summary
 grep -q '^## Contributions$' "$pm" || fail "the bids headed Contributions"
 grep -q '^<summary>📈 Fulfills goal step 1: calc can subtract</summary>$' "$pm" || fail "a merged bid, under the leader's title: $(cat "$pm")"
@@ -184,7 +192,7 @@ grep -q '^\*\*Adds a sub case to calc.sh\*\*$' "$pm" && grep -q '^sub &amp; its 
 grep -q '^<summary>🎫 Adds mul</summary>$' "$pm" || fail "a pending bid, under its bidder's title"
 grep -q '^<summary>📉 Breaks the existing tests</summary>$' "$pm" && grep -q '^_Rejected: it breaks &lt;test.sh&gt;_$' "$pm" || fail "a rejected bid, under the leader's title, its reason inside"
 grep -q '^<summary>🪦 old mul</summary>$' "$pm" || fail "a cleared bid, under its note"
-[ "$(grep -c '^<details>$' "$pm")" = 8 ] && [ "$(grep -c '^</details>$' "$pm")" = 8 ] || fail "a details block for the goal and each bid"
+[ "$(grep -c '^<details>$' "$pm")" = 13 ] && [ "$(grep -c '^</details>$' "$pm")" = 13 ] || fail "a details block for the market instructions, each plan item and each bid"
 # unchanged, it isn't rewritten (the view doesn't redraw for nothing)
 touch -t 202001010000 "$pm"
 ( sed -n "/^ITEMS_AWK='/,/^}'\$/p; /^GOAL_AWK='/,/^}'\$/p; /^BIDS_AWK='/,/^}'\$/p" "$pc"; sed -n '/^market_title()/,/^}/p; /^render_plan()/,/^}/p' "$pc"; sed -n '/^agents_of()/,/^}/p' "$pc" ) > "$t/fn.sh"

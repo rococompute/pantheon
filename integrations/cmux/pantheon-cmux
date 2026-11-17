@@ -338,10 +338,19 @@ for x in json.load(sys.stdin)["workspaces"]:
 # task covers an item when its spec holds the item's words, nearly all of them
 # (a leader quotes an item, not always word for word: without its backticks,
 # with "to calc.sh" put in), or else, for a numbered goal line, when the spec
-# starts with "step N" or "goal step N". Items lead with their icon, one
-# to a paragraph, in place of a list's numbers or dots. ITEMS=goal: the goal
-# file's list lines, its other lines as they are; ITEMS=plan: a .plan.
+# starts with "step N" or "goal step N". ITEMS=goal: the goal file's list
+# lines lead with their icon, its other lines as they are; ITEMS=plan: each
+# .plan item folds its full text under a short summary with its status.
 ITEMS_AWK='
+function esc(s) { gsub(/&/, "\\&amp;", s); gsub(/</, "\\&lt;", s); gsub(/>/, "\\&gt;", s); return s }
+function item(text, mark, dropped,   title) {
+  title = text
+  if (length(title) > 60) title = substr(title, 1, 59) "…"
+  title = esc(title)
+  if (dropped) title = "<s>" title "</s>"
+  else title = mark " " title
+  printf "<details>\n<summary>%s</summary>\n\n%s%s%s\n\n</details>\n\n", title, (dropped ? "~~" : ""), esc(text), (dropped ? "~~" : "")
+}
 function norm(s) { s = tolower(s); gsub(/[^a-z0-9]/, "", s); return s }
 # the item in the spec: all of it, letters and digits only, or 90% of its
 # words of three letters or more
@@ -379,9 +388,9 @@ items == "goal" {
 items == "plan" {
   if (/^#/ || /^[ \t]*$/) next
   if (/^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]/) { printf "%s### %s\n\n", (days++ ? "\n" : ""), $0; next }
-  if (/^[+*] /) { printf "🌳 %s\n\n", substr($0, 3); next }
-  if (/^- /) { printf "~~%s~~\n\n", substr($0, 3); next }
-  printf "%s %s\n\n", icon($0, ""), $0
+  if (/^[+*] /) { item(substr($0, 3), "🌳", 0); next }
+  if (/^- /) { item(substr($0, 3), "", 1); next }
+  item($0, icon($0, ""), 0)
 }'
 
 # Keep the opening goal paragraph visible; fold its remaining instructions.
