@@ -183,7 +183,7 @@ grep -q '^<summary>📈 Fulfills goal step 1: calc can subtract</summary>$' "$pm
 grep -q '^\*\*Adds a sub case to calc.sh\*\*$' "$pm" && grep -q '^sub &amp; its test$' "$pm" || fail "a merged bid's own title and its note, escaped, inside"
 grep -q '^<summary>⛰️ Adds mul</summary>$' "$pm" || fail "a pending bid, under its bidder's title"
 grep -q '^<summary>📉 Breaks the existing tests</summary>$' "$pm" && grep -q '^_Rejected: it breaks &lt;test.sh&gt;_$' "$pm" || fail "a rejected bid, under the leader's title, its reason inside"
-grep -q '^<summary>🏔️ old mul</summary>$' "$pm" || fail "a cleared bid, under its note"
+grep -q '^<summary>🪦 old mul</summary>$' "$pm" || fail "a cleared bid, under its note"
 [ "$(grep -c '^<details>$' "$pm")" = 8 ] && [ "$(grep -c '^</details>$' "$pm")" = 8 ] || fail "a details block for the goal and each bid"
 # unchanged, it isn't rewritten (the view doesn't redraw for nothing)
 touch -t 202001010000 "$pm"
