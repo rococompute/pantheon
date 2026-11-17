@@ -387,6 +387,22 @@ open_line (l : string) : bool :=
 plan_open (text : string) : list string :=
   firstn 60 (map truncate_line (filter open_line (map trim (split_lines text)))).
 
+(** Before starting a new chain, catch a Markdown task list mistaken for
+    Carmack's .plan format. Never silently reopen genuinely dropped work.
+    Completed history and plans without items are valid. *)
+plan_preflight (allow_closed : bool) (text : string) : option string :=
+  let lines := map trim (split_lines text) in
+  let checkbox l :=
+    let body := if marked_line l then trim (substr l 2 (slen l - 2)) else l in
+    starts "[ ]" body || starts "[x]" body || starts "[X]" body in
+  let items := filter (fun l => open_line l || marked_line l) lines in
+  if existsb checkbox items then
+    Some "Markdown checkboxes are not .plan marks. Write open items without a prefix; use '+ ' for completed items and '- ' for deliberately dropped items."
+  else if negb allow_closed && negb (length items =? 0)
+          && forallb (fun l => marked_line l && starts "-" l) items then
+    Some "every item is dropped: '- ' means dropped work, not a Markdown bullet. Write open items without a prefix, or use --allow-closed-plan if every item is intentionally dropped."
+  else None.
+
 (** "…", U+2026, in UTF-8: a model may write it for "..." *)
 ellipsis : string := SCons (ascii_of_nat 226) (SCons (ascii_of_nat 128) (SCons (ascii_of_nat 166) SNil)).
 

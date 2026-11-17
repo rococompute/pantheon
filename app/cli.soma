@@ -435,8 +435,22 @@ kv_arg (flag kv : string) : (string * string) + string :=
   | None => inr (cat [flag, " wants name=value, got ", kv])
   end.
 
+(** Read the governed snapshot, not an operator's uncommitted working file.
+    A repository without a .plan may still be driven by an explicit goal. *)
+check_repo_plan {R : Type} `{Stops R} (repo revision : string) (allow_closed : bool)
+  (k : unit -> nprog R) : nprog R :=
+  let item := append revision ":.plan" in
+  cli_ask (IoGit repo ["cat-file", "-e", item]) (fun present =>
+  if negb (fst present) then k tt else
+  cli_ask (IoGit repo ["show", item]) (fun content =>
+  if negb (fst content) then cli_fail (cat ["cannot read ", repo, " at ", item]) else
+  match plan_preflight allow_closed (ans_one content) with
+  | Some why => cli_fail (cat [repo, " at ", item, ": ", why])
+  | None => k tt
+  end)).
+
 Record init_args := { ia_dir : string; ia_repos : list (string * string); ia_port : nat;
-                      ia_params : list (string * string); ia_block_ms : nat }.
+                      ia_params : list (string * string); ia_block_ms : nat; ia_allow_closed : bool }.
 
 number_arg (flag v : string) : nat + string :=
   match num_opt v with Some n => inl n | None => inr (cat [flag, " wants a number, got ", v]) end.
@@ -446,31 +460,34 @@ Fixpoint init_parse (args : list string) (a : init_args) : init_args + string :=
   | "--repo" :: kv :: r =>
       match kv_arg "--repo" kv with
       | inl p => init_parse r {| ia_dir := ia_dir a; ia_repos := ia_repos a ++ [p]; ia_port := ia_port a;
-                                ia_params := ia_params a; ia_block_ms := ia_block_ms a |}
+                                ia_params := ia_params a; ia_block_ms := ia_block_ms a; ia_allow_closed := ia_allow_closed a |}
       | inr e => inr e
       end
   | "--base-port" :: p :: r =>
       match number_arg "--base-port" p with
       | inl n => init_parse r {| ia_dir := ia_dir a; ia_repos := ia_repos a; ia_port := n;
-                                ia_params := ia_params a; ia_block_ms := ia_block_ms a |}
+                                ia_params := ia_params a; ia_block_ms := ia_block_ms a; ia_allow_closed := ia_allow_closed a |}
       | inr e => inr e
       end
   | "--block-ms" :: p :: r =>
       match number_arg "--block-ms" p with
       | inl n => init_parse r {| ia_dir := ia_dir a; ia_repos := ia_repos a; ia_port := ia_port a;
-                                ia_params := ia_params a; ia_block_ms := n |}
+                                ia_params := ia_params a; ia_block_ms := n; ia_allow_closed := ia_allow_closed a |}
       | inr e => inr e
       end
   | "--param" :: kv :: r =>
       match kv_arg "--param" kv with
       | inl p => init_parse r {| ia_dir := ia_dir a; ia_repos := ia_repos a; ia_port := ia_port a;
-                                ia_params := ia_params a ++ [p]; ia_block_ms := ia_block_ms a |}
+                                ia_params := ia_params a ++ [p]; ia_block_ms := ia_block_ms a; ia_allow_closed := ia_allow_closed a |}
       | inr e => inr e
       end
+  | "--allow-closed-plan" :: r =>
+      init_parse r {| ia_dir := ia_dir a; ia_repos := ia_repos a; ia_port := ia_port a;
+                      ia_params := ia_params a; ia_block_ms := ia_block_ms a; ia_allow_closed := true |}
   | d :: r =>
       if seq (ia_dir a) "" then
         init_parse r {| ia_dir := d; ia_repos := ia_repos a; ia_port := ia_port a;
-                        ia_params := ia_params a; ia_block_ms := ia_block_ms a |}
+                        ia_params := ia_params a; ia_block_ms := ia_block_ms a; ia_allow_closed := ia_allow_closed a |}
       else inr (append "unknown init argument " d)
   | [] => inl a
   end.
@@ -479,17 +496,16 @@ Fixpoint indexed {A : Type} (i : nat) (l : list A) : list (nat * A) :=
   match l with [] => [] | x :: r => (i, x) :: indexed (S i) r end.
 
 cmd_init (args : list string) : nprog unit :=
-  match init_parse args {| ia_dir := ""; ia_repos := []; ia_port := 26700; ia_params := []; ia_block_ms := 500 |} with
+  match init_parse args {| ia_dir := ""; ia_repos := []; ia_port := 26700; ia_params := []; ia_block_ms := 500; ia_allow_closed := false |} with
   | inr e => cli_fail e
   | inl a =>
   let dir := ia_dir a in
   if seq dir "" || match ia_repos a with [] => true | _ => false end then
-    cli_fail "usage: pantheon init DIR --repo NAME=GIT-CHECKOUT [--repo ...] [--base-port P] [--block-ms N] [--param name=value]..."
+    cli_fail "usage: pantheon init DIR --repo NAME=GIT-CHECKOUT [--repo ...] [--base-port P] [--block-ms N] [--param name=value]... [--allow-closed-plan]"
   else
   let net := path dir "network" in
   cli_exists net (fun has =>
   if has then cli_fail (cat [dir, " already holds a network, keys included. To discard it, stop its nodes and remove the directory; to keep it, pick another DIR"]) else
-  cli_do (IoMakeDirs (path net "parts")) (fun _ =>
   cli_ask IoCwd (fun cwd =>
   let abs p := if is_relative p then path (ans_one cwd) p else p in
   cli_map (ia_repos a) (fun np k =>
@@ -498,7 +514,9 @@ cmd_init (args : list string) : nprog unit :=
     cli_ask (IoGit p ["rev-parse", "HEAD"]) (fun commit =>
     let commit := trim (ans_one commit) in
     if seq commit "" then cli_fail (append p " is not a git checkout with a commit")
-    else k (JObj [("name", JStr n), ("url", JStr p), ("commit", JStr commit)]))) (fun repos =>
+    else check_repo_plan p commit (ia_allow_closed a) (fun _ =>
+      k (JObj [("name", JStr n), ("url", JStr p), ("commit", JStr commit)])))) (fun repos =>
+  cli_do (IoMakeDirs (path net "parts")) (fun _ =>
   cli_do (IoSave (path net "network.json") "false"
             (json_file (JObj [("block_ms", JNum (show (ia_block_ms a))),
                               ("params", JObj (List.map (fun kv => (fst kv, JStr (snd kv))) (ia_params a))),
@@ -595,6 +613,13 @@ lines_text (l : list string) : string := cat (List.map (fun x => append x newlin
 cmd_plan (file : string) : nprog unit :=
   cli_read_text file (cat ["no ", file, " here: a repository's plan is .plan at its root (docs/PLAN.md)"]) (fun t =>
   cli_do (IoPrint (lines_text (plan_open t))) (fun _ => NDone tt)).
+
+cmd_plan_check (file : string) (allow_closed : bool) : nprog unit :=
+  cli_read_text file (append "cannot read " file) (fun t =>
+  match plan_preflight allow_closed t with
+  | Some why => cli_fail (cat [file, ": ", why])
+  | None => cli_do (IoPrint (cat [file, ": plan preflight passed", newline])) (fun _ => NDone tt)
+  end).
 
 (** ---- edits, apply-edits, check: the edits machinery ----
     An edit is a path, the old text and the new: it replaces the one place
@@ -1049,7 +1074,7 @@ cmd_check (repo head file out : string) : nprog unit :=
 usage : string := "pantheon: a private BFT labor market where LLM agents take turns as term leader.
 
   One machine:
-  pantheon init DIR --repo NAME=GIT-CHECKOUT [--repo ...] [--base-port P] [--block-ms N] [--param name=value]...
+  pantheon init DIR --repo NAME=GIT-CHECKOUT [--repo ...] [--base-port P] [--block-ms N] [--param name=value]... [--allow-closed-plan]
   pantheon up DIR [--backends claude=claude,codex=codex,grok=grok,muse=scripted] [node flags]
 
   One machine per agent (see docs/NETWORK.md):
@@ -1057,12 +1082,13 @@ usage : string := "pantheon: a private BFT labor market where LLM agents take tu
   pantheon genesis HOME NETWORK                         once all 4 parts are in
 
   pantheon node HOME [--backend B] [--behavior honest|deny|silent] [--goal FILE] [--deny PATH] [--listen HOST]
-                     [--ci CMD] [--ci-repo NAME CMD] [--ci-image IMAGE | --ci-sandbox PROGRAM] [--ci-memory 8g] [--bid-window N] [--perspective TEXT] [--max-llm-calls N]
+                     [--ci CMD] [--ci-repo NAME CMD] [--ci-image IMAGE | --ci-sandbox PROGRAM] [--ci-memory 8g] [--bid-window N] [--perspective TEXT] [--max-llm-calls N] [--allow-closed-plan]
   pantheon status HOME
   pantheon tx HOME post REPO ""spec"" [CONTEXT-PATH...]   (or any market transaction's fields)
   pantheon edits CHECKOUT [--title TITLE] [NOTE]
                                      a checkout's changes as a patch reply (for models with tools)
   pantheon plan [FILE]              a .plan's open items (default ./.plan; see docs/PLAN.md)
+  pantheon plan --check [--allow-closed-plan] [FILE]   catch Markdown task lists mistaken for .plan marks
   pantheon apply-edits DIR EDITS.json
   pantheon image HOME FILE [--service HOST:PORT] [node flags]   the node as a MirageOS unikernel's source (soma build FILE)
   pantheon service HOME HOST:PORT [node flags]   git, model calls and CI for HOME's unikernel, at HOST:PORT
@@ -1091,6 +1117,7 @@ Fixpoint node_flags (args : list string) (set : list (string * string)) (events 
   : (list (string * string) * list (list string) * list (string * string) * list string) + string :=
   match args with
   | "--backend" :: b :: r => node_flags r (put "backend" b set) events ci_repo no_check
+  | "--allow-closed-plan" :: r => node_flags r (put "allow_closed_plan" "true" set) events ci_repo no_check
   | "--behavior" :: b :: r => node_flags r set (events ++ [["agent", "behavior", b]]) ci_repo no_check
   | "--goal" :: f :: r => node_flags r set (events ++ [["goal_file", f]]) ci_repo no_check
   | "--deny" :: p :: r => node_flags r set (events ++ [["agent", "deny", p]]) ci_repo no_check
@@ -1222,6 +1249,17 @@ node_setup (home : string) (flags : list string) : nprog (option (list (list str
   | None => cli_fail "genesis.json: a repository has a name, url, commit and tree"
   | Some repos =>
   cli_map repos (node_repo home) (fun states =>
+  (* Replayed chains may legitimately have no open work left. On a fresh
+     chain, check every checkout before starting a model or entering consensus. *)
+  (* Only its size matters here; do not read a growing chain a second time. *)
+  cli_ask (IoRun "test" ["-s", path home "blocks.log"]) (fun blocks =>
+  let resumed := fst blocks in
+  let checked k := if resumed then k tt else
+    cli_each repos (fun r next => match r with
+      | n :: _ => check_repo_plan (path (path home "repos") n) "HEAD" (seq (setting "allow_closed_plan") "true") next
+      | [] => next tt
+      end) k in
+  checked (fun _ =>
   NDone (Some (
     [[home, me, secret, chain_id, byz, setting "backend", setting "listen", setting "ci", setting "ci_memory",
       setting "ci_image", setting "ci_sandbox", setting "max_calls"],
@@ -1244,7 +1282,7 @@ node_setup (home : string) (flags : list string) : nprog (option (list (list str
                           | [n, _, size, kn, ke] => [["key", n, show (num size / 8), kn, ke]]
                           | _ => [] end) agents
     ++ [["me", me], ["backend_kind_of", setting "backend"]] ++ events
-    ++ flat_map (fun s => match s with (n, Some body) => [["applied_body", n, body]] | _ => [] end) states)))
+    ++ flat_map (fun s => match s with (n, Some body) => [["applied_body", n, body]] | _ => [] end) states)))))
   end)
   end))
   end
@@ -1309,6 +1347,10 @@ cli_prog (args : list string) : nprog unit :=
   | "keygen" :: rest => cmd_keygen rest
   | ["genesis", home, net] => cmd_genesis home net
   | "edits" :: dir :: rest => cmd_edits dir rest
+  | ["plan", "--check"] => cmd_plan_check ".plan" false
+  | ["plan", "--check", "--allow-closed-plan"] => cmd_plan_check ".plan" true
+  | ["plan", "--check", "--allow-closed-plan", file] => cmd_plan_check file true
+  | ["plan", "--check", file] => cmd_plan_check file false
   | ["plan"] => cmd_plan ".plan"
   | ["plan", file] => cmd_plan file
   | ["apply-edits", dir, file] => cmd_apply_edits dir file

@@ -43,7 +43,7 @@ Proof. repeat split; computed. Qed.
 
 Example init_args_as_before :
   match init_parse ["d", "--repo", "calc=src", "--block-ms", "200", "--param", "a=b"]
-          {| ia_dir := ""; ia_repos := []; ia_port := 26700; ia_params := []; ia_block_ms := 500 |} with
+          {| ia_dir := ""; ia_repos := []; ia_port := 26700; ia_params := []; ia_block_ms := 500; ia_allow_closed := false |} with
   | inl a => ia_dir a = "d" /\ ia_repos a = [("calc", "src")] /\ ia_port a = 26700
              /\ ia_params a = [("a", "b")] /\ ia_block_ms a = 200
   | inr _ => False
@@ -51,9 +51,9 @@ Example init_args_as_before :
 Proof. cbn. repeat split; reflexivity. Qed.
 
 Example init_refuses_as_before :
-  init_parse ["d", "e"] {| ia_dir := ""; ia_repos := []; ia_port := 0; ia_params := []; ia_block_ms := 0 |}
+  init_parse ["d", "e"] {| ia_dir := ""; ia_repos := []; ia_port := 0; ia_params := []; ia_block_ms := 0; ia_allow_closed := false |}
     = inr "unknown init argument e"
-  /\ init_parse ["--base-port", "x"] {| ia_dir := ""; ia_repos := []; ia_port := 0; ia_params := []; ia_block_ms := 0 |}
+  /\ init_parse ["--base-port", "x"] {| ia_dir := ""; ia_repos := []; ia_port := 0; ia_params := []; ia_block_ms := 0; ia_allow_closed := false |}
     = inr "--base-port wants a number, got x".
 Proof. split; computed. Qed.
 
