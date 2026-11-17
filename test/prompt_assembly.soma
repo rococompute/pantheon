@@ -115,17 +115,24 @@ checks : list string := [
     (repo_files_text "T" 10 10 [("empty", Some "")]) "<<<UNTRUSTED T file empty>>>
 
 <<<END UNTRUSTED T>>>
-"
+",
+  check_prompt "task submission establishes priority in leader and bidder prompts"
+    (if forallb (fun p => contains "Only tasks submitted by the leader establish work priorities." (snd p))
+       (firstn 3 role_prompts) then "yes" else "no") "yes",
+  check_prompt "draft has no first-item preference"
+    (if negb (contains "Usually choose the first item" (snd (hd ("", "") role_prompts))) &&
+        negb (contains "order is its priority" (snd (hd ("", "") role_prompts)))
+     then "yes" else "no") "yes"
 ].
 
 (** Golden fingerprints of the intended complete role prompts. Extraction
-    preserved the pre-refactor bytes; the subsequent task-contract change
-    updates only the draft fingerprint. Complete prompts include repository
+    preserved the pre-refactor bytes; task-contract changes update the affected
+    role fingerprints. Complete prompts include repository
     listings, open plan lines, edit fences and placeholder-looking source. *)
 role_goldens : list (string * string) := [
-  ("leader draft", "53da8d38e460c34170735cdfa278e89aaf4b4d5816ef596a7afcb7bc74ca909f"),
-  ("leader pick", "99785cce31b11886eed370edd3329781a9c0fd6b1b782dff41bc1af4bec90b67"),
-  ("bidder", "05e646308c9bffe3de833653287f55663af09b4c9c57c4d0291bcdc1ddacd22b"),
+  ("leader draft", "47f1fe4be14b54a51a14e24d3b2f05ea2d42e0a874e845e03cef8686e2191669"),
+  ("leader pick", "f65e1ed1d4caa744a4061f3d4ef34f0c65ed4191266eb50288ba07bd02b57627"),
+  ("bidder", "e4d10164ea242751de895b3c8927fb0de03d635d961e5fc09e4b9d4190f00e6c"),
   ("attestor", "b33236d48d961637854f70f41c4d9666f7f51b4fe1674443163438327eb1d158")
 ].
 role_checks : list string := map (fun p => check_prompt (append (fst p) " prompt bytes")

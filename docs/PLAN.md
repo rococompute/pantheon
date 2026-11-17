@@ -5,8 +5,8 @@ format John Carmack used for his .plan files at id Software. A term leader
 drafts the next task from the plan's open items, bids make progress on it,
 whole or in parts, and the leader marks the item done when it judges the
 task finished. So the plan changes the way the code does, through
-the market, and anyone who opens the repository's default branch sees what's
-next and what's done.
+the market, and anyone who opens the repository's default branch sees the
+goals and what's done.
 
 ## The format
 
@@ -38,13 +38,12 @@ to the node's launch flags (`pantheon-cmux up NET -- --allow-closed-plan`).
 Nodes replaying an existing nonempty block log skip this launch preflight:
 a running market can legitimately finish its plan.
 
-The order is the priority, a guide for the leader rather than a rule: the
-first open item is usually the next one, and a leader takes another when it
-judges it the better next step (it unblocks the first, the first can't be done
-yet or keeps failing, or it moves the goal further for the work). Keep each
-item one line and make it a pointer. Say what's wrong or wanted in a few
-words, then name the files that have the details: a review finding, a
-design note, the code, the test that will judge it.
+Plan items describe goals, not a ranked backlog. Their position carries no
+priority: only tasks submitted by the leader establish work priorities. The
+leader chooses from the operator's goal, current repository state, dependencies
+and useful progress. Keep each item one line and make it a pointer. Say what's
+wrong or wanted in a few words, then name the files that have the details:
+a review finding, a design note, the code, the test that will judge it.
 
 An item no bid can land goes in a `#` section of its own, as notes, so no
 leader posts it. Pantheon's CI refuses a bid that changes a test already in
@@ -80,11 +79,11 @@ the leader reads `.plan` at the repository's head each time it drafts.
 
 ## How the market uses it
 
-- **Drafting:** the leader's prompt has each repository's open items, in
-  order, under "Each repository's plan" (`runtime/node.soma`'s `plan_text_of`,
+- **Drafting:** the leader's prompt has each repository's open items
+  under "Each repository's plan" (`runtime/node.soma`'s `plan_text_of`,
   expanded by `prompt_assemble`). The leader
   takes the open item no task already covers that it judges best to do next,
-  usually the first, and says why when it isn't. With room for another task
+  and explains its choice. With room for another task
   (`max_open_tasks`), it drafts one beside the open ones when it judges one can
   run at the same time, or gives null. Bidders see the plan too. The task quotes the item,
   names `.plan` and the item's files as context.
@@ -122,7 +121,7 @@ the leader reads `.plan` at the repository's head each time it drafts.
 - **Operator goals:** `--goal FILE` lines still work. They come first in the
   leader's prompt, as the operator's direction. A leader drafts only when the
   node has at least one goal line, so give a line such as "Work through each
-  repository's .plan, in order".
+  repository's .plan".
 
 ## Reading it
 

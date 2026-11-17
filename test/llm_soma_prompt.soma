@@ -279,6 +279,7 @@ kind_checks : list string := [
   check "draft: preamble" (yes (starts (preamble_of "term leader, choosing the next task") draft_p)) "yes",
   check "draft: plan block then the task fence"
     (yes (contains (append "so read those rather than expecting them here.
+Plan items describe goals, not a ranked backlog. Do not infer priority from an item's position in .plan. Only tasks submitted by the leader establish work priorities. Bidders work their assigned task; other plan items are context.
 " (append plan_block "<<<UNTRUSTED TOKEN task open, in calc>>>
 add the step
 <<<END UNTRUSTED TOKEN>>>
@@ -294,12 +295,14 @@ Reply format: {""task"": ""what to do, and what having it done looks like"", ""r
   check "pick: preamble, task, bid, then plan"
     (yes (starts (append (preamble_of "term leader, reviewing the bids for a task")
       (append task_fence (append "Bid 7 by grok:
-" (append bid_fences (append "Each repository's plan, its open items:
+" (append bid_fences (append "Plan items describe goals, not a ranked backlog. Do not infer priority from an item's position in .plan. Only tasks submitted by the leader establish work priorities. Bidders work their assigned task; other plan items are context.
+Each repository's plan, its open items:
 " (append plan_block "Pick the bid")))))) pick_p)) "yes",
   check "pick: no placeholder left" (no_placeholder pick_p) "yes",
   check "patch: preamble, task, plan, files"
     (yes (starts (append (preamble_of "bidder, writing a patch for a task in the repository calc")
-      (append task_fence (append "Each repository's plan, its open items (the task is one of them; the rest are context):
+      (append task_fence (append "Plan items describe goals, not a ranked backlog. Do not infer priority from an item's position in .plan. Only tasks submitted by the leader establish work priorities. Bidders work their assigned task; other plan items are context.
+Each repository's plan, its open items (the task is one of them; the rest are context):
 " (append plan_block (append "Files from the repository:
 " (append repo_block "
 Leave the repository better than you found it.")))))) patch_p)) "yes",

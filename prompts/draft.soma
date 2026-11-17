@@ -21,10 +21,11 @@ draft_goal_heading : string := "Project goal, from the operator:
 
 draft_plan_context : string := prompt_text [
   "Each repository's plan: the open items of the .plan file at its root, in John Carmack's .plan ",
-  "format (one item per line; an unmarked line is open, * and + mark it done, - dropped). Its ",
-  "order is its priority, a guide rather than a rule, and an item points at the files with its ",
-  "details, so read those rather than expecting them here.
-{{PLAN}}"
+  "format (one item per line; an unmarked line is open, * and + mark it done, - dropped). An ",
+  "item points at the files with its details, so read those rather than expecting them here.
+",
+  prompt_plan_scheduling,
+  "{{PLAN}}"
 ].
 
 draft_closed_task_guidance : string := prompt_text [
@@ -42,8 +43,8 @@ draft_repository_context : string := "The repositories, and their files:
 (** Separate the direction of a plan item from the acceptance gate for a bid. *)
 draft_choose_item : string := prompt_text [
   "Write the next task for the best open plan item not already covered by an open task, in one ",
-  "repository. Usually choose the first item; choose another when it unblocks it, it is stalled, ",
-  "or another advances the goal more for the work. Explain a different choice. "
+  "repository. Choose based on the operator's goal, the current repository state, dependencies ",
+  "and useful progress, and explain the choice. "
 ].
 
 draft_direction : string := prompt_text [

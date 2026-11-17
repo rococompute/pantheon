@@ -17,8 +17,11 @@ pick_bid_separator : string := ":
 
 pick_note_label : string := "note".
 
-pick_plan_context : string := "Each repository's plan, its open items:
-{{PLAN}}".
+pick_plan_context : string := prompt_text [
+  prompt_plan_scheduling,
+  "Each repository's plan, its open items:
+{{PLAN}}"
+].
 
 pick_instructions : string := prompt_text [
   "Pick the bid that leaves the repository better than it found it by the most, if any leaves it ",

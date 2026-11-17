@@ -10,5 +10,5 @@ if ! soma run test/prompt_assembly.soma > "$prompt_test_dir/out" 2> "$prompt_tes
 fi
 cat "$prompt_test_dir/out"
 if grep -q '^FAIL ' "$prompt_test_dir/out"; then exit 1; fi
-[ "$(grep -c '^ok ' "$prompt_test_dir/out")" -eq 20 ]
+[ "$(grep -c '^ok ' "$prompt_test_dir/out")" -eq 22 ]
 echo 'PASS pure Soma prompt assembly and role prompt bytes'

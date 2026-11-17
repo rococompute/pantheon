@@ -19,6 +19,7 @@ patch_role_prefix : string := "bidder, writing a patch for a task in the reposit
 patch_task_label : string := "task".
 
 patch_plan_context : string := prompt_text [
+  prompt_plan_scheduling,
   "Each repository's plan, its open items (the task is one of them; the rest are context):
 ",
   "{{PLAN}}Files from the repository:

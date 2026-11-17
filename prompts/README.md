@@ -43,6 +43,11 @@ were already stale before extraction and were refreshed from that captured text.
 
 ## Task-writing contract
 
+Plan items are goals, not a ranked backlog. Their position carries no priority.
+Only the leader's submitted tasks establish work priorities; bidders work their
+assigned task and use the rest of the plan as context. The leader chooses tasks
+from the operator's goal, repository state, dependencies and useful progress.
+
 `draft.soma` names task selection, direction, incremental acceptance, required
 safety, optional quality, tests, constraints and completion separately. A task
 must distinguish its full plan-item direction from an independently useful next
