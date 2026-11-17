@@ -338,8 +338,8 @@ for x in json.load(sys.stdin)["workspaces"]:
 # task covers an item when its spec holds the item's words, nearly all of them
 # (a leader quotes an item, not always word for word: without its backticks,
 # with "to calc.sh" put in), or else, for a numbered goal line, when the spec
-# starts with "step N" or "goal step N". Plan items have an icon column
-# beside their text. ITEMS=goal: the goal
+# starts with "step N" or "goal step N". Items lead with their icon, one
+# to a paragraph, in place of a list's numbers or dots. ITEMS=goal: the goal
 # file's list lines, its other lines as they are; ITEMS=plan: a .plan.
 ITEMS_AWK='
 function norm(s) { s = tolower(s); gsub(/[^a-z0-9]/, "", s); return s }
@@ -361,11 +361,6 @@ function icon(text, num,   j, id, by_text, st) {
   return st ~ /B/ ? (items == "plan" ? "🌱" : "⏳") : st ~ /D/ ? (items == "plan" ? "🪴" : "✅") : (items == "plan" ? "🫘" : "🟡")
 }
 function state(id) { return merged[id] ? "D" : (st_[id] == "open" && bids[id]) ? "B" : "-" }
-function close_table() { if (in_table) { printf "</tbody>\n</table>\n\n"; in_table = 0 } }
-function plan_row(status, text) {
-  if (!in_table) { printf "<table>\n<tbody>\n"; in_table = 1 }
-  printf "<tr>\n<td>%s</td>\n<td>\n\n%s\n\n</td>\n</tr>\n", status, text
-}
 FILENAME == ARGV[1] {
   if ($1 == "task") { id = $2; s = $3; gsub(/[^a-z]/, "", s); st_[id] = s
     line = $0; sub(/^task [0-9]+ \[[a-z]+\] /, "", line); spec[id] = norm(line); raw[id] = tolower(line); ids[++n] = id
@@ -383,13 +378,10 @@ items == "goal" {
 }
 items == "plan" {
   if (/^#/ || /^[ \t]*$/) next
-  if (/^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]/) { close_table(); printf "%s### %s\n\n", (days++ ? "\n" : ""), $0; next }
-  if (/^[+*] /) { plan_row("🌳", substr($0, 3)); next }
-  if (/^- /) { plan_row("", "~~" substr($0, 3) "~~"); next }
-  plan_row(icon($0, ""), $0)
-}
-END {
-  close_table()
+  if (/^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]/) { printf "%s### %s\n\n", (days++ ? "\n" : ""), $0; next }
+  if (/^[+*] /) { printf "🌳 %s\n\n", substr($0, 3); next }
+  if (/^- /) { printf "~~%s~~\n\n", substr($0, 3); next }
+  printf "%s %s\n\n", icon($0, ""), $0
 }'
 
 # Keep the opening goal paragraph visible; fold its remaining instructions.
@@ -412,7 +404,7 @@ END {
 }'
 
 # The bids, the last 20, each a
-# details block beside its outcome icon, with its title in the summary (the leader's for a merge or a rejection, else its
+# details block: its outcome's icon and its title in the summary (the leader's for a merge or a rejection, else its
 # bidder's, else the start of its note), then the bidder's title and note and
 # the leader's reason inside. Green, merged; yellow, pending; red, rejected;
 # white, cleared or withdrawn. Their text is HTML-escaped: other agents wrote it.
@@ -425,20 +417,18 @@ $1 == "title" { title[$2] = rest($2) }
 $1 == "verdict" { verdict[$2] = rest($2) }
 $1 == "note" { note[$2] = rest($2) }
 END {
-  if (n) printf "<table>\n<tbody>\n"
   for (j = (n > 20 ? n - 19 : 1); j <= n; j++) { b = id[j]; s = state[b]
     icon = s == "merged" ? "🟢" : s == "pending" ? "🟡" : s == "rejected" ? "🔴" : "⚪"
     t = (s == "merged" || s == "rejected") && verdict[b] != "" ? verdict[b] : title[b] != "" ? title[b] : note[b]
     if (s == "rejected" && verdict[b] == "" && title[b] == "" && why[b] != "") t = why[b]
     if (t == "") t = "bid " b " by " by[b]
     if (length(t) > 60) t = substr(t, 1, 59) "…"
-    printf "<tr>\n<td>%s</td>\n<td>\n\n<details>\n<summary>%s</summary>\n\n_bid %s by %s, %s_\n\n", icon, esc(t), b, by[b], s
+    printf "<details>\n<summary>%s %s</summary>\n\n_bid %s by %s, %s_\n\n", icon, esc(t), b, by[b], s
     if (title[b] != "" && title[b] != t) printf "**%s**\n\n", esc(title[b])
     if (note[b] != "") printf "%s\n\n", esc(note[b])
     if (why[b] != "") printf "_%s: %s_\n\n", (s == "rejected" ? "Rejected" : "Why"), esc(why[b])
-    printf "</details>\n\n</td>\n</tr>\n"
+    printf "</details>\n\n"
   }
-  if (n) printf "</tbody>\n</table>\n\n"
 }'
 
 # The market's title, the goal's heading and the workspace's name: Market (X
