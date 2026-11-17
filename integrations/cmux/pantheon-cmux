@@ -470,7 +470,7 @@ render_plan() {
       printf '\n'
     done
     if [ -f "$f" ] && grep -q '^bid ' "$f"; then
-      printf '## Bids\n\n'
+      printf '## Contributions\n\n'
       printf '_📈 accepted  🎫 pending  📉 rejected  🪦 stale_\n\n'
       awk "$BIDS_AWK" "$f"
     fi

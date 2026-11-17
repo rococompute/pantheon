@@ -178,7 +178,7 @@ grep -q '^~~add a pow command~~$' "$pm" || fail "plan's dropped item"
 ! grep -q 'Keep this multiline task specification' "$pm" || fail "internal task body leaked"
 grep -q '^🪴 add a cube command$' "$pm" || fail "merged partial work is not a plan checkmark"
 # The bids: each a details block, its icon and title in the summary
-grep -q '^## Bids$' "$pm" || fail "the bids headed Bids"
+grep -q '^## Contributions$' "$pm" || fail "the bids headed Contributions"
 grep -q '^<summary>📈 Fulfills goal step 1: calc can subtract</summary>$' "$pm" || fail "a merged bid, under the leader's title: $(cat "$pm")"
 grep -q '^\*\*Adds a sub case to calc.sh\*\*$' "$pm" && grep -q '^sub &amp; its test$' "$pm" || fail "a merged bid's own title and its note, escaped, inside"
 grep -q '^<summary>🎫 Adds mul</summary>$' "$pm" || fail "a pending bid, under its bidder's title"
