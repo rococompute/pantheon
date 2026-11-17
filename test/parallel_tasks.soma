@@ -79,6 +79,25 @@ lines_drafting : list string :=
   ++ say (length (draft_asks o1) =? 0) "at the cap, the leader drafts nothing"
   ++ say ((length (draft_asks o0) =? 1) && forallb (fun p => negb (has p "Tasks open now")) (draft_asks o0)) "with nothing open, a plain draft".
 
+(** Task counts can change while the model is drafting or its post is landing.
+    A fresh draft key must not overlap that outstanding work. *)
+lines_draft_waiting : list string :=
+  let m := base_market 2 in
+  let (drafting, _) := lead leader_agent m in
+  let (_, concurrent) := lead drafting (one_open 2) in
+  let posting := ["post", "calc", "task two"] in
+  let (_, queued) := lead (enqueue leader_agent posting) (one_open 2) in
+  let sent := setf (setf (setf leader_agent "inflight" 1) "sent_at" 10) "inflight_tx" posting in
+  let (_, inflight) := lead sent (one_open 2) in
+  let landed := setf (one_open 2) "nonces" ([("claude", 1)] : list (string * nat)) in
+  let (_, after) := lead sent landed in
+  let (_, unrelated) := lead (enqueue leader_agent ["close", "1"]) (one_open 2) in
+  say (length (draft_asks concurrent) =? 0) "a task-count change cannot overlap an outstanding draft"
+  ++ say (length (draft_asks queued) =? 0) "a queued task post blocks another draft"
+  ++ say (length (draft_asks inflight) =? 0) "an in-flight task post blocks another draft"
+  ++ say (length (draft_asks after) =? 1) "after the post lands, parallel drafting resumes"
+  ++ say (length (draft_asks unrelated) =? 1) "unrelated queued work does not block drafting".
+
 lines_stale : list string :=
   let m := after_merge (one_open 0) in
   let who := eligible m 1 in
@@ -133,6 +152,6 @@ lines_tries : list string :=
   ++ say (patch_asks fresh =? 1) "the version moved: fresh tries for an updated bid".
 
 report : list string :=
-  lines_posting ++ lines_drafting ++ lines_stale ++ lines_clearing ++ lines_check ++ lines_tries.
+  lines_posting ++ lines_drafting ++ lines_draft_waiting ++ lines_stale ++ lines_clearing ++ lines_check ++ lines_tries.
 
 main := Host.print_lines report.

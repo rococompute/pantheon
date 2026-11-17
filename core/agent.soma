@@ -426,8 +426,16 @@ lead (a m : obj) : obj * list (list string) :=
       end) (mine (open_tasks m)) closed in
   (* room for another task: draft the next one from the goal. With tasks
      open, the model writes one only if it judges it can run beside them, and
-     asks again when the count of tasks or of open ones changes *)
-  if (length (open_tasks m) <? param m "max_open_tasks") && negb (length (goal (fst st)) =? 0) && negb (length (my_repos (fst st) m) =? 0) then
+     asks again when the count of tasks or of open ones changes. Those counts
+     can change while a draft is outstanding: finish that request and let its
+     post land before asking from the new state, otherwise both replies can
+     post the same work. Other leader duties may continue in the meantime. *)
+  let a := release_inflight (fst st) m in
+  let st := (a, snd st) in
+  let posting tx := match tx with "post" :: _ => true | _ => false end in
+  let drafting := existsb (fun r => match snd r with "draft" :: _ => true | _ => false end) (reqs a)
+                  || existsb posting (queue a) || posting (inflight_tx a) in
+  if negb drafting && (length (open_tasks m) <? param m "max_open_tasks") && negb (length (goal a) =? 0) && negb (length (my_repos a m) =? 0) then
     with_retry st m (append "draft." (append (show (term m)) (append "." (append (show (length (tasks m))) (append "." (show (length (open_tasks m)))))))) ["draft"] (draft_prompt (fst st) m) []
   else st.
 
