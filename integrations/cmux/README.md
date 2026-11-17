@@ -12,7 +12,7 @@
   of the roster's K agents having said so), with the remaining goal text in a
   collapsed **Details** section, and each repository's `.plan` under **Goals**
   at the market's head, every item led by its status (✅ explicitly marked done,
-  🔧 work merged with the plan item still open, ⏳ being bid on,
+  🔧 work merged with the plan item still open, 🌱 being bid on,
   🫘 not picked up yet; dropped ones struck through), then the last 20
   **Bids**. A bid is a details block: in its summary its outcome (🟢 merged,
   🟡 pending, 🔴 rejected, ⚪ cleared or withdrawn) and its title, the
