@@ -26,6 +26,18 @@ starts a day. The marks:
 what came up but wasn't done as plain lines, then went back and marked those
 `+` as he got to them. `-` (dropped) is Pantheon's addition.
 
+Do not write open items as Markdown bullets or checkboxes. `pantheon init`
+checks the committed `.plan` before creating a network or its keys. A new
+node also checks its repository heads before starting a model, covering
+networks assembled with `keygen` and `genesis`. An all-dropped plan is
+refused with an explanation of `- `; Markdown checkboxes are refused even
+when other items are open. Nothing is automatically reopened or rewritten.
+Completed history, an empty plan, and a repository without a plan are valid.
+If every item really is dropped, pass `--allow-closed-plan` to `init` and
+to the node's launch flags (`pantheon-cmux up NET -- --allow-closed-plan`).
+Nodes replaying an existing nonempty block log skip this launch preflight:
+a running market can legitimately finish its plan.
+
 The order is the priority, a guide for the leader rather than a rule: the
 first open item is usually the next one, and a leader takes another when it
 judges it the better next step (it unblocks the first, the first can't be done
@@ -117,4 +129,5 @@ the leader reads `.plan` at the repository's head each time it drafts.
 ```bash
 pantheon plan            # ./.plan's open items, one per line
 pantheon plan soma/.plan
+pantheon plan --check soma/.plan  # preflight a file before committing it
 ```
