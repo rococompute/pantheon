@@ -176,7 +176,7 @@ grep -q '^~~add a pow command~~$' "$pm" || fail "plan's dropped item"
 ! grep -q '^## Tasks$' "$pm" || fail "internal tasks section is visible"
 ! grep -q 'Task 8 —' "$pm" || fail "internal task row is visible"
 ! grep -q 'Keep this multiline task specification' "$pm" || fail "internal task body leaked"
-grep -q '^🔧 add a cube command$' "$pm" || fail "merged partial work is not a plan checkmark"
+grep -q '^🪴 add a cube command$' "$pm" || fail "merged partial work is not a plan checkmark"
 # The bids: each a details block, its icon and title in the summary
 grep -q '^## Bids$' "$pm" || fail "the bids headed Bids"
 grep -q '^<summary>🟢 Fulfills goal step 1: calc can subtract</summary>$' "$pm" || fail "a merged bid, under the leader's title: $(cat "$pm")"

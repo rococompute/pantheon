@@ -358,7 +358,7 @@ function icon(text, num,   j, id, by_text, st) {
   }
   if (!by_text && num != "")
     for (j = 1; j <= n; j++) { id = ids[j]; if (raw[id] ~ ("^[^:]*: *(goal )?step " num "([^0-9]|$)")) st = st state(id) }
-  return st ~ /B/ ? (items == "plan" ? "🌱" : "⏳") : st ~ /D/ ? (items == "plan" ? "🔧" : "✅") : (items == "plan" ? "🫘" : "🟡")
+  return st ~ /B/ ? (items == "plan" ? "🌱" : "⏳") : st ~ /D/ ? (items == "plan" ? "🪴" : "✅") : (items == "plan" ? "🫘" : "🟡")
 }
 function state(id) { return merged[id] ? "D" : (st_[id] == "open" && bids[id]) ? "B" : "-" }
 FILENAME == ARGV[1] {
@@ -464,7 +464,7 @@ render_plan() {
       plan=$(git -C "$r" show HEAD:.plan 2>/dev/null || cat "$r/.plan" 2>/dev/null) || continue
       [ -n "$plan" ] || continue
       printf '## Goals\n\n'
-      printf '_✅ marked done · 🔧 work merged · 🌱 bidding · 🫘 open._\n\n'
+      printf '_✅ marked done · 🪴 work merged · 🌱 bidding · 🫘 open._\n\n'
       # .plan: "# " comments, a date per day, an item a line: "+ " or "* " done, "- " dropped
       printf '%s\n' "$plan" | awk -v items=plan "$ITEMS_AWK" "$sf" -
       printf '\n'
