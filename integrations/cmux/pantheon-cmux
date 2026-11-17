@@ -471,7 +471,7 @@ render_plan() {
     done
     if [ -f "$f" ] && grep -q '^bid ' "$f"; then
       printf '## Contributions\n\n'
-      printf '_📈 accepted  🎫 pending  📉 rejected  🪦 stale_\n\n'
+      printf '_📈 accepted  📉 rejected  🎫 pending  🪦 stale_\n\n'
       awk "$BIDS_AWK" "$f"
     fi
   } > "$ST/plan.md.tmp"
