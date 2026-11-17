@@ -11,11 +11,11 @@
   begun to say there are no more tasks, **Market (X leader, N/K to done)**, N
   of the roster's K agents having said so), with the remaining goal text in a
   collapsed **Details** section, and each repository's `.plan` under **Goals**
-  at the market's head, every item led by its status (🌳 explicitly marked done,
+  at the market's head, every item beside its own status column (🌳 explicitly marked done,
   🪴 work merged with the plan item still open, 🌱 being bid on,
   🫘 not picked up yet; dropped ones struck through), then the last 20
-  **Bids**. A bid is a details block: in its summary its outcome (🟢 merged,
-  🟡 pending, 🔴 rejected, ⚪ cleared or withdrawn) and its title, the
+  **Bids**. A bid is a details block with its outcome in a separate column
+  (🟢 merged, 🟡 pending, 🔴 rejected, ⚪ cleared or withdrawn). Its summary is its title, the
   leader's for a merge or a rejection (what it does for the goal, or why not),
   else its bidder's; inside, its bidder's title and note and the leader's
   reason. Internal task records stay hidden; their activity is reflected in
