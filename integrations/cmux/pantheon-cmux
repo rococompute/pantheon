@@ -663,7 +663,10 @@ cmd_watchdog() {
   p=0
   while :; do
     status_pass; note_leaders
-    if market_finished; then say "the market finished, so the diplomats are done: the watchdog stops, and nudges no one"; return 0; fi
+    # Stop only after status_pass published completion to the view and inboxes.
+    # A node can finish between that pass and this check; another read of its
+    # status could otherwise stop us with a stale view and diplomats waiting.
+    if [ -e "$ST/finished" ]; then say "the market finished, so the diplomats are done: the watchdog stops, and nudges no one"; return 0; fi
     if [ $((p % 6)) -eq 0 ]; then for a in $(agents_of "$NET"); do watch_agent "$a" || true; done; fi
     p=$((p + 1)); sleep 10
   done

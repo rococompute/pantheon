@@ -316,6 +316,23 @@ grep -q "^rename-workspace --workspace .* Done$" "$t/ledger" || fail "the watchd
 ! grep -q '^set-status' "$t/ledger" || fail "the watchdog put a line in the sidebar"
 head -1 "$t/net/.cmux/plan.md" | grep -q '^## Done$' || fail "the watchdog renders the plan: $(head -1 "$t/net/.cmux/plan.md")"
 [ -e "$t/net/.cmux/finished" ] && [ -e "$t/net/.cmux/claude/inbox/finished" ] && grep -q '^notify --title Pantheon: the market finished' "$t/ledger" || fail "the watchdog tells the diplomats and you the market finished"
+# Completion can land after a status pass but before the loop checks whether
+# to stop. Reproduce that timing without sleeps or a running market.
+sed '/^c=${1:-};/,$d' "$pc" > "$t/watchdog-functions.sh"
+printf 'height 43  term 3  leader codex\nno more tasks: 3 of 4, say claude grok muse\n' > "$t/net/claude/status.txt"
+rm -f "$t/net/.cmux/finished" "$t/net/.cmux/claude/inbox/finished"
+: > "$t/ledger"
+(
+  . "$t/watchdog-functions.sh"
+  note_leaders() {
+    printf 'height 44  term 3  leader (drawing)\nfinished: every agent, as leader, found no more tasks\n' > "$t/net/claude/status.txt"
+  }
+  sleep() { :; }
+  watch_agent() { :; }
+  cmd_watchdog "$t/net"
+) > "$t/wd" 2>&1 || fail "watchdog completion race: $(cat "$t/wd")"
+head -1 "$pm" | grep -q '^## Done$' || fail "completion between passes left the plan stale"
+[ -e "$t/net/.cmux/claude/inbox/finished" ] && grep -q '^notify --title Pantheon: the market finished' "$t/ledger" || fail "completion between passes left diplomats waiting"
 printf 'height 45  term 4  leader muse\n' > "$t/net/claude/status.txt"; rm -f "$t/net/.cmux/finished"; : > "$t/ledger"
 ( timeout 3 sh "$pc" watchdog "$t/net" > /dev/null 2>&1 || true )
 [ "$(grep -c '^rename-workspace --workspace .* Market (muse leader)$' "$t/ledger")" = 1 ] || fail "the watchdog names the workspace for its leader, once: $(grep rename-workspace "$t/ledger")"
