@@ -358,10 +358,10 @@ function icon(text, num,   j, id, by_text, st) {
   }
   if (!by_text && num != "")
     for (j = 1; j <= n; j++) { id = ids[j]; if (raw[id] ~ ("^[^:]*: *(goal )?step " num "([^0-9]|$)")) st = st state(id) }
-  return st ~ /D/ ? "✅" : st ~ /B/ ? "⏳" : "🟡"
+  return st ~ /B/ ? "⏳" : st ~ /D/ ? (items == "plan" ? "🔧" : "✅") : "🟡"
 }
 function state(id) { return merged[id] ? "D" : (st_[id] == "open" && bids[id]) ? "B" : "-" }
-FNR == NR {
+FILENAME == ARGV[1] {
   if ($1 == "task") { id = $2; s = $3; gsub(/[^a-z]/, "", s); st_[id] = s
     line = $0; sub(/^task [0-9]+ \[[a-z]+\] /, "", line); spec[id] = norm(line); raw[id] = tolower(line); ids[++n] = id
     m = split(raw[id], w, /[^a-z0-9_]+/); for (i = 1; i <= m; i++) words[id, w[i]] = 1 }
@@ -384,7 +384,46 @@ items == "plan" {
   printf "%s %s\n\n", icon($0, ""), $0
 }'
 
-# The bids, the last 20 (the tasks they answer stay out of the view), each a
+# Tasks include their complete, multiline specification. Open tasks come first,
+# newest first within each state. Closed is deliberately not called done: a
+# task may close after useful partial work while its plan item remains open.
+TASKS_AWK='
+function esc(s) { gsub(/&/, "\\&amp;", s); gsub(/</, "\\&lt;", s); gsub(/>/, "\\&gt;", s); return s }
+/^task [0-9]+ \[(open|closed)\] / {
+  current = $2; ids[++n] = current; state[current] = $3; gsub(/[^a-z]/, "", state[current])
+  text = $0; sub(/^task [0-9]+ \[[a-z]+\] /, "", text)
+  spec[current] = text; title[current] = text
+  sub(/^[^:]+: */, "", title[current]); next
+}
+/^(bid [0-9]+ \[|count |title [0-9]+ |verdict [0-9]+ |note [0-9]+ |pool |height |version |history |repo |finished:|no more tasks:)/ {
+  current = ""
+  if ($1 == "bid") {
+    s = $3; gsub(/[^a-z]/, "", s)
+    for (i = 3; i < NF; i++) if ($i == "task") {
+      id = $(i + 1); if (s == "merged") merged[id]++; if (s == "pending") pending[id]++; break
+    }
+  }
+  next
+}
+current != "" { spec[current] = spec[current] "\n" $0 }
+END {
+  for (j = 2; j <= n; j++) {
+    value = ids[j]; k = j - 1
+    while (k >= 1 && ids[k] + 0 > value + 0) { ids[k + 1] = ids[k]; k-- }
+    ids[k + 1] = value
+  }
+  for (pass = 1; pass <= 2; pass++) for (j = n; j >= 1; j--) {
+    id = ids[j]; s = state[id]
+    if ((pass == 1) != (s == "open")) continue
+    t = title[id]; if (length(t) > 96) t = substr(t, 1, 95) "…"
+    printf "<details>\n<summary>%s Task %s — %s: %s</summary>\n\n", (s == "open" ? "⏳" : "⚪"), id, s, esc(t)
+    printf "_%d merged %s; %d pending %s._\n\n", merged[id], (merged[id] == 1 ? "bid" : "bids"), pending[id], (pending[id] == 1 ? "bid" : "bids")
+    if (s == "closed") printf "_Closed tasks may leave their plan item open._\n\n"
+    printf "%s\n\n</details>\n\n", esc(spec[id])
+  }
+}'
+
+# The bids, the last 20, each a
 # details block: its outcome's icon and its title in the summary (the leader's for a merge or a rejection, else its
 # bidder's, else the start of its note), then the bidder's title and note and
 # the leader's reason inside. Green, merged; yellow, pending; red, rejected;
@@ -445,10 +484,15 @@ render_plan() {
       plan=$(git -C "$r" show HEAD:.plan 2>/dev/null || cat "$r/.plan" 2>/dev/null) || continue
       [ -n "$plan" ] || continue
       printf '## Plan: %s\n\n' "$(basename "$r")"
+      printf '_✅ marked done · 🔧 work merged · ⏳ bidding · 🟡 open._\n\n'
       # .plan: "# " comments, a date per day, an item a line: "+ " or "* " done, "- " dropped
       printf '%s\n' "$plan" | awk -v items=plan "$ITEMS_AWK" "$sf" -
       printf '\n'
     done
+    if [ -f "$f" ] && grep -q '^task [0-9]' "$f"; then
+      printf '## Tasks\n\n'
+      awk "$TASKS_AWK" "$f"
+    fi
     if [ -f "$f" ] && grep -q '^bid ' "$f"; then
       printf '## Bids\n\n'
       awk "$BIDS_AWK" "$f"
