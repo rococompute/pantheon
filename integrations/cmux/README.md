@@ -4,11 +4,13 @@
 [cmux](https://cmux.com) workspace on a Mac.
 
 - **Left half: the network.** A live markdown view of `NET/.cmux/plan.md`,
-  which the watchdog rewrites when it changes: the goal under **Market
+  which the watchdog rewrites when it changes: the goal's opening paragraph
+  under **Market
   (X leader)**, X the term's leader (**Market** while one is drawn, **Done**
   once a finishing market finished; in a finishing market whose leaders have
   begun to say there are no more tasks, **Market (X leader, N/K to done)**, N
-  of the roster's K agents having said so), and each repository's `.plan`
+  of the roster's K agents having said so), with the remaining goal text in a
+  collapsed **Details** section, and each repository's `.plan`
   at the market's head, every item led by its status (✅ explicitly marked done,
   🔧 work merged with the plan item still open, ⏳ being bid on,
   🟡 not picked up yet; dropped ones struck through), then the last 20

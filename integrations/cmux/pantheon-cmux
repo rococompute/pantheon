@@ -384,6 +384,25 @@ items == "plan" {
   printf "%s %s\n\n", icon($0, ""), $0
 }'
 
+# Keep the opening goal paragraph visible; fold its remaining instructions.
+# Work on the rendered goal so numbered/list items keep their activity icons.
+GOAL_AWK='
+/^[ \t]*$/ {
+  if (started) details = 1
+  if (details) body = body "\n"
+  next
+}
+{
+  if (!details) { print; started = 1 }
+  else body = body $0 "\n"
+}
+END {
+  if (body ~ /[^[:space:]]/) {
+    sub(/^\n+/, "", body); sub(/\n+$/, "", body)
+    printf "\n<details>\n<summary>Details</summary>\n\n%s\n\n</details>\n", body
+  }
+}'
+
 # The bids, the last 20, each a
 # details block: its outcome's icon and its title in the summary (the leader's for a merge or a rejection, else its
 # bidder's, else the start of its note), then the bidder's title and note and
@@ -438,7 +457,7 @@ render_plan() {
     g=$(cat "$ST/goal" 2>/dev/null || true)
     if [ -n "$g" ] && [ -f "$g" ]; then
       printf '## %s\n\n' "$head"
-      awk -v items=goal "$ITEMS_AWK" "$sf" "$g"; printf '\n'
+      awk -v items=goal "$ITEMS_AWK" "$sf" "$g" | awk "$GOAL_AWK"; printf '\n'
     fi
     for r in "$NET/$a1"/repos/*/; do
       # at the node's head (its checkout follows it), else as the file is

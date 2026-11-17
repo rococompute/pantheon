@@ -128,10 +128,42 @@ grep -q '^### 2026-11-15' "$pm" || fail "plan's day"
 grep -q '^🟡 add a div command$' "$pm" || fail "plan's item not picked up: $(cat "$pm")"
 # a finished market's goal is headed Done
 cp "$t/net/claude/status.txt" "$t/status.keep"; echo 'finished: every agent, as leader, found no more tasks' >> "$t/net/claude/status.txt"
-( sed -n "/^ITEMS_AWK='/,/^}'\$/p; /^BIDS_AWK='/,/^}'\$/p" "$pc"; sed -n '/^market_title()/,/^}/p; /^render_plan()/,/^}/p; /^agents_of()/,/^}/p' "$pc" ) > "$t/fn0.sh"
+( sed -n "/^ITEMS_AWK='/,/^}'\$/p; /^GOAL_AWK='/,/^}'\$/p; /^BIDS_AWK='/,/^}'\$/p" "$pc"; sed -n '/^market_title()/,/^}/p; /^render_plan()/,/^}/p; /^agents_of()/,/^}/p' "$pc" ) > "$t/fn0.sh"
 ( NET=$t/net ST=$t/net/.cmux; . "$t/fn0.sh"; render_plan )
 head -1 "$pm" | grep -q '^## Done$' || fail "a finished market's goal headed Done: $(head -3 "$pm")"
 ! grep -q 'Finished' "$pm" || fail "a finished market's plan has no Finished line"
+# The market keeps its opening summary visible and folds the rest before Plan.
+python3 - "$pm" <<'PYGOAL' || fail "goal summary and details"
+import sys
+text = open(sys.argv[1]).read()
+goal = text[:text.index("## Plan:")]
+summary, details = goal.split("<details>", 1)
+assert "✅ add a sub command" in summary
+assert "add a mul command" not in summary
+assert "<summary>Details</summary>" in details
+assert "⏳ add a mul command" in details and "Keep it small." in details
+assert details.rstrip().endswith("</details>")
+PYGOAL
+# Prose keeps its complete opening paragraph; a short goal needs no empty fold.
+cp "$t/goal.txt" "$t/goal.keep"
+printf '\nBuild a compact project.\nA wrapped summary line.\n\nDetailed rules.\n\nMore rules.\n' > "$t/goal.txt"
+( NET=$t/net ST=$t/net/.cmux; . "$t/fn0.sh"; render_plan )
+python3 - "$pm" <<'PYGOAL' || fail "prose summary"
+import sys
+text = open(sys.argv[1]).read().split("## Plan:", 1)[0]
+summary, details = text.split("<details>", 1)
+assert "Build a compact project.\nA wrapped summary line." in summary
+assert "Detailed rules." in details and "More rules." in details
+PYGOAL
+printf 'Only the summary.\n\n' > "$t/goal.txt"
+( NET=$t/net ST=$t/net/.cmux; . "$t/fn0.sh"; render_plan )
+python3 - "$pm" <<'PYGOAL' || fail "short goal has no empty details"
+import sys
+text = open(sys.argv[1]).read().split("## Plan:", 1)[0]
+assert "Only the summary." in text and "<details>" not in text
+PYGOAL
+cp "$t/goal.keep" "$t/goal.txt"
+( NET=$t/net ST=$t/net/.cmux; . "$t/fn0.sh"; render_plan )
 # while a leader is drawn, Market alone
 sed '1s/leader codex/leader (drawing)/' "$t/status.keep" > "$t/net/claude/status.txt"; ( NET=$t/net ST=$t/net/.cmux; . "$t/fn0.sh"; render_plan )
 head -1 "$pm" | grep -q '^## Market$' || fail "goal headed Market while a leader is drawn: $(head -1 "$pm")"
@@ -151,10 +183,10 @@ grep -q '^\*\*Adds a sub case to calc.sh\*\*$' "$pm" && grep -q '^sub &amp; its 
 grep -q '^<summary>🟡 Adds mul</summary>$' "$pm" || fail "a pending bid, under its bidder's title"
 grep -q '^<summary>🔴 Breaks the existing tests</summary>$' "$pm" && grep -q '^_Rejected: it breaks &lt;test.sh&gt;_$' "$pm" || fail "a rejected bid, under the leader's title, its reason inside"
 grep -q '^<summary>⚪ old mul</summary>$' "$pm" || fail "a cleared bid, under its note"
-[ "$(grep -c '^<details>$' "$pm")" = 7 ] && [ "$(grep -c '^</details>$' "$pm")" = 7 ] || fail "a details block per bid"
+[ "$(grep -c '^<details>$' "$pm")" = 8 ] && [ "$(grep -c '^</details>$' "$pm")" = 8 ] || fail "a details block for the goal and each bid"
 # unchanged, it isn't rewritten (the view doesn't redraw for nothing)
 touch -t 202001010000 "$pm"
-( sed -n "/^ITEMS_AWK='/,/^}'\$/p; /^BIDS_AWK='/,/^}'\$/p" "$pc"; sed -n '/^market_title()/,/^}/p; /^render_plan()/,/^}/p' "$pc"; sed -n '/^agents_of()/,/^}/p' "$pc" ) > "$t/fn.sh"
+( sed -n "/^ITEMS_AWK='/,/^}'\$/p; /^GOAL_AWK='/,/^}'\$/p; /^BIDS_AWK='/,/^}'\$/p" "$pc"; sed -n '/^market_title()/,/^}/p; /^render_plan()/,/^}/p' "$pc"; sed -n '/^agents_of()/,/^}/p' "$pc" ) > "$t/fn.sh"
 ( NET=$t/net ST=$t/net/.cmux; . "$t/fn.sh"; render_plan )
 [ -z "$(find "$pm" -newer "$t/goal.txt")" ] || fail "an unchanged plan was rewritten"
 # the node scripts: run from where up ran, each with its backend and the node arguments
