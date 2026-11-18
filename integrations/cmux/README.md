@@ -141,6 +141,46 @@ and time it saw the term at.
 `--check` shows what it sees without nudging anyone. `--once` runs a single
 pass, nudges included, for a test or a cron job.
 
+## Events and agent hooks
+
+The full watchdog also runs `events.py`. Every two seconds it compares the
+first node's committed `status.txt` with its last snapshot. New accepted,
+rejected, cleared or withdrawn contributions, closed tasks, and market finish
+produce events. It also notices live, unclaimed inbox requests, including
+reviews waiting while a diplomat works on a patch. Attaching to an existing
+market starts with a baseline; it does not announce its historical merges.
+
+Events are batched per diplomat and sent with `cmux agent message SURFACE
+--from Pantheon -- TEXT`. cmux delivers through the provider's hooks at the
+next step; an active tool is allowed to finish. Idle-session watchdog nudges
+also use this hook channel. No terminal input is pasted. Diplomats check their
+inboxes, handle waiting answers promptly, and recheck closed tasks before
+submitting related work. Notices never automatically skip requests, delete
+checkouts, or approve contributions. CLIs without receiving hooks need their
+cmux provider integration enabled; failed delivery is logged and retried.
+
+`NET/.cmux/events/state.json` atomically stores the snapshot, monotonic sequence
+number, last 256 events, and pending deliveries. Repeated observations and
+normal restarts do not send duplicates; a crash after cmux accepts a message
+but before the queue is saved can redeliver it. Delivery means cmux accepted
+the notice, not that the model acted on it. `relay.log` records delivery and
+retry results. The run record includes this state as `events.json`.
+
+A local Unix socket is published in `NET/.cmux/events/socket`. Its actual path
+is in a private short `/tmp/pantheon-events-UID` directory for macOS's path
+limit. Send one JSON line `{}` for a current snapshot followed by live JSONL
+events, or `{"after": 123}` to replay events after a sequence number and then
+follow live events. An unavailable cursor receives a fresh snapshot. Slow
+readers are disconnected and can reconnect with their cursor. The socket and
+relay stop with the watchdog; an exclusive lock prevents duplicate relays.
+`PANTHEON_EVENTS=0` disables the relay. `--once` and `--check` do not start it.
+
+This is a read-side integration, not a change to the consensus protocol:
+it observes committed state rather than treating a proposed merge or a model's
+description as acceptance. There is a two-second observation delay, plus any
+time until the provider reaches a hook boundary. Verify with
+`python3 test/cmux-events.py` and `sh test/integration-cmux.sh`.
+
 ## Isolation, and what's next
 
 Every pane runs as you, and the node homes in `NET` hold the agents' keys.

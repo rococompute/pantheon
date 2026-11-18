@@ -65,6 +65,7 @@ else:
     print("OK")
 STUB
 chmod +x "$t/bin/cmux"
+export PANTHEON_EVENTS=0
 export STUB_DIR="$t" CMUX="$t/bin/cmux" PANTHEON=/bin/true DIPLOMAT_CLI="echo diplomat" PANTHEON_RUNS="$t/runs"
 
 # a network: four agents with a key and a genesis
@@ -226,7 +227,7 @@ cp "$t/net/.cmux/claude/surface" "$t/watched"
 echo idle > "$t/state"; : > "$t/ledger"
 echo 99 > "$t/net/.cmux/claude/watchdog"
 for pass in 1 2 3; do sh "$pc" watchdog "$t/net" --once > /dev/null; done
-! grep -q '^paste' "$t/ledger" || fail "nudged an idle diplomat with no request"
+! grep -q '^agent message' "$t/ledger" || fail "nudged an idle diplomat with no request"
 [ ! -e "$t/net/.cmux/claude/watchdog" ] || fail "empty inbox retained an old idle count"
 
 # Only live unanswered requests count; malformed/expired/already-answered
@@ -243,13 +244,13 @@ request 1794000002-abcd; : > "$inbox/1794000002-abcd/done"
 request 1794000003-abcd; : > "$inbox/1794000003-abcd/expired"
 request 1794000004-abcd; echo invalid > "$inbox/1794000004-abcd/deadline"
 for pass in 1 2; do sh "$pc" watchdog "$t/net" --once > /dev/null; done
-! grep -q '^paste' "$t/ledger" || fail "nudged for a resolved or invalid request"
+! grep -q '^agent message' "$t/ledger" || fail "nudged for a resolved or invalid request"
 
 request 1794000005-abcd
 sh "$pc" watchdog "$t/net" --once > /dev/null
-! grep -q '^paste' "$t/ledger" || fail "nudged after one idle pass"
+! grep -q '^agent message' "$t/ledger" || fail "nudged after one idle pass"
 sh "$pc" watchdog "$t/net" --once > "$t/wd"
-grep -q "^paste .*--submit Your inbox still has an unanswered request (1794000005-abcd)" "$t/ledger" || fail "no nudge for a persistent unanswered request"
+grep -q "^agent message .*--from Pantheon -- Your inbox still has an unanswered request (1794000005-abcd)" "$t/ledger" || fail "no nudge for a persistent unanswered request"
 grep -q "nudged it back" "$t/wd" || fail "the nudge isn't reported"
 
 # A new request starts its own grace period, regardless of the old counter.
@@ -257,16 +258,16 @@ grep -q "nudged it back" "$t/wd" || fail "the nudge isn't reported"
 request 1794000006-abcd
 : > "$t/ledger"
 sh "$pc" watchdog "$t/net" --once > /dev/null
-! grep -q '^paste' "$t/ledger" || fail "a new request inherited the old idle count"
+! grep -q '^agent message' "$t/ledger" || fail "a new request inherited the old idle count"
 sh "$pc" watchdog "$t/net" --once > /dev/null
-grep -q '^paste' "$t/ledger" || fail "the new unanswered request never got a nudge"
+grep -q '^agent message' "$t/ledger" || fail "the new unanswered request never got a nudge"
 
 # Muse-style background waits remain live even when cmux says idle.
 # The real wait command's lease lifecycle is covered by test/inbox-wait.sh.
 echo $(( $(date +%s) + 3600 )) > "$inbox/.waiting.$$"
 : > "$t/ledger"
 for pass in 1 2 3; do sh "$pc" watchdog "$t/net" --once > /dev/null; done
-! grep -q '^paste' "$t/ledger" || fail "nudged a live background wait"
+! grep -q '^agent message' "$t/ledger" || fail "nudged a live background wait"
 [ ! -e "$t/net/.cmux/claude/watchdog" ] || fail "background wait retained an idle count"
 sh "$pc" watchdog "$t/net" --check | grep -q 'idle (waiting for inbox)' || fail "--check does not explain the background wait"
 # A dead PID or expired lease cannot suppress recovery.
@@ -274,18 +275,18 @@ rm "$inbox/.waiting.$$"
 echo $(( $(date +%s) + 3600 )) > "$inbox/.waiting.99999999"
 echo 1 > "$inbox/.waiting.$$"
 for pass in 1 2; do sh "$pc" watchdog "$t/net" --once > /dev/null; done
-grep -q '^paste' "$t/ledger" || fail "stale wait leases suppressed a needed nudge"
+grep -q '^agent message' "$t/ledger" || fail "stale wait leases suppressed a needed nudge"
 rm "$inbox/.waiting.99999999" "$inbox/.waiting.$$"
 
 echo working > "$t/state"; : > "$t/ledger"; sh "$pc" watchdog "$t/net" --once > /dev/null
-! grep -q '^paste' "$t/ledger" || fail "nudged a working session"
+! grep -q '^agent message' "$t/ledger" || fail "nudged a working session"
 echo needs_input > "$t/state"
 sh "$pc" watchdog "$t/net" --once > /dev/null; sh "$pc" watchdog "$t/net" --once > /dev/null
 n=$(grep -c '^notify' "$t/ledger" || true); [ "$n" = 1 ] || fail "a session waiting on a person: one notice, not $n"
-! grep -q '^paste' "$t/ledger" || fail "nudged a session waiting on a person"
+! grep -q '^agent message' "$t/ledger" || fail "nudged a session waiting on a person"
 echo idle > "$t/state"; echo 'LIMIT until 5pm' >> "$t/net/claude/status.txt"; : > "$t/ledger"
 sh "$pc" watchdog "$t/net" --once > /dev/null; sh "$pc" watchdog "$t/net" --once > /dev/null
-! grep -q '^paste' "$t/ledger" || fail "nudged a limited agent"
+! grep -q '^agent message' "$t/ledger" || fail "nudged a limited agent"
 sh "$pc" watchdog "$t/net" --check | grep -q "watchdog: claude limited" || fail "--check names a limited agent"
 printf 'height 43  term 2  leader grok\n' > "$t/net/claude/status.txt"
 sh "$pc" watchdog "$t/net" --check | grep -q "watchdog: claude idle" || fail "--check names the state"
@@ -306,7 +307,7 @@ sh "$pc" watchdog "$t/net" --once > "$t/wd"
 # a finished market: an idle diplomat is done, so no nudge, and the loop ends
 printf 'height 44  term 3  leader \nfinished: every agent, as leader, found no more tasks\n' > "$t/net/claude/status.txt"; : > "$t/ledger"
 sh "$pc" watchdog "$t/net" --once > /dev/null; sh "$pc" watchdog "$t/net" --once > /dev/null; sh "$pc" watchdog "$t/net" --once > /dev/null
-! grep -q '^paste' "$t/ledger" || fail "nudged a diplomat of a finished market"
+! grep -q '^agent message' "$t/ledger" || fail "nudged a diplomat of a finished market"
 sh "$pc" watchdog "$t/net" --check | grep -q "watchdog: claude finished" || fail "--check names a finished market's diplomat"
 timeout 20 sh "$pc" watchdog "$t/net" > "$t/wd" 2>&1 || fail "the watchdog's loop didn't end for a finished market"
 grep -q "the market finished" "$t/wd" || fail "the watchdog says why it stops: $(cat "$t/wd")"

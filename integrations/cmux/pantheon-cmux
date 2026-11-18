@@ -41,6 +41,7 @@
 #                 the prompt as its last argument); for another CLI, or for a test
 #   GROK_MODEL    Grok Build's model for a grok diplomat (default: Grok Build's own)
 #   PANTHEON_RUNS where each run's record is kept (default: ~/.pantheon/runs)
+#   PANTHEON_EVENTS 0 disables the local event socket and agent-hook relay (default: on)
 #
 # Every run is recorded by default, outside NET, so removing NET loses
 # nothing: PANTHEON_RUNS/NAME-YYYYMMDD-HHMMSS holds each node's blocks.log
@@ -502,6 +503,7 @@ record() {
     done
   done
   for x in leaders.log plan.md; do [ -f "$ST/$x" ] && cp "$ST/$x" "$rec/$x"; done
+  [ ! -f "$ST/events/state.json" ] || cp "$ST/events/state.json" "$rec/events.json"
   g_=$(cat "$ST/goal" 2>/dev/null || true); [ -n "$g_" ] && [ -f "$g_" ] && cp "$g_" "$rec/goal.txt"
   if [ "${BUNDLE:-}" = 1 ]; then
     for r_ in "$NET/$(agents_of "$NET" | head -1)"/repos/*/; do
@@ -632,7 +634,7 @@ watch_agent() {
   n=$(( $(cat "$st" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$st"
   [ "$n" -ge 2 ] && [ $(( (n - 2) % 5 )) -eq 0 ] || return 0
   msg="Your inbox still has an unanswered request ($request). Check it and continue the wait, answer, repeat loop (your instructions: $ST/$a/desk/instructions.md). If your provider says you've hit a usage limit, report it with limited as they say, then stop."
-  cm paste --workspace "$(workspace)" --surface "$(cat "$ST/$a/surface")" --submit "$msg" >/dev/null \
+  cm agent message "$(cat "$ST/$a/surface")" --from Pantheon -- "$msg" >/dev/null \
     && say "watchdog: $a idle with request $request unanswered for $n checks: nudged it back to its inbox"
 }
 
@@ -659,6 +661,16 @@ cmd_watchdog() {
     --check) for a in $(agents_of "$NET"); do dry=1 watch_agent "$a"; done; return 0 ;;
     --once) note_leaders; for a in $(agents_of "$NET"); do watch_agent "$a" || true; done; return 0 ;;
   esac
+  events_pid=""
+  if [ "${PANTHEON_EVENTS:-1}" != 0 ]; then
+    mkdir -p "$ST/events"
+    python3 "$here/integrations/cmux/events.py" "$NET" --cmux "$CMUX_BIN" --parent "$$" >> "$ST/events/relay.log" 2>&1 &
+    events_pid=$!
+    trap 'stop_events' EXIT
+    trap 'exit 129' HUP
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+  fi
   say "keeping $NET's workspace name and plan, saying each term's leader (all of them in $ST/leaders.log), and watching its diplomats every minute"
   p=0
   while :; do
@@ -670,6 +682,15 @@ cmd_watchdog() {
     if [ $((p % 6)) -eq 0 ]; then for a in $(agents_of "$NET"); do watch_agent "$a" || true; done; fi
     p=$((p + 1)); sleep 10
   done
+}
+
+stop_events() {
+  if [ -n "${events_pid:-}" ]; then
+    kill -TERM "$events_pid" 2>/dev/null || true
+    wait "$events_pid" 2>/dev/null || true
+    events_pid=""
+    record
+  fi
 }
 
 cmd_down() {
