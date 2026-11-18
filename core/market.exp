@@ -487,7 +487,7 @@ Proof.
         destruct (settle s) as [sm so] eqn:?;
         cbn [fst] in Hs
       end
-    | progress cbn beta iota zeta delta [fst]
+    | progress cbn beta iota zeta delta [fst leader_append]
     | match goal with
       | |- merged_satisfy _ (fst (fst (match ?x with _ => _ end))) => destruct x
       end ].
@@ -573,7 +573,8 @@ Proof.
         as [[s' o] why] eqn:E.
       cbn [fst] in Ha |- *.
       destruct (seq why "" && is_leader s' a); cbn [fst];
-        [apply merged_setf_other; [reflexivity|exact Ha]|exact Ha].
+        [destruct (seq (hd "" fields) "leader-note");
+         [exact Ha|apply merged_setf_other; [reflexivity|exact Ha]]|exact Ha].
     - cbn [fst]. apply merged_setf_other; [reflexivity|exact Hm]. }
   match type of HF with merged_satisfy _ (fst ?acc) =>
     destruct acc as [s outs] eqn:E

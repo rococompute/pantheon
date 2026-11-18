@@ -27,7 +27,7 @@
     be drawn. Withholding still lets the last agent to reveal choose between two
     seeds, so an agent that held back in one draw is barred from the next: a
     recent leader can't steer a draw now and be repaid with a term later. *)
-Import core.util runtime.nodeio core.consensus.
+Import core.util runtime.nodeio core.consensus core.leader.
 From Stdlib Require Import Ascii.
 
 (** ---- A signed transaction (step 5: decode_tx in Soma) ----
@@ -307,6 +307,7 @@ new_market (agents : list string) : obj :=
    ("tasks", ([] : list task) : Any), ("bids", ([] : list bid) : Any), ("nbids", 0 : Any), ("pending", (None : option proposal) : Any),
    ("nonces", ([] : list (string * nat)) : Any), ("lastbid", ([] : list (string * nat)) : Any),
    ("counters", ([] : list (string * nat)) : Any), ("params", ([] : list (string * nat)) : Any),
+   ("leader_entries", ([] : list leader_entry) : Any), ("leader_tip", "" : Any), ("leader_count", 0 : Any),
    ("excluded", ([] : list (string * string)) : Any),
    ("roster_changes", ([] : list (string * bool * nat)) : Any),
    (* the chain's id and each agent's genesis key: [size in bytes, n, e] *)
@@ -640,6 +641,15 @@ apply (m : obj) (a : string) (fields : list string) : obj * list (list string) *
   let ok (m : obj) := (m, ([] : list (list string)), "") in
   let lead := is_leader m a in
   match fields with
+  | "leader-note" :: data =>
+      match data with
+      | _ :: r :: _ =>
+          if negb (on_roster m a) || excludes m a r then fail "outside this journal author's scope"
+          else if negb (existsb (fun p => seq (fst p) r) (repos m)) then fail "unknown journal repository"
+          else if negb (leader_fields_ok data) then fail "invalid leader journal entry"
+          else let '(m, out) := leader_append m (mheight m) (term m) a data in (m, out, "")
+      | _ => fail "leader-note KIND REPO BID BASE_TREE TREE COMMIT CONTEXT ORIGIN INFO"
+      end
   | "post" :: rest =>
       (* post SPEC, with one repository; or post REPO SPEC CONTEXT-PATH... *)
       let '(r, s, ctx) := match rest, repos m with
@@ -905,7 +915,9 @@ apply_block (m : obj) (h : nat) (txs : list string) : obj * list (list string) :
           if num n =? nonce_of m a + 1 then
             let m := setf m "nonces" (put a (num n) (nonces m)) in
             let '(m', o, why) := apply_titled m a fields in
-            let m' := if seq why "" && is_leader m' a then setf m' "active" h else m' in
+            (* Informational journal entries cannot keep a stalled leader in office. *)
+            let m' := if seq why "" && is_leader m' a
+                      then (if seq (hd "" fields) "leader-note" then m' else setf m' "active" h) else m' in
             let note := if seq why "" then [] else [["log", append a (append ": " why)]] in
             (m', outs ++ o ++ note)
           else (m, outs)
@@ -940,6 +952,7 @@ status_lines (m : obj) : list string :=
   [append "height " (append (show (mheight m)) (append "  term " (append (show (term m)) (append "  leader " (if seq (leader m) "" then "(drawing)" else leader m))))),
    append "version " (show (version m)),
    append "history " (fold_left (fun s a => append s (append " " a)) (history m) "")]
+  ++ [append "leader-chain " (append (show (leader_count m)) (append " " (leader_tip m)))]
   ++ map (fun r => append "repo " (append (fst r) (append " " (snd r)))) (repos m)
   ++ map (fun t => append "task " (append (show (tid t)) (append (if topen t then " [open] " else " [closed] ") (append (trepo t) (append ": " (spec t)))))) (tasks m)
   ++ map (fun b => append "bid " (append (show (bidn b)) (append " [" (append (status_name (bst b)) (append (if stale b then " stale] task " else "] task ")
