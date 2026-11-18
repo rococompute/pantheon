@@ -149,6 +149,8 @@ rejected, cleared or withdrawn contributions, closed tasks, and market finish
 produce events. It also notices live, unclaimed inbox requests, including
 reviews waiting while a diplomat works on a patch. Attaching to an existing
 market starts with a baseline; it does not announce its historical merges.
+New [leader-chain](../../docs/LEADER-CHAIN.md) records notify the current
+leader through the same hooks, including results completed by former leaders.
 
 Events are batched per diplomat and sent with `cmux agent message SURFACE
 --from Pantheon -- TEXT`. cmux delivers through the provider's hooks at the

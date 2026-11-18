@@ -122,6 +122,18 @@ class TestEvents(unittest.TestCase):
         self.bridge.deliver()
         self.assertEqual(self.calls(), [])
 
+    def test_journal_update_targets_only_current_leader(self):
+        self.bridge.poll()
+        self.write(status(2).replace("pool 0", "leader-chain 3 " + "a" * 64 + "\npool 0"))
+        self.bridge.poll()
+        self.bridge.deliver()
+        self.bridge.poll()
+        self.bridge.deliver()
+        self.assertEqual(len(self.calls()), 1)
+        self.assertEqual(self.calls()[0][2], "surface-claude-1")
+        self.assertIn("record #3", self.calls()[0][-1])
+        self.assertEqual(self.bridge.state["events"][-1]["type"], "leader-chain.updated")
+
     def test_partial_or_older_status_is_ignored(self):
         self.write(status(8))
         self.bridge.poll()

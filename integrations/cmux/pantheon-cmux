@@ -501,6 +501,18 @@ record() {
     for x in blocks.log status.txt node.log genesis.json; do
       [ -f "$NET/$a_/$x" ] && ! cmp -s "$NET/$a_/$x" "$rec/$a_/$x" && cp "$NET/$a_/$x" "$rec/$a_/$x"
     done
+    if [ "${BUNDLE:-}" = 1 ] && [ -d "$NET/$a_/leader-chain.git" ]; then
+      git -C "$NET/$a_/leader-chain.git" bundle create "$rec/$a_/leader-chain.bundle" --all >/dev/null 2>&1 || true
+    fi
+    if [ "${BUNDLE:-}" = 1 ]; then
+      # Candidate refs belong to the checking author, so keep every node's
+      # objects, not only the first node's accepted checkout below.
+      for ar_ in "$NET/$a_"/repos/*/; do
+        [ -d "$ar_/.git" ] || continue
+        mkdir -p "$rec/$a_/repos"
+        git -C "$ar_" bundle create "$rec/$a_/repos/$(basename "$ar_").bundle" --all HEAD >/dev/null 2>&1 || true
+      done
+    fi
   done
   for x in leaders.log plan.md; do [ -f "$ST/$x" ] && cp "$ST/$x" "$rec/$x"; done
   [ ! -f "$ST/events/state.json" ] || cp "$ST/events/state.json" "$rec/events.json"

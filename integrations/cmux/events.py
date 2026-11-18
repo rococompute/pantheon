@@ -27,6 +27,10 @@ def status(text):
         return None  # Do not interpret an incomplete write as removals.
     return {
         "height": int(header[1]),
+        "leader": header[3],
+        "leader_chain": next(({"count": int(count), "tip": tip} for count, tip in
+                              re.findall(r"^leader-chain (\d+) ([0-9a-f]*)$", text, re.M)),
+                             {"count": 0, "tip": ""}),
         "tasks": dict(re.findall(r"^task (\d+) \[(open|closed)\] ", text, re.M)),
         "bids": {bid: state.split()[0] for bid, state in
                  re.findall(r"^bid (\d+) \[([^\]]+)\] ", text, re.M)},
@@ -37,6 +41,9 @@ def status(text):
 
 def transitions(old, new):
     if old:
+        journal = new["leader_chain"]
+        if journal["count"] > old.get("leader_chain", {}).get("count", 0):
+            yield {"type": "leader-chain.updated", **journal}
         for bid, state in new["bids"].items():
             if state in ("merged", "rejected", "cleared", "withdrawn") and old["bids"].get(bid) != state:
                 yield {"type": "contribution." + state, "bid": bid}
@@ -75,6 +82,9 @@ def notice(events, desk):
             parts.append("The committed market status is finished. Check your inbox's finish notice and stop.")
         elif kind == "request.ready":
             parts.append("Inbox request " + event["request"] + " (" + event["kind"] + ") is waiting.")
+        elif kind == "leader-chain.updated":
+            parts.append("Leader handoff journal advanced through record #" + str(event["count"]) +
+                         ". Read leader-chain for new check results and findings; these are not merge approvals.")
     return ("Pantheon event update: " + " ".join(parts) + "\n"
             "At the next safe tool boundary, read " + str(desk / "instructions.md") + ". "
             "Use " + str(desk / "pantheon-inbox") + " list. Answer waiting kind=answer requests "
@@ -121,7 +131,9 @@ class Bridge:
         if new is None or (old and new["height"] < old["height"]):
             return
         targets = self.targets()
-        events = [(e, list(targets)) for e in transitions(old, new)]
+        events = [(e, [new["leader"]] if new["leader"] in targets else [])
+                  if e["type"] == "leader-chain.updated" else (e, list(targets))
+                  for e in transitions(old, new)]
         active = {}
         if not new["finished"]:
             for agent in targets:
