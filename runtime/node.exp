@@ -898,14 +898,14 @@ Qed.
 Theorem io_wire_reads_back : forall op, io_of_wire (io_wire op) = Some op.
 Proof.
   intros op. destruct op as [text | ms event | event | fields | index fields |
-    who fields | height txs | height | text | slot vid fields | raw | |
+    who fields | height txs | height | text | previous digest entry | key evidence | slot vid fields | raw | |
     id repo head edits | repo version | repo entry | | height kind fields alternate |
     offer mode target | conn | job | job | who | | repo | who first | who first timestamp |
     | height | | | slot | slot | height | nonce fields | | | | | stamp |
     repo | repo | repo path | repo path | repo path text | repo path |
     repo version tree bid task bidder spec | | id kind prompt ctx |
     id kind raw prompt ctx clean launch env | repo | | | | repo | repo path |
-    until reason backoff | backoff | | | probing requests | job result | id out tree ci | path | path |
+    until reason backoff | backoff | | | probing requests | job result | id out tree ci evidence | path | path |
     raw | | raw | who | | | | stamp | path | | | timers | | | wait |
     | | height txs | | slot vid fields | message | text | code | path | path mode | path | | count | dir args |
     url dir commit | prog log args | pids | path | dir path | dir path text | dir path | prefix | path | dir stdin extra args | prog stdin cwd env args | job | prog args | prefix suffix text | host port backlog | host port | ms reads writes | fd nonblock | fd | fd data | fd | fd | path durable text | path text | | prog stdin cwd env args | pid | pid | path text sync | path | src dst | dir | path | path | prefix suffix | prog args | text | | address port | wait | conn found stamp fields |
@@ -1166,9 +1166,18 @@ Proof. intros byz ci raw H. unfold check_apply_plan_of. rewrite H. reflexivity. 
 
 Theorem check_apply_otherwise_trims : forall byz ci raw,
   starts "!" raw = false ->
+  kv_at (check_evidence raw) "tree" = "" ->
   check_apply_plan_of byz ci raw =
     CheckApplyTree (negb (seq ci "")) (seq byz "bad-tree") (ocaml_trim raw).
-Proof. intros byz ci raw H. unfold check_apply_plan_of. rewrite H. reflexivity. Qed.
+Proof.
+  intros byz ci raw H Hplain. unfold check_apply_plan_of, check_raw_tree.
+  rewrite H, Hplain. reflexivity.
+Qed.
+
+Example recorded_check_extracts_the_tree_and_commit :
+  check_apply_plan_of "" "test" "{""tree"":""ab"",""commit"":""cd""}" = CheckApplyTree true false "ab" /\
+  kv_at (check_evidence "{""tree"":""ab"",""commit"":""cd""}") "commit" = "cd".
+Proof. split; computed. Qed.
 
 Theorem check_failure_ignores_the_lie : forall lie id raw ci,
   starts "!" raw = true ->

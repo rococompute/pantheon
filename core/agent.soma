@@ -7,7 +7,7 @@
     The market holds no file contents, so a prompt names what it needs and the
     Soma fills it in from the shell's checkout reads: {{REPOS}} lists every repository's
     files, and {{REPO}} gives a task's context files. *)
-Import core.util core.market prompts.common prompts.draft prompts.patch prompts.pick prompts.attest.
+Import core.util runtime.nodeio core.market core.leader prompts.common prompts.draft prompts.patch prompts.pick prompts.attest.
 
 me (a : obj) : string := getf a "me".
 backend (a : obj) : string := getf a "backend".
@@ -26,6 +26,7 @@ attempts (a : obj) : list (string * nat) := getf a "attempts".
 attempt_v (a : obj) : list (string * nat) := getf a "attempt_v".
 retry_keys (a : obj) : list (string * string) := getf a "retry_keys".
 reqs (a : obj) : list (string * list string) := getf a "reqs".
+req_contexts (a : obj) : list (string * list string) := getf a "req_contexts".
 nreq (a : obj) : nat := getf a "nreq".
 bid_window (a : obj) : nat := getf a "bid_window".
 (** a leader's judgment that a task is done: task id to the bid that finishes
@@ -54,6 +55,7 @@ new_agent (me : string) : obj :=
    ("queue", ([] : list (list string)) : Any),
    ("asked", ([] : list string) : Any), ("attempts", ([] : list (string * nat)) : Any), ("attempt_v", ([] : list (string * nat)) : Any), ("retry_keys", ([] : list (string * string)) : Any),
    ("reqs", ([] : list (string * list string)) : Any), ("nreq", 0 : Any), ("bid_window", 30 : Any),
+   ("req_contexts", ([] : list (string * list string)) : Any),
    ("done_marks", ([] : list (string * string)) : Any), ("close_marks", ([] : list (string * string)) : Any),
    ("merge_seen", ([] : list (string * nat)) : Any),
    ("plan_lines", ([] : list (string * string)) : Any),
@@ -140,8 +142,15 @@ parallel_text (m : obj) : string :=
             draft_parallel_guidance)
   end.
 
+leader_context (m : obj) (repo : string) : string :=
+  match leader_entries m with
+  | [] => ""
+  | _ => append prompt_leader_journal_guidance
+      (fence prompt_leader_journal_label (leader_recent m repo))
+  end.
+
 draft_prompt (a m : obj) : string :=
-  append (preamble a draft_role)
+  append (append (preamble a draft_role) (leader_context m ""))
   (append draft_goal_heading (append (goal_text a)
   (append draft_plan_context
   (append (fold_left (fun s t => append s (fence (append (task_label m t) (trepo t)) (spec t))) (tasks m) "")
@@ -166,7 +175,7 @@ patch_prompt (a m : obj) (t : task) : string :=
   patch_instructions)))).
 
 pick_prompt (a m : obj) (t : task) (bs : list bid) : string :=
-  append (preamble a pick_role)
+  append (append (preamble a pick_role) (leader_context m (trepo t)))
   (append (fence pick_task_label (spec t)) (append (merged_text m t)
   (append (match bs with [] => pick_no_bids | _ => "" end)
   (append (fold_left (fun s b => append s (append pick_bid_label (append (show (bidn b)) (append pick_by_label (append (bidder b)
@@ -204,6 +213,11 @@ implemented by " (me a)), "title", append "task " (append t (append " by " (me a
 
 (** what a flattened reply says at a key *)
 kv_at (kv : list string) (k : string) : string := get_or "" k (pairs kv).
+
+journal_note (a m : obj) (kind repo bid head tree commit context origin info : string) : obj :=
+  let data := [kind, repo, bid, head, tree, commit, take_str 2000 (clean_text context),
+               take_str 256 (clean_text origin), take_str 4000 (clean_text info)] in
+  if leader_fields_ok data then enqueue a ("leader-note" :: data) else a.
 
 Fixpoint edits_from (kv : list string) (i fuel : nat) : list string :=
   match fuel with
@@ -285,6 +299,16 @@ on_answer (a m : obj) (data kv : list string) : obj :=
         enqueue a (if seq ti "" then "bid" :: t :: v :: clean_text (kv_at kv "note") :: es
                    else "tbid" :: t :: v :: ti :: clean_text (kv_at kv "note") :: es)
   | "pick" :: t :: cands =>
+      let repo := match task_by m (num t) with Some tk => trepo tk | None => "" end in
+      let info := leader_json_object [("task", t), ("selected_bid", kv_at kv "merge"),
+        ("done", kv_at kv "done"), ("close", kv_at kv "close"),
+        ("handoff", take_str 1200 (redact (kv_at kv "handoff"))),
+        ("rejections", take_str 1800 (redact (nio_json_strings kv)))] in
+      let head := match kv_at kv "_journal_base" with "" => get_or "" repo (repos m) | h => h end in
+      let origin := match kv_at kv "_journal_origin" with "" => append "pick/task/" t | o => o end in
+      let a := journal_note a m "review" repo (kv_at kv "merge") head "" ""
+        "leader selection; CI and committed merge still required" origin info in
+      if negb (is_leader m (me a)) then a else
       let a := fold_left (fun a r =>
                  if mem (fst r) cands then
                    let ti := short_title (reject_title kv (fst r)) in
@@ -314,6 +338,12 @@ ask_ctx (a m : obj) (data : list string) (prompt : string) (ctx : list string) :
   else if scripted a then (on_answer a m data (scripted_answer a m data), [])
   else
     let id := show (nreq a + 1) in
+    let context := match data with
+      | "pick" :: t :: _ => match task_by m (num t) with
+        | Some tk => [get_or "" (trepo tk) (repos m), Stdlib.Strings.String.concat "/" ["pick", "term", show (term m), "request", id]]
+        | None => [] end
+      | _ => [] end in
+    let a := setf a "req_contexts" (firstn 50 ((id, context) :: req_contexts a)) in
     (setf (setf a "nreq" (nreq a + 1)) "reqs" (firstn 50 ((id, data) :: reqs a)),
      [("llm" :: id :: hd "" data :: prompt :: ctx)]).
 
@@ -398,8 +428,8 @@ lead (a m : obj) : obj * list (list string) :=
                if mark_merged || negb (ask_once a (append "unmarked." id)) then (a, o)
                else (note_asked a (append "unmarked." id),
                      o ++ [["log", unmarked_close_text id (judged_done t) (seq line "") marked (judged_closed t)]])
-             else if judged_done t && ask_once a (append "mark." id)
-             then (enqueue (note_asked a (append "mark." id)) ["markq", id], o)
+             else if judged_done t && ask_once a (Stdlib.Strings.String.concat "." ["mark", show (term m), id])
+             then (enqueue (note_asked a (Stdlib.Strings.String.concat "." ["mark", show (term m), id])) ["markq", id], o)
              else (a, o)) (mine (open_tasks m)) (a, []) in
   (* review bids once the chosen workers have bid or the window has passed *)
   let st := fold_left (fun (st : obj * list (list string)) (t : task) =>
@@ -410,10 +440,10 @@ lead (a m : obj) : obj * list (list string) :=
          now? asked once a version *)
       if (length cands =? 0) then
         (if (0 <? length (merged_on t)) && negb (judged_done t) && negb (judged_closed t)
-         then with_retry st m (append "review." (append (show (tid t)) (append "." (show (version m))))) ["pick", show (tid t)] (pick_prompt (fst st) m t []) []
+         then with_retry st m (append (append "review." (append (show (term m)) ".")) (append (show (tid t)) (append "." (show (version m))))) ["pick", show (tid t)] (pick_prompt (fst st) m t []) []
          else st) else
       if (length cands <? length (bidders_for m t)) && (h <? posted_at t + bid_window (fst st)) then st else
-      let key := append "pick." (append (show (tid t)) (append "." (append (hash_list (map (fun b => show (bidn b)) cands)) (append "." (show (version m)))))) in
+      let key := append (append "pick." (append (show (term m)) ".")) (append (show (tid t)) (append "." (append (hash_list (map (fun b => show (bidn b)) cands)) (append "." (show (version m)))))) in
       let bad := filter (fun b => negb (seq (violation (fst st) m b) "")) cands in
       let good := filter (fun b => seq (violation (fst st) m b) "") cands in
       (* the policy's rejections once; the pick, again if the model failed *)
@@ -475,7 +505,11 @@ check_req (a m : obj) (kind : string) (b : bid) (t : string) : obj * list (list 
   let r := bid_repo m b in
   let id := show (nreq a + 1) in
   (* the head the check runs on, last: a merge or mark names it *)
-  (setf (setf a "nreq" (nreq a + 1)) "reqs" ((id, [kind, show (bidn b), t, get_or "" r (repos m)]) :: reqs a),
+  let head := get_or "" r (repos m) in
+  let origin := Stdlib.Strings.String.concat "/" [kind, "term", show (term m), "request", id] in
+  let a := journal_note a m "check-start" r (show (bidn b)) head "" "" "queued; no result yet" origin
+    "Check requested on this exact base tree. A result may arrive in a later term." in
+  (setf (setf a "nreq" (nreq a + 1)) "reqs" ((id, [kind, show (bidn b), t, head, origin, r]) :: reqs a),
    [("check" :: id :: r :: get_or "" r (repos m) :: flat_edits (edits b))]).
 
 (** what an attestation of bid b to the pending merge is asked under: a merge
@@ -526,19 +560,34 @@ flush (a m : obj) : obj * list (list string) :=
   | ["merge", b] :: rest =>
       let a := setf a "queue" rest in
       (* a bid merged, rejected or cleared since it was queued isn't checked *)
-      match bid_by m (num b) with Some bd => if is_pending (bst bd) then check_req a m "mcheck" bd "" else (a, []) | None => (a, []) end
+      if negb (is_leader m (me a)) then (a, []) else
+      match bid_by m (num b) with
+      | Some bd =>
+        let head := get_or "" (bid_repo m bd) (repos m) in
+        let running := existsb (fun r => match snd r with
+          | "mcheck" :: other :: _ :: on :: _ => seq b other && seq on head
+          | _ => false end) (reqs a) in
+        if is_pending (bst bd) && negb running then check_req a m "mcheck" bd "" else (a, [])
+      | None => (a, [])
+      end
   | ["markq", t] :: rest =>
       let a := setf a "queue" rest in
+      if negb (is_leader m (me a)) then (a, []) else
       let line := get_or "" t (plan_lines a) in
       match task_by m (num t) with
       | Some tk =>
           let r := trepo tk in
           let id := show (nreq a + 1) in
-          (setf (setf a "nreq" (nreq a + 1)) "reqs" ((id, ["markcheck", t, line, get_or "" r (repos m)]) :: reqs a),
+          let origin := Stdlib.Strings.String.concat "/" ["markcheck", "term", show (term m), "request", id] in
+          let a := journal_note a m "check-start" r "0" (get_or "" r (repos m)) "" ""
+            "plan mark validation queued" origin (append "Validate completion mark for task " t) in
+          (setf (setf a "nreq" (nreq a + 1)) "reqs" ((id, ["markcheck", t, line, get_or "" r (repos m), origin]) :: reqs a),
            [("check" :: id :: r :: get_or "" r (repos m) :: (epath (mark_edit line) :: eold (mark_edit line) :: enew (mark_edit line) :: []))])
       | None => (a, [])
       end
   | tx :: rest =>
+      if mem (hd "" tx) ["merge", "mark", "post", "reject", "conflict", "close", "finish"]
+         && negb (is_leader m (me a)) then (setf a "queue" rest, []) else
       if inflight a =? 0 then
         (setf (setf (setf (setf a "queue" rest) "inflight" (n + 1)) "sent_at" (mheight m)) "inflight_tx" tx,
          [("submit" :: show (n + 1) :: tx)])
@@ -555,7 +604,9 @@ tick (a m : obj) : obj * list (list string) :=
   let (a, o5) := flush a m in
   (a, o1 ++ o2 ++ o3 ++ o4 ++ o5).
 
-drop_req (a : obj) (id : string) : obj := setf a "reqs" (filter (fun r => negb (seq (fst r) id)) (reqs a)).
+drop_req (a : obj) (id : string) : obj :=
+  setf (setf a "reqs" (filter (fun r => negb (seq (fst r) id)) (reqs a)))
+       "req_contexts" (filter (fun r => negb (seq (fst r) id)) (req_contexts a)).
 
 (** A model call failed: forget the request, so the duty can ask again. A
     request asked through with_retry counts a failure for its key, which is
@@ -575,7 +626,34 @@ abstain (a : obj) (kv : list string) : obj * list (list string) :=
 (** A model or a check answered request id: kv is the flattened reply. *)
 answered (a m : obj) (id : string) (kv : list string) : obj * list (list string) :=
   let req := lookup id (reqs a) in
+  let kv := match lookup id (req_contexts a) with
+    | Some [head, origin] => ["_journal_base", head, "_journal_origin", origin] ++ kv
+    | _ => kv end in
   let a := drop_req a id in
+  let a := match req with
+    | Some ("markcheck" :: t :: _ :: head :: origin :: _) =>
+        match task_by m (num t) with
+        | Some tk => journal_note a m (if seq (kv_at kv "ok") "true" then "check-pass" else "check-fail")
+            (trepo tk) "0" head (kv_at kv "tree") (kv_at kv "commit") (kv_at kv "context") origin
+            (leader_json_object [("task", t), ("base_commit", kv_at kv "base_commit"),
+              ("result", kv_at kv "ok"), ("reason", take_str 700 (redact (kv_at kv "why"))),
+              ("output", take_str 2000 (kv_at kv "details"))])
+        | None => a
+        end
+    | Some (kind :: b :: _ :: head :: origin :: more) =>
+      if mem kind ["check", "mcheck"] then
+        let repo := match more with r :: _ => r | [] =>
+          match bid_by m (num b) with Some bd => bid_repo m bd | None => "" end end in
+        journal_note a m (if seq (kv_at kv "ok") "true" then "check-pass" else "check-fail")
+            repo b head (kv_at kv "tree") (kv_at kv "commit") (kv_at kv "context") origin
+            (leader_json_object [("result", kv_at kv "ok"), ("stage", kv_at kv "stage"),
+              ("base_commit", kv_at kv "base_commit"), ("reason", take_str 700 (redact (kv_at kv "why"))),
+              ("reused_local_check", kv_at kv "reused"),
+              ("verified_request", kv_at kv "verified_request"), ("check_key", kv_at kv "check_key"),
+              ("output", take_str 2000 (kv_at kv "details"))])
+      else a
+    | _ => a
+    end in
   match req with
   | Some ("check" :: b :: t :: _) =>
       if seq (kv_at kv "ok") "error" then abstain a kv
@@ -589,6 +667,7 @@ answered (a m : obj) (id : string) (kv : list string) : obj * list (list string)
         end
       else flush (enqueue a ["attest", b, "no"]) m
   | Some ("markcheck" :: t :: line :: rest) =>
+      if negb (is_leader m (me a)) then flush a m else
       let on := match rest with o :: _ => o | [] => "" end in
       (* a merge landed while the check ran: its answer is the old head's,
          so the mark is checked again on the head *)
@@ -600,6 +679,11 @@ answered (a m : obj) (id : string) (kv : list string) : obj * list (list string)
         let '(a, o) := flush a m in
         (a, ["log", append "the plan line of task " (append t (append " can't be marked, so it closes unmarked: " (kv_at kv "why")))] :: o)
   | Some ("mcheck" :: b :: rest) =>
+      (* Late checks remain useful journal entries, but leadership is checked
+         again before spending another check or trying to merge/reject. *)
+      if negb (is_leader m (me a)) then flush a m else
+      if negb (match bid_by m (num b) with Some bd => is_pending (bst bd) | None => false end)
+      then flush a m else
       (* the head the check ran on; none recorded is taken as the head *)
       let on := match rest with _ :: o :: _ => o | _ => "" end in
       if seq (kv_at kv "ok") "error" then abstain a kv

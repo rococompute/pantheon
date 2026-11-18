@@ -348,6 +348,7 @@ order_effects (ev : list string) (before after : node_state) (outs : list (list 
 Inductive output_request :=
 | SetTimer (ms : string) (event : list string)
 | WriteLog (text : string)
+| RecordLeader (previous digest entry : string)
 | RevealLink (term : string)
 | DecidedBlock (height : string) (txs : list string)
 | SetHeight (height : string)
@@ -378,6 +379,7 @@ plan_output (out : list string) : output_request :=
   | "merge" :: r :: v :: tree :: bid :: task :: bidder :: spec :: edits =>
       MergeRequest r v tree bid task bidder spec edits
   | "llm" :: id :: kind :: prompt :: ctx => LlmRequest id kind prompt ctx
+  | ["leader-record", previous, digest, entry] => RecordLeader previous digest entry
   | ["finish", ms] => FinishNode ms
   | ["exit", code] => ExitNode code
   | _ => LegacyOutput out
@@ -434,6 +436,7 @@ output_io (out : list string) : option node_op :=
   match plan_output out with
   | SetTimer ms ev => Some (IoTimer ms ev)
   | WriteLog text => Some (IoLog text)
+  | RecordLeader previous digest entry => Some (IoLeaderRecord previous digest entry)
   | _ => None
   end.
 
@@ -1289,9 +1292,16 @@ Inductive check_apply_plan :=
 | CheckApplyFailed
 | CheckApplyTree (with_ci : bool) (lie : bool) (tree : string).
 
+check_evidence (raw : string) : list string :=
+  match json_tokens raw with Some toks => flatten_reply toks | None => [] end.
+
+check_raw_tree (raw : string) : string :=
+  let tree := kv_at (check_evidence raw) "tree" in
+  if seq tree "" then ocaml_trim raw else tree.
+
 check_apply_plan_of (byz ci raw : string) : check_apply_plan :=
   if starts "!" raw then CheckApplyFailed
-  else CheckApplyTree (negb (seq ci "")) (seq byz "bad-tree") (ocaml_trim raw).
+  else CheckApplyTree (negb (seq ci "")) (seq byz "bad-tree") (check_raw_tree raw).
 
 (** A check's result event, chosen here (step 5): ok is "true", "error"
     when the failure is this node's own (stage "node": the agent abstains)
@@ -1346,21 +1356,26 @@ check_apply_tree (plan : check_apply_plan) (lie_hash : string) : string :=
 (** The shell queued the raw output. Log the fault, ask the shell to start
     CI, or return the event, in the old order. Events an immediate CI start
     failure queued come back with these, so they stay in this turn. *)
-check_apply_prog (id out ci raw : string) : nprog (list (list string)) :=
+check_apply_record_prog (id out ci raw : string) (native_evidence : list string) : nprog (list (list string)) :=
   nbind (nask IoDraw) (fun draw =>
   let plan := check_apply_plan_of (fst (ans_draw draw)) ci raw in
   let lying := match plan with CheckApplyTree _ true _ => true | _ => false end in
   let lie_hash := if lying then check_lie_tree id else "" in
   nbind (if lying then nexec (IoLog "FAULT INJECTION: naming a wrong tree") else NDone true) (fun noted =>
-  let evs := check_apply_choice lie_hash id raw plan in
+  let evidence := native_evidence ++ flat (filter (fun p => mem (fst p) ["commit", "base_commit"]) (pairs (check_evidence raw))) in
+  let evs := map (fun ev => if seq (hd "" ev) "check_result" && negb (seq (kv_at evidence "commit") "")
+    then ev ++ evidence ++ ["context", "apply-only; no CI configured"] else ev)
+    (check_apply_choice lie_hash id raw plan) in
   if noted then
     match plan with
     | CheckApplyTree true _ _ =>
-        nbind (nask (IoCiLaunch id out (check_apply_tree plan lie_hash) ci)) (fun started =>
+        nbind (nask (IoCiLaunch id out (check_apply_tree plan lie_hash) ci evidence)) (fun started =>
         NDone (evs ++ nio_lists (ans_list started)))
     | _ => NDone evs
     end
   else NDone [])).
+
+check_apply_prog (id out ci raw : string) : nprog (list (list string)) := check_apply_record_prog id out ci raw [].
 
 (** Generated model replies are interpreted before the turn's events run,
     at the finished job's original queue position. Codex's file remains
@@ -1375,7 +1390,7 @@ model_output_prog (ev : list string) : nprog (list (list string)) :=
       model_reply_prog id kind prompt0 (codex_reply_of text (fun _ => Some out)) ctx
   | "codex_output" :: id :: kind :: prompt0 :: text :: "0" :: ctx =>
       model_reply_prog id kind prompt0 (codex_reply_of text (fun _ => None)) ctx
-  | ["check_apply_out", id, out, ci, raw] => check_apply_prog id out ci raw
+  | "check_apply_out" :: id :: out :: ci :: raw :: evidence => check_apply_record_prog id out ci raw evidence
   | _ => NDone [ev]
   end.
 
@@ -1686,6 +1701,7 @@ output_prog (out : list string) : nprog bool :=
   match plan_output out with
   | SetTimer ms ev => nexec (IoTimer ms ev)
   | WriteLog text => nexec (IoLog text)
+  | RecordLeader previous digest entry => nexec (IoLeaderRecord previous digest entry)
   | RevealLink term =>
       nbind (nask IoDraw) (fun draw =>
       let (byz, chain) := ans_draw draw in
@@ -1730,7 +1746,7 @@ output_prog (out : list string) : nprog bool :=
   | LlmRequest id kind prompt ctx => llm_prog id kind prompt ctx
   | FinishNode ms => nexec (IoTimer ms ["finished"])
   | ExitNode code => nexec (IoExit code)
-  | LegacyOutput _ => NDone true
+| LegacyOutput _ => NDone true
   end.
 
 (** A vote signed ahead of its snapshot ([sign_effects]): written to the
@@ -2137,13 +2153,20 @@ check_failed_prog (id t : string) : nprog bool :=
   nand (nexec (IoLog (append "check of request " (append id (append " failed: " t))))) (fun _ =>
   nexec (IoQueue (check_result_event id false "" t (check_apply_stage t)))).
 
-ci_done_prog (id tree memory runner t : string) : nprog bool :=
+ci_done_record_prog (id tree memory runner t : string) (evidence : list string) : nprog bool :=
   let (ok, rest) := ci_outcome t (seq runner "sandbox") memory in
   let (why, stage) := rest in
   nand (nexec (IoLog (append "CI for request " (append id (append ": " (if ok then "passed" else "failed")))))) (fun _ =>
   nand (if ok then NDone true
         else nexec (IoLog (append "CI for request " (append id (append " said: " (replace_all t newline " ")))))) (fun _ =>
-  nexec (IoQueue (check_result_event id ok tree why stage)))).
+  let result := check_result_event id ok tree why stage ++ evidence ++
+    (if seq (kv_at evidence "check_key") "" then [] else ["verified_request", id]) ++
+    (if seq (kv_at evidence "commit") "" then [] else ["details", take_str 3000 (clean_text (redact (ci_tail t)))]) in
+  nand (if ok && negb (seq (kv_at evidence "check_key") "") then
+    nexec (IoRememberCheck (kv_at evidence "check_key") (skipn 2 result)) else NDone true) (fun _ =>
+  nexec (IoQueue result)))).
+
+ci_done_prog (id tree memory runner t : string) : nprog bool := ci_done_record_prog id tree memory runner t [].
 
 (** A peer line as the shell read it: its shape scanned, its members
     read, and for a transaction whether it was refused before
@@ -2193,8 +2216,8 @@ run_event_prog (st : node_state) (ev : list string) : nprog node_state :=
       NDone (if ok then (if seq mode "evict" then peer_forget st target else st) else with_live st (live st))))
   | ["peer_closed", cid] => NDone (peer_forget st cid)
   | ["check_failed", id, t] => nbind (check_failed_prog id t) (fun ok => NDone (kept st ok))
-  | ["ci_done", id, tree, memory, runner, t] =>
-      nbind (ci_done_prog id tree memory runner t) (fun ok => NDone (kept st ok))
+  | "ci_done" :: id :: tree :: memory :: runner :: t :: evidence =>
+      nbind (ci_done_record_prog id tree memory runner t evidence) (fun ok => NDone (kept st ok))
   | ["inbox_file", path, content] =>
       match inbox_tx (json_tokens content) with
       | Some fields => step_prog st ("local_tx" :: fields)

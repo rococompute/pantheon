@@ -1,0 +1,23 @@
+(** Exercise the actual append-only Git projection, including replay. *)
+Import core.util core.leader runtime.nodeio runtime.node_host runtime.node_shell.
+Require Soma.Host.
+
+world (home : string) : hworld := {| hw_home := home; hw_backend := "scripted"; hw_repos := [];
+  hw_max_calls := "0"; hw_ci := ""; hw_ci_repo := []; hw_ci_memory := "1g"; hw_ci_image := ""; hw_ci_sandbox := "" |}.
+
+main :=
+  let home := hd "." (Host.argv tt) in
+  let m := [("leader_entries", ([] : list leader_entry) : Any), ("leader_tip", "" : Any), ("leader_count", 0 : Any), ("chain", "test-chain" : Any)] in
+  let first := fst (leader_append m 1 1 "a" ["note", "r", "0", "", "", "", "", "manual", "first finding"]) in
+  let second := fst (leader_append first 9 4 "b" ["note", "r", "0", "", "", "", "", "manual", "next leader finding"]) in
+  let e1 := hd {| le_number := 0; le_parent := ""; le_hash := ""; le_height := 0; le_term := 0; le_author := ""; le_chain := "test-chain"; le_fields := [] |} (leader_entries first) in
+  let e2 := hd e1 (leader_entries second) in
+  let append_record e := hjournal (world home) (le_parent e) (le_hash e) (leader_entry_json e) in
+  let result := run_shell (
+    nbind (append_record e1) (fun a =>
+    nbind (append_record e2) (fun b =>
+    nbind (append_record e1) (fun c =>
+    nbind (append_record e2) (fun d =>
+    nbind (hjournal (world home) "" (sha256 "fork") "fork") (fun fork =>
+    NDone (fst a && fst b && fst c && fst d && negb (fst fork)))))))) in
+  Host.print (if result then "ok journal append, replay and fork refusal" else "FAIL Git journal").

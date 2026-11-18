@@ -1,0 +1,62 @@
+(** Late results remain facts, never authority; the journal preserves old bases. *)
+Import core.util core.leader core.market core.agent.
+Require Soma.Host.
+
+check (name : string) (ok : bool) : string := append (if ok then "ok " else "FAIL ") name.
+base_tree : string := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".
+candidate_tree : string := "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".
+candidate_commit : string := "cccccccccccccccccccccccccccccccccccccccc".
+
+market : obj := setf (setf (setf (setf (setf (new_market ["a", "b", "c", "d"])
+  "repos" ([("r", base_tree)] : list (string * string))) "leader" "a") "term" 1) "awaiting" false) "h" 10.
+task0 : task := {| tid := 1; trepo := "r"; spec := "task"; poster := "a"; tctx := []; topen := true; posted_at := 0 |}.
+bid0 : bid := {| bidn := 1; btask := 1; bidder := "c"; base := 0;
+  edits := [{| epath := "x"; eold := ""; enew := "value" |}]; note := "candidate";
+  bst := Pending; stale := false; why := ""; votes := [] |}.
+m0 : obj := setf (setf market "tasks" [task0]) "bids" [bid0].
+started : obj * list (list string) := check_req (new_agent "a") m0 "mcheck" bid0 "".
+m4 : obj := setf (setf (setf m0 "leader" "b") "term" 4) "repos" ([("r", candidate_tree)] : list (string * string)).
+completed : obj * list (list string) := answered (fst started) m4 "1"
+  ["ok", "true", "tree", candidate_tree, "commit", candidate_commit,
+   "context", "test command", "details", "CHECK_TIMING tests passed"].
+pass_fields : list string := ["check-pass", "r", "1", base_tree, candidate_tree, candidate_commit,
+  "test command", "mcheck/term/1/request/1", "tested on the old base, not accepted"].
+recorded := apply m4 "a" ("leader-note" :: pass_fields).
+m1 : obj := fst (fst recorded).
+recorded2 := apply m1 "b" ["leader-note", "note", "r", "0", candidate_tree, "", candidate_commit,
+  "investigation", "manual", "next step: wire the UI"].
+m2 : obj := fst (fst recorded2).
+
+is_pass (tx : list string) : bool := seq (hd "" tx) "leader-note" && seq (nth 1 tx "") "check-pass".
+
+main := Host.print_lines [
+  check "a check starts with a durable journal intent"
+    (existsb (fun tx => seq (nth 1 tx "") "check-start") (queue (fst started))),
+  check "a result after three leader changes is retained" (existsb is_pass (queue (fst completed))),
+  check "late callbacks never queue an unauthorized merge"
+    (negb (existsb (fun tx => seq (hd "" tx) "merge") (queue (fst completed)))),
+  check "already queued checked merges are not submitted after rotation"
+    (length (snd (flush (setf (new_agent "a") "queue"
+      ([["merge", "1", candidate_tree, base_tree]] : list (list string))) m4)) =? 0),
+  check "returning leaders do not queue duplicate running checks"
+    (length (snd (flush (setf (fst started) "queue"
+      ([["merge", "1"]] : list (list string))) m0)) =? 0),
+  check "late evidence survives pruning its bid"
+    (existsb is_pass (queue (fst (answered (fst started) (setf m4 "bids" ([] : list bid)) "1"
+      ["ok", "true", "tree", candidate_tree, "commit", candidate_commit, "context", "test command"])))),
+  check "former leaders may publish their late observations" (seq (snd recorded) ""),
+  check "a passing check is not a merge" ((version m1 =? 0) && (pending_bid_id m1 =? 0)
+    && match bid_by m1 1 with Some b => is_pending (bst b) | None => false end),
+  check "entries append and link to their predecessor"
+    ((leader_count m2 =? 2) && match leader_entries m2 with
+      e2 :: e1 :: [] => seq (le_parent e2) (le_hash e1) && seq (le_author e1) "a" && seq (le_author e2) "b"
+      | _ => false end),
+  check "historical checks keep their original base"
+    (match leader_entries m2 with _ :: e :: _ => seq (nth 3 (le_fields e) "") base_tree | _ => false end),
+  check "journal entries cannot overwrite records"
+    (negb (leader_fields_ok ["replace", "r", "1", base_tree, candidate_tree, candidate_commit, "", "", ""])),
+  check "success requires a retained candidate commit"
+    (negb (leader_fields_ok ["check-pass", "r", "1", base_tree, candidate_tree, "", "", "", ""])),
+  check "handoff context is fenced in leader prompts"
+    (contains "leader handoff observations" (pick_prompt (new_agent "b") m2 task0 [bid0]))
+].

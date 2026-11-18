@@ -9,7 +9,7 @@
     printing, files, git, a new RSA key and starting nodes; the edits
     machinery decides here too, over the host's file and git work.
     [pantheon node] is runtime/node.soma's [run_node]. *)
-Import core.util runtime.nodeio.
+Import core.leader core.util runtime.nodeio.
 (* [float] and its literals, OCaml's (Soma.OCaml) *)
 From Soma Require Import OCaml.
 From Stdlib Require Import Ascii.
@@ -608,6 +608,16 @@ cmd_tx (home : string) (fields : list string) : nprog unit :=
   cli_say (cat ["queued for ", basename home, "'s agent: ", join " " fields, " (it signs and sends it next; see `pantheon status ", home, "`)"])
     (fun _ => NDone tt)))).
 
+cmd_leader_note (home repo commit info : string) : nprog unit :=
+  let dir := path (path home "repos") repo in
+  cli_ask (IoGit dir ["rev-parse", "--verify", "--end-of-options", append commit "^{commit}"]) (fun resolved =>
+  if negb (fst resolved) then cli_fail "leader-note requires a commit available in the named repository" else
+  let commit := trim (ans_one resolved) in
+  cli_ask (IoGit dir ["rev-parse", append commit "^{tree}"]) (fun tree =>
+  if negb (fst tree) then cli_fail "cannot read the journal note's commit tree" else
+  cmd_tx home ["leader-note", "note", repo, "0", trim (ans_one tree), "", commit,
+               "manual handoff observation", "manual", take_str 4000 (clean_text (redact info))])).
+
 lines_text (l : list string) : string := cat (List.map (fun x => append x newline) l).
 
 cmd_plan (file : string) : nprog unit :=
@@ -719,7 +729,27 @@ Fixpoint edits_prog (pl : edit_place) (es : list (string * string * string)) : n
     message. *)
 Inductive tree_result := TreeMade (tree : string) | TreeBid (why : string) | TreeNode (why : string).
 
-check_tree_prog (repo head out : string) (edits : list string) : nprog tree_result :=
+(** Keep the exact candidate reachable after its temporary checkout goes away.
+    These refs are create-only and never move the accepted repository HEAD. *)
+pin_check_prog (repo out parent tree : string) : nprog bool :=
+  let zero := "0000000000000000000000000000000000000000" in
+  let ref := cat ["refs/pantheon/checks/", parent, "/", tree] in
+  let env := ["GIT_AUTHOR_NAME=Pantheon", "GIT_AUTHOR_EMAIL=pantheon@localhost",
+              "GIT_COMMITTER_NAME=Pantheon", "GIT_COMMITTER_EMAIL=pantheon@localhost",
+              "GIT_AUTHOR_DATE=2000-01-01T00:00:00+0000", "GIT_COMMITTER_DATE=2000-01-01T00:00:00+0000"] in
+  nbind (nask (IoGitEnv out "Pantheon checked candidate" env ["commit-tree", tree, "-p", parent])) (fun made =>
+  if negb (fst made) then NDone false else
+  let commit := trim (ans_one made) in
+  nbind (nask (IoGit repo ["fetch", "--quiet", "--no-tags", "--no-write-fetch-head", out, commit])) (fun fetched =>
+  if negb (fst fetched) then NDone false else
+  nbind (nask (IoGit repo ["rev-parse", "--verify", "--quiet", ref])) (fun existing =>
+  nbind (if fst existing then NDone (ans_flag (seq (trim (ans_one existing)) commit))
+         else nask (IoGit repo ["update-ref", ref, commit, zero])) (fun pinned =>
+  if negb (fst pinned) then NDone false else
+  nbind (nask (IoGit out ["update-ref", "refs/pantheon/candidate", commit, zero])) (fun marked =>
+  NDone (fst marked)))))).
+
+check_tree_record_prog (retain : bool) (repo head out : string) (edits : list string) : nprog tree_result :=
   nbind (nask (IoGit repo ["rev-parse", "HEAD"])) (fun commit =>
   nbind (nask (IoGit repo ["rev-parse", "HEAD^{tree}"])) (fun tree =>
   let tree := trim (ans_one tree) in
@@ -736,8 +766,15 @@ check_tree_prog (repo head out : string) (edits : list string) : nprog tree_resu
   | None =>
       nbind (nask (IoGit out ["add", "-A", "-f"])) (fun added =>
       if negb (fst added) then NDone (TreeNode "node problem: git add failed") else
-      nbind (nask (IoGit out ["write-tree"])) (fun t => NDone (TreeMade (trim (ans_one t)))))
+      nbind (nask (IoGit out ["write-tree"])) (fun t =>
+      let tree := trim (ans_one t) in
+      nbind (if negb (fst t) then NDone false else
+        if retain then pin_check_prog repo out (trim (ans_one commit)) tree else NDone true) (fun pinned =>
+      NDone (if pinned then TreeMade tree else TreeNode "node problem: cannot retain the checked candidate commit"))))
   end))))).
+
+check_tree_prog (repo head out : string) (edits : list string) : nprog tree_result :=
+  check_tree_record_prog false repo head out edits.
 
 (** ---- a checkout's changes as edits (pantheon edits) ----
     What changed in a checkout since its HEAD, as edits. Binary files, and
@@ -1069,6 +1106,24 @@ cmd_check (repo head file out : string) : nprog unit :=
   | TreeNode e => cli_do (IoPrint e) (fun _ => cli_do (IoExit check_node_failed) (fun _ => NDone tt))
   end)).
 
+cmd_check_record (repo head file out : string) : nprog unit :=
+  edits_file file (fun edits =>
+  nbind (check_tree_record_prog true repo head out edits) (fun r =>
+  match r with
+  | TreeMade tree =>
+      nbind (nask (IoGit out ["rev-parse", "refs/pantheon/candidate"])) (fun candidate =>
+      nbind (nask (IoGit out ["rev-parse", "HEAD"])) (fun parent =>
+      cli_do (IoPrint (leader_json_object [("tree", tree), ("commit", trim (ans_one candidate)),
+        ("base_commit", trim (ans_one parent))])) (fun _ => NDone tt)))
+  | TreeBid e => cli_do (IoPrint e) (fun _ => cli_do (IoExit check_bid_failed) (fun _ => NDone tt))
+  | TreeNode e => cli_do (IoPrint e) (fun _ => cli_do (IoExit check_node_failed) (fun _ => NDone tt))
+  end)).
+
+cmd_leader_chain (home : string) : nprog unit :=
+  cli_ask (IoGit (path home "leader-chain.git") ["log", "--reverse", "--format=%s", "refs/heads/leader-chain"]) (fun a =>
+  if fst a then cli_do (IoPrint (ans_one a)) (fun _ => NDone tt)
+  else cli_fail "no committed leader chain yet").
+
 (** ---- the commands ---- *)
 
 usage : string := "pantheon: a private BFT labor market where LLM agents take turns as term leader.
@@ -1087,6 +1142,8 @@ usage : string := "pantheon: a private BFT labor market where LLM agents take tu
   pantheon tx HOME post REPO ""spec"" [CONTEXT-PATH...]   (or any market transaction's fields)
   pantheon edits CHECKOUT [--title TITLE] [NOTE]
                                      a checkout's changes as a patch reply (for models with tools)
+  pantheon leader-chain HOME        committed handoff records as JSONL (checks are not merges)
+  pantheon leader-note HOME REPO COMMIT NOTE...   retain a useful finding against an exact commit
   pantheon plan [FILE]              a .plan's open items (default ./.plan; see docs/PLAN.md)
   pantheon plan --check [--allow-closed-plan] [FILE]   catch Markdown task lists mistaken for .plan marks
   pantheon apply-edits DIR EDITS.json
@@ -1355,6 +1412,9 @@ cli_prog (args : list string) : nprog unit :=
   | ["plan", file] => cmd_plan file
   | ["apply-edits", dir, file] => cmd_apply_edits dir file
   | ["check", repo, head, file, out] => cmd_check repo head file out
+  | ["check", repo, head, file, out, "--record"] => cmd_check_record repo head file out
+  | ["leader-chain", home] => cmd_leader_chain home
+  | "leader-note" :: home :: repo :: commit :: info => cmd_leader_note home repo commit (join " " info)
   | ["status", home] => cmd_status home
   | "tx" :: home :: field :: rest => cmd_tx home (field :: rest)
   | "up" :: dir :: rest => cmd_up dir rest

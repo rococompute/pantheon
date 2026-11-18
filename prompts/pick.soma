@@ -60,5 +60,6 @@ People follow the market by short titles. For the bid you merge, give title: wha
 Reply format: {""merge"": <bid number or 0>, ",
   """title"": ""the merged bid's, up to 60 characters"", ""reject"": [{""bid"": <number>, ""reason"": ",
   """why"", ""title"": ""up to 60 characters""}], ""done"": true or false, ""close"": true or false, ",
-  """plan_line"": ""the item's line, or empty""}"
+  """plan_line"": ""the item's line, or empty"", ""handoff"": ""concise reusable findings, ",
+  "remaining work or blockers for a future leader; distinguish observations from acceptance""}"
 ].

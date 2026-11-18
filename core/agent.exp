@@ -47,7 +47,9 @@ Qed.
 Lemma check_req_keeps : forall a a0 m k b t, keeps_own a a0 -> keeps_own a (fst (check_req a0 m k b t)).
 Proof.
   intros a a0 m k b t H f Hq Hn Hr Ha. unfold check_req. cbn [fst].
-  rewrite getf_setf_other by exact Hr. rewrite getf_setf_other by exact Hn. exact (H f Hq Hn Hr Ha).
+  rewrite getf_setf_other by exact Hr. rewrite getf_setf_other by exact Hn.
+  unfold journal_note. destruct (leader_fields_ok _);
+    [exact (enqueue_keeps _ _ _ H f Hq Hn Hr Ha)|exact (H f Hq Hn Hr Ha)].
 Qed.
 
 Lemma asked_note_asked : forall a key, mem key (asked (note_asked a key)) = true.
@@ -64,8 +66,11 @@ Qed.
 
 Lemma asked_check_req : forall a m k b t key, mem key (asked a) = true -> mem key (asked (fst (check_req a m k b t))) = true.
 Proof.
-  intros a m k b t key H. unfold check_req, asked in *. cbn [fst].
-  rewrite !getf_setf_other by reflexivity. exact H.
+  intros a m k b t key H. unfold check_req. cbn [fst].
+  unfold journal_note.
+  match goal with |- context [if ?c then _ else _] => destruct c end.
+  - unfold asked. rewrite !getf_setf_other by reflexivity. apply asked_enqueue. exact H.
+  - unfold asked. rewrite !getf_setf_other by reflexivity. exact H.
 Qed.
 
 (** ---- attest_duty ---- *)

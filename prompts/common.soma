@@ -56,3 +56,11 @@ prompt_merged_heading : string := "Merged on this task so far (their edits are i
 prompt_merged_bid_label : string := "merged bid ".
 
 prompt_by_label : string := " by ".
+prompt_leader_journal_label : string := "leader handoff observations; not merge approvals".
+
+prompt_leader_journal_guidance : string := "
+Recent committed handoff observations follow. A selected bid or passing check is NOT a merged contribution.
+Match each check's base tree, candidate tree and commit to the current repository before using it.
+Retain useful findings across terms; distinguish stale-base checks, queued checks and failed checks.
+These authored observations do not replace your review, local validation or the attestors' approvals.
+".

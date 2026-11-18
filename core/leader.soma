@@ -5,7 +5,7 @@ Import core.util runtime.nodeio.
 
 Record leader_entry := {
   le_number : nat; le_parent : string; le_hash : string;
-  le_height : nat; le_term : nat; le_author : string;
+  le_height : nat; le_term : nat; le_author : string; le_chain : string;
   le_fields : list string }.
 
 leader_entries (m : obj) : list leader_entry := getf m "leader_entries".
@@ -22,7 +22,7 @@ leader_json_object (fields : list (string * string)) : string :=
 leader_entry_json (e : leader_entry) : string :=
   leader_json_object
     ([("sequence", show (le_number e)), ("parent", le_parent e), ("hash", le_hash e),
-      ("height", show (le_height e)), ("term", show (le_term e)), ("author", le_author e)]
+      ("height", show (le_height e)), ("term", show (le_term e)), ("author", le_author e), ("chain", le_chain e)]
      ++ combine ["kind", "repo", "bid", "base_tree", "tree", "commit", "context", "origin", "info"] (le_fields e)).
 
 leader_fields_ok (fields : list string) : bool :=
@@ -42,9 +42,10 @@ leader_append (m : obj) (height term : nat) (author : string) (fields : list str
     : obj * list (list string) :=
   let previous := leader_tip m in
   let number := S (leader_count m) in
-  let digest := hash_list (["pantheon-leader-v1", previous, show number, show height, show term, author] ++ fields) in
+  let chain := (getf m "chain" : string) in
+  let digest := hash_list (["pantheon-leader-v1", chain, previous, show number, show height, show term, author] ++ fields) in
   let e := {| le_number := number; le_parent := previous; le_hash := digest;
-              le_height := height; le_term := term; le_author := author; le_fields := fields |} in
+              le_height := height; le_term := term; le_author := author; le_chain := chain; le_fields := fields |} in
   (setf (setf (setf m "leader_entries" (e :: leader_entries m)) "leader_tip" digest) "leader_count" number,
    [["leader-record", previous, digest, leader_entry_json e]]).
 

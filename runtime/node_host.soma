@@ -11,7 +11,7 @@
     inbox's last poll, and the jobs: what each one's end becomes, what
     goes with it, its time limit, whether the node stopped it, and CI's
     turns. *)
-Import core.util runtime.nodeio.
+Import core.util runtime.nodeio core.leader.
 
 (** What the host's work knows from the node's setup: the home (absolute),
     the backend, the governed repositories with their genesis commits, the
@@ -35,8 +35,8 @@ Record hworld := {
 Inductive job_done :=
 | DoneModel (id kind prompt : string) (ctx : list string)
 | DoneCodex (id kind prompt out : string) (ctx : list string)
-| DoneCheck (id out ci : string)
-| DoneCi (id tree memory runner : string).
+| DoneCheck (id out ci : string) (evidence : list string)
+| DoneCi (id tree memory runner : string) (evidence : list string).
 
 (** what goes when it's over: a file, a directory's tree (in the
     background), a container *)
@@ -72,17 +72,58 @@ Record host_state := {
   hs_ended : list hjob;
   hs_ci_busy : bool;
   hs_ci_waiting : list (list string);
-  hs_events : list (list string) }.
+  hs_events : list (list string);
+  (** Only native CI successes populate this process-local cache. Journal
+      claims never populate it; restarting a node revalidates its environment. *)
+  hs_verified : list (string * list string) }.
 
 host_start : host_state :=
   {| hs_calls := 0; hs_until := PrimFloat.zero; hs_reason := ""; hs_backoff := nio_small 900;
      hs_held := []; hs_probing := false; hs_inbox := PrimFloat.zero;
-     hs_jobs := []; hs_ended := []; hs_ci_busy := false; hs_ci_waiting := []; hs_events := [] |}.
+     hs_jobs := []; hs_ended := []; hs_ci_busy := false; hs_ci_waiting := []; hs_events := []; hs_verified := [] |}.
 
 hnl : string := Stdlib.Strings.String.String (Ascii.ascii_of_nat 10) Stdlib.Strings.String.EmptyString.
 
 (** a governed repository's checkout: HOME/repos/NAME *)
 hrepo_dir (hw : hworld) (r : string) : string := hjoin (hjoin (hw_home hw) "repos") r.
+
+(** The committed handoff stream has its own append-only Git history. Each
+    record also has a create-only ref, so replay is idempotent even when the
+    branch is already ahead. Fixed metadata makes every replica's Git history
+    identical. The governed repositories' HEADs are never moved here. *)
+leader_git_env : list string :=
+  ["GIT_AUTHOR_NAME=Pantheon", "GIT_AUTHOR_EMAIL=pantheon@localhost",
+   "GIT_COMMITTER_NAME=Pantheon", "GIT_COMMITTER_EMAIL=pantheon@localhost",
+   "GIT_AUTHOR_DATE=2000-01-01T00:00:00+0000", "GIT_COMMITTER_DATE=2000-01-01T00:00:00+0000"].
+
+hjournal (hw : hworld) (previous digest entry : string) : nprog nanswer :=
+  let dir := hjoin (hw_home hw) "leader-chain.git" in
+  let branch := "refs/heads/leader-chain" in
+  let record := append "refs/pantheon/entries/" digest in
+  let zero := "0000000000000000000000000000000000000000" in
+  nbind (nask (IoFileExists (hjoin dir "HEAD"))) (fun present =>
+  nbind (if fst present then NDone ans_ok else
+    nbind (nask (IoGit (hw_home hw) ["init", "--bare", "--quiet", dir])) (fun initialized =>
+      if fst initialized then nask (IoGit dir ["symbolic-ref", "HEAD", branch]) else NDone initialized)) (fun init =>
+  if negb (fst init) then NDone init else
+  nbind (if nio_eq previous "" then NDone (ans_data true [zero]) else
+    nask (IoGit dir ["rev-parse", "--verify", append "refs/pantheon/entries/" previous])) (fun parent =>
+  if negb (fst parent) then NDone parent else
+  let old := trim (ans_one parent) in
+  nbind (nask (IoGit dir ["mktree"])) (fun tree =>
+  nbind (nask (IoGitEnv dir entry leader_git_env
+    (["commit-tree", trim (ans_one tree)] ++ (if nio_eq old zero then [] else ["-p", old])))) (fun made =>
+  if negb (fst made) then NDone made else
+  let commit := trim (ans_one made) in
+  nbind (nask (IoGit dir ["rev-parse", "--verify", "--quiet", record])) (fun existing =>
+  nbind (if fst existing then NDone (ans_flag (nio_eq (trim (ans_one existing)) commit))
+         else nask (IoGit dir ["update-ref", record, commit, zero])) (fun indexed =>
+  if negb (fst indexed) then NDone indexed else
+  nbind (nask (IoGit dir ["rev-parse", "--verify", "--quiet", branch])) (fun tip =>
+  if (negb (fst tip) && nio_eq old zero) || nio_eq (trim (ans_one tip)) old
+  then nask (IoGit dir ["update-ref", branch, commit, old])
+  else if fst tip then nask (IoGit dir ["merge-base", "--is-ancestor", commit, trim (ans_one tip)])
+  else NDone (ans_flag false))))))))).
 
 (** decimal text added, digit by digit (a node's numbers stay text: a
     unikernel's naturals may count one by one) *)
@@ -179,11 +220,11 @@ done_event (d : job_done) (t : string) : list string :=
   match d with
   | DoneModel id kind prompt ctx => "llm_output" :: id :: kind :: prompt :: t :: ctx
   | DoneCodex id kind prompt out ctx => "codex_file" :: id :: kind :: prompt :: t :: out :: ctx
-  | DoneCheck id out ci => ["check_apply_out", id, out, ci, t]
-  | DoneCi id tree memory runner => ["ci_done", id, tree, memory, runner, t]
+  | DoneCheck id out ci evidence => "check_apply_out" :: id :: out :: ci :: t :: evidence
+  | DoneCi id tree memory runner evidence => "ci_done" :: id :: tree :: memory :: runner :: t :: evidence
   end.
 
-done_ci (d : job_done) : bool := match d with DoneCi _ _ _ _ => true | _ => false end.
+done_ci (d : job_done) : bool := match d with DoneCi _ _ _ _ _ => true | _ => false end.
 
 Fixpoint hcleanup (l : list job_clean) : nprog bool :=
   match l with
@@ -251,14 +292,16 @@ ci_docker_args (name mem out image script : string) : list string :=
     problem) is runtime/node.soma's ci_outcome, from the node's own signals. *)
 hci_start (hw : hworld) (env : list string) (s : host_state) (w : list string) : nprog (host_state * option (list string)) :=
   match w with
-  | [id, out, tree, ci, name] =>
+  | id :: out :: tree :: ci :: name :: evidence =>
       let mem := hw_ci_memory hw in
+      let evidence := evidence ++ ["context", leader_json_object [("command", ci),
+        ("memory", mem), ("image", hw_ci_image hw), ("runner", hw_ci_sandbox hw)]] in
       if negb (nio_eq (hw_ci_sandbox hw) "") then
         hstart_job s (nio_small 3600) (hw_ci_sandbox hw) "" [mem, out, ci_wrap ci] env
-          (DoneCi id tree mem "sandbox") [CleanTree out]
+          (DoneCi id tree mem "sandbox" evidence) [CleanTree out]
       else
         hstart_job s (nio_small 3600) "docker" "" (ci_docker_args name mem out (hw_ci_image hw) (ci_wrap ci)) env
-          (DoneCi id tree mem "docker") [CleanContainer name, CleanTree out]
+          (DoneCi id tree mem "docker" evidence) [CleanContainer name, CleanTree out]
   | _ => NDone (s, None)
   end.
 
@@ -301,7 +344,7 @@ hci_launch (hw : hworld) (env : list string) (s : host_state) (w : list string) 
     output, a tree or why not, becomes runtime/node.soma's check_apply_out. The
     tree goes on to the repository's CI, if it has one, which removes it
     after; without CI it goes with the job. *)
-hcheck (hw : hworld) (s : host_state) (id repo head : string) (edits : list string) : nprog (nanswer * host_state) :=
+hcheck_fresh (hw : hworld) (s : host_state) (id repo head key : string) (edits : list string) : nprog (nanswer * host_state) :=
   let ci := match List.find (fun p => nio_eq (fst p) repo) (hw_ci_repo hw) with Some p => snd p | None => hw_ci hw end in
   nbind (nask (IoTempDir "pantheon-check")) (fun o =>
   let out := ans_one o in
@@ -309,21 +352,43 @@ hcheck (hw : hworld) (s : host_state) (id repo head : string) (edits : list stri
   let ef := ans_one e in
   nbind (nask IoSelfExe) (fun self =>
   nbind (nask IoEnvEntries) (fun env =>
-  nbind (hstart_job s (nio_small 600) (ans_one self) "" ["check", hrepo_dir hw repo, head, ef, out] (ans_list env)
-           (DoneCheck id out ci) (CleanFile ef :: (if nio_eq ci "" then [CleanTree out] else []))) (fun r =>
+  nbind (hstart_job s (nio_small 600) (ans_one self) "" ["check", hrepo_dir hw repo, head, ef, out, "--record"] (ans_list env)
+           (DoneCheck id out ci ["check_key", key]) (CleanFile ef :: (if nio_eq ci "" then [CleanTree out] else []))) (fun r =>
   hkeep (hpush_opt (fst r) (snd r)) ans_ok))))).
+
+hcheck (hw : hworld) (s : host_state) (id repo head : string) (edits : list string) : nprog (nanswer * host_state) :=
+  let ci := match List.find (fun p => nio_eq (fst p) repo) (hw_ci_repo hw) with Some p => snd p | None => hw_ci hw end in
+  nbind (if nio_eq ci "" then NDone (ans_flag false) else
+    if nio_eq (hw_ci_sandbox hw) "" then
+      nask (IoRun "docker" ["image", "inspect", "--format={{.Id}}", hw_ci_image hw])
+    else nask (IoReadText (hw_ci_sandbox hw))) (fun runner =>
+  let key := if fst runner then hash_list
+    (["pantheon-local-check-v1", repo, head, ci, hw_ci_memory hw, hw_ci_image hw,
+      hw_ci_sandbox hw, sha256 (ans_one runner)] ++ edits) else "" in
+  let fresh := hcheck_fresh hw s id repo head key edits in
+  match lookup key (hs_verified s) with
+  | None => fresh
+  | Some evidence =>
+    let get k := get_or "" k (pairs evidence) in
+    nbind (nask (IoGit (hrepo_dir hw repo) ["rev-parse", "HEAD^{tree}"])) (fun base =>
+    nbind (nask (IoGit (hrepo_dir hw repo) ["rev-parse", append (get "commit") "^{tree}"])) (fun tree =>
+    if fst base && fst tree && nio_eq (trim (ans_one base)) head && nio_eq (trim (ans_one tree)) (get "tree")
+    then nbind (nask (IoLog (append "reusing this node's verified check for request " id))) (fun _ =>
+      hkeep (hpush s (["check_result", id] ++ evidence ++ ["reused", "true"])) ans_ok)
+    else fresh))
+  end).
 
 (** CI for a tree: its checkout's .git goes first (a --shared clone's
     objects live in this node's own repository, which isn't in CI's
     sandbox, so git there saw a broken repository and its errors led a
     rejection's reason), and everyone may read the rest; then its turn.
     The events queued so far come back. *)
-hci (hw : hworld) (s : host_state) (id out tree ci : string) : nprog (nanswer * host_state) :=
+hci (hw : hworld) (s : host_state) (id out tree ci : string) (evidence : list string) : nprog (nanswer * host_state) :=
   nbind (nask (IoRun "rm" ["-rf", hjoin out ".git"])) (fun _ =>
   nbind (nask (IoRun "chmod" ["-R", "a+rX", out])) (fun _ =>
   nbind (nask (IoRandomHex "8")) (fun tok =>
   nbind (nask IoEnvEntries) (fun env =>
-  nbind (hci_launch hw (ans_list env) s [id, out, tree, ci, append "pantheon-ci-" (substr (ans_one tok) 0 12)]) (fun s =>
+  nbind (hci_launch hw (ans_list env) s ([id, out, tree, ci, append "pantheon-ci-" (substr (ans_one tok) 0 12)] ++ evidence)) (fun s =>
   NDone (hdrain s)))))).
 
 hswap (mark out : string) (args : list string) : list string :=
@@ -453,7 +518,13 @@ host_op (hw : hworld) (s : host_state) (op : node_op) : option (nprog (nanswer *
   | IoInboxStamp stamp => Some (hkeep {| s with hs_inbox := float_of_digits stamp |} ans_ok)
   | IoLlmStart id kind raw prompt ctx clean launch env => Some (hllm s id kind raw prompt ctx clean launch env)
   | IoCheck id repo head edits => Some (hcheck hw s id repo head edits)
-  | IoCiLaunch id out tree ci => Some (hci hw s id out tree ci)
+  | IoRememberCheck key evidence => Some (hkeep
+      (if nio_eq key "" then s else {| s with hs_verified := firstn 128 (put key evidence (hs_verified s)) |}) ans_ok)
+  | IoLeaderRecord previous digest entry => Some (
+      nbind (hjournal hw previous digest entry) (fun result =>
+      if fst result then hkeep s result else
+      nbind (nask (IoFail "leader chain could not append or verify its Git history")) (hkeep s)))
+  | IoCiLaunch id out tree ci evidence => Some (hci hw s id out tree ci evidence)
   | IoJobComplete id result => Some (hcomplete hw s id result)
   | IoJobs =>
       Some (hkeep s (ans_data true (nio_frame_lists (List.map (fun j =>

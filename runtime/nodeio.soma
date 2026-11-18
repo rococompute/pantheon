@@ -103,6 +103,8 @@ Inductive node_op :=
 | IoStore (height : string) (txs : list string)
 | IoSetHeight (height : string)
 | IoWriteStatus (text : string)
+| IoLeaderRecord (previous digest entry : string)
+| IoRememberCheck (key : string) (evidence : list string)
 | IoSignVote (slot vid : string) (fields : list string)
 | IoTrackTx (raw : string)
 | IoMarkNonceFlood
@@ -193,7 +195,7 @@ Inductive node_op :=
 | IoHeldRequests
 | IoHeldStore (probing : string) (requests : list (list string))
 | IoJobComplete (job result : string)
-| IoCiLaunch (id out tree ci : string)
+ | IoCiLaunch (id out tree ci : string) (evidence : list string)
 | IoReadText (path : string)
 | IoDiscardFile (path : string)
 (** the event loop's own reads and writes (U-1): a refused transaction
@@ -393,6 +395,8 @@ io_wire (op : node_op) : list string :=
   | IoStore height txs => "store" :: height :: txs
   | IoSetHeight height => ["set_height", height]
   | IoWriteStatus text => ["write_status", text]
+  | IoLeaderRecord previous digest entry => ["leader_record", previous, digest, entry]
+  | IoRememberCheck key evidence => "remember_check" :: key :: evidence
   | IoSignVote slot vid fields => "sign_vote" :: slot :: vid :: fields
   | IoTrackTx raw => ["track_tx", raw]
   | IoMarkNonceFlood => ["mark_nonce_flood"]
@@ -449,7 +453,7 @@ io_wire (op : node_op) : list string :=
   | IoHeldRequests => ["held_requests"]
   | IoHeldStore probing requests => "held_store" :: probing :: nio_frame_lists requests
   | IoJobComplete job result => ["job_complete", job, result]
-  | IoCiLaunch id out tree ci => ["ci_launch", id, out, tree, ci]
+  | IoCiLaunch id out tree ci evidence => "ci_launch" :: id :: out :: tree :: ci :: evidence
   | IoReadText path => ["read_text", path]
   | IoDiscardFile path => ["discard_file", path]
   | IoRefuse raw => ["refuse", raw]
@@ -543,6 +547,8 @@ io_of_wire (w : list string) : option node_op :=
   | "store" :: height :: txs => Some (IoStore height txs)
   | ["set_height", height] => Some (IoSetHeight height)
   | ["write_status", text] => Some (IoWriteStatus text)
+  | ["leader_record", previous, digest, entry] => Some (IoLeaderRecord previous digest entry)
+  | "remember_check" :: key :: evidence => Some (IoRememberCheck key evidence)
   | "sign_vote" :: slot :: vid :: fields => Some (IoSignVote slot vid fields)
   | ["track_tx", raw] => Some (IoTrackTx raw)
   | ["mark_nonce_flood"] => Some IoMarkNonceFlood
@@ -612,7 +618,7 @@ io_of_wire (w : list string) : option node_op :=
   | ["held_requests"] => Some IoHeldRequests
   | "held_store" :: probing :: requests => Some (IoHeldStore probing (nio_lists requests))
   | ["job_complete", job, result] => Some (IoJobComplete job result)
-  | ["ci_launch", id, out, tree, ci] => Some (IoCiLaunch id out tree ci)
+  | "ci_launch" :: id :: out :: tree :: ci :: evidence => Some (IoCiLaunch id out tree ci evidence)
   | ["read_text", path] => Some (IoReadText path)
   | ["discard_file", path] => Some (IoDiscardFile path)
   | ["refuse", raw] => Some (IoRefuse raw)
