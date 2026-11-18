@@ -431,9 +431,9 @@ END {
     icon = s == "merged" ? "📈" : s == "pending" ? "🎫" : s == "rejected" ? "📉" : "🪦"
     t = (s == "merged" || s == "rejected") && verdict[b] != "" ? verdict[b] : title[b] != "" ? title[b] : note[b]
     if (s == "rejected" && verdict[b] == "" && title[b] == "" && why[b] != "") t = why[b]
-    if (t == "") t = "bid " b " by " by[b]
+    if (t == "") t = "bid " b
     if (length(t) > 60) t = substr(t, 1, 59) "…"
-    printf "<details>\n<summary>%s %s</summary>\n\n_bid %s by %s, %s_\n\n", icon, esc(t), b, by[b], s
+    printf "<details>\n<summary>%s (%s) %s</summary>\n\n_bid %s by %s, %s_\n\n", icon, esc(by[b]), esc(t), b, by[b], s
     if (title[b] != "" && title[b] != t) printf "**%s**\n\n", esc(title[b])
     if (note[b] != "") printf "%s\n\n", esc(note[b])
     if (why[b] != "") printf "_%s: %s_\n\n", (s == "rejected" ? "Rejected" : "Why"), esc(why[b])

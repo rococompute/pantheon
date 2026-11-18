@@ -188,11 +188,11 @@ assert text.count("<details>") == 5 and text.count("</details>") == 5
 PYPLAN
 # The bids: each a details block, its icon and title in the summary
 grep -q '^## Contributions$' "$pm" || fail "the bids headed Contributions"
-grep -q '^<summary>📈 Fulfills goal step 1: calc can subtract</summary>$' "$pm" || fail "a merged bid, under the leader's title: $(cat "$pm")"
+grep -q '^<summary>📈 (grok) Fulfills goal step 1: calc can subtract</summary>$' "$pm" || fail "a merged bid, under the leader's title: $(cat "$pm")"
 grep -q '^\*\*Adds a sub case to calc.sh\*\*$' "$pm" && grep -q '^sub &amp; its test$' "$pm" || fail "a merged bid's own title and its note, escaped, inside"
-grep -q '^<summary>🎫 Adds mul</summary>$' "$pm" || fail "a pending bid, under its bidder's title"
-grep -q '^<summary>📉 Breaks the existing tests</summary>$' "$pm" && grep -q '^_Rejected: it breaks &lt;test.sh&gt;_$' "$pm" || fail "a rejected bid, under the leader's title, its reason inside"
-grep -q '^<summary>🪦 old mul</summary>$' "$pm" || fail "a cleared bid, under its note"
+grep -q '^<summary>🎫 (muse) Adds mul</summary>$' "$pm" || fail "a pending bid, under its bidder's title"
+grep -q '^<summary>📉 (codex) Breaks the existing tests</summary>$' "$pm" && grep -q '^_Rejected: it breaks &lt;test.sh&gt;_$' "$pm" || fail "a rejected bid, under the leader's title, its reason inside"
+grep -q '^<summary>🪦 (codex) old mul</summary>$' "$pm" || fail "a cleared bid, under its note"
 [ "$(grep -c '^<details>$' "$pm")" = 13 ] && [ "$(grep -c '^</details>$' "$pm")" = 13 ] || fail "a details block for the market instructions, each plan item and each bid"
 # unchanged, it isn't rewritten (the view doesn't redraw for nothing)
 touch -t 202001010000 "$pm"
