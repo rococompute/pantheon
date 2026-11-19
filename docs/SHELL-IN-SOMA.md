@@ -521,38 +521,45 @@ host's stat reports at the time it looks.
 
 ### Files
 
-How the binary writes its files is Soma: `runtime/node_file.soma`, asked by
-`shell_answer` like the two above, for the kernel's named files (through
-runtime/node_net.soma's `IoSave`), the commands, the host's work and the
-service. A file written whole (`write_whole`) is its text put in
-`FILE.pantheon-tmp` (on disk first when it must be), the file's mode
-kept, then renamed over the file, so the file is the old text or the
-new, never part of one; durable, the directory is synced after the
-rename, so consensus.state's text is on disk before any vote it holds
-is sent. Directories are made where none is, the highest first
-(`make_dirs`); a path's write in a checkout makes the directories above
-it, then writes the file whole; a path's removal and a discarded file
-are one removal; a temporary file is a new private one, then written
-whole. A tree (a checkout, a temporary directory) is removed in the
-background, since a checkout with a build in it is close to a GB and
-removing it in the main loop stalled consensus for minutes: `rm -rf --
-PATH` started on its own (`remove_tree_prog`), the path one argument
-with no shell between, where shell.ml's `remove_tree_later` built a
-`/bin/sh` line with the path quoted into it. A save or a temporary file
-that fails ends the binary, as the exception did. shell.ml's `write_file`, `mkdir_p`, `path_write`,
-`path_remove` and `temp_file`'s write are gone; it keeps one call each:
-`file_put` (create or empty, write, sync if asked), `file_mode`,
-`rename`, `sync_dir`, `make_dir`, `remove_file`, `temp_new` and
-`start_detached` (a program forked twice, so its parent is the system's
-and nothing is left to reap, its input and output `/dev/null`).
-runtime/node_file.exp proves, of any answers those give:
-`failed_put_renames_nothing` (the file is as it was),
-`whole_write_order` (the put, the mode kept, the rename, then the
-directory synced), `whole_write_only_renames_onto_it` (nothing else
-touches the file), `make_dirs_only_where_none` (never "", "." or "/",
-and only where the host said none is), `path_write_writes_its_file` and
-`failed_save_ends` and `remove_tree_starts_rm` (rm started on its own,
-the path its one operand after `--`, and nothing else).
+Application file decisions remain in `runtime/node_file.soma`: the target,
+contents, durability and what failure means. `write_whole` requests the
+typed `IoFileReplace` effect; failure still ends a required save through
+`failed_save_ends`. Its native Host implementation performs an atomic
+replacement using an unpredictable exclusive sibling temporary file,
+permissions no broader than the intended final permissions, full writes
+and rename. Durable saves sync the file before rename and the containing
+directory afterwards. A final symlink or non-regular destination is refused.
+The predictable `FILE.pantheon-tmp` name is no longer used.
+
+Checkout writes and regular-file removals request `IoPathReplace` and
+`IoPathUnlink` relative to a trusted checkout root. The native primitives
+walk descendants through directory descriptors with `openat`/`O_NOFOLLOW`;
+missing write parents are created through those descriptors. They do not
+rely on an earlier path probe remaining true. The OS code implements only
+this filesystem contract; it contains no node, consensus or market rules.
+The shared `Soma.Host` declarations and operation codecs give the binary
+and the unikernel's host service the same typed contract.
+
+Large-tree cleanup stays asynchronous so it cannot stall consensus.
+`runtime/node_host.soma` registers it as a `DoneCleanup` process with the
+literal arguments `rm -rf -- PATH`, observes its real end and logs success,
+failure or failure to start. Cleanup jobs own no cleanup tree themselves,
+so completion cannot create recursive cleanup jobs. Failed container teardown
+sets Soma's `hs_ci_blocked` resource barrier unless a successful exact-name
+daemon query proves that the container is already absent. Queued and future
+CI then receive infrastructure errors without launching another CI process;
+cleanup processes themselves can still finish. Allocation failures are
+checked before starting a check and retain node-stage classification.
+A one-shot CLI caller
+without that event loop receives only a detached-process startup receipt;
+it no longer unconditionally answers that removal is complete.
+
+`runtime/node_file.exp` checks the application's requested operation,
+contents, durability and failure handling. Native Host regressions test
+actual replacement, creation permissions, final-symlink refusal and
+concurrent ancestor-symlink substitution on macOS and Linux. Those tests
+provide OS evidence; the abstract Soma proofs do not claim to prove the
+filesystem implementation.
 
 ### The primitives by name
 
@@ -873,9 +880,9 @@ host work asks for those.
 What it still allows: the token's holder reads the service's
 environment (`IoEnvEntries`, which the model's and git's environments
 are made from); the model, a check and CI run as the node's would, with
-what they can reach; a process the service started could put a symlink
-in a path between the probe and the operation (the service itself is
-one request at a time); and the token crosses vmnet in the clear.
+what they can reach; read-only path probes and subsequent reads can still
+race an external writer, while checkout writes/unlinks use the separate
+descriptor-relative Host contract; and the token crosses vmnet in the clear.
 
 `test/node-image-service.sh` runs the image with its service beside three
 binaries, all four up, with a fake model (a `cmd:` backend): the market

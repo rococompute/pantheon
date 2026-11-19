@@ -263,3 +263,59 @@ then `network` and `start` as usual. The Mac reaches the host with
   makes them Soma bidders, and their leaders leave Soma's tasks to others.
 - **Merges:** `merge_approvals` is 1 (`examples/network/network.json`): a
   leader's merge lands on its own check and pick, without attestors.
+
+## Node egress policy
+
+The default sandbox firewall isolates the Mac and private LAN; it preserves
+public node egress for remote Git repositories and native model API calls.
+It does **not** prevent a compromised node uid from sending its readable
+files to a public host. Bidder model tools also retain public egress.
+
+An operator can restrict the node uid without changing the application's IO
+semantics. Write root-owned `/etc/pantheon/node-egress.json`, then run
+`sudo systemctl restart pantheon-firewall`:
+
+```json
+{"mode":"restricted","allow":[{"cidr":"198.51.100.10/32","tcp":[22,443]}]}
+```
+
+Replace the documentation address with the actual Git/API destination ranges;
+maintain them when provider addresses change. Restricted mode always retains
+loopback and Pantheon peers, rejects private/LAN destinations as before, and
+drops other node traffic. An empty allow list is default-deny for public
+node egress. Bidder public egress is unchanged. Invalid configuration fails
+with a diagnostic before replacing the active ruleset. `{"mode":"public"}`
+restores compatibility mode. The files and renderer are owned by root, not
+by the node or model. Allowlisted services and the system DNS resolver are
+still possible data channels; these controls restrict destinations, not
+what a compromised process can send to a permitted destination.
+
+The Docker CI system-package stage pins both the Debian image manifest and
+an immutable Debian/security package snapshot in `deploy/Dockerfile`.
+`docker build --target system-base` validates that stage without compiling
+Soma. Updating either pin is deliberate; this does not claim that all later
+opam/compiler tooling is fully hermetic. `.dockerignore` excludes Git
+history and build/switch artifacts from the Pantheon build context.
+
+## CI resource and failure boundaries
+
+The root Docker wrapper requires memory, swap and tmpfs to match the
+root-owned `ci-memory` budget. Provisioning creates the shared build lock
+and bidder wrapper. Lock waits are bounded to at most 900 seconds; the host
+runner's `CI_LOCK_WAIT` can lower that wait, and a root-owned
+`ci-lock-wait` file controls the VM wrappers. Parent-death containment also
+stops a lock waiter when its runner is cancelled, before a scope exists.
+The whole Soma CI build has a 900-second ceiling (`SOMA_CI_TIMEOUT` may
+lower it), including compiler bootstrap and downstream checks.
+
+The Docker daemon owns a running container independently of its CLI pid.
+The wrapper therefore refuses a new CI run if any prior Pantheon CI
+container is still running after it acquires the build lock. Within the
+node, Soma tracks failed container teardown as an infrastructure barrier:
+only successful removal or a successful empty exact-name daemon query
+proves completion. A live or unknown container blocks further CI processes
+and produces node-stage errors instead of rejecting another agent's bid.
+Repair the daemon/container and restart the affected node before resuming
+its CI. The wrapper's daemon guard also protects a restarted node whose
+process-local state was cleared. Root metadata queries are restricted to
+one exact hexadecimal Pantheon CI container name.

@@ -309,6 +309,9 @@ Inductive node_op :=
     temporary file (its path); a program started on its own, never waited
     for (runtime/node_file.soma's tree removed in the background). Each not found
     with why, when it failed. *)
+| IoFileReplace (path text sync : string)
+| IoPathReplace (root path text : string)
+| IoPathUnlink (root path : string)
 | IoFilePut (path text sync : string)
 | IoFileMode (path : string)
 | IoRename (src dst : string)
@@ -513,6 +516,9 @@ io_wire (op : node_op) : list string :=
   | IoSpawn prog stdin cwd env args => "spawn" :: prog :: stdin :: cwd :: resend_fields env ++ ("alternate" :: args)
   | IoWaitPid pid => ["wait_pid", pid]
   | IoKillPid pid => ["kill_pid", pid]
+  | IoFileReplace p text sync => ["file_replace", p, text, sync]
+  | IoPathReplace root p text => ["path_replace", root, p, text]
+  | IoPathUnlink root p => ["path_unlink", root, p]
   | IoFilePut path text sync => ["file_put", path, text, sync]
   | IoFileMode path => ["file_mode", path]
   | IoRename src dst => ["rename", src, dst]
@@ -694,6 +700,9 @@ io_of_wire (w : list string) : option node_op :=
       end
   | ["wait_pid", pid] => Some (IoWaitPid pid)
   | ["kill_pid", pid] => Some (IoKillPid pid)
+  | ["file_replace", p, text, sync] => Some (IoFileReplace p text sync)
+  | ["path_replace", root, p, text] => Some (IoPathReplace root p text)
+  | ["path_unlink", root, p] => Some (IoPathUnlink root p)
   | ["file_put", path, text, sync] => Some (IoFilePut path text sync)
   | ["file_mode", path] => Some (IoFileMode path)
   | ["rename", src, dst] => Some (IoRename src dst)

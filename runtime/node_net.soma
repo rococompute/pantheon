@@ -334,7 +334,9 @@ net_proc_start (s : net_state) (prog stdin cwd : string) (env args : list string
     forever) *)
 net_proc_kill (s : net_state) (job : string) : nprog (nanswer * net_state) :=
   match find (fun p => nio_eq (p_job p) job) (ns_procs s) with
-  | Some p => nbind (nask (IoKillPid (p_pid p))) (fun _ => NDone (ans_ok, {| s with ns_cut := p_pid p :: ns_cut s |}))
+  | Some p => nbind (nask (IoKillPid (p_pid p))) (fun answer =>
+      if fst answer then NDone (ans_ok, {| s with ns_cut := p_pid p :: ns_cut s |})
+      else NDone (answer, s))
   | None => NDone (ans_ok, s)
   end.
 

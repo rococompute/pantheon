@@ -14,29 +14,14 @@ Import core.util runtime.nodeio.
 err_of (a : nanswer) : string :=
   if fst a then "" else match ans_list a with [e] => if seq e "" then "failed" else e | _ => "failed" end.
 
-(** where a file is written before it is renamed into place *)
-save_tmp (p : string) : string := append p ".pantheon-tmp".
-
-(** [p] written whole: [text] put in [save_tmp p] (on disk first when
-    [durable]), [p]'s mode kept, then renamed over [p], so [p] is the old
-    text or the new, never part of one; when [durable], the directory is
-    synced after the rename, so the rename is on disk before anything
-    relies on it (consensus.state's text, before any vote it holds is
-    sent). "" when it worked, else what went wrong. *)
+(** The application chooses the destination, contents and durability.
+    The host performs one atomic replacement: an exclusive sibling temporary
+    file, mode preservation and rename, with file/directory sync when asked.
+    It never follows a final symlink. Filesystem atomicity is an explicit IO
+    contract; no application state transition is delegated to the host. *)
 write_whole (p : string) (durable : bool) (text : string) : nprog string :=
-  let tmp := save_tmp p in
-  let rename_in := fun (_ : unit) =>
-    nbind (nask (IoRename tmp p)) (fun r =>
-    if negb (fst r) then NDone (err_of r)
-    else if durable then nbind (nask (IoSyncDir (dirname p))) (fun d => NDone (err_of d))
-    else NDone "") in
-  nbind (nask (IoFileMode p)) (fun m =>
-  nbind (nask (IoFilePut tmp text (if durable then "true" else "false"))) (fun w =>
-  if negb (fst w) then NDone (err_of w)
-  else if fst m then
-    nbind (nexec (IoChmod tmp (ans_one m))) (fun ok =>
-    if ok then rename_in tt else NDone (append tmp ": its mode couldn't be kept"))
-  else rename_in tt)).
+  nbind (nask (IoFileReplace p text (if durable then "true" else "false")))
+    (fun answer => NDone (err_of answer)).
 
 (** [d] and the directories above it that aren't there, the highest
     first; never "", "." or "/" *)
@@ -67,9 +52,7 @@ save_prog (p : string) (durable : bool) (text : string) : nprog nanswer :=
 (** a path in a checkout written: the directories above it, then the file
     whole ("" when it worked, else what went wrong) *)
 path_write_prog (dir p text : string) : nprog nanswer :=
-  nbind (make_dirs (dirname (hjoin dir p))) (fun e =>
-  if negb (seq e "") then NDone (ans_data true [e])
-  else nbind (write_whole (hjoin dir p) false text) (fun e => NDone (ans_data true [e]))).
+  nbind (nask (IoPathReplace dir p text)) (fun r => NDone (ans_data true [err_of r])).
 
 (** a new private temporary file with [text] in it (its path) *)
 temp_file_prog (prefix suffix text : string) : nprog nanswer :=
@@ -81,9 +64,12 @@ temp_file_prog (prefix suffix text : string) : nprog nanswer :=
 (** A tree removed in the background: a checkout with a build in it is
     close to a GB, and removing it in the main loop stalled consensus for
     minutes. rm started on its own and not waited for, the path one
-    argument after "--" (no shell between, nothing read as an option). *)
+    argument after "--" (no shell between, nothing read as an option).
+    This one-shot fallback returns the startup receipt, not a completion
+    claim. The node host interpreter tracks IoRemoveTree as a normal job
+    and reports its actual completion or failure. *)
 remove_tree_prog (p : string) : nprog nanswer :=
-  nbind (nask (IoStartDetached "rm" ["-rf", "--", p])) (fun _ => NDone ans_ok).
+  nask (IoStartDetached "rm" ["-rf", "--", p]).
 
 (** what the runners carry out this way; anything else goes on as it is *)
 file_op (op : node_op) : option (nprog nanswer) :=
@@ -92,7 +78,7 @@ file_op (op : node_op) : option (nprog nanswer) :=
   | IoMakeDirs d =>
       Some (nbind (make_dirs d) (fun e => if seq e "" then NDone ans_ok else file_fail (hcat [d, ": ", e])))
   | IoPathWrite dir p text => Some (path_write_prog dir p text)
-  | IoPathRemove dir p => Some (nbind (nask (IoRemoveFile (hjoin dir p))) (fun r => NDone (ans_data true [err_of r])))
+  | IoPathRemove dir p => Some (nbind (nask (IoPathUnlink dir p)) (fun r => NDone (ans_data true [err_of r])))
   | IoDiscardFile p => Some (nbind (nask (IoRemoveFile p)) (fun _ => NDone ans_ok))
   | IoTempFile prefix suffix text => Some (temp_file_prog prefix suffix text)
   | IoRemoveTree p => Some (remove_tree_prog p)

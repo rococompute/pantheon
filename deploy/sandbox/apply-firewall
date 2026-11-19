@@ -1,0 +1,11 @@
+#!/bin/sh
+# Root-owned deployment IO: validate and apply a complete ruleset atomically.
+set -eu
+[ "$(id -u)" -eq 0 ] || { echo 'pantheon firewall: run as root' >&2; exit 3; }
+tmp=$(mktemp /etc/pantheon/firewall.XXXXXXXX)
+trap 'rm -f "$tmp"' EXIT HUP INT TERM
+python3 /usr/local/lib/pantheon/render-firewall.py /etc/pantheon/node-egress.json \
+  /usr/local/lib/pantheon/firewall.nft.in "$(id -u pantheon)" "$(id -u bidder)" > "$tmp"
+nft -c -f "$tmp"
+nft -f "$tmp"
+mv "$tmp" /etc/pantheon/firewall.nft

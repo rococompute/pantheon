@@ -1,0 +1,149 @@
+(** Actual Soma host-job state transitions; no model, daemon or shell mocks. *)
+Import core.util runtime.nodeio runtime.node runtime.node_host runtime.node_service runtime.node_net.
+Require Soma.Host.
+
+check (name : string) (ok : bool) : string := append (if ok then "ok " else "FAIL ") name.
+world : hworld := {| hw_home := "/home"; hw_backend := ""; hw_repos := []; hw_max_calls := "0";
+  hw_ci := ""; hw_ci_repo := []; hw_ci_memory := "256m"; hw_ci_image := "image"; hw_ci_sandbox := "/runner" |}.
+service : service_world := {| sw_token := "token"; sw_world := world; sw_self := "/node"; sw_env := ["PATH=/usr/bin:/bin"] |}.
+answers (op : node_op) : nanswer :=
+  match op with
+  | IoProcStart _ _ _ _ _ => ans_data true ["cleanup-job"]
+  | IoClock => ans_data true []
+  | IoEnvEntries => ans_data true ["PATH=/usr/bin:/bin"]
+  | _ => ans_ok
+  end.
+failed_start (op : node_op) : nanswer :=
+  match op with IoProcStart _ _ _ _ _ => ans_data false ["spawn refused"] | _ => answers op end.
+started : host_state := nresult answers (hcleanup host_start [CleanTree "/tree"]).
+ended : host_state := fst (hevent started ["job_ended", "cleanup-job", "exit", "1"]).
+kill_failed (op : node_op) : nanswer :=
+  match op with IoProcKill _ => ans_data false ["permission denied"] | _ => answers op end.
+check_answers (op : node_op) : nanswer :=
+  match op with
+  | IoTempDir prefix => ans_data true [if seq prefix "pantheon-check" then "/tmp/check-owned" else "/tmp/job-owned"]
+  | IoTempFile _ _ _ => ans_data true ["/tmp/edits-owned"]
+  | IoSelfExe => ans_data true ["/node"]
+  | _ => answers op
+  end.
+actual_check : list node_op := ntrace check_answers (hcheck_fresh world host_start "id" "calc" "head" "key" []).
+check_roots : list string := ["/tmp/check-owned", "/tmp/job-owned", "/tmp/edits-owned"].
+pid_kill_failed (op : node_op) : nanswer :=
+  match op with IoKillPid _ => ans_data false ["permission denied"] | _ => answers op end.
+process_state : net_state := {| (net_start "/home") with
+  ns_procs := [{| p_job := "job"; p_fd := "fd"; p_pid := "pid" |}] |}.
+temp_dir_failed (op : node_op) : nanswer :=
+  match op with IoTempDir _ => ans_data false ["disk full"] | _ => check_answers op end.
+temp_file_failed (op : node_op) : nanswer :=
+  match op with IoTempFile _ _ _ => ans_data false ["disk full"] | _ => check_answers op end.
+self_started (trace : list node_op) : bool :=
+  existsb (fun op => match op with IoProcStart prog _ _ _ _ => seq prog "/node" | _ => false end) trace.
+startup_callbacks_are_node (state : host_state) : bool :=
+  existsb (fun ev => match ev with
+    "check_apply_out" :: _ :: _ :: _ :: raw :: _ => seq (check_apply_stage raw) "node"
+    | _ => false end) (hs_events state).
+docker_teardown_failed (op : node_op) : nanswer :=
+  match op with IoRun "docker" _ => ans_data false ["daemon unavailable"] | _ => answers op end.
+docker_still_live (op : node_op) : nanswer :=
+  match op with IoRun "docker" ["rm", "-f", _] => ans_data false []
+              | IoRun "docker" _ => ans_data true ["deadbeef"] | _ => answers op end.
+docker_already_absent (op : node_op) : nanswer :=
+  match op with IoRun "docker" ["rm", "-f", _] => ans_data false []
+              | IoRun "docker" _ => ans_data true [""] | _ => answers op end.
+ci_ended : host_state :=
+  let j := {| j_id := "finished-ci"; j_started := PrimFloat.zero; j_limit := nio_small 1;
+    j_done := DoneCi "id" "tree" "256m" "docker" []; j_clean := [CleanContainer "pantheon-ci-ab"];
+    j_overtime := false; j_flooded := false |} in
+  {| host_start with hs_ci_busy := true; hs_ended := [j];
+     hs_ci_waiting := [["next", "/tmp/out", "tree", "true", "pantheon-ci-cd"]] |}.
+no_new_process (trace : list node_op) : bool :=
+  negb (existsb (fun op => match op with IoProcStart prog _ _ _ _ => negb (seq prog "rm") | _ => false end) trace).
+failed_trace : list node_op := ntrace answers (hcomplete world ended "cleanup-job" "!process failed (exit 1):").
+success_trace : list node_op := ntrace answers (hcomplete world ended "cleanup-job" "").
+no_recursive_cleanup : bool :=
+  match hs_jobs started with [j] => match j_done j with
+    DoneCleanup p => seq p "/tree" && (length (j_clean j) =? 0) | _ => false end | _ => false end.
+logs (needle : string) (trace : list node_op) : bool :=
+  existsb (fun op => match op with IoLog text => contains needle text | _ => false end) trace.
+
+main := Host.print_lines [
+  check "tree removal is a tracked rm process with a literal operand"
+    (existsb (fun op => match op with
+      IoProcStart prog _ _ _ args => seq prog "rm" && eq_strs args ["-rf", "--", "/tree"]
+      | _ => false end) (ntrace answers (hcleanup host_start [CleanTree "/tree"]))),
+  check "cleanup job owns no scratch tree and cannot recursively schedule cleanup" no_recursive_cleanup,
+  check "failed cleanup startup is visible and creates no running job"
+    ((length (hs_jobs (nresult failed_start (hcleanup host_start [CleanTree "/tree"]))) =? 0)
+      && logs "cleanup could not start" (ntrace failed_start (hcleanup host_start [CleanTree "/tree"]))),
+  check "actual failed cleanup completion is logged" (logs "cleanup failed: /tree" failed_trace),
+  check "actual successful cleanup completion is logged" (logs "cleanup complete: /tree" success_trace),
+  check "completed cleanup job leaves no recursive job"
+    (length (hs_jobs (snd (nresult answers (hcomplete world ended "cleanup-job" "")))) =? 0),
+  check "runner exit 3 is already an infrastructure problem" (ci_node_problem false (Some "exit 3")),
+  check "Docker runner exit 125 is already an infrastructure problem" (ci_node_problem false (Some "exit 125")),
+  check "wrapped bid failure exit 86 is the bid's failure" (negb (ci_node_problem false (Some "exit 86"))),
+  check "lock wait infrastructure status 75 is a node problem" (ci_node_problem false (Some "exit 75")),
+  check "service permits the same tracked cleanup for a tree it made"
+    (sv_allowed service ["/tree"] (IoProcStart "rm" "" "/tree" ["PATH=/usr/bin:/bin"] ["-rf", "--", "/tree"])),
+  check "service refuses arbitrary cleanup targets"
+    (negb (sv_allowed service ["/tree"] (IoProcStart "rm" "" "/tree" ["PATH=/usr/bin:/bin"] ["-rf", "--", "/elsewhere"]))),
+  check "service keeps the path probe for tracked cleanup"
+    (match sv_guard service ["/tree"] (IoProcStart "rm" "" "/tree" [] ["-rf", "--", "/tree"]) with
+     Some (root, rel) => seq root "/tree" && seq rel "" | None => false end),
+  check "tracked cleanup revokes the temporary root capability once started"
+    (length (sv_after ["/tree"] (IoProcStart "rm" "" "/tree" [] ["-rf", "--", "/tree"]) ans_ok) =? 0),
+  check "cleanup startup receipt never claims scheduling after spawn failure"
+    (negb (fst (fst (nresult failed_start (hcleanup_tree host_start "/tree"))))),
+  check "failed cancellation remains a failure"
+    (negb (fst (fst (nresult kill_failed (hstop started "cleanup-job" j_overtime (fun j => {| j with j_overtime := true |})))))),
+  check "failed cancellation never marks a live job timed out"
+    (match hs_jobs (snd (nresult kill_failed (hstop started "cleanup-job" j_overtime (fun j => {| j with j_overtime := true |})))) with
+     [j] => negb (j_overtime j) | _ => false end),
+  check "actual recorded hcheck_fresh process is served by the image host"
+    (existsb (fun op => match op with IoProcStart _ _ _ _ _ => true | _ => false end) actual_check &&
+     forallb (fun op => match op with IoProcStart _ _ _ _ _ => sv_allowed service check_roots op | _ => true end) actual_check),
+  check "service refuses unrecognized extra check flags"
+    (negb (sv_allowed service check_roots (IoProcStart "/node" "" "/tmp/job-owned" []
+      ["check", "/home/repos/calc", "head", "/tmp/edits-owned", "/tmp/check-owned", "--not-record"]))),
+  check "tracked cleanup has no blanket repository-root authority"
+    (negb (sv_allowed service [] (IoProcStart "rm" "" "/home/repos" [] ["-rf", "--", "/home/repos"]))),
+  check "failed PID cancellation is reported and never forces process completion"
+    (negb (fst (fst (nresult pid_kill_failed (net_proc_kill process_state "job")))) &&
+     (length (ns_cut (snd (nresult pid_kill_failed (net_proc_kill process_state "job")))) =? 0)),
+  check "successful PID cancellation permits normal forced completion"
+    (fst (fst (nresult answers (net_proc_kill process_state "job"))) &&
+     eq_strs (ns_cut (snd (nresult answers (net_proc_kill process_state "job")))) ["pid"]),
+  check "tracked cleanup refuses descendants susceptible to ancestor substitution"
+    (negb (sv_allowed service ["/tree"] (IoProcStart "rm" "" "/tree" [] ["-rf", "--", "/tree/child"]))),
+  check "tracked cleanup retains an exact minted git-directory sibling"
+    (sv_allowed service ["/tree"] (IoProcStart "rm" "" "/tree.git" [] ["-rf", "--", "/tree.git"])),
+  check "failed job scratch allocation never starts a process"
+    (length (ntrace temp_dir_failed (hstart_job host_start (nio_small 10) "/node" "" [] []
+      (DoneCheck "id" "" "" []) [])) =? 1),
+  check "failed check directory allocation never launches the self check"
+    (negb (self_started (ntrace temp_dir_failed (hcheck_fresh world host_start "id" "calc" "head" "key" []))) &&
+     startup_callbacks_are_node (snd (nresult temp_dir_failed (hcheck_fresh world host_start "id" "calc" "head" "key" [])))),
+  check "failed edits allocation is a node failure with no self-check launch"
+    (negb (self_started (ntrace temp_file_failed (hcheck_fresh world host_start "id" "calc" "head" "key" []))) &&
+     startup_callbacks_are_node (snd (nresult temp_file_failed (hcheck_fresh world host_start "id" "calc" "head" "key" [])))),
+  check "failed Docker teardown blocks the next CI process"
+    (no_new_process (ntrace docker_teardown_failed (hcomplete world ci_ended "finished-ci" "")) &&
+     hs_ci_blocked (snd (nresult docker_teardown_failed (hcomplete world ci_ended "finished-ci" "")))),
+  check "future CI requests cannot bypass a failed teardown barrier"
+    (no_new_process (ntrace answers (hci_launch world [] {| host_start with hs_ci_blocked := true |}
+      ["next", "/tmp/out", "tree", "true", "pantheon-ci-cd"]))),
+  check "a successful empty daemon query treats auto-removed containers idempotently"
+    (negb (hs_ci_blocked (nresult docker_already_absent (hcleanup host_start [CleanContainer "pantheon-ci-ab"])))),
+  check "service permits only exact-name cleanup queries"
+    (sv_allowed service [] (IoRun "docker" ["ps", "-a", "-q", "--filter", "name=^/pantheon-ci-ab$"]) &&
+     negb (sv_allowed service [] (IoRun "docker" ["ps", "-a", "-q", "--filter", "name=^/pantheon-ci-.*$"]))),
+  check "a successful nonempty daemon query never releases a live container barrier"
+    (no_new_process (ntrace docker_still_live (hcomplete world ci_ended "finished-ci" "")) &&
+     hs_ci_blocked (snd (nresult docker_still_live (hcomplete world ci_ended "finished-ci" "")))),
+  check "blocked future CI reports infrastructure rather than blaming the bid"
+    (existsb (fun event => match event with
+      "ci_done" :: _ :: _ :: _ :: _ :: raw :: _ => ci_node_problem false (ci_job_how raw)
+      | _ => false end) (hs_events (nresult answers (hci_launch world [] {| host_start with hs_ci_blocked := true |}
+        ["next", "/tmp/out", "tree", "true", "pantheon-ci-cd"])))),
+  "--PAYLOAD--", ci_wrap "exit 3", "--END-PAYLOAD--"
+].

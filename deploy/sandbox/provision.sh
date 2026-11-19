@@ -20,23 +20,35 @@ say() { printf 'provision: %s\n' "$*"; }
 # and the models' CLIs timed out reaching their providers
 mkdir -p /etc/systemd/resolved.conf.d
 printf '[Resolve]\nDNS=1.1.1.1 8.8.8.8\nDomains=~.\n' > /etc/systemd/resolved.conf.d/pantheon-dns.conf
-# but the agents' addresses (lima-NAME.internal, in the genesis) only Lima's
-# resolver knows, and it answers those at once: .internal stays on eth0's
-mkdir -p /etc/systemd/network/10-netplan-eth0.network.d
-printf '[Network]\nDomains=~internal\n' > /etc/systemd/network/10-netplan-eth0.network.d/pantheon-dns.conf
-networkctl reload 2>/dev/null || true
 systemctl restart systemd-resolved 2>/dev/null || true
 
 say "system packages"
 apt-get update -q >/dev/null
 apt-get install -y -q git build-essential opam jq curl m4 pkg-config libgmp-dev rsync ca-certificates \
-  docker.io docker-buildx nftables nodejs npm unzip bubblewrap >/dev/null
+  docker.io docker-buildx nftables nodejs npm unzip bubblewrap python3 >/dev/null
+
+# Lima's resolver knows .internal peers. Find the networkd unit that owns
+# the selected interface instead of assuming eth0 or a netplan filename.
+nic=$(ip -4 route get 1.1.1.1 | awk '{for (i=1; i<NF; i++) if ($i == "dev") {print $(i+1); exit}}')
+[ -n "$nic" ] || { echo "provision: cannot identify the default IPv4 interface" >&2; exit 3; }
+network_file=$(LC_ALL=C networkctl status "$nic" --no-pager --no-legend | sed -n 's/.*Network File: //p' | head -1)
+[ -n "$network_file" ] && [ -f "$network_file" ] || { echo "provision: no networkd configuration for $nic" >&2; exit 3; }
+network_dropin=/etc/systemd/network/$(basename "$network_file").d
+mkdir -p "$network_dropin"
+printf '[Network]\nDomains=~internal\n' > "$network_dropin/pantheon-dns.conf"
+networkctl reload
+systemctl restart systemd-resolved
 
 id pantheon >/dev/null 2>&1 || useradd -m -s /bin/bash pantheon
 id bidder >/dev/null 2>&1 || useradd -m -s /bin/bash bidder
 chmod 755 /home/pantheon; chmod 700 /home/bidder
 install -d -o pantheon -g pantheon -m 700 /var/lib/pantheon
 install -d -m 755 /etc/pantheon /usr/local/lib/pantheon/bin
+install -d -m 755 /var/lib/pantheon-build /usr/local/lib/pantheon/bidder-bin
+touch /var/lib/pantheon-build/lock
+chmod 644 /var/lib/pantheon-build/lock
+install -m 755 "$here/soma-locked" /usr/local/lib/pantheon/bidder-bin/soma
+[ -f /etc/pantheon/ci-memory ] || printf '3g\n' > /etc/pantheon/ci-memory
 
 # swap, so four VMs' CI builds at once slow down instead of dying
 if [ ! -f /swapfile ]; then
@@ -52,7 +64,14 @@ echo 'kernel.apparmor_restrict_unprivileged_userns = 0' > /etc/sysctl.d/60-panth
 sysctl -q -p /etc/sysctl.d/60-pantheon-userns.conf || true
 
 say "firewall"
-sed -e "s/PANTHEON_UID/$(id -u pantheon)/g" -e "s/BIDDER_UID/$(id -u bidder)/g" "$here/firewall.nft" > /etc/pantheon/firewall.nft
+install -m 644 "$here/firewall.nft" /usr/local/lib/pantheon/firewall.nft.in
+install -m 644 "$here/render-firewall.py" /usr/local/lib/pantheon/render-firewall.py
+install -m 755 "$here/apply-firewall" /usr/local/sbin/pantheon-firewall-apply
+# Preserve supported remote Git/native API IO by default. Untrusted-node
+# deployments select restricted mode with explicit operator-owned destinations.
+[ -f /etc/pantheon/node-egress.json ] || printf '{"mode":"public","allow":[]}\n' > /etc/pantheon/node-egress.json
+chown root:root /etc/pantheon/node-egress.json /etc/pantheon/ci-memory
+chmod 644 /etc/pantheon/node-egress.json /etc/pantheon/ci-memory
 cat > /etc/systemd/system/pantheon-firewall.service <<'U'
 [Unit]
 Description=Pantheon sandbox firewall
@@ -61,7 +80,7 @@ Wants=network-pre.target
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/usr/sbin/nft -f /etc/pantheon/firewall.nft
+ExecStart=/usr/local/sbin/pantheon-firewall-apply
 [Install]
 WantedBy=multi-user.target
 U

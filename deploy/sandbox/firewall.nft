@@ -4,7 +4,11 @@
 #   - nothing of the Mac: Lima's gateway forwards to the Mac's localhost
 #   - nothing on a private network (your LAN, cloud metadata), except
 #   - the node's user reaching other nodes' Pantheon port
-#   - the public internet: model APIs
+#   - the public internet: models and node Git/API IO in compatibility mode
+# Root may restrict node destinations/ports through node-egress.json; bidder
+# public egress remains available for model tools. This is network isolation,
+# not a guarantee that a compromised node cannot disclose data to an allowed
+# destination. DNS through the system resolver is also an allowed channel.
 #
 # PANTHEON_UID and BIDDER_UID are filled in by provision.sh.
 table inet pantheon
@@ -14,9 +18,10 @@ table inet pantheon {
     type filter hook output priority 0; policy accept;
     oifname "lo" accept
     meta skuid != { PANTHEON_UID, BIDDER_UID } accept
-    ct state established,related accept
     meta nfproto ipv6 drop
     meta skuid PANTHEON_UID ip daddr 192.168.104.0/24 ip daddr != 192.168.104.2 tcp dport 26700 accept
+    meta skuid PANTHEON_UID ip daddr 192.168.104.0/24 ip daddr != 192.168.104.2 ct state established,related accept
     ip daddr { 0.0.0.0/8, 10.0.0.0/8, 100.64.0.0/10, 127.0.0.0/8, 169.254.0.0/16, 172.16.0.0/12, 192.168.0.0/16, 224.0.0.0/4, 240.0.0.0/4 } counter drop
+# NODE_EGRESS_RULES
   }
 }

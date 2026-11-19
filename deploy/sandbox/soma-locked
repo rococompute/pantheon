@@ -6,10 +6,21 @@
 case "${1:-}" in
   build|run)
     lock=/var/lib/pantheon-build/lock
-    if [ -r "$lock" ] && command -v flock >/dev/null; then
-      exec 9<"$lock"
-      flock -n 9 || { echo "soma: waiting for the other build on this machine (CI) to finish" >&2; flock 9; }
-    fi ;;
+    [ -r "$lock" ] && command -v flock >/dev/null && command -v setpriv >/dev/null || {
+      echo "soma: build lock unavailable; provision this machine before building" >&2; exit 3;
+    }
+    wait=$(cat /etc/pantheon/ci-lock-wait 2>/dev/null || echo 900)
+    printf '%s' "$wait" | grep -Eqx '[0-9]{1,3}' && [ "$wait" -le 900 ] || {
+      echo "soma: invalid build lock wait (0 to 900 seconds)" >&2; exit 3;
+    }
+    exec 9<"$lock"
+    flock -n 9 || {
+      echo "soma: waiting at most ${wait}s for the other build on this machine (CI)" >&2
+      setpriv --pdeathsig KILL sh -c '
+        [ "$PPID" = "$1" ] || exit 75
+        exec flock -w "$2" -E 75 9
+      ' soma-lock "$$" "$wait" || { echo "soma: build lock wait expired" >&2; exit 75; }
+    } ;;
 esac
 # the real soma by its path: it finds its library from where it was run. A
 # build killed for memory says only that a file "does not compile (its errors

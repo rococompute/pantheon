@@ -1,0 +1,28 @@
+(** Actual application IO through its Soma runner and native Host primitives. *)
+Import core.util runtime.nodeio runtime.node_shell.
+Require Soma.Host.
+
+check (name : string) (ok : bool) : string := append (if ok then "ok " else "FAIL ") name.
+fixture : nprog (list string) :=
+  nbind (nask (IoTempDir "pantheon-file-audit")) (fun root =>
+  let dir := ans_one root in
+  let victim := hjoin dir "victim" in
+  let saved := hjoin dir "saved" in
+  nbind (nask (IoSave victim "true" "keep")) (fun _ =>
+  nbind (nask (IoRun "ln" ["-s", victim, append saved ".pantheon-tmp"])) (fun _ =>
+  nbind (nask (IoSave saved "true" "state")) (fun a =>
+  nbind (nask (IoReadText victim)) (fun b =>
+  nbind (nask (IoReadText saved)) (fun c =>
+  nbind (nask (IoPathWrite dir "nested/inside" "inside")) (fun d =>
+  nbind (nask (IoRun "ln" ["-s", dir, hjoin dir "link"])) (fun _ =>
+  nbind (nask (IoPathWrite dir "link/victim" "bad")) (fun e =>
+  nbind (nask (IoPathRemove dir "link/victim")) (fun f =>
+  nbind (nask (IoReadText victim)) (fun g =>
+  let results := [check "whole save ignores an attacker-preplaced legacy temporary symlink" (fst a && seq (ans_one b) "keep" && seq (ans_one c) "state"),
+         check "descriptor-relative write creates ordinary missing parents" (seq (ans_one d) ""),
+         check "descriptor-relative write refuses symlink traversal" (negb (seq (ans_one e) "")),
+         check "descriptor-relative remove refuses symlink traversal" (negb (seq (ans_one f) "")),
+         check "refused paths leave the target unchanged" (seq (ans_one g) "keep")] in
+  nbind (nask (IoRun "rm" ["-rf", "--", dir])) (fun _ => NDone results)))))))))))).
+
+main := Host.print_lines (run_shell fixture).

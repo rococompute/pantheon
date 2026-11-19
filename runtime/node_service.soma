@@ -12,6 +12,7 @@
     looks first). runtime/node_service.exp proves what it refuses, and that what
     the node's host work asks is never refused. *)
 Import core.util runtime.nodeio runtime.node runtime.node_host.
+From Stdlib Require Import Ascii.
 
 (** What the service knows of itself: the node's token, the host's world
     from its setup, its own binary and its environment. *)
@@ -49,6 +50,13 @@ sv_under (r p : string) : bool := seq p r || starts (append r "/") p.
 sv_path (w : service_world) (made : list string) (p : string) : bool :=
   sv_no_up p && existsb (fun r => sv_under r p) (sv_roots w made).
 
+(** Background cleanup owns only temporary capabilities minted by this
+    service, plus their exact conventional separate-git-dir siblings. Repository
+    and inbox roots are not blanket cleanup authority. *)
+sv_cleanup_path (made : list string) (p : string) : bool :=
+  sv_no_up p && existsb (fun root => starts "/" root &&
+    (seq root p || seq (append root ".git") p)) made.
+
 (** a word an argument may be: not empty, not an option *)
 sv_word (s : string) : bool := (0 <? slen s) && negb (seq (substr s 0 1) "-").
 
@@ -79,6 +87,14 @@ sv_git (w : service_world) (made : list string) (dir : string) (args : list stri
          && sv_word src && path src && sv_word wt && path wt
      | _ => false
      end.
+
+(** An exact resource-query filter: never a regex chosen by a client. *)
+sv_ci_filter (filter : string) : bool :=
+  let prefix := "name=^/pantheon-ci-" in
+  let tail := take_str (slen filter - slen prefix - 1) (drop_str (slen prefix) filter) in
+  starts prefix filter && ends "$" filter && (0 <? slen tail) && (slen tail <=? 32) &&
+  forallb (fun c => let n := nat_of_ascii c in
+    ((48 <=? n) && (n <=? 57)) || ((97 <=? n) && (n <=? 102))) (chars tail).
 
 (** ---- programs ---- *)
 
@@ -111,7 +127,8 @@ sv_program (w : service_world) (made : list string) (prog : string) (args : list
   let path := sv_path w made in
   (seq prog (sw_self w)
    && match args with
-      | [c, repo, head, edits, out] => seq c "check" && path repo && sv_word head && path edits && path out
+      | [c, repo, head, edits, out]
+      | [c, repo, head, edits, out, "--record"] => seq c "check" && path repo && sv_word head && path edits && path out
       | _ => false
       end)
   || (seq prog "claude" && eq_strs args (sv_launch_args "claude"))
@@ -121,6 +138,9 @@ sv_program (w : service_world) (made : list string) (prog : string) (args : list
   || (seq prog "curl"
       && (let h := nth 4 args "" in
           starts "@" h && path (drop_str 1 h) && eq_strs args (hswap "@HDR@" h (sv_launch_args "grok"))))
+  || (seq prog "rm" && match args with
+       | [a, sep, p] => seq a "-rf" && seq sep "--" && sv_cleanup_path made p
+       | _ => false end)
   || (seq prog "docker" && sv_ci_docker w made args)
   || (negb (seq (hw_ci_sandbox hw) "") && seq prog (hw_ci_sandbox hw)
       && match args with [mem, out, _] => seq mem (hw_ci_memory hw) && path out | _ => false end)
@@ -134,6 +154,7 @@ sv_run (w : service_world) (made : list string) (prog : string) (args : list str
   | [a, p] => seq prog "rm" && seq a "-rf" && sv_path w made p
   | [a, b, p] => (seq prog "chmod" && seq a "-R" && seq b "a+rX" && sv_path w made p)
                  || (seq prog "docker" && seq a "rm" && seq b "-f" && starts "pantheon-ci-" p && sv_name p)
+  | [a, b, c, d, filter] => seq prog "docker" && eq_strs [a, b, c, d] ["ps", "-a", "-q", "--filter"] && sv_ci_filter filter
   | _ => false
   end.
 
@@ -171,6 +192,8 @@ sv_guard (w : service_world) (made : list string) (op : node_op) : option (strin
   match op with
   | IoPathStat p | IoReadText p | IoDirEntries p | IoDiscardFile p | IoRemoveTree p => sv_guard_path w made p
   | IoPathWrite dir p _ | IoPathRemove dir p => sv_guard_path w made (hjoin dir p)
+  | IoProcStart prog _ _ _ [a, sep, p] =>
+      if seq prog "rm" && seq a "-rf" && seq sep "--" then sv_guard_path w made p else None
   | _ => None
   end.
 
@@ -199,6 +222,9 @@ sv_after (made : list string) (op : node_op) (a : nanswer) : list string :=
   | IoTempDir _ | IoTempFile _ _ _ =>
       if fst a && starts "/" (ans_one a) then ans_one a :: made else made
   | IoRemoveTree p | IoDiscardFile p => filter (fun m => negb (seq m p)) made
+  | IoProcStart prog _ _ _ [flag, sep, p] =>
+      if fst a && seq prog "rm" && seq flag "-rf" && seq sep "--"
+      then filter (fun m => negb (seq m p)) made else made
   | _ => made
   end.
 

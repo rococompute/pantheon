@@ -11,13 +11,26 @@
 # Images allowed: one per line in /etc/pantheon/ci-images.
 set -eu
 no() { echo "pantheon-docker: refused: $*" >&2; exit 64; }
-name_ok() { printf '%s' "$1" | grep -Eqx 'pantheon-ci-[0-9a-f]{1,32}'; }
-mem_ok() { printf '%s' "$1" | grep -Eqx '[0-9]{1,4}[mg]'; }
+name_ok() {
+  case "$1" in pantheon-ci-*) pantheon_name_tail=${1#pantheon-ci-} ;; *) return 1 ;; esac
+  case "$pantheon_name_tail" in ''|*[!0123456789abcdef]*) return 1 ;; esac
+  [ "${#pantheon_name_tail}" -le 32 ]
+}
+mem_ok() {
+  case "$1" in *m|*g) pantheon_mem_digits=${1%?} ;; *) return 1 ;; esac
+  case "$pantheon_mem_digits" in ''|0*|*[!0123456789]*) return 1 ;; esac
+  [ "${#pantheon_mem_digits}" -le 4 ]
+}
 
 case "${1:-}" in
   rm)
     [ $# -eq 3 ] && [ "$2" = -f ] && name_ok "$3" || no "rm takes -f pantheon-ci-HEX"
     exec /usr/bin/docker rm -f "$3" ;;
+  ps)
+    [ $# -eq 5 ] && [ "$2" = -a ] && [ "$3" = -q ] && [ "$4" = --filter ] || no "ps takes -a -q --filter name=^/pantheon-ci-HEX$"
+    name=${5#name=^/}; name=${name%\$}
+    name_ok "$name" && [ "$5" = "name=^/$name\$" ] || no "ps requires one exact Pantheon CI name"
+    exec /usr/bin/docker ps -a -q --filter "name=^/$name\$" ;;
   run) ;;
   *) no "only run and rm" ;;
 esac
@@ -35,6 +48,12 @@ mem=${12#--memory=}; [ "$mem" != "${12}" ] && mem_ok "$mem" || no "memory ${12}"
 # no swap: a build over its memory budget fails instead of crawling
 [ "${13}" = "--memory-swap=$mem" ] || no "argument 13 is '${13}', want '--memory-swap=$mem'"
 
+# The budget is operator-owned, never selected by the node uid. Both
+# cgroup memory and tmpfs must match it; shape validation alone is no cap.
+budget=$(cat /etc/pantheon/ci-memory) || no "no configured CI memory budget"
+mem_ok "$budget" || no "invalid configured CI memory budget"
+[ "$mem" = "$budget" ] && [ "$tmpsize" = "$budget" ] || no "memory and tmpfs must match the configured budget $budget"
+
 # the checkout: a directory the node made in /tmp, not a link, owned by the node
 src=${18%:/work:ro}; [ "$src" != "${18}" ] || no "mount ${18}"
 printf '%s' "$src" | grep -Eqx '/tmp/pantheon-check[A-Za-z0-9._-]+' || no "mount source $src"
@@ -49,7 +68,21 @@ grep -qxF -- "$image" /etc/pantheon/ci-images 2>/dev/null || no "image $image is
 # doesn't inherit the descriptor (dockerd starts it, not this process), so a
 # check can't release it (P-15)
 lock=/var/lib/pantheon-build/lock
-[ -r "$lock" ] && { exec 9<"$lock"; flock 9; }
+[ -r "$lock" ] || no "missing build lock $lock: provision the machine first"
+wait=$(cat /etc/pantheon/ci-lock-wait 2>/dev/null || echo 900)
+printf '%s' "$wait" | grep -Eqx '[0-9]{1,3}' || no "invalid build lock wait"
+[ "$wait" -le 900 ] || no "build lock wait exceeds 900 seconds"
+exec 9<"$lock"
+setpriv --pdeathsig KILL sh -c '
+  [ "$PPID" = "$1" ] || exit 75
+  exec flock -w "$2" -E 75 9
+' ci-lock "$$" "$wait" || { echo "pantheon-docker: build lock unavailable after ${wait}s" >&2; exit 75; }
+# The daemon, not this CLI pid, owns a container. A previous node may have
+# died before removing one; never reuse the host budget while it still runs.
+running=$(/usr/bin/docker ps -q --filter 'name=^/pantheon-ci-') || {
+  echo "pantheon-docker: cannot verify the daemon's active CI containers" >&2; exit 3;
+}
+[ -z "$running" ] || { echo "pantheon-docker: another CI container still runs; remove it before reusing this budget" >&2; exit 75; }
 exec /usr/bin/docker run --rm --name "$name" --network=none --read-only --tmpfs "/tmp:exec,size=$tmpsize" \
   --cap-drop=ALL --security-opt=no-new-privileges --pids-limit=512 --memory="$mem" --memory-swap="$mem" --user=65534:65534 \
   -e HOME=/tmp -v "$src:/work:ro" -w /work "$image" sh -c "${24}"

@@ -44,15 +44,26 @@ marker=$((300 + $$ % 600))
 HOME=$t/home SOMA_DIR=$t/soma CI_LOCK=$t/lock sh "$sb" 256m "$t/work" "sleep $marker" >/dev/null & pid=$!
 sleep 2
 pgrep -f "sleep $marker" >/dev/null || fail "the check didn't start"
+cgroup=/sys/fs/cgroup$(sed -n 's/^0:://p' "/proc/$pid/cgroup")
 kill -9 $pid; wait $pid 2>/dev/null || true
 sleep 2
 pgrep -f "sleep $marker" >/dev/null && { pkill -f "sleep $marker"; fail "the check outlived ci-sandbox's SIGKILL"; }
 flock -n "$t/lock" true || fail "the lock stayed held after the kill"
+[ ! -e "$cgroup/cgroup.procs" ] || [ -z "$(cat "$cgroup/cgroup.procs")" ] || fail "a process survived in the CI scope"
 ok "a check killed through ci-sandbox dies, and the lock is free"
 
 out=$(run 'exit 3' 2>&1) && fail "a failing check passed" || r=$?
 [ "$r" = 3 ] || fail "a check's exit status 3 came back as $r"
 ok "a check's exit status comes back"
+
+# A bounded wait is infrastructure contention (75), not a failed bid (86).
+exec 8>"$t/lock"; flock 8
+if CI_LOCK_WAIT=0 HOME=$t/home SOMA_DIR=$t/soma CI_LOCK=$t/lock sh "$sb" 256m "$t/work" true > "$t/wait"; then
+  fail "a contended zero-wait lock ran CI"
+else status=$?; fi
+[ "$status" -eq 75 ] || fail "lock contention returned $status rather than infrastructure status 75"
+flock -u 8; exec 8>&-
+ok "CI lock contention is bounded and keeps its infrastructure status"
 # the node's command starts with "(" (ci_wrap) and may end in a comment;
 # where sh is bash (Fedora), "((" would start arithmetic and fail to parse
 out=$(run "(x=1

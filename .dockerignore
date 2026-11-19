@@ -2,3 +2,12 @@
 main.exe
 .net*
 net
+
+# The CI image needs source, never checkout history or developer artifacts.
+.git
+**/.git
+_build
+**/_build
+_opam
+**/_opam
+**/.soma-cache
