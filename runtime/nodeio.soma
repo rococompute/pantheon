@@ -188,7 +188,7 @@ Inductive node_op :=
     [id, kind, prompt, ctx...], framed by [nio_frame_lists]); a finished
     job resumed with its outcome, and CI started for a tree (the events
     each queued, framed); a file's text (found or not) and removing a file
-    (no matter whether it's there) *)
+    (its actual unlink result, including failure when it is already absent) *)
 | IoLimitSet (until reason backoff : string)
 | IoLimitClear (backoff : string)
 | IoReleaseState

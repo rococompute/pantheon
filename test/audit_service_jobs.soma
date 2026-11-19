@@ -90,8 +90,8 @@ main := Host.print_lines [
   check "service keeps the path probe for tracked cleanup"
     (match sv_guard service ["/tree"] (IoProcStart "rm" "" "/tree" [] ["-rf", "--", "/tree"]) with
      Some (root, rel) => seq root "/tree" && seq rel "" | None => false end),
-  check "tracked cleanup revokes the temporary root capability once started"
-    (length (sv_after ["/tree"] (IoProcStart "rm" "" "/tree" [] ["-rf", "--", "/tree"]) ans_ok) =? 0),
+  check "tracked cleanup keeps the root capability until its terminal result"
+    (eq_strs (sv_after ["/tree"] (IoProcStart "rm" "" "/tree" [] ["-rf", "--", "/tree"]) ans_ok) ["/tree"]),
   check "cleanup startup receipt never claims scheduling after spawn failure"
     (negb (fst (fst (nresult failed_start (hcleanup_tree host_start "/tree"))))),
   check "failed cancellation remains a failure"

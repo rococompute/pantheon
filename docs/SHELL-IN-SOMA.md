@@ -1651,3 +1651,29 @@ The local CLI one-shot detached cleanup fallback still uses the generic detached
 launcher, whose receipt confirms neither exec nor completion. It is not used as
 proof that service cleanup succeeded; the service now waits for an actual process
 result. This follow-up does not change the generic Host detached contract.
+
+Tracked service cleanup retains its owning capability until a fresh runner
+`job_ended` event reports exit 0. Every terminal outcome removes the job record;
+failure or kill keeps ownership available for probing and retry. Client request
+fields, process output and queued event replays cannot supply that completion.
+One active cleanup per owner bounds bookkeeping by the existing owned-root set;
+normal event polling reaps it, rather than retaining historical jobs. Competing
+cleanup/discard requests are refused while that owner's job remains active.
+
+The tool's explicitly requested `[git-directory, worktree]` cleanup becomes one
+asynchronous rm job for exactly `[worktree.git, worktree]`. This preserves the
+legitimate back-to-back cleanup flow without racing two jobs for one capability.
+The pair requires an actual minted worktree root, so a derived sibling cannot
+mint a `.git.git` target. Both leaves are probed. Only these validated absolute
+single/pair cleanup operands permit empty process cwd; every other process keeps
+the existing directory restriction. This lets the same pair retry after a
+partial deletion removed the worktree but left its git directory.
+
+`IoDiscardFile` now propagates its actual unlink result in the shared Soma
+interpreter. A failed directory unlink or an already absent file reports false
+and preserves service ownership; successful file unlink consumes its capability.
+There is no errno-string matching or new Host policy. The inbox caller explicitly
+logs a failed cleanup and continues the remaining entries, preserving its former
+best-effort progress even if the same unremovable entry remains listed. Failed
+enqueue still stops before unlink; generic `ndo` failure semantics are unchanged.
+Stronger idempotent absence reporting would need a separate explicit IO contract.

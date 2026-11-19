@@ -118,16 +118,19 @@ Qed.
 Theorem processes_are_the_nodes_own : forall w made prog stdin cwd env args,
   sv_allowed w made (IoProcStart prog stdin cwd env args) = true ->
   In prog [sw_self w, "claude", "codex", "curl", "rm", "docker", hw_ci_sandbox (sw_world w), drop_str 4 (hw_backend (sw_world w))]
-  /\ sv_path w made cwd = true
+  /\ (sv_path w made cwd = true \/ (cwd = "" /\ prog = "rm" /\ sv_cleanup_args made args = true))
   /\ (forall e, In e env -> In e (sw_env w) \/ exists pre, In pre sv_tool_names /\ starts pre e = true).
 Proof.
   intros w made prog stdin cwd env args H. cbn [sv_allowed] in H.
-  apply andb_prop in H as [H Hp]. apply andb_prop in H as [Hc He]. split; [| split; [exact Hc |]].
+  apply andb_prop in H as [H Hp]. apply andb_prop in H as [Hc He]. split; [| split].
   - unfold sv_program in Hp.
     repeat match goal with Hx : (_ || _) = true |- _ => apply Bool.orb_prop in Hx as [Hx | Hx] end;
     repeat match goal with Hx : (_ && _) = true |- _ => apply andb_prop in Hx as [Hx ?] end;
     match goal with Hs : seq prog _ = true |- _ => apply seq_true in Hs; subst prog end;
     repeat (first [apply List.in_eq | apply List.in_cons]).
+  - apply Bool.orb_prop in Hc as [Hc | Hc]; [left; exact Hc | right].
+    apply andb_prop in Hc as [Hc Ha]. apply andb_prop in Hc as [Hcwd Hprog].
+    apply seq_true in Hcwd. apply seq_true in Hprog. repeat split; assumption.
   - intros e Hin. rewrite List.forallb_forall in He. specialize (He e Hin). unfold sv_env_ok in He.
     apply Bool.orb_prop in He as [He | He].
     + left. apply List.existsb_exists in He as [x [Hx Hs]]. apply seq_true in Hs. subst. exact Hx.
@@ -292,7 +295,7 @@ Theorem model_launches_are_served : forall w made cwd stdin env out hdr,
   sv_allowed w made (IoProcStart "codex" stdin cwd env (hswap "@OUT@" out (sv_launch_args "codex"))) = true /\
   sv_allowed w made (IoProcStart "curl" stdin cwd env (hswap "@HDR@" (append "@" hdr) (sv_launch_args "grok"))) = true.
 Proof.
-  intros w made cwd stdin env out hdr Pc He Po Ph. cbn [sv_allowed]. rewrite Pc, He. cbn [andb].
+  intros w made cwd stdin env out hdr Pc He Po Ph. cbn [sv_allowed]. rewrite Pc, He. cbn [andb orb].
   unfold sv_program. rewrite !Bool.orb_true_iff. split; [| split].
   - left; left; left; left; left; left; right. rewrite eq_strs_refl. reflexivity.
   - left; left; left; left; left; right. cbn -[sv_path eq_strs]. rewrite Po, eq_strs_refl. reflexivity.
@@ -310,7 +313,7 @@ Theorem check_job_is_served : forall w made cwd env repo head edits out,
   sv_word head = true -> sv_path w made edits = true -> sv_path w made out = true ->
   sv_allowed w made (IoProcStart (sw_self w) "" cwd env ["check", repo, head, edits, out]) = true.
 Proof.
-  intros w made cwd env repo head edits out Pc He Pr Hh Pe Po. cbn [sv_allowed]. rewrite Pc, He. cbn [andb].
+  intros w made cwd env repo head edits out Pc He Pr Hh Pe Po. cbn [sv_allowed]. rewrite Pc, He. cbn [andb orb].
   unfold sv_program. rewrite !Bool.orb_true_iff. do 7 left. rewrite seq_refl. cbn -[sv_path sv_word].
   rewrite Pr, Hh, Pe, Po. reflexivity.
 Qed.
@@ -322,7 +325,7 @@ Theorem recorded_check_job_is_served : forall w made cwd env repo head edits out
   sv_word head = true -> sv_path w made edits = true -> sv_path w made out = true ->
   sv_allowed w made (IoProcStart (sw_self w) "" cwd env ["check", repo, head, edits, out, "--record"]) = true.
 Proof.
-  intros w made cwd env repo head edits out Pc He Pr Hh Pe Po. cbn [sv_allowed]. rewrite Pc, He. cbn [andb].
+  intros w made cwd env repo head edits out Pc He Pr Hh Pe Po. cbn [sv_allowed]. rewrite Pc, He. cbn [andb orb].
   unfold sv_program. rewrite !Bool.orb_true_iff. do 7 left. rewrite seq_refl. cbn -[sv_path sv_word].
   rewrite Pr, Hh, Pe, Po. reflexivity.
 Qed.
@@ -336,9 +339,9 @@ Theorem ci_is_served : forall w made cwd env x out script,
   (seq (hw_ci_sandbox (sw_world w)) "" = false ->
    sv_allowed w made (IoProcStart (hw_ci_sandbox (sw_world w)) "" cwd env [hw_ci_memory (sw_world w), out, script]) = true).
 Proof.
-  intros w made cwd env x out script Pc He Hn Po. cbn [sv_allowed]. rewrite Pc, He. cbn [andb].
+  intros w made cwd env x out script Pc He Hn Po. cbn [sv_allowed]. rewrite Pc, He. cbn [andb orb].
   unfold sv_program. split; [| intros Hs]; rewrite !Bool.orb_true_iff.
-  - left; left; right. rewrite seq_refl. cbn [andb]. unfold sv_ci_docker. cbn [ci_docker_args nth last].
+  - left; left; right. rewrite seq_refl. cbn [andb orb]. unfold sv_ci_docker. cbn [ci_docker_args nth last].
     rewrite volume_out, volume_ends, Hn, Po, eq_strs_refl, starts_append. reflexivity.
   - left; right. rewrite Hs, !seq_refl. cbn -[sv_path]. rewrite Po. reflexivity.
 Qed.
@@ -349,7 +352,7 @@ Theorem cleanup_job_is_served : forall w made p env,
   sv_path w made p = true -> sv_cleanup_path made p = true -> forallb (sv_env_ok w) env = true ->
   sv_allowed w made (IoProcStart "rm" "" p env ["-rf", "--", p]) = true.
 Proof.
-  intros w made p env Hp Hmade He. cbn [sv_allowed]. rewrite Hp, He. cbn [andb].
+  intros w made p env Hp Hmade He. cbn [sv_allowed]. rewrite Hp, He. cbn [andb orb].
   unfold sv_program. rewrite !Bool.orb_true_iff.
   left; left; left; right. rewrite !seq_refl. exact Hmade.
 Qed.
@@ -360,7 +363,7 @@ Theorem cmd_backend_is_served : forall w made cwd stdin env,
   starts "cmd:" (hw_backend (sw_world w)) = true -> (4 <? slen (hw_backend (sw_world w))) = true ->
   sv_allowed w made (IoProcStart (drop_str 4 (hw_backend (sw_world w))) stdin cwd env []) = true.
 Proof.
-  intros w made cwd stdin env Pc He Hs Hl. cbn [sv_allowed]. rewrite Pc, He. cbn [andb].
+  intros w made cwd stdin env Pc He Hs Hl. cbn [sv_allowed]. rewrite Pc, He. cbn [andb orb].
   unfold sv_program. rewrite !Bool.orb_true_iff. right. rewrite Hs, Hl, seq_refl. reflexivity.
 Qed.
 
@@ -472,3 +475,11 @@ Proof.
   change (sv_path w made p && sv_sync_cleanup_path made p = true).
   unfold sv_sync_cleanup_path. rewrite Hp, Hc. reflexivity.
 Qed.
+
+Theorem tracked_start_is_not_completion : forall made prog stdin cwd env args answer,
+  sv_after made (IoProcStart prog stdin cwd env args) answer = made.
+Proof. intros. reflexivity. Qed.
+
+Theorem failed_discard_keeps_capabilities : forall made p answer,
+  fst answer = false -> sv_after made (IoDiscardFile p) answer = made.
+Proof. intros made p answer H. cbn [sv_after]. rewrite H. reflexivity. Qed.

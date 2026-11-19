@@ -1,0 +1,66 @@
+(** Persistent bad inbox entry plus later good files, through real filesystem IO.
+    Clock/metadata and queue observation are supplied. Real directory entries
+    are stably partitioned only here to pin a valid bad-first worst-case order;
+    production readdir ordering and all filesystem effects stay unchanged. *)
+Import core.util runtime.nodeio runtime.node runtime.node_shell.
+Require Soma.Host.
+check (name : string) (ok : bool) : string := append (if ok then "ok " else "FAIL ") name.
+Record inbox_fixture_state := {
+  it_directory : string; it_last : PrimFloat.float; it_now : PrimFloat.float;
+  it_queued : list (list string); it_failed_logs : nat; it_listings : list (list string) }.
+Fixpoint run_inbox_fixture {A : Type} (s : inbox_fixture_state) (p : nprog A) : A * inbox_fixture_state :=
+  match p with
+  | NDone a => (a, s)
+  | NStep op k => match op with
+      | IoInboxState => run_inbox_fixture s (k (true, (it_last s, [it_directory s])))
+      | IoTurnNow => run_inbox_fixture s (k (ans_time (it_now s)))
+      | IoInboxStamp stamp => run_inbox_fixture {| s with it_last := float_of_digits stamp |} (k ans_ok)
+      | IoDirEntries directory =>
+          let observed := shell_answer op in
+          let names := ans_list observed in
+          let ordered := filter (seq "00-bad.json") names ++ filter (fun name => negb (seq name "00-bad.json")) names in
+          run_inbox_fixture {| s with it_listings := it_listings s ++ [ordered] |}
+            (k (ans_data (fst observed) ordered))
+      | IoQueue fields => run_inbox_fixture {| s with it_queued := it_queued s ++ [fields] |} (k ans_ok)
+      | IoLog text =>
+          let answered := shell_answer op in
+          run_inbox_fixture {| s with it_failed_logs := S (it_failed_logs s) |} (k answered)
+      | _ => run_inbox_fixture s (k (shell_answer op))
+      end
+  end.
+fixture : nprog (list string) :=
+  nbind (nask (IoTempDir "pantheon-persistent-inbox")) (fun made =>
+  let directory := ans_one made in
+  let bad := hjoin directory "00-bad.json" in
+  let first := hjoin directory "10-good.json" in
+  let second := hjoin directory "20-good.json" in
+  nbind (nask (IoMakeDirs bad)) (fun _ =>
+  nbind (nask (IoSave (hjoin bad "keep") "false" "fixture")) (fun _ =>
+  nbind (nask (IoSave first "false" "first")) (fun _ =>
+  let initial := {| it_directory := directory; it_last := nio_small 0; it_now := nio_small 10;
+    it_queued := []; it_failed_logs := 0; it_listings := [] |} in
+  let polled_first := run_inbox_fixture initial poll_inbox_prog in
+  nbind (nask (IoSave second "false" "second")) (fun _ =>
+  let polled_second := run_inbox_fixture {| (snd polled_first) with it_now := nio_small 20 |} poll_inbox_prog in
+  nbind (nask (IoReadText (hjoin bad "keep"))) (fun marker =>
+  nbind (nask (IoFileExists first)) (fun first_present =>
+  nbind (nask (IoFileExists second)) (fun second_present =>
+  let results := [
+    check "persistent bad entry does not fail the first inbox batch" (fst polled_first),
+    check "same persistent bad entry does not fail the next inbox batch" (fst polled_second),
+    check "same failed-unlink directory remains across real polls" (seq (ans_one marker) "fixture"),
+    check "first later good file is queued despite persistent failure"
+      (existsb (fun fields => eq_strs fields ["inbox_file", first, "first"]) (it_queued (snd polled_second))),
+    check "second later good file is queued on the next poll"
+      (existsb (fun fields => eq_strs fields ["inbox_file", second, "second"]) (it_queued (snd polled_second))),
+    check "both later good files are actually unlinked" (negb (fst first_present) && negb (fst second_present)),
+    check "persistent cleanup failures are logged on both polls" (it_failed_logs (snd polled_second) =? 2),
+    check "both actual listings keep the same bad entry before real good files"
+      (match it_listings (snd polled_second) with
+       | [first_names, second_names] => seq (hd "" first_names) "00-bad.json" &&
+           existsb (seq "10-good.json") first_names && seq (hd "" second_names) "00-bad.json" &&
+           existsb (seq "20-good.json") second_names
+       | _ => false end)] in
+  nbind (nask (IoRun "/bin/rm" ["-rf", "--", directory])) (fun removed =>
+  NDone (results ++ [check "persistent inbox fixture removed" (fst removed)])))))))))).
+main := Host.print_lines (run_shell fixture).
