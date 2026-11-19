@@ -68,10 +68,22 @@ Example json_reads_tokens :
     = Some (JObj [("a", JNum "1"), ("b", JList [JStr "x", JNull])], []).
 Proof. computed. Qed.
 
-Example key_text_sorts_members :
-  key_text (JObj [("size", JNum "2048"), ("n", JStr "ab"), ("e", JStr "01")])
-    = "{""e"":""01"",""n"":""ab"",""size"":2048}".
-Proof. computed. Qed.
+Example key_text_uses_decoded_identity :
+  key_text (JObj [("size", JNum "8"), ("n", JStr "ab"), ("e", JStr "03")])
+    = "[""ab"",""3""]" /\
+  key_text (JObj [("n", JStr "00 AB"), ("e", JStr "0003"), ("size", JNum "16"), ("extra", JBool "true")])
+    = "[""ab"",""3""]".
+Proof. split; computed. Qed.
+
+Example public_key_width_and_fields_are_checked :
+  public_key_valid (JObj [("size", JNum "8"), ("n", JStr "ab"), ("e", JStr "03")]) = true /\
+  public_key_valid (JObj [("size", JNum "16"), ("n", JStr "ab"), ("e", JStr "03")]) = false /\
+  public_key_valid (JObj [("size", JNum "8"), ("n", JStr "ac"), ("e", JStr "03")]) = false /\
+  public_key_valid (JObj [("size", JNum "8"), ("n", JStr "ab"), ("e", JStr "01")]) = false /\
+  public_key_valid (JObj [("size", JNum "8"), ("n", JStr "no"), ("e", JStr "03")]) = false /\
+  public_key_same (JObj [("size", JNum "8"), ("n", JStr "ab"), ("e", JStr "03")])
+                  (JObj [("size", JNum "8"), ("n", JStr "AB"), ("e", JStr "05")]) = false.
+Proof. repeat split; computed. Qed.
 
 Example stamp_as_seconds_and_microseconds :
   stamp_text "1794540934705916" = "1794540934.705916".
@@ -135,3 +147,33 @@ Proof.
   intros ans pids. unfold up_wait, cli_do. cbn [ntrace]. f_equal.
   induction pids as [| p r IH]; cbn; [reflexivity | f_equal; exact IH].
 Qed.
+
+Example genesis_numbers_are_checked_before_conversion :
+  genesis_param_valid "merge_approvals" "one" = false /\
+  genesis_param_valid "reveal_window" "-5" = false /\
+  genesis_param_valid "term_blocks" "12x" = false /\
+  genesis_param_valid "term_blocks" "9999999999999999999" = false /\
+  genesis_param_valid "merge_approvals" "0" = true /\
+  genesis_param_valid "term_blocks" "007" = true /\
+  genesis_param_valid "block_ms" "0" = false /\
+  genesis_param_valid "block_ms" "300" = true /\
+  genesis_param_valid "label" "two words" = true.
+Proof. repeat split; computed. Qed.
+
+Example genesis_network_rejects_malformed_known_numbers :
+  genesis_network_error (JObj [("block_ms", JNum "-1")]) =
+    Some "block_ms is a positive decimal integer at most 1000000000" /\
+  genesis_network_error (JObj [("block_ms", JStr "200")]) =
+    Some "block_ms is a positive decimal integer at most 1000000000" /\
+  genesis_network_error (JObj [("params", JObj [("merge_approvals", JNum "1")])]) =
+    Some "parameter merge_approvals must be a string; known numeric parameters are decimal integers at most 1000000000 (block_ms is positive)" /\
+  genesis_network_error (JObj [("params", JObj [("label", JStr "two words"), ("finish", JStr "1")])]) = None /\
+  node_flags ["--bid-window", "one"] [] [] [] [] = inr "--bid-window wants a number, got one".
+Proof. repeat split; computed. Qed.
+
+Example genesis_numeric_cap_preserves_zero_padding :
+  genesis_param_valid "max_files" "0001000000000" = true /\
+  genesis_param_valid "max_files" "0001000000001" = false /\
+  genesis_param_valid "block_ms" "0000000000" = false /\
+  genesis_param_valid "merge_approvals" "0000000000" = true.
+Proof. repeat split; computed. Qed.
