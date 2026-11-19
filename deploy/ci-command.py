@@ -3,7 +3,9 @@
 
 The manifest and verifier travel in the command, never in the bid's files.
 A bid can't change the tests that judge it (test/ files already there), and
-can't add an unproved assumption. It can change the deployment (deploy/,
+rejects recognized new assumption declarations and explicit escape hatches.
+This is a lexical guard, not a semantic audit of macros or dependencies.
+It can change the deployment (deploy/,
 scripts/host.sh, scripts/sandbox.sh): CI runs the operator's deployed copies
 of those, never the bid's, so the change is code under test, attested like
 any other, until the next deployment (an epoch, host.sh start) runs it, as it
@@ -52,19 +54,64 @@ def assumptions(text):
                 i += len(m[0])
             else:
                 i += 1
+    # Keep declarations separate from term/tactic uses: a definition named
+    # `error`, `context` or `cast` does not introduce an assumption. This is
+    # deliberately a lexical guard: aliases/macros need semantic auditing.
+    declarations = {'admitted', 'axiom', 'axioms', 'conjecture', 'conjectures',
+                    'parameter', 'parameters', 'hypothesis', 'hypotheses',
+                    'variable', 'variables', 'context'}
+    escapes = {'unk', 'unknown', 'err', 'cast', 'admit', 'exact_no_check',
+               'vm_cast_no_check', 'native_cast_no_check', 'give_up'}
+    named = {'definition', 'abbreviation', 'example', 'lemma', 'theorem',
+             'fact', 'remark', 'corollary', 'proposition', 'fixpoint',
+             'cofixpoint', 'inductive', 'coinductive', 'record', 'class',
+             'instance', 'let'}
+    modifiers = {'local', 'global', 'polymorphic', 'monomorphic', 'program',
+                 'cumulative', 'noncumulative', 'private', 'time', 'succeed', 'fail'}
+
+    def command_start(statement):
+        j = 0
+        while j < len(statement):
+            token = statement[j].lower()
+            if token in modifiers:
+                j += 1
+            elif token in {'timeout', 'redirect'} and j + 1 < len(statement):
+                j += 2
+            elif statement[j:j + 2] == ['#', '[']:
+                j += 2
+                nesting = 1
+                while j < len(statement) and nesting:
+                    nesting += (statement[j] == '[') - (statement[j] == ']')
+                    j += 1
+            else:
+                break
+        return j
+
+    def is_escape(statement):
+        start = command_start(statement)
+        if start >= len(statement):
+            return False
+        if statement[start].lower() in declarations:
+            return True
+        # Do not confuse a declared identifier with a use of the primitive.
+        # For ordinary definitions both the Rocq spelling and Soma's short
+        # `name := ...` / `name : type := ...` spelling name one identifier.
+        binding = None
+        if statement[start].lower() in named:
+            binding = start + 1
+        elif statement[start + 1:start + 2] == [':']:
+            binding = start
+        return any(i != binding and token.lower() in escapes
+                   for i, token in enumerate(statement))
+
     # Preserve each existing escape's complete statement, not just its count:
     # removing one assumption must not buy permission to introduce another.
-    bad = {'admitted', 'admit', 'axiom', 'axioms', 'conjecture', 'conjectures',
-           'parameter', 'parameters',
-           'hypothesis', 'hypotheses', 'variable', 'variables', 'context',
-           'unk', 'unknown', 'err', 'error', 'cast', 'unsafe',
-           'exact_no_check', 'vm_cast_no_check', 'native_cast_no_check', 'give_up'}
     result = collections.Counter()
     statement = []
     for token in tokens + ['.']:
         statement.append(token)
         if token == '.':
-            if any(t.lower() in bad for t in statement):
+            if is_escape(statement):
                 result[' '.join(statement)] += 1
             statement = []
     return result
