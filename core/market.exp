@@ -400,6 +400,20 @@ Proof.
   rewrite bids_setf_other by exact H. exact Hm.
 Qed.
 
+Lemma merged_reset_notes : forall P m id,
+  merged_satisfy P m -> merged_satisfy P (reset_merge_notes m id).
+Proof.
+  intros P m id Hm. unfold reset_merge_notes. cbv beta zeta.
+  repeat match goal with
+  | |- context [match ?x with Some _ => _ | None => _ end] => destruct x; cbv beta iota zeta
+  end.
+  all: repeat first [apply merged_setf_other; [reflexivity|] | exact Hm].
+Qed.
+
+Lemma merged_record_note : forall P m id voter reason,
+  merged_satisfy P m -> merged_satisfy P (record_merge_note m id voter reason).
+Proof. intros. unfold record_merge_note. apply merged_setf_other; [reflexivity|assumption]. Qed.
+
 Lemma merged_set_bid : forall P m b,
   bst b <> Merged -> merged_satisfy P m -> merged_satisfy P (set_bid m b).
 Proof.
@@ -429,7 +443,7 @@ Lemma settle_preserves_merged : forall P,
     merged_satisfy P (fst (finalize m p))) ->
   forall m, merged_satisfy P m -> merged_satisfy P (fst (settle m)).
 Proof.
-  intros P Hfinal m Hm. unfold settle.
+  intros P Hfinal m Hm. unfold settle, end_merge_notes.
   destruct (pending m) as [p|] eqn:Hp; [|exact Hm].
   cbv zeta.
   destruct (merge_quorum m p <=? counted_approvals m p) eqn:Hyes.
@@ -437,7 +451,7 @@ Proof.
   - destruct (rejected_at (merge_n m p) (counted_noes m p));
       [destruct (bid_by m (pbid p)) as [b|] |
        destruct (param m "attest_window" <=? mheight m - pat p)]; simpl;
-      repeat first [apply merged_count | apply merged_setf_other; [reflexivity|] |
+      repeat first [apply merged_count | apply merged_reset_notes | apply merged_setf_other; [reflexivity|] |
         apply merged_set_bid; [discriminate|] | exact Hm].
 Qed.
 
@@ -464,6 +478,9 @@ Proof.
     repeat first [ assumption
       | match goal with
         | |- merged_satisfy _ (count _ _ _) => apply merged_count
+        | |- merged_satisfy _ (reset_merge_notes _ _) => apply merged_reset_notes
+        | |- merged_satisfy _ (record_merge_note _ _ _ _) => apply merged_record_note
+        | |- merged_satisfy _ (if ?choice then _ else _) => destruct choice
         | |- merged_satisfy _ (setf _ _ _) =>
             apply merged_setf_other; [reflexivity|]
         | |- merged_satisfy _ (set_bid _ _) =>
@@ -537,7 +554,9 @@ Lemma prune_preserves_merged : forall P m,
   merged_satisfy P m -> merged_satisfy P (prune m).
 Proof.
   unfold merged_satisfy, prune. intros P m Hm b Hin Hb.
-  rewrite bids_setf_bids in Hin. apply filter_In in Hin. apply Hm; tauto.
+  rewrite bids_setf_bids in Hin. apply filter_In in Hin.
+  repeat rewrite bids_setf_other in Hin by reflexivity.
+  apply Hm; tauto.
 Qed.
 
 Lemma merged_block_fold : forall (P : bid -> Prop)

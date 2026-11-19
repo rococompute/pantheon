@@ -92,7 +92,7 @@ Theorem violation_attests_no_without_the_model : forall a m p b,
   pending m = Some p -> bid_by m (pbid p) = Some b -> violation a m b <> "" ->
   snd (attest_duty a m) = [] /\
   (fst (attest_duty a m) = a \/
-   exists key, fst (attest_duty a m) = enqueue (note_asked a key) ["attest", show (bidn b), "no"]).
+   exists key, fst (attest_duty a m) = enqueue (note_asked a key) (attestation_fields (show (bidn b)) false "" (violation a m b))).
 Proof.
   intros a m p b Hp Hb Hv. unfold attest_duty. rewrite Hp, Hb.
   destruct (_ || _ || _ || _); [split; [reflexivity|left; reflexivity]|].
@@ -178,3 +178,11 @@ Proof.
   intros a m x Hx Hs. pose proof (flush_submits_next a m x Hx Hs) as H.
   rewrite release_inflight_me in H. exact H.
 Qed.
+
+Example negative_attestation_retains_the_model_reason :
+  attestation_fields "7" false "" "does not handle invalid input" =
+    ["attest", "7", "no", "does not handle invalid input"] /\
+  attestation_fields "7" true "tree" "checked behavior" =
+    ["attest", "7", "yes", "tree", "checked behavior"] /\
+  attestation_fields "7" false "" "" = ["attest", "7", "no"].
+Proof. repeat split; computed. Qed.

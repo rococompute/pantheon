@@ -211,6 +211,13 @@ implemented by " (me a)), "title", append "task " (append t (append " by " (me a
   | _ => []
   end.
 
+(** A reason is part of the signed vote, not a discarded model field.
+    Empty reasons keep the legacy wire shape for old scripted clients. *)
+attestation_fields (bid : string) (approve : bool) (tree reason : string) : list string :=
+  let reason := take_str 700 (clean_text (redact reason)) in
+  (["attest", bid, if approve then "yes" else "no"] ++ (if approve then [tree] else [])) ++
+  (if seq reason "" then [] else [reason]).
+
 (** what a flattened reply says at a key *)
 kv_at (kv : list string) (k : string) : string := get_or "" k (pairs kv).
 
@@ -325,7 +332,7 @@ on_answer (a m : obj) (data kv : list string) : obj :=
                else a in
       if merging then enqueue a ["merge", pick] else a
   | "attest" :: b :: tree :: _ =>
-      enqueue a (if seq (kv_at kv "approve") "true" then ["attest", b, "yes", tree] else ["attest", b, "no"])
+      enqueue a (attestation_fields b (seq (kv_at kv "approve") "true") tree (kv_at kv "reason"))
   | _ => a
   end.
 
@@ -535,7 +542,7 @@ attest_duty (a m : obj) : obj * list (list string) :=
           if (3 <=? n) || negb (ask_once a key) then (a, []) else
           let a := note_asked a key in
           let v := violation a m b in
-          if negb (seq v "") then (enqueue a ["attest", show (bidn b), "no"], [])
+          if negb (seq v "") then (enqueue a (attestation_fields (show (bidn b)) false "" v), [])
           else
             (* first the shell applies the edits to the head, gets the tree and
                runs CI if it has one; then the model judges *)
@@ -665,7 +672,7 @@ answered (a m : obj) (id : string) (kv : list string) : obj * list (list string)
                      let '(a, o') := flush a m in (a, o ++ o')
         | None => (a, [])
         end
-      else flush (enqueue a ["attest", b, "no"]) m
+      else flush (enqueue a (attestation_fields b false "" (kv_at kv "why"))) m
   | Some ("markcheck" :: t :: line :: rest) =>
       if negb (is_leader m (me a)) then flush a m else
       let on := match rest with o :: _ => o | [] => "" end in

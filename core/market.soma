@@ -222,6 +222,34 @@ bids (m : obj) : list bid := getf m "bids".
     bids (prune) must not make the next bid reuse *)
 nbids (m : obj) : nat := getf m "nbids".
 pending (m : obj) : option proposal := getf m "pending".
+
+(** Diagnostic metadata follows the current proposal for each retained bid.
+    It does not change the bool votes used by quorum proofs. Reproposal resets
+    it and pruning removes it with the bid; one voter contributes once. *)
+merge_vote_notes (m : obj) : list (string * list (string * (string * nat))) := getf m "merge_vote_notes".
+merge_terminals (m : obj) : list (string * (nat * string)) := getf m "merge_terminals".
+merge_recorded_votes (m : obj) : list (string * list (string * bool)) := getf m "merge_recorded_votes".
+
+reset_merge_notes (m : obj) (id : nat) : obj :=
+  let key := show id in
+  match lookup key (merge_vote_notes m), lookup key (merge_terminals m), lookup key (merge_recorded_votes m) with
+  | None, None, None => m
+  | _, _, _ =>
+      let m := setf (setf m "merge_vote_notes" (filter (fun p => negb (seq (fst p) key)) (merge_vote_notes m)))
+           "merge_terminals" (filter (fun p => negb (seq (fst p) key)) (merge_terminals m)) in
+      setf m "merge_recorded_votes" (filter (fun p => negb (seq (fst p) key)) (merge_recorded_votes m))
+  end.
+
+record_merge_note (m : obj) (id : nat) (voter reason : string) : obj :=
+  setf m "merge_vote_notes" (put (show id)
+    (put voter (reason, mheight m) (get_or [] (show id) (merge_vote_notes m))) (merge_vote_notes m)).
+
+end_merge_notes (m : obj) (p : proposal) (outcome : string) : obj :=
+  setf (setf m "merge_terminals" (put (show (pbid p)) (mheight m, outcome) (merge_terminals m)))
+       "merge_recorded_votes" (put (show (pbid p)) (pvotes p) (merge_recorded_votes m)).
+
+merge_note_for (m : obj) (id : nat) (voter : string) : string * nat :=
+  get_or ("", 0) voter (get_or [] (show id) (merge_vote_notes m)).
 nonces (m : obj) : list (string * nat) := getf m "nonces".
 lastbid (m : obj) : list (string * nat) := getf m "lastbid".
 counters (m : obj) : list (string * nat) := getf m "counters".
@@ -305,6 +333,9 @@ new_market (agents : list string) : obj :=
    ("reveals", ([] : list (string * string)) : Any), ("held_back", ([] : list string) : Any), ("tips", ([] : list (string * string)) : Any),
    ("version", 0 : Any), ("repos", ([] : list (string * string)) : Any), ("paths", ([] : list (string * nat)) : Any),
    ("tasks", ([] : list task) : Any), ("bids", ([] : list bid) : Any), ("nbids", 0 : Any), ("pending", (None : option proposal) : Any),
+   ("merge_vote_notes", ([] : list (string * list (string * (string * nat)))) : Any),
+   ("merge_terminals", ([] : list (string * (nat * string))) : Any),
+   ("merge_recorded_votes", ([] : list (string * list (string * bool))) : Any),
    ("nonces", ([] : list (string * nat)) : Any), ("lastbid", ([] : list (string * nat)) : Any),
    ("counters", ([] : list (string * nat)) : Any), ("params", ([] : list (string * nat)) : Any),
    ("leader_entries", ([] : list leader_entry) : Any), ("leader_tip", "" : Any), ("leader_count", 0 : Any),
@@ -403,14 +434,14 @@ overwrites (m : obj) (b : bid) : bool :=
     its checkout and checks it reaches that tree. *)
 finalize (m : obj) (p : proposal) : obj * list (list string) :=
   match bid_by m (pbid p) with
-  | None => (setf m "pending" (None : option proposal), [])
+  | None => (setf (reset_merge_notes m (pbid p)) "pending" (None : option proposal), [])
   | Some b =>
       let r := bid_repo m b in
       let spec_of := match task_by m (btask b) with Some t => spec t | None => "" end in
       let v := version m + 1 in
       let ps := fold_left (fun ps x => put (path_key r x) v ps) (edit_paths (edits b)) (paths m) in
       let m := setf (setf (setf m "paths" ps) "version" v) "repos" (put r (ptree p) (repos m)) in
-      let m := set_bid m (with_votes (with_status b Merged "") (pvotes p)) in
+      let m := end_merge_notes (set_bid m (with_votes (with_status b Merged "") (pvotes p))) p "merged" in
       let m := setf (setf m "pending" (None : option proposal)) "merges" (merges m + 1) in
       let m := count m (bidder b) "merges" in
       (* a pending bid whose files this changed is marked stale and stays: its
@@ -597,6 +628,17 @@ counted_approvals (m : obj) (p : proposal) : nat :=
 counted_noes (m : obj) (p : proposal) : nat :=
   length (filter (fun v => negb (snd v)) (counted_votes m p)).
 
+(** Retain useful authored no reasons without inventing reasons for legacy
+    votes. Names/reasons are JSON-quoted so they remain one status line. *)
+attestation_rejection_reason (m : obj) (p : proposal) : string :=
+  let explained := filter (fun v => negb (snd v) &&
+      negb (seq (fst (merge_note_for m (pbid p) (fst v))) "")) (counted_votes m p) in
+  fold_left (fun text v =>
+    let reason := fst (merge_note_for m (pbid p) (fst v)) in
+    append text (append " (" (append (nio_json_string (fst v))
+      (append ": " (append (nio_json_string reason) ")")))))
+    (firstn 8 explained) "attestors voted no".
+
 settle (m : obj) : obj * list (list string) :=
   match pending m with
   | None => (m, [])
@@ -607,10 +649,11 @@ settle (m : obj) : obj * list (list string) :=
       if merge_quorum m p <=? yes then finalize m p
       else if rejected_at (merge_n m p) no then
         match bid_by m (pbid p) with
-        | Some b => (count (setf (set_bid m (with_votes (with_status b Rejected "attestors voted no") (pvotes p))) "pending" (None : option proposal)) (bidder b) "rejected", [])
-        | None => (setf m "pending" (None : option proposal), [])
+        | Some b => (count (end_merge_notes (setf (set_bid m (with_votes (with_status b Rejected (attestation_rejection_reason m p)) (pvotes p))) "pending" (None : option proposal)) p "rejected") (bidder b) "rejected", [])
+        | None => (setf (reset_merge_notes m (pbid p)) "pending" (None : option proposal), [])
         end
-      else if param m "attest_window" <=? age then (setf m "pending" (None : option proposal), [])
+      else if param m "attest_window" <=? age then
+        (end_merge_notes (setf m "pending" (None : option proposal)) p "expired", [])
       else (m, [])
   end.
 
@@ -719,26 +762,39 @@ apply (m : obj) (a : string) (fields : list string) : obj * list (list string) *
           else if excludes m a (bid_repo m b) then fail "the bid's repository is outside this leader's scope (its genesis part excludes it): a leader whose scope has it merges it"
           else if seq on "" then fail "a merge names the head its tree was checked on: merge BID TREE HEAD"
           else if moved_since m (bid_repo m b) on then fail "the tree was checked on another head than the repository's (a merge landed since): check the bid on the head again, then merge BID TREE HEAD"
-          else ok (setf m "pending" (Some {| pbid := bidn b; pby := a; pat := mheight m; pvotes := []; ptree := tree |}))
+          else ok (setf (reset_merge_notes m (bidn b)) "pending" (Some {| pbid := bidn b; pby := a; pat := mheight m; pvotes := []; ptree := tree |}))
       | None => fail "no such bid"
       end
   | "attest" :: i :: yes :: rest =>
-      (* attest BID yes TREE, the tree the edits gave on the head; or attest BID no *)
+      (* Legacy attest BID no / yes TREE remains valid; an optional final
+         reason is signed with the same fields and retained in diagnostics. *)
+      let parsed := if seq yes "yes" then
+          match rest with [tree] => Some (tree, "") | [tree, reason] => Some (tree, reason) | _ => None end
+        else if seq yes "no" then
+          match rest with [] => Some ("", "") | [reason] => Some ("", reason) | _ => None end
+        else None in
+      match parsed with
+      | None => fail "usage: attest BID yes TREE [REASON], or attest BID no [REASON]"
+      | Some (tree, reason) =>
+      if (700 <? slen reason) || negb (plain_text reason) then fail "an attestation reason is plain text of at most 700 bytes" else
       match pending m, bid_by m (num i) with
       | Some p, Some b =>
-          let tree := match rest with [x] => x | _ => "" end in
           if negb (pbid p =? bidn b) then fail "that bid isn't pending merge"
           else if seq a (pby p) || seq a (bidder b) then fail "the leader and the bidder don't attest"
           else if existsb (fun v => seq (fst v) a) (pvotes p) then fail "already attested"
           else if excludes m a (bid_repo m b) then fail "the bid's repository is outside this agent's scope (its genesis part excludes it): it doesn't attest there"
           else if seq yes "yes" && seq tree "" then fail "a yes names the tree it checked: attest BID yes TREE"
           else
-            (* a yes for another tree than the leader's counts as a no *)
             let agree := seq yes "yes" && seq (ptree p) tree in
+            let reason := if seq yes "yes" && negb agree
+                          then append "checked tree differs from proposal" (if seq reason "" then "" else append ": " reason)
+                          else reason in
             let p := {| pbid := pbid p; pby := pby p; pat := pat p; pvotes := (a, agree) :: pvotes p; ptree := ptree p |} in
             let note := if seq yes "yes" && negb agree then [["log", append a (append "'s yes named another tree than the leader's, " (ptree p))]] else [] in
+            let m := if seq reason "" then m else record_merge_note m (pbid p) a (take_str 700 reason) in
             let '(m, o) := settle (setf m "pending" (Some p)) in (m, o ++ note, "")
       | _, _ => fail "nothing to attest"
+      end
       end
   | "mark" :: t :: line :: tree :: rest =>
       (* mark TASK LINE TREE HEAD: HEAD as for a merge *)
@@ -760,7 +816,7 @@ apply (m : obj) (a : string) (fields : list string) : obj * list (list string) *
             let id := nbids m + 1 in
             (* the bid appended last, the shape core/market.exp's lemma for an
                appended bid states *)
-            let m := setf (setf m "nbids" id) "pending" (Some {| pbid := id; pby := a; pat := mheight m; pvotes := []; ptree := tree |}) in
+            let m := setf (setf (reset_merge_notes m id) "nbids" id) "pending" (Some {| pbid := id; pby := a; pat := mheight m; pvotes := []; ptree := tree |}) in
             ok (setf m "bids" (bids m ++ [{| bidn := id; btask := tid tk; bidder := a; base := version m; edits := [mark_edit line];
                                              note := mark_note; bst := Pending; stale := false; why := ""; votes := [] |}]))
       end
@@ -902,6 +958,10 @@ prune (m : obj) : obj :=
   let settled := filter (fun b => negb (is_pending (bst b))) (bids m) in
   let drop := length settled - param m "keep_settled" in
   let old := map bidn (firstn drop settled) in
+  let keys := map show old in
+  let m := setf (setf m "merge_vote_notes" (filter (fun p => negb (mem (fst p) keys)) (merge_vote_notes m)))
+                "merge_terminals" (filter (fun p => negb (mem (fst p) keys)) (merge_terminals m)) in
+  let m := setf m "merge_recorded_votes" (filter (fun p => negb (mem (fst p) keys)) (merge_recorded_votes m)) in
   setf m "bids" (filter (fun b => negb (existsb (fun i => i =? bidn b) old)) (bids m)).
 
 (** A block: each transaction in order, then the end-of-block rules. A
