@@ -1,5 +1,5 @@
 (** Bound the in-memory projection while retaining every real Git record. *)
-Import core.util core.leader runtime.nodeio runtime.node runtime.node_host runtime.node_shell.
+Import core.util core.leader core.market runtime.nodeio runtime.node runtime.node_host runtime.node_shell.
 Require Soma.Host.
 
 check (label : string) (ok : bool) : string := append (if ok then "ok " else "FAIL ") label.
@@ -23,6 +23,7 @@ world (home : string) : hworld := {| hw_home := home; hw_backend := "scripted"; 
 main :=
   let home := hd "." (Host.argv tt) in
   let (m, all) := fixture 40 initial [] in
+  let governed := setf (new_market ["a"]) "repos" ([("one", "tree")] : list (string * string)) in
   let reference repo := Stdlib.Strings.String.concat newline
     (map leader_entry_json (rev (firstn 12 (filter (fun e => seq repo "" || seq (leader_repo e) repo) (rev all))))) in
   let archive_ok := run_shell (
@@ -40,5 +41,9 @@ main :=
       (seq (leader_tip m) (le_hash (last all blank))),
     check "all-repo and per-repo prompt windows match the unbounded reference"
       (forallb (fun repo => seq (leader_recent m repo) (reference repo)) ["", "one", "two"]),
+    check "arbitrary repository names cannot create more in-memory windows"
+      (let '(unchanged, _, reason) := apply governed "a"
+        ["leader-note", "note", "unconfigured", "0", "", "", "", "", "manual", "no new bucket"] in
+       seq reason "unknown journal repository" && (leader_count unchanged =? 0)),
     check "every Git record survives window eviction and old-record replay" archive_ok
   ].
