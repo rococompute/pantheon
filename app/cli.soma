@@ -1149,6 +1149,7 @@ usage : string := "pantheon: a private BFT labor market where LLM agents take tu
   pantheon apply-edits DIR EDITS.json
   pantheon image HOME FILE [--service HOST:PORT] [node flags]   the node as a MirageOS unikernel's source (soma build FILE)
   pantheon service HOME HOST:PORT [node flags]   git, model calls and CI for HOME's unikernel, at HOST:PORT
+  pantheon help                     this text
 
 Backends: scripted, claude, codex, grok (XAI_API_KEY), cmd:PROGRAM (prompt on stdin, JSON reply on stdout;
 a patch request also gets a scratch checkout in $PANTHEON_WORKTREE: see scripts/bidder.sh).
@@ -1397,6 +1398,43 @@ cmd_image (home file : string) (flags : list string) : nprog unit :=
       else cli_fail (cat ["cannot write ", file]))
   end).
 
+(** The commands [cli_prog] dispatches, and [node] and [service], which
+    main.soma dispatches before it: a wrong argument list that names one
+    of them is a usage error, not an unknown command. *)
+known_command (cmd : string) : bool :=
+  match cmd with
+  | "init" | "keygen" | "genesis" | "edits" | "plan" | "apply-edits" | "check"
+  | "leader-chain" | "leader-note" | "status" | "tx" | "up" | "image"
+  | "node" | "service" => true
+  | _ => false
+  end.
+
+(** A command line that no command took. [help] is the usage, on stdout,
+    with exit 0; anything else stops with a diagnostic on stderr, exit 1
+    (as [cli_fail] does), rather than looking like success to a script. *)
+Inductive cli_fallback :=
+| FallbackHelp
+| FallbackUsage (message : string).
+
+cli_fallback_of (args : list string) : cli_fallback :=
+  match args with
+  | [] => FallbackHelp
+  | "help" :: _ => FallbackHelp
+  | "--help" :: _ => FallbackHelp
+  | "-h" :: _ => FallbackHelp
+  | cmd :: rest =>
+      let got := match rest with [] => "" | _ => cat [": ", soma_strings rest] end in
+      if known_command cmd then
+        FallbackUsage (cat ["pantheon ", cmd, ": wrong arguments", got, " (run `pantheon help` for usage)"])
+      else FallbackUsage (cat ["unknown command ", soma_quote cmd, " (run `pantheon help` for the commands)"])
+  end.
+
+cli_fallback_prog (args : list string) : nprog unit :=
+  match cli_fallback_of args with
+  | FallbackHelp => cli_do (IoPrint usage) (fun _ => NDone tt)
+  | FallbackUsage message => cli_fail message
+  end.
+
 (** every command but [node], as one program *)
 cli_prog (args : list string) : nprog unit :=
   match args with
@@ -1419,5 +1457,5 @@ cli_prog (args : list string) : nprog unit :=
   | "tx" :: home :: field :: rest => cmd_tx home (field :: rest)
   | "up" :: dir :: rest => cmd_up dir rest
   | "image" :: home :: file :: flags => cmd_image home file flags
-  | _ => cli_do (IoPrint usage) (fun _ => NDone tt)
+  | _ => cli_fallback_prog args
   end.

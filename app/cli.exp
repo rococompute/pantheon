@@ -105,6 +105,28 @@ Example image_strings_quote :
   soma_strings ["a""b", ""] = "[""a""""b"", """"]".
 Proof. computed. Qed.
 
+Example fallback_help_succeeds :
+  cli_fallback_of [] = FallbackHelp
+  /\ cli_fallback_of ["help"] = FallbackHelp
+  /\ cli_fallback_of ["--help"] = FallbackHelp
+  /\ cli_fallback_of ["-h"] = FallbackHelp
+  /\ cli_fallback_of ["help", "status"] = FallbackHelp.
+Proof. repeat split; reflexivity. Qed.
+
+Example fallback_unknown_command_stops :
+  cli_fallback_of ["bogus"] = FallbackUsage "unknown command ""bogus"" (run `pantheon help` for the commands)"
+  /\ cli_fallback_of ["bogus", "home"] = FallbackUsage "unknown command ""bogus"" (run `pantheon help` for the commands)".
+Proof. split; computed. Qed.
+
+Example fallback_wrong_arguments_stops :
+  cli_fallback_of ["status"] = FallbackUsage "pantheon status: wrong arguments (run `pantheon help` for usage)"
+  /\ cli_fallback_of ["status", "home", "extra"] =
+       FallbackUsage "pantheon status: wrong arguments: [""home"", ""extra""] (run `pantheon help` for usage)"
+  /\ cli_fallback_of ["node"] = FallbackUsage "pantheon node: wrong arguments (run `pantheon help` for usage)"
+  /\ cli_fallback_of ["service", "home"] =
+       FallbackUsage "pantheon service: wrong arguments: [""home""] (run `pantheon help` for usage)".
+Proof. repeat split; computed. Qed.
+
 (** [up] waits for exactly the nodes it started, in order, and only after
     an interrupt or a terminate is set to stop them all *)
 Theorem up_waits_for_what_it_started : forall ans pids,
