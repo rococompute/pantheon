@@ -2839,6 +2839,7 @@ genesis_agent (fuel : nat) (a : list string) : option (string * (string * list s
   | Some ps =>
       match genesis_text (genesis_member "name" ps), genesis_text (genesis_member "tip" ps) with
       | Some name, Some tip =>
+          if seq name "" || seq tip "" then None else
           match genesis_member "exclude" ps with
           | Some (("L" :: _) as ex) =>
               match peer_string_list ex with
