@@ -717,6 +717,7 @@ apply (m : obj) (a : string) (fields : list string) : obj * list (list string) *
           else if param m "max_merges" <=? merges m then fail "merge limit for this term"
           else if negb (is_pending (bst b)) || seq (bidder b) a then fail "not a bid this leader can merge"
           else if excludes m a (bid_repo m b) then fail "the bid's repository is outside this leader's scope (its genesis part excludes it): a leader whose scope has it merges it"
+          else if seq on "" then fail "a merge names the head its tree was checked on: merge BID TREE HEAD"
           else if moved_since m (bid_repo m b) on then fail "the tree was checked on another head than the repository's (a merge landed since): check the bid on the head again, then merge BID TREE HEAD"
           else ok (setf m "pending" (Some {| pbid := bidn b; pby := a; pat := mheight m; pvotes := []; ptree := tree |}))
       | None => fail "no such bid"
@@ -750,6 +751,7 @@ apply (m : obj) (a : string) (fields : list string) : obj * list (list string) *
           else if negb (topen tk) then fail "task is closed"
           else if excludes m a (trepo tk) then fail "the task's repository is outside this leader's scope (its genesis part excludes it)"
           else if seq tree "" then fail "a mark names the tree its edit gives on the head: mark TASK LINE TREE HEAD"
+          else if seq on "" then fail "a mark names the head its tree was checked on: mark TASK LINE TREE HEAD"
           else if moved_since m (trepo tk) on then fail "the tree was checked on another head than the repository's (a merge landed since): check the mark on the head again, then mark TASK LINE TREE HEAD"
           else if negb (pending_bid_id m =? 0) then fail "a merge is already pending"
           else if seq line "" || negb (plain_text line) || contains newline line then fail "a mark names one line of .plan, as it is there"
