@@ -3,8 +3,7 @@
 # No arguments and help print the usage on stdout and exit 0. An unknown
 # command, or a known command with an argument list no command takes, says
 # what is wrong on stderr and exits 1. Valid commands keep their own status.
-# This replaces test/cli.sh's historical "usage succeeds, including wrong
-# arities" assertion; that file is outside this test's ownership.
+# Complements test/cli.sh with fallback diagnostics and stdout/stderr checks.
 # Needs main.exe built by `soma build main.soma`.
 set -u
 cd "$(dirname "$0")/.." || exit 1

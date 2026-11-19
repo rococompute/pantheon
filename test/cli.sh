@@ -17,23 +17,27 @@ expect() {
   if [ "$got" -eq "$want" ]; then ok "$desc (exit $got)";
   else fail "$desc: wanted exit $want, got $got: $(cat "$T/out" "$T/err")"; fi
 }
-# Usage historically succeeds, including wrong arities. Preserve that contract.
+# Help succeeds; unknown commands and wrong arities are usage errors.
 expect 0 'missing command'
 cp "$T/out" "$T/usage"
-for args in unknown genesis status tx node up edits apply-edits check; do
-  expect 0 "usage for $args" "$args"
-  cmp -s "$T/usage" "$T/out" || fail "usage differs for $args"
+expect 0 'help' help
+cmp -s "$T/usage" "$T/out" || fail 'help differs from no-argument usage'
+for args in genesis status tx node up edits apply-edits check; do
+  expect 1 "usage error for $args" "$args"
+  grep -Fq "pantheon $args: wrong arguments" "$T/err" || fail "no diagnostic for $args"
 done
-expect 0 'unknown command with arguments' unknown '' 'two words'
-cmp -s "$T/usage" "$T/out" || fail 'unknown-command usage differs'
-expect 0 'genesis extra argument' genesis home network extra
-cmp -s "$T/usage" "$T/out" || fail 'wrong-arity genesis reached implementation'
-expect 0 'plan extra argument' plan file extra
-cmp -s "$T/usage" "$T/out" || fail 'wrong-arity plan reached implementation'
-expect 0 'status extra argument' status home extra
-cmp -s "$T/usage" "$T/out" || fail 'wrong-arity status reached implementation'
-expect 0 'tx requires at least one field' tx home
-cmp -s "$T/usage" "$T/out" || fail 'empty tx reached implementation'
+expect 1 'unknown command' unknown
+grep -Fq 'unknown command "unknown"' "$T/err" || fail 'unknown-command diagnostic differs'
+expect 1 'unknown command with arguments' unknown '' 'two words'
+grep -Fq 'unknown command "unknown"' "$T/err" || fail 'unknown-command diagnostic differs'
+expect 1 'genesis extra argument' genesis home network extra
+grep -Fq 'pantheon genesis: wrong arguments' "$T/err" || fail 'wrong-arity genesis diagnostic'
+expect 1 'plan extra argument' plan file extra
+grep -Fq 'pantheon plan: wrong arguments' "$T/err" || fail 'wrong-arity plan diagnostic'
+expect 1 'status extra argument' status home extra
+grep -Fq 'pantheon status: wrong arguments' "$T/err" || fail 'wrong-arity status diagnostic'
+expect 1 'tx requires at least one field' tx home
+grep -Fq 'pantheon tx: wrong arguments' "$T/err" || fail 'empty tx diagnostic'
 expect 1 'init without arguments reaches its own parser' init
 expect 1 'keygen without arguments reaches its own parser' keygen
 
