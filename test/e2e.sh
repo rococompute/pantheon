@@ -9,13 +9,13 @@
 #
 # Needs main.exe: build it with `soma build main.soma`.
 set -u
-ALL="bidders bidder-fallback bidder-timeout happy crash restart-lock equivocate double-vote silent bad-sig withhold bad-tree future-nonce deny silent-model policy model stuck limit limit-cli prune epoch text network ci cifail ciflood cispoof nocheck parallel scope flood"
+ALL="bidders bidder-fallback bidder-timeout happy crash restart-lock equivocate double-vote silent bad-sig withhold draw-recovery bad-tree future-nonce deny silent-model policy model stuck limit limit-cli prune epoch text network ci cifail ciflood cispoof nocheck parallel scope flood"
 case ${1:-} in
   --list) printf '%s\n' $ALL; exit 0 ;;
   --help|-h) printf 'Usage: %s [SCENARIO ...]\nRun scripted real-node scenarios; --list lists names without starting nodes.\n' "$0"; exit 0 ;;
 esac
 cd "$(dirname "$0")/.."
-BIN=$PWD/main.exe
+BIN=${PANTHEON:-$PWD/main.exe}
 [ -x "$BIN" ] || { echo "no main.exe: run soma build main.soma"; exit 1; }
 ROOT=${TMPDIR:-/tmp}/pantheon-e2e-$$
 mkdir -p "$ROOT"
@@ -392,6 +392,102 @@ scenario_withhold() {
   [ "${n:-0}" -ge 2 ] || { echo "FAIL withhold: muse held back ${n:-0} times, expected 2 or more"; return 1; }
   grep -q 'holding back my link' "$ROOT/withhold/muse/node.log" || { echo "FAIL withhold: muse never held back"; return 1; }
   echo "ok withhold: muse held back $n times and never led, rotation $hist"
+}
+
+# One missed reveal must cost the following draw, not the rest of this
+# node's lifetime. Silent scripted agents keep the network drawing without
+# model calls or task-completion shutdown. The fault lives in reveal_plan,
+# shared by the native and image interpreters, rather than a host shim.
+scenario_draw_recovery() {
+  init draw-recovery 27750 term_blocks=12 stall_blocks=12 max_merges=1 fallback_blocks=10 reveal_window=6 || return 1
+  : > "$ROOT/draw-recovery/goal.txt"
+  # Fix only the private draw secrets and their public commitments before
+  # the first block; keep the real generated signing identities. These
+  # chains deterministically draw claude, grok, codex, then recovered muse.
+  # Rebuild genesis through its real CLI rather than editing a live chain.
+  python3 - "$ROOT/draw-recovery" <<'PY' || return 1
+import hashlib,json,pathlib,sys
+root=pathlib.Path(sys.argv[1])
+for name in ['claude','codex','grok','muse']:
+    secret='pantheon-e2e-draw-recovery-v1/'+name
+    tip=secret
+    for _ in range(100000):
+        tip=hashlib.sha256(tip.encode()).hexdigest()
+    (root/name/'chain.json').write_text(json.dumps({'secret':secret})+'\n')
+    for path in [root/name/'public.json',root/'network/parts'/(name+'.json')]:
+        part=json.loads(path.read_text());part['tip']=tip
+        path.write_text(json.dumps(part)+'\n')
+PY
+  for a in $AGENTS; do
+    "$BIN" genesis "$ROOT/draw-recovery/$a" "$ROOT/draw-recovery/network" >> "$ROOT/draw-recovery.init.log" 2>&1 || return 1
+  done
+  recovery_cleanup() {
+    stop draw-recovery
+    for agent in $AGENTS; do
+      [ ! -f "$ROOT/draw-recovery/$agent/pid" ] || wait "$(cat "$ROOT/draw-recovery/$agent/pid")" 2>/dev/null || true
+    done
+  }
+  trap recovery_cleanup EXIT
+  trap 'exit 1' HUP INT TERM
+  for a in claude codex grok; do node draw-recovery "$a" -- --behavior silent; done
+  node draw-recovery muse PANTHEON_BYZ=withhold-once -- --behavior silent
+  wait_for draw-recovery claude 90 "the first completed draw" term_at_least draw-recovery claude 1 || return 1
+  grep -q '^count muse.held_back 1$' "$ROOT/draw-recovery/claude/status.txt" || {
+    echo 'FAIL draw-recovery: withhold-once fault did not activate on the first draw'; return 1;
+  }
+  wait_for draw-recovery claude 90 "two completed draws" term_at_least draw-recovery claude 2 || return 1
+  # Capture the early history before its rolling window drops either term.
+  cp "$ROOT/draw-recovery/claude/status.txt" "$ROOT/draw-recovery/first-draws.txt"
+  early=$(sed -n 's/^history //p' "$ROOT/draw-recovery/first-draws.txt")
+  set -- $early
+  [ $# -ge 2 ] && [ "$1" != muse ] && [ "$2" != muse ] || {
+    echo "FAIL draw-recovery: muse led before its one-draw penalty expired: $early"; return 1;
+  }
+  # The fixed commitments make the fourth draw choose recovered muse.
+  # This fails promptly for permanent exclusion, without a probabilistic
+  # wait hoping that a randomly generated chain eventually selects muse.
+  wait_for draw-recovery claude 90 "the fourth draw" term_at_least draw-recovery claude 4 || return 1
+  grep -q '^count muse.led 1$' "$ROOT/draw-recovery/claude/status.txt" || {
+    echo 'FAIL draw-recovery: muse could not lead again on its deterministic fourth draw'; return 1;
+  }
+  sleep 1
+  recovery_cleanup
+  trap - EXIT HUP INT TERM
+  agree draw-recovery claude codex grok muse && agree_files draw-recovery claude codex grok muse && rotation_ok draw-recovery claude || return 1
+  grep -q '^count muse.held_back 1$' "$ROOT/draw-recovery/claude/status.txt" || {
+    echo 'FAIL draw-recovery: muse missed more than the injected first draw'; return 1;
+  }
+  [ "$(grep -c 'FAULT INJECTION: holding back my link for draw 1$' "$ROOT/draw-recovery/muse/node.log")" -eq 1 ] || {
+    echo 'FAIL draw-recovery: did not inject exactly one withheld draw'; return 1;
+  }
+  if grep -q 'muse: not a link of this agent.s hash chain' "$ROOT/draw-recovery"/*/node.log; then
+    echo 'FAIL draw-recovery: post-miss reveal was rejected as a skipped link'; return 1;
+  fi
+  # Check on-chain reveal bytes against muse's committed chain: the first
+  # successful post-miss reveal must be the immediate preimage of genesis,
+  # never the link indexed by the later draw number.
+  python3 - "$ROOT/draw-recovery" <<'PY' || return 1
+import hashlib,json,pathlib,sys
+root=pathlib.Path(sys.argv[1]);home=root/'claude'
+history=next(line[len('history '):].split() for line in (home/'status.txt').read_text().splitlines() if line.startswith('history '))
+assert history[:4]==['claude','grok','codex','muse'], ('unexpected deterministic leader history',history)
+gen=json.loads((home/'genesis.json').read_text())
+agents=gen['agents']
+tip=next(a['tip'] for a in agents if a['name']=='muse')
+reveals=[]
+for line in (home/'blocks.log').read_text().splitlines():
+    block=json.loads(line)
+    for raw in block['txs']:
+        tx=json.loads(raw)
+        if tx['agent']=='muse' and tx['fields'][0]=='reveal':
+            link=tx['fields'][1]
+            assert hashlib.sha256(link.encode()).hexdigest()==tip, 'post-miss reveal skipped the outstanding link'
+            reveals.append({'height':block.get('h'),'link':link})
+            tip=link
+assert len(reveals)>=2, 'no accepted continued reveal sequence after the missed draw'
+(root/'recovery-reveals.json').write_text(json.dumps(reveals,indent=2)+'\n')
+PY
+  echo "ok draw-recovery: muse missed once, served the next-draw penalty, revealed valid links and led again; history $(sed -n 's/^history //p' "$ROOT/draw-recovery/claude/status.txt")"
 }
 
 # docs/SECURITY-REVIEW-2.md P-5: muse signs 600 transactions at nonces past
@@ -952,6 +1048,7 @@ run() {
     deny) scenario_bad_model deny 27600 ;;
     silent-model) scenario_bad_model silent 27650 ;;
     withhold) scenario_withhold ;;
+    draw-recovery) scenario_draw_recovery ;;
     bad-tree) scenario_bad_tree ;;
     future-nonce) scenario_future_nonce ;;
     network) scenario_network ;;

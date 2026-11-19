@@ -236,6 +236,15 @@ Example withhold_even_draw_reveals :
     [QueueAction ["local_tx", "reveal", sha256 (sha256 "secret")]].
 Proof. computed. Qed.
 
+Example withhold_once_misses_only_the_first_draw :
+  reveal_plan "withhold-once" "4" "secret" "1" (draw_link 4 "secret") =
+    [LogAction "FAULT INJECTION: holding back my link for draw 1"] /\
+  reveal_plan "withhold-once" "4" "secret" "2" (draw_link 4 "secret") =
+    [QueueAction ["local_tx", "reveal", draw_link 3 "secret"]] /\
+  reveal_plan "withhold-once" "4" "secret" "3" (draw_link 3 "secret") =
+    [QueueAction ["local_tx", "reveal", draw_link 2 "secret"]].
+Proof. repeat split; computed. Qed.
+
 Example exhausted_chain_queues_nothing :
   reveal_plan "" "4" "secret" "4" "secret" = [] /\
   reveal_plan "" "4" "secret" "5" "secret" = [] /\

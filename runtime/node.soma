@@ -463,7 +463,8 @@ Fixpoint draw_preimage (fuel : nat) (candidate tip : string) : option string :=
 
 reveal_plan (byz limit secret term tip : string) : list output_action :=
   let t := num term in
-  if seq byz "withhold" && (t mod 2 =? 1) then
+  if (seq byz "withhold" && (t mod 2 =? 1)) ||
+     (seq byz "withhold-once" && (t =? 1)) then
     [LogAction (append "FAULT INJECTION: holding back my link for draw " (show t))]
   (* As before, never publish the root secret itself: the usable links are
      H(secret) through H^(limit-1)(secret). Exhaustion is a property of the
