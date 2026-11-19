@@ -49,6 +49,13 @@ sv_under (r p : string) : bool := seq p r || starts (append r "/") p.
 sv_path (w : service_world) (made : list string) (p : string) : bool :=
   sv_no_up p && existsb (fun r => sv_under r p) (sv_roots w made).
 
+(** Background cleanup owns only temporary capabilities minted by this
+    service, plus their conventional separate-git-dir siblings. Repository
+    and inbox roots are not blanket cleanup authority. *)
+sv_cleanup_path (made : list string) (p : string) : bool :=
+  sv_no_up p && existsb (fun root => starts "/" root &&
+    (sv_under root p || sv_under (append root ".git") p)) made.
+
 (** a word an argument may be: not empty, not an option *)
 sv_word (s : string) : bool := (0 <? slen s) && negb (seq (substr s 0 1) "-").
 
@@ -111,7 +118,8 @@ sv_program (w : service_world) (made : list string) (prog : string) (args : list
   let path := sv_path w made in
   (seq prog (sw_self w)
    && match args with
-      | [c, repo, head, edits, out] => seq c "check" && path repo && sv_word head && path edits && path out
+      | [c, repo, head, edits, out]
+      | [c, repo, head, edits, out, "--record"] => seq c "check" && path repo && sv_word head && path edits && path out
       | _ => false
       end)
   || (seq prog "claude" && eq_strs args (sv_launch_args "claude"))
@@ -122,7 +130,7 @@ sv_program (w : service_world) (made : list string) (prog : string) (args : list
       && (let h := nth 4 args "" in
           starts "@" h && path (drop_str 1 h) && eq_strs args (hswap "@HDR@" h (sv_launch_args "grok"))))
   || (seq prog "rm" && match args with
-       | [a, sep, p] => seq a "-rf" && seq sep "--" && path p
+       | [a, sep, p] => seq a "-rf" && seq sep "--" && sv_cleanup_path made p
        | _ => false end)
   || (seq prog "docker" && sv_ci_docker w made args)
   || (negb (seq (hw_ci_sandbox hw) "") && seq prog (hw_ci_sandbox hw)

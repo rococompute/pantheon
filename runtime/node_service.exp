@@ -310,6 +310,18 @@ Proof.
   rewrite Pr, Hh, Pe, Po. reflexivity.
 Qed.
 
+(** The recorded check is exactly the production hcheck_fresh shape; it
+    adds one fixed flag, never an arbitrary argument tail. *)
+Theorem recorded_check_job_is_served : forall w made cwd env repo head edits out,
+  sv_path w made cwd = true -> forallb (sv_env_ok w) env = true -> sv_path w made repo = true ->
+  sv_word head = true -> sv_path w made edits = true -> sv_path w made out = true ->
+  sv_allowed w made (IoProcStart (sw_self w) "" cwd env ["check", repo, head, edits, out, "--record"]) = true.
+Proof.
+  intros w made cwd env repo head edits out Pc He Pr Hh Pe Po. cbn [sv_allowed]. rewrite Pc, He. cbn [andb].
+  unfold sv_program. rewrite !Bool.orb_true_iff. do 7 left. rewrite seq_refl. cbn -[sv_path sv_word].
+  rewrite Pr, Hh, Pe, Po. reflexivity.
+Qed.
+
 (** CI in its container, and with the service's sandbox runner *)
 Theorem ci_is_served : forall w made cwd env x out script,
   sv_path w made cwd = true -> forallb (sv_env_ok w) env = true ->
@@ -329,12 +341,12 @@ Qed.
 (** Tracked cleanup is the same literal rm request as the native host,
     from a directory the service owns, with only the service environment. *)
 Theorem cleanup_job_is_served : forall w made p env,
-  sv_path w made p = true -> forallb (sv_env_ok w) env = true ->
+  sv_path w made p = true -> sv_cleanup_path made p = true -> forallb (sv_env_ok w) env = true ->
   sv_allowed w made (IoProcStart "rm" "" p env ["-rf", "--", p]) = true.
 Proof.
-  intros w made p env Hp He. cbn [sv_allowed]. rewrite Hp, He. cbn [andb].
+  intros w made p env Hp Hmade He. cbn [sv_allowed]. rewrite Hp, He. cbn [andb].
   unfold sv_program. rewrite !Bool.orb_true_iff.
-  left; left; left; right. rewrite !seq_refl. exact Hp.
+  left; left; left; right. rewrite !seq_refl. exact Hmade.
 Qed.
 
 (** the service's own cmd: backend *)

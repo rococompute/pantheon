@@ -1,5 +1,5 @@
 (** Actual Soma host-job state transitions; no model, daemon or shell mocks. *)
-Import core.util runtime.nodeio runtime.node runtime.node_host runtime.node_service.
+Import core.util runtime.nodeio runtime.node runtime.node_host runtime.node_service runtime.node_net.
 Require Soma.Host.
 
 check (name : string) (ok : bool) : string := append (if ok then "ok " else "FAIL ") name.
@@ -17,6 +17,21 @@ failed_start (op : node_op) : nanswer :=
   match op with IoProcStart _ _ _ _ _ => ans_data false ["spawn refused"] | _ => answers op end.
 started : host_state := nresult answers (hcleanup host_start [CleanTree "/tree"]).
 ended : host_state := fst (hevent started ["job_ended", "cleanup-job", "exit", "1"]).
+kill_failed (op : node_op) : nanswer :=
+  match op with IoProcKill _ => ans_data false ["permission denied"] | _ => answers op end.
+check_answers (op : node_op) : nanswer :=
+  match op with
+  | IoTempDir prefix => ans_data true [if seq prefix "pantheon-check" then "/tmp/check-owned" else "/tmp/job-owned"]
+  | IoTempFile _ _ _ => ans_data true ["/tmp/edits-owned"]
+  | IoSelfExe => ans_data true ["/node"]
+  | _ => answers op
+  end.
+actual_check : list node_op := ntrace check_answers (hcheck_fresh world host_start "id" "calc" "head" "key" []).
+check_roots : list string := ["/tmp/check-owned", "/tmp/job-owned", "/tmp/edits-owned"].
+pid_kill_failed (op : node_op) : nanswer :=
+  match op with IoKillPid _ => ans_data false ["permission denied"] | _ => answers op end.
+process_state : net_state := {| (net_start "/home") with
+  ns_procs := [{| p_job := "job"; p_fd := "fd"; p_pid := "pid" |}] |}.
 failed_trace : list node_op := ntrace answers (hcomplete world ended "cleanup-job" "!process failed (exit 1):").
 success_trace : list node_op := ntrace answers (hcomplete world ended "cleanup-job" "").
 no_recursive_cleanup : bool :=
@@ -51,5 +66,26 @@ main := Host.print_lines [
      Some (root, rel) => seq root "/tree" && seq rel "" | None => false end),
   check "tracked cleanup revokes the temporary root capability once started"
     (length (sv_after ["/tree"] (IoProcStart "rm" "" "/tree" [] ["-rf", "--", "/tree"]) ans_ok) =? 0),
+  check "cleanup startup receipt never claims scheduling after spawn failure"
+    (negb (fst (fst (nresult failed_start (hcleanup_tree host_start "/tree"))))),
+  check "failed cancellation remains a failure"
+    (negb (fst (fst (nresult kill_failed (hstop started "cleanup-job" j_overtime (fun j => {| j with j_overtime := true |})))))),
+  check "failed cancellation never marks a live job timed out"
+    (match hs_jobs (snd (nresult kill_failed (hstop started "cleanup-job" j_overtime (fun j => {| j with j_overtime := true |})))) with
+     [j] => negb (j_overtime j) | _ => false end),
+  check "actual recorded hcheck_fresh process is served by the image host"
+    (existsb (fun op => match op with IoProcStart _ _ _ _ _ => true | _ => false end) actual_check &&
+     forallb (fun op => match op with IoProcStart _ _ _ _ _ => sv_allowed service check_roots op | _ => true end) actual_check),
+  check "service refuses unrecognized extra check flags"
+    (negb (sv_allowed service check_roots (IoProcStart "/node" "" "/tmp/job-owned" []
+      ["check", "/home/repos/calc", "head", "/tmp/edits-owned", "/tmp/check-owned", "--not-record"]))),
+  check "tracked cleanup has no blanket repository-root authority"
+    (negb (sv_allowed service [] (IoProcStart "rm" "" "/home/repos" [] ["-rf", "--", "/home/repos"]))),
+  check "failed PID cancellation is reported and never forces process completion"
+    (negb (fst (fst (nresult pid_kill_failed (net_proc_kill process_state "job")))) &&
+     (length (ns_cut (snd (nresult pid_kill_failed (net_proc_kill process_state "job")))) =? 0)),
+  check "successful PID cancellation permits normal forced completion"
+    (fst (fst (nresult answers (net_proc_kill process_state "job"))) &&
+     eq_strs (ns_cut (snd (nresult answers (net_proc_kill process_state "job")))) ["pid"]),
   "--PAYLOAD--", ci_wrap "exit 3", "--END-PAYLOAD--"
 ].

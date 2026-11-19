@@ -231,20 +231,22 @@ done_ci (d : job_done) : bool := match d with DoneCi _ _ _ _ _ => true | _ => fa
 (** Cleanup stays asynchronous for large trees, but it is a real tracked
     process: its completion/failure is observed like every other host job.
     Cleanup jobs own no scratch directory, so cleaning one never recursively
-    creates another cleanup job. *)
+    creates another cleanup job. The startup receipt reports failures too. *)
+hcleanup_tree (s : host_state) (p : string) : nprog (nanswer * host_state) :=
+  nbind (nask IoEnvEntries) (fun env =>
+  nbind (nask (IoProcStart "rm" "" p (ans_list env) ["-rf", "--", p])) (fun a =>
+  if negb (fst a) then
+    nbind (nexec (IoLog (hcat ["cleanup could not start: ", p, ": ", ans_one a])))
+      (fun _ => NDone (a, s))
+  else nbind (nask IoClock) (fun now =>
+    let j := {| j_id := ans_one a; j_started := ans_float now; j_limit := nio_small 3600;
+                j_done := DoneCleanup p; j_clean := []; j_overtime := false; j_flooded := false |} in
+    NDone (ans_data true ["cleanup scheduled", ans_one a], {| s with hs_jobs := j :: hs_jobs s |})))) .
+
 Fixpoint hcleanup (s : host_state) (l : list job_clean) : nprog host_state :=
   match l with
   | [] => NDone s
-  | CleanTree p :: rest =>
-      nbind (nask IoEnvEntries) (fun env =>
-      nbind (nask (IoProcStart "rm" "" p (ans_list env) ["-rf", "--", p])) (fun a =>
-      if negb (fst a) then
-        nbind (nexec (IoLog (hcat ["cleanup could not start: ", p, ": ", ans_one a])))
-          (fun _ => hcleanup s rest)
-      else nbind (nask IoClock) (fun now =>
-        let j := {| j_id := ans_one a; j_started := ans_float now; j_limit := nio_small 3600;
-                    j_done := DoneCleanup p; j_clean := []; j_overtime := false; j_flooded := false |} in
-        hcleanup {| s with hs_jobs := j :: hs_jobs s |} rest)))
+  | CleanTree p :: rest => nbind (hcleanup_tree s p) (fun r => hcleanup (snd r) rest)
   | c :: rest =>
       nbind (nask (match c with
                    | CleanFile p => IoDiscardFile p
@@ -449,7 +451,8 @@ hwithout (id : string) (l : list hjob) : list hjob := List.filter (fun j => negb
 hstop (s : host_state) (id : string) (marked : hjob -> bool) (mark : hjob -> hjob) : nprog (nanswer * host_state) :=
   match hfind_job id (hs_jobs s) with
   | Some j => if marked j then hkeep s ans_ok
-              else nbind (nask (IoProcKill id)) (fun _ => hkeep (hjob_set s id mark) ans_ok)
+              else nbind (nask (IoProcKill id)) (fun answer =>
+                if fst answer then hkeep (hjob_set s id mark) ans_ok else hkeep s answer)
   | None => hkeep s ans_ok
   end.
 
@@ -552,8 +555,7 @@ host_op (hw : hworld) (s : host_state) (op : node_op) : option (nprog (nanswer *
       if fst result then hkeep s result else
       nbind (nask (IoFail "leader chain could not append or verify its Git history")) (hkeep s)))
   | IoCiLaunch id out tree ci evidence => Some (hci hw s id out tree ci evidence)
-  | IoRemoveTree p => Some (nbind (hcleanup s [CleanTree p])
-      (fun s => hkeep s (ans_data true ["cleanup scheduled"])))
+  | IoRemoveTree p => Some (hcleanup_tree s p)
   | IoJobComplete id result => Some (hcomplete hw s id result)
   | IoJobs =>
       Some (hkeep s (ans_data true (nio_frame_lists (List.map (fun j =>
