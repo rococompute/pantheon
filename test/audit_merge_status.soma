@@ -41,6 +41,25 @@ status_expired : obj := fst (settle (setf status_one_no "h" 110)).
 status_reproposed : obj := status_after (apply status_expired "leader" ["merge", "1", "tree1", "tree0"]).
 status_pruned : obj := prune (setf status_rejected "params" ([("keep_settled", 0)] : list (string * nat))).
 
+(** Stress a large retained diagnostic view: generation may summarize it,
+    but must emit a bounded valid object explicitly marked as truncated. *)
+status_budget_market : obj :=
+  let voters := map (fun n => append "attestor-" (show n)) (List.seq 1 64) in
+  let vs := map (fun who => (who, false)) voters in
+  let reason := Stdlib.Strings.String.concat "" (repeat "x" 700) in
+  let notes := map (fun who => (who, (reason, 12))) voters in
+  let ids := List.seq 1 20 in
+  let bs := map (fun id => {| bidn := id; btask := 1; bidder := "worker"; base := 0;
+      edits := []; note := ""; bst := Rejected; stale := false; why := reason; votes := vs |}) ids in
+  setf (setf (new_market status_roster) "bids" bs) "merge_vote_notes"
+    (map (fun id => (show id, notes)) ids).
+
+status_budget_ok (m : obj) : bool :=
+  let text := market_status_json m in
+  (slen text <=? 256 * 1024) &&
+  match json_of text with Some j => match json_member "details_truncated" j with
+    JBool "true" => true | _ => false end | None => false end.
+
 status_answers (op : node_op) : nanswer :=
   match op with
   | IoReadText "home/status.json" => ans_data true ["{""schema"":""pantheon-status-1"",""height"":11}"]
@@ -111,5 +130,6 @@ checks_for (status_proposed status_one_no status_rejected status_one_yes status_
   check_status "duplicate voter cannot replace its signed explanation"
     (negb (seq (status_error (apply status_one_no status_voter1 ["attest", "1", "no", "different"])) ""))
 ].
-main := Host.print_lines (checks_for status_proposed status_one_no status_rejected status_one_yes status_merged
-  status_expired status_reproposed status_pruned status_vote1_fields status_vote1_raw status_rejected_bid).
+main := Host.print_lines ((checks_for status_proposed status_one_no status_rejected status_one_yes status_merged
+  status_expired status_reproposed status_pruned status_vote1_fields status_vote1_raw status_rejected_bid) ++
+  [check_status "oversized diagnostic view is explicitly summarized within JSON budget" (status_budget_ok status_budget_market)]).

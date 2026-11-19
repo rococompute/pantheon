@@ -1084,7 +1084,8 @@ status_bid_json (m : obj) (b : bid) : string :=
 
 market_status_json (m : obj) : string :=
   let header := [("schema", nio_json_string "pantheon-status-1"), ("scope", nio_json_string "market"),
-                 ("height", show (mheight m)), ("term", show (term m)), ("version", show (version m))] in
+                 ("height", show (mheight m)), ("term", show (term m)), ("version", show (version m))] ++
+                status_name_fields "chain_id" (getf m "chain" : string) in
   let text := status_object (header ++ status_name_fields "leader" (leader m) ++
       [("pending_merge", status_pending_json m),
        ("recent_bids", status_array (map (status_bid_json m) (last_n 20 (bids m)))),

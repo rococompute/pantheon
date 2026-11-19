@@ -9,5 +9,5 @@ if ! soma run test/audit_merge_status.soma > "$status_test_dir/out" 2> "$status_
 fi
 cat "$status_test_dir/out"
 if grep -q '^FAIL ' "$status_test_dir/out"; then exit 1; fi
-[ "$(grep -c '^ok ' "$status_test_dir/out")" -eq 22 ]
+[ "$(grep -c '^ok ' "$status_test_dir/out")" -eq 23 ]
 echo 'PASS signed attestation reasons, settlement diagnostics and market JSON'
