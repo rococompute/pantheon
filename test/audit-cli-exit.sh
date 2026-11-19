@@ -34,6 +34,7 @@ run
 [ "$status" -eq 0 ] || fail "no arguments: wanted exit 0, got $status: $(cat "$T/out" "$T/err")"
 [ ! -s "$T/err" ] || fail "no arguments: stderr is not empty: $(cat "$T/err")"
 grep -Fq 'pantheon: a private BFT labor market' "$T/out" || fail 'no arguments: no usage on stdout'
+grep -Fq 'pantheon help' "$T/out" || fail 'no arguments: usage does not list pantheon help'
 cp "$T/out" "$T/usage"
 
 # help, --help and -h are the same intentional success
