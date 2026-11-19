@@ -79,11 +79,18 @@ mux_markdown() {
   printf '%s %s' "$(printf '%s\n' "$ids" | sed -n 2p)" "$(printf '%s\n' "$ids" | sed -n 1p)"
 }
 mux_plan_changed() {
-  plan_html "$ST/plan.md" || return 0
+  plan_html "$ST/plan.md" || return 1
   ps_=$(cat "$ST/plan-surface" 2>/dev/null) || return 0
+  [ -n "$ps_" ] || return 0
   # Browser commands target the globally unique panel UUID; unlike terminal
   # commands, the browser CLI does not accept --workspace for reload.
-  [ -z "$ps_" ] || c1 browser --panel "$ps_" reload >/dev/null 2>&1 || true
+  c1 browser --panel "$ps_" reload >/dev/null || return 1
+  # Reload queues a navigation. Confirm the exact generated document before
+  # status_pass publishes its title or announces completion, not the old DOM.
+  revision_=$(python3 -c 'import re, sys; print(re.search(r"<meta name=\"pantheon-plan-revision\" content=\"([0-9a-f]{64})\">", open(sys.argv[1]).read())[1])' "$ST/plan.html") || return 1
+  c1 browser --panel "$ps_" wait --function \
+    "document.querySelector('meta[name=\"pantheon-plan-revision\"][content=\"$revision_\"]') !== null" \
+    --timeout-ms 5000 >/dev/null
 }
 mux_rename_ws() { c1 rename-workspace --workspace "$1" "$2" >/dev/null 2>&1; }
 mux_notify() { c1 notify --title "$3" --body "$4" --workspace "$1" ${2:+--panel "$2"} >/dev/null 2>&1 || true; }

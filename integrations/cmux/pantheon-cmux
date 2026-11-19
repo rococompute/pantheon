@@ -589,9 +589,19 @@ render_plan() {
       printf '_🎫 pending  📈 accepted  📉 rejected  🪦 stale_\n\n'
       awk "$BIDS_AWK" "$f"
     fi
-  } > "$ST/plan.md.tmp"
+  } > "$ST/plan.md.tmp" || return 1
   [ -s "$ST/plan.md.tmp" ] || printf 'No goal, plan or tasks yet.\n' > "$ST/plan.md.tmp"
-  if cmp -s "$ST/plan.md.tmp" "$ST/plan.md"; then rm -f "$ST/plan.md.tmp"; else mv "$ST/plan.md.tmp" "$ST/plan.md"; mux_plan_changed; fi
+  if cmp -s "$ST/plan.md.tmp" "$ST/plan.md"; then
+    rm -f "$ST/plan.md.tmp"
+  else
+    mv "$ST/plan.md.tmp" "$ST/plan.md" || return 1
+    : > "$ST/plan-update-pending"
+  fi
+  # Failed browser delivery must retry even when the Markdown is unchanged.
+  if [ -e "$ST/plan-update-pending" ]; then
+    mux_plan_changed || return 1
+    rm -f "$ST/plan-update-pending"
+  fi
 }
 
 # The run's record (see the top): every node's chain, status and log, never a
@@ -640,10 +650,14 @@ status_pass() {
   pass_file_=$STATUS_FILE pass_agent_=$STATUS_AGENT pass_state_=$STATUS_STATE
   pass_height_=$STATUS_HEIGHT pass_chain_=$STATUS_SAME_CHAIN
   w=$(workspace) title=$(market_title "$pass_file_" "$pass_state_")
+  if ! render_plan "$pass_file_" "$pass_agent_" "$pass_state_" "$pass_height_"; then
+    say "plan view update failed; retrying before publishing $title" >&2
+    record
+    return 0
+  fi
   if [ "$title" != "$(cat "$ST/title" 2>/dev/null || true)" ]; then
     mux_rename_ws "$w" "$title" && printf '%s\n' "$title" > "$ST/title"
   fi
-  render_plan "$pass_file_" "$pass_agent_" "$pass_state_" "$pass_height_"
   record
   if [ ! -e "$ST/finished" ] && market_finished "$pass_file_" "$pass_state_" "$pass_chain_"; then
     BUNDLE=1 record

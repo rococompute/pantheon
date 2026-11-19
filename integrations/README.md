@@ -15,7 +15,7 @@ there too. A diplomat is a coding agent's CLI working its node's inbox
 | Folder | Where it runs | Status |
 |---|---|---|
 | [`cmux/`](cmux/README.md) | A Mac with [cmux](https://cmux.com) | Works. Tested with `test/integration-cmux.sh` against a stub of cmux, and by hand in cmux with scripted nodes and a stub diplomat. |
-| [`c11/`](c11/README.md) | A Mac with [c11](https://github.com/stage-11-agentics/c11), run from a c11 terminal | Checkpoint. `pantheon-cmux` with a c11 adapter; stub regression tests pass. Current native C11 validation is pending; see [`c11/HANDOFF.md`](c11/HANDOFF.md). |
+| [`c11/`](c11/README.md) | A Mac with [c11](https://github.com/stage-11-agentics/c11), run from a c11 terminal | `pantheon-cmux` with a c11 adapter; native calculator dogfood and browser/sidebar completion updates validated, with stub regression coverage for refresh failures. |
 | [`standalone/`](standalone/README.md) | Any machine, no multiplexer: nodes as binaries or (a Mac) unikernels, agents remote over HTTP or each in a Docker container | Works. Tested with `test/integration-standalone.sh` (real nodes, a stub of docker) and `test/integration-standalone-image.sh` (a real unikernel, on a Mac with Soma's MirageOS switch). |
 | [`herdr/`](herdr/README.md) | The Linux host (`scripts/host.sh`) | Reference: not run since the network went laptop-only, and it may not work right now. |
 

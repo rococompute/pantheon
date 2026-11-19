@@ -12,6 +12,7 @@ is escaped, so text from the goal, the repositories and other agents stays
 text. Its entities (&amp; &lt; &gt;) are kept as they are. The page keeps which
 folds are open, and where it was scrolled, across the reloads the watchdog
 asks for (in sessionStorage, which c11 keeps across a reload)."""
+import hashlib
 import os
 import re
 import sys
@@ -116,6 +117,7 @@ PAGE = """<!doctype html>
 <html><head><meta charset="utf-8">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline' 'unsafe-eval'">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="pantheon-plan-revision" content="%(revision)s">
 <title>%(title)s</title>
 <style>
 :root { --bg: #ffffff; --fg: #1f2328; --muted: #59636e; --line: #d1d9e0; --hover: #f6f8fa; --code: #eff1f3; }
@@ -183,7 +185,8 @@ def main():
     src, dst = sys.argv[1], sys.argv[2]
     md = open(src, encoding="utf-8", errors="replace").read()
     title = next((re.sub(r"[*_~`]", "", l[3:]) for l in md.split("\n") if l.startswith("## ")), "Market")
-    page = PAGE % {"title": esc(title), "body": body(md)}
+    page = PAGE % {"title": esc(title), "body": body(md),
+                   "revision": hashlib.sha256(md.encode("utf-8")).hexdigest()}
     tmp = dst + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         f.write(page)

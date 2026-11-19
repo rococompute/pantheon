@@ -55,6 +55,17 @@ elif cmd == "new-panel":
     for a in st["areas"]:
         if a["id"] == opt("--area"): a["panel_ids"].append(p); a["cmds"].append(opt("--command"))
     save(); print("OK panel:9 (%s) area:1 workspace:1 input=queued" % p)
+elif cmd == "browser":
+    if "--workspace" in args:
+        print("browser: unknown flag --workspace", file=sys.stderr); sys.exit(1)
+    if "wait" in args and os.path.exists(t + "/browser-wait-fail"):
+        print("browser: simulated load timeout", file=sys.stderr); sys.exit(1)
+    if "wait" in args:
+        import re
+        page = open(t + "/net/.c11/plan.html").read()
+        revision = re.search(r'<meta name="pantheon-plan-revision" content="([0-9a-f]{64})">', page)[1]
+        assert revision in args[args.index("--function") + 1], "wait must acknowledge the current page"
+    print("OK")
 elif cmd == "fleet":
     state = open(t + "/state").read().strip() if os.path.exists(t + "/state") else ""
     ended = None if os.path.exists(t + "/no-turn") else "2026-11-18T00:00:00Z"
@@ -225,6 +236,40 @@ PYHTML
 : > "$t/ledger"
 ( here=$here ST=$d C11_BIN=$t/bin/c11; workspace() { cat "$ST/workspace"; }; die() { :; }; first_uuid() { :; }; . "$here/integrations/c11/mux.sh"; mux_plan_changed )
 grep -q "^browser --panel $(cat "$d/plan-surface") reload" "$t/ledger" || fail "the page reloaded: $(cat "$t/ledger")"
+
+# The real status pass must publish the page before the sidebar. A browser
+# timeout cannot hide the counter or stop retries when Markdown is unchanged.
+sed '/^c=${1:-};/,$d' "$here/integrations/cmux/pantheon-cmux" > "$t/status-functions.sh"
+status_pass_fixture() {
+  PANTHEON_MUX=c11 sh -c '. "$1"; net_arg "$2" watchdog; status_pass' \
+    "$here/integrations/cmux/pantheon-cmux" "$t/status-functions.sh" "$t/net"
+}
+printf 'height 100  term 2  leader codex\nno more tasks: 1 of 4, say claude\npool 0\n' > "$t/net/claude/status.txt"
+: > "$t/ledger"; : > "$t/browser-wait-fail"
+status_pass_fixture > "$t/pass.log" 2>&1 || fail "failed refresh must leave the watchdog running"
+[ -e "$d/plan-update-pending" ] && ! grep -q 'rename-workspace.*1/4 to done' "$t/ledger" || fail "sidebar advanced before the page"
+rm "$t/browser-wait-fail"
+for count in 1 2 3; do
+  printf 'height %s  term 2  leader codex\nno more tasks: %s of 4, say claude\npool 0\n' "$((99 + count))" "$count" > "$t/net/claude/status.txt"
+  : > "$t/ledger"
+  status_pass_fixture > "$t/pass.log" 2>&1 || fail "counter $count: $(cat "$t/pass.log")"
+  grep -q "<h2>Market (codex leader, $count/4 to done)</h2>" "$d/plan.html" || fail "counter $count missing from HTML"
+  [ "$(cat "$d/title")" = "Market (codex leader, $count/4 to done)" ] && [ ! -e "$d/plan-update-pending" ] || fail "counter publication or retry"
+  python3 - "$t/ledger" <<'PYORDER' || fail "sidebar must follow the loaded page"
+import sys
+calls = open(sys.argv[1]).read().splitlines()
+wait = next(i for i, call in enumerate(calls) if call.startswith("browser ") and " wait --function " in call)
+rename = next(i for i, call in enumerate(calls) if call.startswith("rename-workspace "))
+assert wait < rename, calls
+PYORDER
+done
+printf 'height 103  term 2  leader codex\nfinished: every agent, as leader, found no more tasks\npool 0\n' > "$t/net/claude/status.txt"
+: > "$t/ledger"; : > "$t/browser-wait-fail"
+status_pass_fixture > "$t/pass.log" 2>&1 || fail "failed Done refresh must leave the watchdog running"
+[ ! -e "$d/finished" ] && [ ! -e "$d/claude/inbox/finished" ] && ! grep -q 'rename-workspace.* Done$' "$t/ledger" || fail "completion published before the page loaded"
+rm "$t/browser-wait-fail"
+status_pass_fixture > "$t/pass.log" 2>&1 || fail "Done refresh retry: $(cat "$t/pass.log")"
+grep -q '<h2>Done</h2>' "$d/plan.html" && [ "$(cat "$d/title")" = Done ] && [ -e "$d/finished" ] && [ -e "$d/claude/inbox/finished" ] || fail "completion retry did not publish the page, sidebar and inbox"
 
 # No own-socket hint: discovery must not inherit either cmux socket alias.
 ( here=$here; die() { exit 1; }; . "$here/integrations/c11/mux.sh"

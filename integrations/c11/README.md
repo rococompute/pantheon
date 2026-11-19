@@ -55,6 +55,11 @@ one long turn reads them when it is next idle, or when it runs
 the requests either way: notices only tell it about closed tasks and merges
 sooner.
 
+The sidebar and the plan heading show the same committed completion count
+(`N/4 to done` for four agents). The watchdog waits for the browser to load
+the current plan before updating the sidebar or announcing **Done**. A failed
+refresh is retried even when the plan text has not changed.
+
 c11's size-aware splits keep areas usable. In a narrow window the agents'
 grid stacks into one column instead of two rows (c11 prints a `note:` when it
 does).
@@ -88,8 +93,9 @@ Every call that `pantheon-cmux` makes to its multiplexer goes through a
 its top). Copy `mux.sh`, write those functions for the new tool, and add an
 entry script like `pantheon-c11` that sets `PANTHEON_MUX` to the folder's name.
 
-## Checkpoint status
+## Validation
 
-The adapter, shared cmux refactor, plan renderer and stub regressions are
-committed as a checkpoint. Current changes have not been validated against a
-live C11 workspace. See [HANDOFF.md](HANDOFF.md) for results and remaining work.
+A native four-agent calculator dogfood completed. A separate live C11 check
+verified matching browser and sidebar titles at `1/4`, `2/4`, `3/4` and **Done**;
+automated fixtures also cover failed refreshes and retries. [HANDOFF.md](HANDOFF.md)
+retains the original checkpoint history.
