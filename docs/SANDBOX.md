@@ -263,3 +263,29 @@ then `network` and `start` as usual. The Mac reaches the host with
   makes them Soma bidders, and their leaders leave Soma's tasks to others.
 - **Merges:** `merge_approvals` is 1 (`examples/network/network.json`): a
   leader's merge lands on its own check and pick, without attestors.
+
+## Node egress policy
+
+The default sandbox firewall isolates the Mac and private LAN; it preserves
+public node egress for remote Git repositories and native model API calls.
+It does **not** prevent a compromised node uid from sending its readable
+files to a public host. Bidder model tools also retain public egress.
+
+An operator can restrict the node uid without changing the application's IO
+semantics. Write root-owned `/etc/pantheon/node-egress.json`, then run
+`sudo systemctl restart pantheon-firewall`:
+
+```json
+{"mode":"restricted","allow":[{"cidr":"198.51.100.10/32","tcp":[22,443]}]}
+```
+
+Replace the documentation address with the actual Git/API destination ranges;
+maintain them when provider addresses change. Restricted mode always retains
+loopback and Pantheon peers, rejects private/LAN destinations as before, and
+drops other node traffic. An empty allow list is default-deny for public
+node egress. Bidder public egress is unchanged. Invalid configuration fails
+with a diagnostic before replacing the active ruleset. `{"mode":"public"}`
+restores compatibility mode. The files and renderer are owned by root, not
+by the node or model. Allowlisted services and the system DNS resolver are
+still possible data channels; these controls restrict destinations, not
+what a compromised process can send to a permitted destination.
