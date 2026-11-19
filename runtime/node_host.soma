@@ -237,7 +237,7 @@ Fixpoint hcleanup (s : host_state) (l : list job_clean) : nprog host_state :=
   | [] => NDone s
   | CleanTree p :: rest =>
       nbind (nask IoEnvEntries) (fun env =>
-      nbind (nask (IoProcStart "rm" "" "" (ans_list env) ["-rf", "--", p])) (fun a =>
+      nbind (nask (IoProcStart "rm" "" p (ans_list env) ["-rf", "--", p])) (fun a =>
       if negb (fst a) then
         nbind (nexec (IoLog (hcat ["cleanup could not start: ", p, ": ", ans_one a])))
           (fun _ => hcleanup s rest)

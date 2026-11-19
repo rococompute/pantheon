@@ -1,10 +1,11 @@
 (** Actual Soma host-job state transitions; no model, daemon or shell mocks. *)
-Import core.util runtime.nodeio runtime.node runtime.node_host.
+Import core.util runtime.nodeio runtime.node runtime.node_host runtime.node_service.
 Require Soma.Host.
 
 check (name : string) (ok : bool) : string := append (if ok then "ok " else "FAIL ") name.
 world : hworld := {| hw_home := "/home"; hw_backend := ""; hw_repos := []; hw_max_calls := "0";
   hw_ci := ""; hw_ci_repo := []; hw_ci_memory := "256m"; hw_ci_image := "image"; hw_ci_sandbox := "/runner" |}.
+service : service_world := {| sw_token := "token"; sw_world := world; sw_self := "/node"; sw_env := ["PATH=/usr/bin:/bin"] |}.
 answers (op : node_op) : nanswer :=
   match op with
   | IoProcStart _ _ _ _ _ => ans_data true ["cleanup-job"]
@@ -41,5 +42,14 @@ main := Host.print_lines [
   check "Docker runner exit 125 is already an infrastructure problem" (ci_node_problem false (Some "exit 125")),
   check "wrapped bid failure exit 86 is the bid's failure" (negb (ci_node_problem false (Some "exit 86"))),
   check "lock wait infrastructure status 75 is a node problem" (ci_node_problem false (Some "exit 75")),
+  check "service permits the same tracked cleanup for a tree it made"
+    (sv_allowed service ["/tree"] (IoProcStart "rm" "" "/tree" ["PATH=/usr/bin:/bin"] ["-rf", "--", "/tree"])),
+  check "service refuses arbitrary cleanup targets"
+    (negb (sv_allowed service ["/tree"] (IoProcStart "rm" "" "/tree" ["PATH=/usr/bin:/bin"] ["-rf", "--", "/elsewhere"]))),
+  check "service keeps the path probe for tracked cleanup"
+    (match sv_guard service ["/tree"] (IoProcStart "rm" "" "/tree" [] ["-rf", "--", "/tree"]) with
+     Some (root, rel) => seq root "/tree" && seq rel "" | None => false end),
+  check "tracked cleanup revokes the temporary root capability once started"
+    (length (sv_after ["/tree"] (IoProcStart "rm" "" "/tree" [] ["-rf", "--", "/tree"]) ans_ok) =? 0),
   "--PAYLOAD--", ci_wrap "exit 3", "--END-PAYLOAD--"
 ].

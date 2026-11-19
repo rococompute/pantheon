@@ -116,7 +116,7 @@ Qed.
     environment and a cmd: patch's paths *)
 Theorem processes_are_the_nodes_own : forall w made prog stdin cwd env args,
   sv_allowed w made (IoProcStart prog stdin cwd env args) = true ->
-  In prog [sw_self w, "claude", "codex", "curl", "docker", hw_ci_sandbox (sw_world w), drop_str 4 (hw_backend (sw_world w))]
+  In prog [sw_self w, "claude", "codex", "curl", "rm", "docker", hw_ci_sandbox (sw_world w), drop_str 4 (hw_backend (sw_world w))]
   /\ sv_path w made cwd = true
   /\ (forall e, In e env -> In e (sw_env w) \/ exists pre, In pre sv_tool_names /\ starts pre e = true).
 Proof.
@@ -289,9 +289,9 @@ Theorem model_launches_are_served : forall w made cwd stdin env out hdr,
 Proof.
   intros w made cwd stdin env out hdr Pc He Po Ph. cbn [sv_allowed]. rewrite Pc, He. cbn [andb].
   unfold sv_program. rewrite !Bool.orb_true_iff. split; [| split].
-  - left; left; left; left; left; right. rewrite eq_strs_refl. reflexivity.
-  - left; left; left; left; right. cbn -[sv_path eq_strs]. rewrite Po, eq_strs_refl. reflexivity.
-  - left; left; left; right.
+  - left; left; left; left; left; left; right. rewrite eq_strs_refl. reflexivity.
+  - left; left; left; left; left; right. cbn -[sv_path eq_strs]. rewrite Po, eq_strs_refl. reflexivity.
+  - left; left; left; left; right.
     change (seq "curl" "curl"
             && (starts "@" (append "@" hdr) && sv_path w made (drop_str (slen "@") (append "@" hdr))
                 && eq_strs (hswap "@HDR@" (append "@" hdr) (sv_launch_args "grok"))
@@ -306,7 +306,7 @@ Theorem check_job_is_served : forall w made cwd env repo head edits out,
   sv_allowed w made (IoProcStart (sw_self w) "" cwd env ["check", repo, head, edits, out]) = true.
 Proof.
   intros w made cwd env repo head edits out Pc He Pr Hh Pe Po. cbn [sv_allowed]. rewrite Pc, He. cbn [andb].
-  unfold sv_program. rewrite !Bool.orb_true_iff. do 6 left. rewrite seq_refl. cbn -[sv_path sv_word].
+  unfold sv_program. rewrite !Bool.orb_true_iff. do 7 left. rewrite seq_refl. cbn -[sv_path sv_word].
   rewrite Pr, Hh, Pe, Po. reflexivity.
 Qed.
 
@@ -324,6 +324,17 @@ Proof.
   - left; left; right. rewrite seq_refl. cbn [andb]. unfold sv_ci_docker. cbn [ci_docker_args nth last].
     rewrite volume_out, volume_ends, Hn, Po, eq_strs_refl, starts_append. reflexivity.
   - left; right. rewrite Hs, !seq_refl. cbn -[sv_path]. rewrite Po. reflexivity.
+Qed.
+
+(** Tracked cleanup is the same literal rm request as the native host,
+    from a directory the service owns, with only the service environment. *)
+Theorem cleanup_job_is_served : forall w made p env,
+  sv_path w made p = true -> forallb (sv_env_ok w) env = true ->
+  sv_allowed w made (IoProcStart "rm" "" p env ["-rf", "--", p]) = true.
+Proof.
+  intros w made p env Hp He. cbn [sv_allowed]. rewrite Hp, He. cbn [andb].
+  unfold sv_program. rewrite !Bool.orb_true_iff.
+  left; left; left; right. rewrite !seq_refl. exact Hp.
 Qed.
 
 (** the service's own cmd: backend *)
