@@ -46,7 +46,7 @@ if [ ! -f "$SOMA_DIR/dune-project" ]; then
     mkdir -p "$SOMA_DIR"; cp -R "$SOMA_REPO/." "$SOMA_DIR/"
   else
     say "cloning Soma from $SOMA_REPO"
-    git clone -q "$SOMA_REPO" "$SOMA_DIR" || { echo "setup: cloning $SOMA_REPO failed. It is private: give this machine a key that can read it (a deploy key), or set SOMA_REPO to a directory with Soma's source" >&2; exit 1; }
+    git clone -q "$SOMA_REPO" "$SOMA_DIR" || { echo "setup: cloning $SOMA_REPO failed. Check network access and Git credentials if access is restricted, or set SOMA_REPO to a directory with Soma's source" >&2; exit 1; }
     git -C "$SOMA_DIR" checkout -q "$SOMA_REF"
   fi
 fi
