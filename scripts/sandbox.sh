@@ -136,7 +136,7 @@ cmd_base() {
   tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
   git -C "$here" archive --format=tar "${PANTHEON_COMMIT:-HEAD}" > "$tmp/pantheon.tar"
   git -C "$SOMA_CHECKOUT" archive --format=tar "${SOMA_COMMIT:-gradual}" > "$tmp/soma.tar"
-  cp "$here/deploy/sandbox/provision.sh" "$here/deploy/sandbox/firewall.nft" "$here/deploy/sandbox/pantheon-docker" "$here/deploy/sandbox/model-env" "$tmp/"
+  cp "$here/deploy/sandbox/provision.sh" "$here/deploy/sandbox/firewall.nft" "$here/deploy/sandbox/pantheon-docker" "$here/deploy/sandbox/model-env" "$here/deploy/sandbox/soma-locked" "$tmp/"
   in_vm $BASE sh -c 'rm -rf /tmp/prov && mkdir /tmp/prov'
   limactl copy -r "$tmp/." $BASE:/tmp/prov/
   say "provisioning $BASE: packages, users, firewall, then Soma and Pantheon from source (the first time, ~20 min)"

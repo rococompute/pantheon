@@ -8,7 +8,11 @@
 #   goal.txt     the goal lines
 set -eu
 q() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
-ip=$(ip -4 -o addr show eth0 | awk '{print $4}' | cut -d/ -f1)
+# Ask the kernel for the selected IPv4 route; interface names vary across
+# Lima, cloud and user-created VMs. An absent address must never mean bind-all.
+route=$(ip -4 -o route get 1.1.1.1) || { echo "node: no usable IPv4 route" >&2; exit 3; }
+ip=$(printf '%s\n' "$route" | awk '{for (i=1; i<NF; i++) if ($i == "src") {print $(i+1); exit}}')
+case "$ip" in ''|*[!0-9.]*) echo "node: no IPv4 source address on the default route" >&2; exit 3 ;; esac
 set -- --backend "$(cat /etc/pantheon/backend)" --goal /etc/pantheon/goal.txt --listen "$ip" \
   --ci-image pantheon:dev --ci-memory "$(cat /etc/pantheon/ci-memory)"
 for f in /etc/pantheon/ci/*; do

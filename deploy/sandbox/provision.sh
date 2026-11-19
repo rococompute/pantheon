@@ -20,11 +20,6 @@ say() { printf 'provision: %s\n' "$*"; }
 # and the models' CLIs timed out reaching their providers
 mkdir -p /etc/systemd/resolved.conf.d
 printf '[Resolve]\nDNS=1.1.1.1 8.8.8.8\nDomains=~.\n' > /etc/systemd/resolved.conf.d/pantheon-dns.conf
-# but the agents' addresses (lima-NAME.internal, in the genesis) only Lima's
-# resolver knows, and it answers those at once: .internal stays on eth0's
-mkdir -p /etc/systemd/network/10-netplan-eth0.network.d
-printf '[Network]\nDomains=~internal\n' > /etc/systemd/network/10-netplan-eth0.network.d/pantheon-dns.conf
-networkctl reload 2>/dev/null || true
 systemctl restart systemd-resolved 2>/dev/null || true
 
 say "system packages"
@@ -32,11 +27,28 @@ apt-get update -q >/dev/null
 apt-get install -y -q git build-essential opam jq curl m4 pkg-config libgmp-dev rsync ca-certificates \
   docker.io docker-buildx nftables nodejs npm unzip bubblewrap >/dev/null
 
+# Lima's resolver knows .internal peers. Find the networkd unit that owns
+# the selected interface instead of assuming eth0 or a netplan filename.
+nic=$(ip -4 route get 1.1.1.1 | awk '{for (i=1; i<NF; i++) if ($i == "dev") {print $(i+1); exit}}')
+[ -n "$nic" ] || { echo "provision: cannot identify the default IPv4 interface" >&2; exit 3; }
+network_file=$(LC_ALL=C networkctl status "$nic" --no-pager --no-legend | sed -n 's/.*Network File: //p' | head -1)
+[ -n "$network_file" ] && [ -f "$network_file" ] || { echo "provision: no networkd configuration for $nic" >&2; exit 3; }
+network_dropin=/etc/systemd/network/$(basename "$network_file").d
+mkdir -p "$network_dropin"
+printf '[Network]\nDomains=~internal\n' > "$network_dropin/pantheon-dns.conf"
+networkctl reload
+systemctl restart systemd-resolved
+
 id pantheon >/dev/null 2>&1 || useradd -m -s /bin/bash pantheon
 id bidder >/dev/null 2>&1 || useradd -m -s /bin/bash bidder
 chmod 755 /home/pantheon; chmod 700 /home/bidder
 install -d -o pantheon -g pantheon -m 700 /var/lib/pantheon
 install -d -m 755 /etc/pantheon /usr/local/lib/pantheon/bin
+install -d -m 755 /var/lib/pantheon-build /usr/local/lib/pantheon/bidder-bin
+touch /var/lib/pantheon-build/lock
+chmod 644 /var/lib/pantheon-build/lock
+install -m 755 "$here/soma-locked" /usr/local/lib/pantheon/bidder-bin/soma
+[ -f /etc/pantheon/ci-memory ] || printf '3g\n' > /etc/pantheon/ci-memory
 
 # swap, so four VMs' CI builds at once slow down instead of dying
 if [ ! -f /swapfile ]; then

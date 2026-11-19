@@ -48,7 +48,10 @@ command -v bwrap >/dev/null || { echo "ci-sandbox: no bwrap: install bubblewrap"
 lock=${CI_LOCK:-$HOME/pantheon/.ci-lock}
 # a lock another user owns (the node user's, for a diplomat) is locked read-only
 if [ -e "$lock" ] && [ ! -w "$lock" ]; then exec 9<"$lock"; else exec 9>>"$lock"; fi
-flock 9
+wait=${CI_LOCK_WAIT:-900}
+case "$wait" in ''|*[!0-9]*) echo "ci-sandbox: CI_LOCK_WAIT is 0 to 900 seconds"; exit 3 ;; esac
+[ "${#wait}" -le 3 ] && [ "$wait" -le 900 ] || { echo "ci-sandbox: CI_LOCK_WAIT exceeds 900 seconds"; exit 3; }
+flock -w "$wait" -E 75 9 || { echo "ci-sandbox: build lock unavailable after ${wait}s"; exit 75; }
 # systemd-run's scope ends when its command does; the command reads its own
 # cgroup's oom_kill count before that, to tell a kill for memory from a failure
 exec systemd-run --user --scope --quiet --collect -p "MemoryMax=$mem" -p MemorySwapMax=0 -p TasksMax=512 -- \
