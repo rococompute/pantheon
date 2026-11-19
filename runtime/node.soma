@@ -837,19 +837,21 @@ repo_text_of (token r : string) (listing : option string) (files : list (string 
 Inductive prompt_slot := FenceSlot | ReposSlot | PlanSlot | RepoSlot.
 Inductive prompt_part := PromptLiteral (text : string) | PromptSlot (slot : prompt_slot).
 
+prompt_flush (literal : list ascii) (parts : list prompt_part) : list prompt_part :=
+  PromptLiteral (of_chars (rev_onto literal [])) :: parts.
+
 Fixpoint prompt_lex_go (cs literal : list ascii) (parts : list prompt_part) : list prompt_part :=
-  let flush := PromptLiteral (of_chars (rev_onto literal [])) :: parts in
   match cs with
   | "{"%char :: "{"%char :: "F"%char :: "}"%char :: "}"%char :: rest =>
-      prompt_lex_go rest [] (PromptSlot FenceSlot :: flush)
+      prompt_lex_go rest [] (PromptSlot FenceSlot :: prompt_flush literal parts)
   | "{"%char :: "{"%char :: "R"%char :: "E"%char :: "P"%char :: "O"%char :: "S"%char :: "}"%char :: "}"%char :: rest =>
-      prompt_lex_go rest [] (PromptSlot ReposSlot :: flush)
+      prompt_lex_go rest [] (PromptSlot ReposSlot :: prompt_flush literal parts)
   | "{"%char :: "{"%char :: "P"%char :: "L"%char :: "A"%char :: "N"%char :: "}"%char :: "}"%char :: rest =>
-      prompt_lex_go rest [] (PromptSlot PlanSlot :: flush)
+      prompt_lex_go rest [] (PromptSlot PlanSlot :: prompt_flush literal parts)
   | "{"%char :: "{"%char :: "R"%char :: "E"%char :: "P"%char :: "O"%char :: "}"%char :: "}"%char :: rest =>
-      prompt_lex_go rest [] (PromptSlot RepoSlot :: flush)
+      prompt_lex_go rest [] (PromptSlot RepoSlot :: prompt_flush literal parts)
   | c :: rest => prompt_lex_go rest (c :: literal) parts
-  | [] => rev_onto flush []
+  | [] => rev_onto (prompt_flush literal parts) []
   end.
 
 prompt_parts (text : string) : list prompt_part := prompt_lex_go (chars text) [] [].
