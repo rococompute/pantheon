@@ -24,8 +24,12 @@ main := Host.print_lines [
     (refused "500" "block_ms" "0"),
   check "zero remains valid for parameters that disable behavior"
     (negb (refused "500" "finish" "0")),
-  check "the largest supported decimal value remains valid"
-    (negb (refused "999999999999999999" "term_blocks" "999999999999999999")),
+  check "numeric parameters reject values above the safe arithmetic bound"
+    (refused "500" "max_files" "1000000001"),
+  check "block_ms rejects values above the safe arithmetic bound"
+    (refused "1000000001" "finish" "0"),
+  check "the largest supported numeric value remains valid"
+    (negb (refused "1000000000" "term_blocks" "1000000000")),
   check "arbitrary string metadata remains accepted"
     (match boot "500" "label" "a personal experiment" with
       | Some evs => existsb (fun ev => match ev with ["param", "label", "a personal experiment"] => true | _ => false end) evs

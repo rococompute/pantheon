@@ -670,11 +670,11 @@ Qed.
 (** A leader never merges its own bid (docs/PROOFS.md, item 8): a merge
     naming a bid its sender made fails, with a reason, and leaves the whole
     market as it was, an already pending proposal included. *)
-Theorem self_merge_makes_no_proposal : forall (m : obj) (a i tree : string) (b : bid),
+Theorem self_merge_makes_no_proposal : forall (m : obj) (a i tree on : string) (b : bid),
   bid_by m (num i) = Some b -> bidder b = a ->
-  exists why, why <> "" /\ apply m a ["merge", i, tree] = (m, [], why).
+  exists why, why <> "" /\ apply m a ["merge", i, tree, on] = (m, [], why).
 Proof.
-  intros m a i tree b Hb Ha. subst a.
+  intros m a i tree on b Hb Ha. subst a.
   assert (Hs : seq (bidder b) (bidder b) = true)
     by (unfold seq; apply Stdlib.Strings.String.eqb_refl).
   assert (Ho : forall x : bool, (x || true) = true) by (intros [|]; reflexivity).

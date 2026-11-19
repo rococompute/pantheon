@@ -385,8 +385,8 @@ changed_since (m : obj) (r : string) (v : nat) (p : string) : bool :=
 (** A merge or a mark names the repository's head its tree was checked on.
     If the head has moved since (a merge landed while the check ran), the
     tree is the old head's: taken, it would put a head no node reaches, and
-    every node would stop taking merges there. An empty head names none, for
-    callers that predate it. *)
+    every node would stop taking merges there. This predicate detects a
+    changed named head; merge and mark separately reject an empty head. *)
 moved_since (m : obj) (r on : string) : bool := negb (seq on "") && negb (seq on (get_or "" r (repos m))).
 
 bid_repo (m : obj) (b : bid) : string := match task_by m (btask b) with Some t => trepo t | None => "" end.
