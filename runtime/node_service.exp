@@ -97,6 +97,7 @@ Theorem path_operations_are_looked_at : forall w made op,
 Proof.
   intros w made op H. destruct op; try exact I; cbn [sv_allowed sv_guard] in *;
     try (apply guard_path_found; exact H);
+    try (apply andb_prop in H as [Hp _]; apply guard_path_found; exact Hp);
     apply andb_prop in H as [_ H]; apply guard_path_found; exact H.
 Qed.
 
@@ -137,9 +138,11 @@ Qed.
 Theorem runs_are_cleanup : forall w made prog args,
   sv_allowed w made (IoRun prog args) = true -> In prog ["rm", "chmod", "docker"].
 Proof.
-  intros w made prog args H. cbn [sv_allowed sv_run] in H.
+  intros w made prog args H. change (sv_run w made prog args = true) in H.
+  unfold sv_run in H.
   destruct args as [| a [| b [| c [| d [| e [| f r]]]]]]; try discriminate H.
-  - apply andb_prop in H as [H _]. apply andb_prop in H as [H _]. apply seq_true in H. subst. left. reflexivity.
+  - repeat match goal with Hx : (_ && _) = true |- _ => apply andb_prop in Hx as [Hx ?] end.
+    apply seq_true in H. subst. left. reflexivity.
   - apply Bool.orb_prop in H as [H | H];
       repeat match goal with Hx : (_ && _) = true |- _ => apply andb_prop in Hx as [Hx ?] end;
       match goal with Hs : seq prog _ = true |- _ => apply seq_true in Hs; subst prog end;
@@ -374,12 +377,14 @@ Qed.
 
 (** cleaning up after a job *)
 Theorem cleanup_is_served : forall w made p x,
-  sv_path w made p = true -> sv_name (append "pantheon-ci-" x) = true ->
+  sv_path w made p = true -> sv_cleanup_path made p = true ->
+  sv_name (append "pantheon-ci-" x) = true ->
   sv_allowed w made (IoRun "rm" ["-rf", p]) = true /\ sv_allowed w made (IoRun "chmod" ["-R", "a+rX", p]) = true /\
   sv_allowed w made (IoRun "docker" ["rm", "-f", append "pantheon-ci-" x]) = true /\
   sv_allowed w made (IoRemoveTree p) = true /\ sv_allowed w made (IoDiscardFile p) = true.
 Proof.
-  intros w made p x H Hn. cbn -[sv_path sv_name append starts]. rewrite H, Hn, starts_append. repeat split.
+  intros w made p x H Hc Hn. cbn -[sv_path sv_cleanup_path sv_sync_cleanup_path sv_name append starts].
+  unfold sv_sync_cleanup_path. rewrite H, Hc, Hn, starts_append. repeat split.
 Qed.
 
 (** the temporary files and directories the host's work makes *)
@@ -427,3 +432,29 @@ Example programs_beyond_the_nodes_are_refused :
   sv_allowed w0 [] (IoRandomHex "100000000") = false /\
   sv_allowed w0 [] IoClock = false.
 Proof. repeat split. Qed.
+
+(** Legacy direct cleanup has the same exact minted capability as tracked rm. *)
+Theorem legacy_cleanup_requires_minted_root : forall w made p,
+  sv_allowed w made (IoRemoveTree p) = true -> sv_cleanup_path made p = true.
+Proof. intros w made p H. cbn [sv_allowed] in H. apply andb_prop in H as [_ H]. exact H. Qed.
+
+Theorem failed_legacy_cleanup_keeps_capabilities : forall made p answer,
+  fst answer = false -> sv_after made (IoRemoveTree p) answer = made.
+Proof. intros made p answer H. cbn [sv_after]. rewrite H. reflexivity. Qed.
+
+Theorem synchronous_cleanup_requires_minted_path : forall w made p,
+  sv_allowed w made (IoRun "rm" ["-rf", p]) = true -> sv_sync_cleanup_path made p = true.
+Proof. intros w made p H. cbn [sv_allowed sv_run] in H. apply andb_prop in H as [_ H]. exact H. Qed.
+
+Theorem failed_synchronous_cleanup_keeps_capabilities : forall made p answer,
+  fst answer = false -> sv_after made (IoRun "rm" ["-rf", p]) answer = made.
+Proof. intros made p answer H. cbn [sv_after]. rewrite H. reflexivity. Qed.
+
+Theorem synchronous_cleanup_is_probed : forall w made p,
+  sv_allowed w made (IoRun "rm" ["-rf", p]) = true ->
+  exists root rel, sv_guard w made (IoRun "rm" ["-rf", p]) = Some (root, rel).
+Proof.
+  intros w made p H. cbn [sv_allowed sv_run] in H.
+  apply andb_prop in H as [H _]. apply andb_prop in H as [_ Hp].
+  cbn [sv_guard]. apply guard_path_found. exact Hp.
+Qed.

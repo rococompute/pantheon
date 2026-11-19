@@ -26,6 +26,7 @@ timeout 120 sh test/audit-status-cli.sh &&
 timeout 120 sh test/audit-status-unicode.sh &&
 timeout 300 sh test/audit-resource-bounds.sh &&
 timeout 120 sh test/audit-service-jobs.sh &&
+timeout 120 sh test/audit-service-cleanup.sh &&
 timeout 120 sh test/audit-file-atomic.sh &&
 timeout 120 sh test/audit-leader-archive.sh &&
 timeout 120 python3 -B test/audit-deploy-limits.py &&

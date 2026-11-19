@@ -1632,3 +1632,15 @@ and `job_wait_status` keeps exit codes separate. The job-output path calls this
 before formatting the existing timeout/flood result. Four general proofs and
 16 fixed checks cover the mapping and its use, including the actual platform
 constants. The shell's signal-name decision branches are removed.
+
+Legacy direct-service `IoRemoveTree` requests use the same exact minted temporary
+root/`.git` sibling capability as tracked cleanup. Repository and inbox roots,
+minted descendants and traversal paths are refused. A failed startup/refusal
+keeps the capability so the caller may retry; a successful startup revokes the
+exact root. Native CLI snapshot cleanup remains a local operation on its fresh
+`IoTempDir`; node cleanup is a tracked Soma job.
+Synchronous service `IoRun "rm" ["-rf", path]` has the same capability and
+additionally permits exactly `minted-root/.git`, required before CI. It gains no
+arbitrary child paths. The same Soma path probe precedes removal, and failed
+completion preserves the capability. Normal repository mutations via declared
+Git/path operations remain supported; this is no blanket confinement claim.

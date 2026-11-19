@@ -57,6 +57,12 @@ sv_cleanup_path (made : list string) (p : string) : bool :=
   sv_no_up p && existsb (fun root => starts "/" root &&
     (seq root p || seq (append root ".git") p)) made.
 
+(** Synchronous CI cleanup also removes exactly the minted checkout's .git
+    directory before making the tree read-only. It gains no other descendants. *)
+sv_sync_cleanup_path (made : list string) (p : string) : bool :=
+  sv_cleanup_path made p || (sv_no_up p && existsb (fun root => starts "/" root &&
+    seq (hjoin root ".git") p) made).
+
 (** a word an argument may be: not empty, not an option *)
 sv_word (s : string) : bool := (0 <? slen s) && negb (seq (substr s 0 1) "-").
 
@@ -151,7 +157,7 @@ sv_program (w : service_world) (made : list string) (prog : string) (args : list
     it, removing a CI container *)
 sv_run (w : service_world) (made : list string) (prog : string) (args : list string) : bool :=
   match args with
-  | [a, p] => seq prog "rm" && seq a "-rf" && sv_path w made p
+  | [a, p] => seq prog "rm" && seq a "-rf" && sv_path w made p && sv_sync_cleanup_path made p
   | [a, b, p] => (seq prog "chmod" && seq a "-R" && seq b "a+rX" && sv_path w made p)
                  || (seq prog "docker" && seq a "rm" && seq b "-f" && starts "pantheon-ci-" p && sv_name p)
   | [a, b, c, d, filter] => seq prog "docker" && eq_strs [a, b, c, d] ["ps", "-a", "-q", "--filter"] && sv_ci_filter filter
@@ -168,7 +174,8 @@ sv_allowed (w : service_world) (made : list string) (op : node_op) : bool :=
   | IoGitEnv dir _ extra args =>
       path dir && forallb (fun e => existsb (fun pre => starts pre e) merge_who_names) extra
       && eq_strs args merge_commit_args
-  | IoPathStat p | IoReadText p | IoDirEntries p | IoDiscardFile p | IoRemoveTree p => path p
+  | IoPathStat p | IoReadText p | IoDirEntries p | IoDiscardFile p => path p
+  | IoRemoveTree p => path p && sv_cleanup_path made p
   | IoPathProbe dir p | IoPathWrite dir p _ | IoPathRemove dir p => path dir && path (hjoin dir p)
   | IoTempDir prefix => sv_name prefix
   | IoTempFile prefix suffix _ => sv_name prefix && sv_name suffix
@@ -194,6 +201,8 @@ sv_guard (w : service_world) (made : list string) (op : node_op) : option (strin
   | IoPathWrite dir p _ | IoPathRemove dir p => sv_guard_path w made (hjoin dir p)
   | IoProcStart prog _ _ _ [a, sep, p] =>
       if seq prog "rm" && seq a "-rf" && seq sep "--" then sv_guard_path w made p else None
+  | IoRun prog [a, p] =>
+      if seq prog "rm" && seq a "-rf" then sv_guard_path w made p else None
   | _ => None
   end.
 
@@ -221,7 +230,11 @@ sv_after (made : list string) (op : node_op) (a : nanswer) : list string :=
   match op with
   | IoTempDir _ | IoTempFile _ _ _ =>
       if fst a && starts "/" (ans_one a) then ans_one a :: made else made
-  | IoRemoveTree p | IoDiscardFile p => filter (fun m => negb (seq m p)) made
+  | IoRemoveTree p => if fst a then filter (fun m => negb (seq m p)) made else made
+  | IoDiscardFile p => filter (fun m => negb (seq m p)) made
+  | IoRun prog [flag, p] =>
+      if fst a && seq prog "rm" && seq flag "-rf"
+      then filter (fun m => negb (seq m p)) made else made
   | IoProcStart prog _ _ _ [flag, sep, p] =>
       if fst a && seq prog "rm" && seq flag "-rf" && seq sep "--"
       then filter (fun m => negb (seq m p)) made else made
