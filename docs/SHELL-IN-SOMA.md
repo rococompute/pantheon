@@ -1635,12 +1635,19 @@ constants. The shell's signal-name decision branches are removed.
 
 Legacy direct-service `IoRemoveTree` requests use the same exact minted temporary
 root/`.git` sibling capability as tracked cleanup. Repository and inbox roots,
-minted descendants and traversal paths are refused. A failed startup/refusal
-keeps the capability so the caller may retry; a successful startup revokes the
-exact root. Native CLI snapshot cleanup remains a local operation on its fresh
+minted descendants and traversal paths are refused. A failed completion/refusal
+keeps the capability so the caller may retry; only successful completion revokes
+the exact root. Legacy service cleanup lowers in Soma to synchronous `IoRun rm`,
+because the generic detached launcher does not confirm exec. The modern node
+tracked process path remains asynchronous. Native CLI snapshot cleanup remains a local operation on its fresh
 `IoTempDir`; node cleanup is a tracked Soma job.
 Synchronous service `IoRun "rm" ["-rf", path]` has the same capability and
 additionally permits exactly `minted-root/.git`, required before CI. It gains no
 arbitrary child paths. The same Soma path probe precedes removal, and failed
 completion preserves the capability. Normal repository mutations via declared
 Git/path operations remain supported; this is no blanket confinement claim.
+
+The local CLI one-shot detached cleanup fallback still uses the generic detached
+launcher, whose receipt confirms neither exec nor completion. It is not used as
+proof that service cleanup succeeded; the service now waits for an actual process
+result. This follow-up does not change the generic Host detached contract.

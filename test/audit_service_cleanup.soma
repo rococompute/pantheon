@@ -90,4 +90,30 @@ fixture : nprog (list string) :=
   nbind (nask (IoRun "rm" ["-rf", "--", home, minted, append minted ".git"]))
     (fun removed => NDone (native ++ image ++ native_sync ++ image_sync ++ [preserve, revoke, sync_preserve, sync_revoke, sync_git_keeps, sibling_keeps, check "owned fixture trees removed" (fst removed)])))))))).
 
-main := Host.print_lines (run_shell fixture).
+missing_case (sync wire : bool) (w : service_world) (made : list string) (target : string) : nprog (list string) :=
+  let op := if sync then IoRun "rm" ["-rf", target] else IoRemoveTree target in
+  let label := hcat [if wire then "image wire " else "native ",
+    if sync then "synchronous rm " else "legacy cleanup "] in
+  nbind (nask (IoSave (hjoin target "keep") "false" "fixture")) (fun _ =>
+  nbind (if wire then
+    let req := ["fixture-connection", sw_token w] ++ io_wire op in
+    let initial := {| service_begin with ss_made := made |} in
+    let result := run_wire req "missing reply" (service_tick_prog w initial) in
+    NDone (seq (snd result) "true", ss_made (fst result))
+  else nbind (sv_serve w made op) (fun answer => NDone (fst answer, sv_after made op answer))) (fun result =>
+  nbind (nask (IoReadText (hjoin target "keep"))) (fun contents =>
+  NDone [check (append label "reports actual exec failure") (negb (fst result)),
+    check (append label "retains capability after actual exec failure") (eq_strs (snd result) made),
+    check (append label "exec failure preserves fixture contents") (seq (ans_one contents) "fixture")]))).
+
+missing_fixture : nprog (list string) :=
+  nbind (nask (IoTempDir "pantheon-cleanup-missing-exec")) (fun made_answer =>
+  let target := ans_one made_answer in let made := sv_after [] (IoTempDir "owned") made_answer in
+  let w := world target in
+  nbind (missing_case false false w made target) (fun native =>
+  nbind (missing_case false true w made target) (fun image =>
+  nbind (missing_case true false w made target) (fun native_sync =>
+  nbind (missing_case true true w made target) (fun image_sync =>
+  NDone (native ++ image ++ native_sync ++ image_sync)))))).
+
+main := Host.print_lines (run_shell (if eq_strs (Host.argv tt) ["missing-rm"] then missing_fixture else fixture)).

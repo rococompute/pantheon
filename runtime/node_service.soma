@@ -212,6 +212,16 @@ sv_refused_text (op : node_op) (why : string) : string :=
 sv_refuse (op : node_op) (why : string) : nprog nanswer :=
   nbind (nexec (IoLog (sv_refused_text op why))) (fun _ => NDone (ans_data false [append "refused: " why])).
 
+(** A legacy service cleanup waits for the actual rm outcome. The generic
+    detached launcher used by local one-shot commands does not confirm exec,
+    so its receipt cannot consume a service capability. The modern node's
+    tracked IoProcStart cleanup stays asynchronous in runtime/node_host. *)
+sv_execute (op : node_op) : nprog nanswer :=
+  match op with
+  | IoRemoveTree p => nask (IoRun "rm" ["-rf", p])
+  | _ => nask op
+  end.
+
 (** An operation carried out, or refused: one not allowed runs nothing;
     one on a path runs only after the path is looked at and isn't
     through a symlink. *)
@@ -220,8 +230,8 @@ sv_serve (w : service_world) (made : list string) (op : node_op) : nprog nanswer
   else match sv_guard w made op with
        | Some (r, rel) =>
            nbind (nask (IoPathProbe r rel)) (fun a =>
-           if seq (ans_one a) "symlink" then sv_refuse op "a symlink on the way" else nask op)
-       | None => nask op
+           if seq (ans_one a) "symlink" then sv_refuse op "a symlink on the way" else sv_execute op)
+       | None => sv_execute op
        end.
 
 (** what it made, after an operation's answer: a temporary file or

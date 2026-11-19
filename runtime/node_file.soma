@@ -65,8 +65,9 @@ temp_file_prog (prefix suffix text : string) : nprog nanswer :=
     close to a GB, and removing it in the main loop stalled consensus for
     minutes. rm started on its own and not waited for, the path one
     argument after "--" (no shell between, nothing read as an option).
-    This one-shot fallback returns the startup receipt, not a completion
-    claim. The node host interpreter tracks IoRemoveTree as a normal job
+    This local one-shot fallback returns a detached-launcher receipt, which
+    confirms neither exec nor completion. Service cleanup instead waits for
+    rm in runtime/node_service.soma. The node host interpreter tracks IoRemoveTree as a normal job
     and reports its actual completion or failure. *)
 remove_tree_prog (p : string) : nprog nanswer :=
   nask (IoStartDetached "rm" ["-rf", "--", p]).

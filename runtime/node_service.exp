@@ -458,3 +458,17 @@ Proof.
   apply andb_prop in H as [H _]. apply andb_prop in H as [_ Hp].
   cbn [sv_guard]. apply guard_path_found. exact Hp.
 Qed.
+
+Theorem legacy_service_cleanup_waits_for_rm : forall ans p,
+  ntrace ans (sv_execute (IoRemoveTree p)) = [IoRun "rm" ["-rf", p]] /\
+  nresult ans (sv_execute (IoRemoveTree p)) = ans (IoRun "rm" ["-rf", p]).
+Proof. intros. split; reflexivity. Qed.
+
+Theorem legacy_cleanup_lowering_preserves_authority : forall w made p,
+  sv_allowed w made (IoRemoveTree p) = true ->
+  sv_allowed w made (IoRun "rm" ["-rf", p]) = true.
+Proof.
+  intros w made p H. cbn [sv_allowed] in H. apply andb_prop in H as [Hp Hc].
+  change (sv_path w made p && sv_sync_cleanup_path made p = true).
+  unfold sv_sync_cleanup_path. rewrite Hp, Hc. reflexivity.
+Qed.
