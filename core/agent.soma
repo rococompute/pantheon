@@ -547,7 +547,7 @@ attest_duty (a m : obj) : obj * list (list string) :=
 reveal_duty (a m : obj) : obj * list (list string) :=
   let key := append "reveal." (append (show (term m)) (append "." (show (mheight m / 15)))) in
   if awaiting m && negb (existsb (fun r => seq (fst r) (me a)) (reveals m)) && ask_once a key
-  then (note_asked a key, [["reveal", show (term m + 1)]]) else (a, []).
+  then (note_asked a key, [["reveal", show (term m + 1), get_or "" (me a) (tips m)]]) else (a, []).
 
 (** One transaction in flight at a time, at the next nonce. The transaction
     itself is kept, not only its nonce, until it lands in a block (accepted

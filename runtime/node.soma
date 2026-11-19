@@ -349,7 +349,7 @@ Inductive output_request :=
 | SetTimer (ms : string) (event : list string)
 | WriteLog (text : string)
 | RecordLeader (previous digest entry : string)
-| RevealLink (term : string)
+| RevealLink (term tip : string)
 | DecidedBlock (height : string) (txs : list string)
 | SetHeight (height : string)
 | CatchupPeer (who first : string)
@@ -368,7 +368,7 @@ plan_output (out : list string) : output_request :=
   match out with
   | ["timer", name, h, r, ms] => SetTimer ms ["timeout", name, h, r]
   | ["log", text] => WriteLog text
-  | ["reveal", t] => RevealLink t
+  | ["reveal", t, tip] => RevealLink t tip
   | "decided" :: h :: txs => DecidedBlock h txs
   | ["height", h] => SetHeight h
   | ["behind", who, first] => CatchupPeer who first
@@ -446,13 +446,26 @@ Fixpoint draw_link (n : nat) (secret : string) : string :=
   | Succ k => draw_link k (sha256 secret)
   end.
 
-reveal_plan (byz limit secret term : string) : list output_action :=
+(** The agreed tip counts accepted reveals, whereas the term counts draws,
+    including ones whose link was lost or withheld. Find exactly its next
+    preimage in our bounded chain. Nothing local advances on an attempted
+    send: replay and a session restart select the same outstanding link. *)
+Fixpoint draw_preimage (fuel : nat) (candidate tip : string) : option string :=
+  match fuel with
+  | 0 => None
+  | Succ remaining =>
+      let next := sha256 candidate in
+      if seq next tip then Some candidate else draw_preimage remaining next tip
+  end.
+
+reveal_plan (byz limit secret term tip : string) : list output_action :=
   let t := num term in
   if seq byz "withhold" && (t mod 2 =? 1) then
     [LogAction (append "FAULT INJECTION: holding back my link for draw " (show t))]
-  else if t <? num limit then
-    [QueueAction ["local_tx", "reveal", draw_link (num limit - t) secret]]
-  else [].
+  else match draw_preimage (num limit) secret tip with
+    | Some link => [QueueAction ["local_tx", "reveal", link]]
+    | None => []
+    end.
 
 decided_plan (h : string) (txs : list string) (stored : option (list string))
     : list output_action :=
@@ -1702,11 +1715,11 @@ output_prog (out : list string) : nprog bool :=
   | SetTimer ms ev => nexec (IoTimer ms ev)
   | WriteLog text => nexec (IoLog text)
   | RecordLeader previous digest entry => nexec (IoLeaderRecord previous digest entry)
-  | RevealLink term =>
+  | RevealLink term tip =>
       nbind (nask IoDraw) (fun draw =>
       let (byz, chain) := ans_draw draw in
       let (limit, secret) := chain in
-      actions_prog (reveal_plan byz limit secret term))
+      actions_prog (reveal_plan byz limit secret term tip))
   | DecidedBlock height txs =>
       nbind (nask (IoBlock height)) (fun block =>
       actions_prog (decided_plan height txs (ans_found block)))

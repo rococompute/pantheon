@@ -216,31 +216,49 @@ Example malformed_outputs_keep_the_old_fallback :
 Proof. repeat split; computed. Qed.
 
 Example reveal_selects_draw_policy :
-  plan_output ["reveal", "3"] = RevealLink "3".
+  plan_output ["reveal", "3", "tip"] = RevealLink "3" "tip".
 Proof. computed. Qed.
 
 Example honest_reveal_queues_the_exact_link :
-  reveal_plan "" "4" "secret" "2" =
+  reveal_plan "" "4" "secret" "2" (draw_link 3 "secret") =
     [QueueAction ["local_tx", "reveal", sha256 (sha256 "secret")]].
 Proof. computed. Qed.
 
 Example withhold_odd_draw_only_logs :
-  reveal_plan "withhold" "4" "secret" "3" =
+  reveal_plan "withhold" "4" "secret" "3" (draw_link 3 "secret") =
     [LogAction "FAULT INJECTION: holding back my link for draw 3"] /\
-  reveal_plan "withhold" "4" "secret" "5" =
+  reveal_plan "withhold" "4" "secret" "5" (draw_link 3 "secret") =
     [LogAction "FAULT INJECTION: holding back my link for draw 5"].
 Proof. split; computed. Qed.
 
 Example withhold_even_draw_reveals :
-  reveal_plan "withhold" "4" "secret" "2" =
+  reveal_plan "withhold" "4" "secret" "2" (draw_link 3 "secret") =
     [QueueAction ["local_tx", "reveal", sha256 (sha256 "secret")]].
 Proof. computed. Qed.
 
 Example exhausted_chain_queues_nothing :
-  reveal_plan "" "4" "secret" "4" = [] /\
-  reveal_plan "" "4" "secret" "5" = [] /\
+  reveal_plan "" "4" "secret" "4" "secret" = [] /\
+  reveal_plan "" "4" "secret" "5" "secret" = [] /\
   draw_link 0 "secret" = "secret".
 Proof. repeat split; computed. Qed.
+
+(** The runtime selects a preimage of the agreed tip, never one chosen by
+    a term index. This is also the market's acceptance condition. *)
+Theorem draw_preimage_is_next_link : forall fuel candidate tip link,
+  draw_preimage fuel candidate tip = Some link -> sha256 link = tip.
+Proof.
+  induction fuel as [|fuel IH]; intros candidate tip link H; simpl in H; [discriminate H|].
+  destruct (seq (sha256 candidate) tip) eqn:E.
+  - injection H as <-. unfold seq in E. apply Stdlib.Strings.String.eqb_eq in E. exact E.
+  - exact (IH _ _ _ H).
+Qed.
+
+Example missing_draws_do_not_skip_the_outstanding_link :
+  reveal_plan "" "4" "secret" "1" (draw_link 4 "secret") =
+    reveal_plan "" "4" "secret" "3" (draw_link 4 "secret") /\
+  reveal_plan "" "4" "secret" "100" (draw_link 3 "secret") =
+    [QueueAction ["local_tx", "reveal", draw_link 2 "secret"]].
+Proof. split; computed. Qed.
 
 Example new_decision_requests_one_store :
   decided_plan "7" ["tx"] None = [StoreAction "7" ["tx"]] /\
@@ -972,9 +990,9 @@ Example outputs_become_operations :
 Proof. repeat split; computed. Qed.
 
 Example plans_become_operations :
-  map action_io (reveal_plan "withhold" "4" "secret" "3") =
+  map action_io (reveal_plan "withhold" "4" "secret" "3" (draw_link 3 "secret")) =
     [Some (IoLog "FAULT INJECTION: holding back my link for draw 3")] /\
-  map action_io (reveal_plan "" "4" "secret" "2") =
+  map action_io (reveal_plan "" "4" "secret" "2" (draw_link 3 "secret")) =
     [Some (IoQueue ["local_tx", "reveal", sha256 (sha256 "secret")])] /\
   map action_io (broadcast_plan "equivocate" 2 ["proposal", "3", "1", "0", "vid", "val"] None None None) =
     [Some (IoRememberBroadcast "3" "each" ["proposal", "3", "1", "0", "vid", "val"]
