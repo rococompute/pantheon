@@ -675,6 +675,16 @@ cmd_status (home : string) : nprog unit :=
     (cat ["no status in ", home, " yet: is its node running? Start it with `pantheon node ", home, "` or `pantheon up DIR`"])
     (fun t => cli_do (IoPrint t) (fun _ => NDone tt)).
 
+(** Machine status is the same market snapshot, rendered in Soma and
+    written as a separate named file. Never reconstruct state from prose. *)
+cmd_status_json (home : string) : nprog unit :=
+  cli_read_text (path home "status.json")
+    (cat ["no JSON status in ", home, " yet: start or update the node to write status.json"])
+    (fun text => match json_of text with
+      | Some (JObj _) => cli_do (IoPrint text) (fun _ => NDone tt)
+      | _ => cli_fail "status.json is not a valid market status object"
+      end).
+
 (** the clock's microseconds as SECONDS.MICROSECONDS, an inbox file's name
     (the node reads them in name order) *)
 stamp_text (us : string) : string :=
@@ -1219,7 +1229,7 @@ usage : string := "pantheon: a private BFT labor market where LLM agents take tu
 
   pantheon node HOME [--backend B] [--behavior honest|deny|silent] [--goal FILE] [--deny PATH] [--listen HOST]
                      [--ci CMD] [--ci-repo NAME CMD] [--ci-image IMAGE | --ci-sandbox PROGRAM] [--ci-memory 8g] [--bid-window N] [--perspective TEXT] [--max-llm-calls N] [--allow-closed-plan]
-  pantheon status HOME
+  pantheon status HOME [--json]    JSON is a bounded market snapshot (last 20 bids)
   pantheon tx HOME post REPO ""spec"" [CONTEXT-PATH...]   (or any market transaction's fields)
   pantheon edits CHECKOUT [--title TITLE] [NOTE]
                                      a checkout's changes as a patch reply (for models with tools)
@@ -1541,6 +1551,7 @@ cli_prog (args : list string) : nprog unit :=
   | ["leader-chain", home] => cmd_leader_chain home
   | "leader-note" :: home :: repo :: commit :: info => cmd_leader_note home repo commit (join " " info)
   | ["status", home] => cmd_status home
+  | ["status", home, "--json"] | ["status", "--json", home] => cmd_status_json home
   | "tx" :: home :: field :: rest => cmd_tx home (field :: rest)
   | "up" :: dir :: rest => cmd_up dir rest
   | "image" :: home :: file :: flags => cmd_image home file flags

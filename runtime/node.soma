@@ -93,7 +93,8 @@ tx_sender (m : obj) (raw : string) : string := match decode_tx m raw with a :: _
 pooled_by (m : obj) (p : list string) (a : string) : nat := length (filter (fun raw => seq (tx_sender m raw) a) p).
 
 and_status (n : node_state) (outs : list (list string)) : node_state * list (list string) :=
-  (n, outs ++ [("status" :: status_lines (mkt n) ++ [append "pool " (show (length (pool n)))])]).
+  (n, outs ++ [("status" :: status_lines (mkt n) ++ [append "pool " (show (length (pool n)))]),
+               ["status-json", append (market_status_json (mkt n)) newline]]).
 
 (** A decided block: apply it, drop what it used from the pool, and let the
     agent react. *)
@@ -354,6 +355,7 @@ Inductive output_request :=
 | SetHeight (height : string)
 | CatchupPeer (who first : string)
 | WriteStatus (lines : list string)
+| WriteStatusJSON (text : string)
 | SubmitTransaction (nonce : string) (fields : list string)
 | Broadcast (fields : list string)
 | CheckRequest (id repo head : string) (edits : list string)
@@ -373,6 +375,7 @@ plan_output (out : list string) : output_request :=
   | ["height", h] => SetHeight h
   | ["behind", who, first] => CatchupPeer who first
   | "status" :: lines => WriteStatus lines
+  | ["status-json", text] => WriteStatusJSON text
   | "submit" :: nonce :: fields => SubmitTransaction nonce fields
   | "broadcast" :: fields => Broadcast fields
   | "check" :: id :: r :: head :: edits => CheckRequest id r head edits
@@ -1736,6 +1739,7 @@ output_prog (out : list string) : nprog bool :=
       actions_prog (catchup_plan who first (ans_one current) (ans_float clock)
                       (served_result last) (fst has_peer) (seq (fst (ans_draw draw)) "silent")))))))
   | WriteStatus lines => status_prog lines
+  | WriteStatusJSON text => nexec (IoFileWrite "status.json" "false" text)
   | SubmitTransaction nonce fields =>
       nbind (nask IoDraw) (fun draw =>
       nbind (nask IoNonceFlooded) (fun flooded =>

@@ -1009,6 +1009,98 @@ build_block (m : obj) (pool : list string) : list string := pick m pool [] (para
 block_ok (m : obj) (txs : list string) : bool :=
   (length (pick m txs [] (length txs + 1)) =? length txs) && (length txs <=? param m "max_block_txs").
 
+(** Additive merge diagnostics. Values which can contain newlines are quoted
+    rather than spliced into the line protocol. Bound each display field and
+    the opt-in JSON snapshot; complete signed reasons remain in the blocks. *)
+status_bool (b : bool) : string := if b then "true" else "false".
+status_array (items : list string) : string := append "[" (append (Stdlib.Strings.String.concat "," items) "]").
+status_object (fields : list (string * string)) : string :=
+  append "{" (append (Stdlib.Strings.String.concat "," (map (fun p =>
+    append (nio_json_string (fst p)) (append ":" (snd p))) fields)) "}").
+status_name_fields (key name : string) : list (string * string) :=
+  [(key, nio_json_string (take_str 256 name)), (append key "_truncated", status_bool (256 <? slen name))] ++
+  (if 256 <? slen name then [(append key "_sha256", nio_json_string (sha256 name))] else []).
+status_display_name (name : string) : string :=
+  if 256 <? slen name then append (take_str 256 name) (append "... [sha256 " (append (sha256 name) "]")) else name.
+
+status_bid_votes (m : obj) (b : bid) : list (string * bool) :=
+  match pending m with
+  | Some p => if pbid p =? bidn b then pvotes p else get_or (votes b) (show (bidn b)) (merge_recorded_votes m)
+  | None => get_or (votes b) (show (bidn b)) (merge_recorded_votes m) end.
+
+status_vote_json (m : obj) (id : nat) (on : list string) (v : string * bool) : string :=
+  let details := lookup (fst v) (get_or [] (show id) (merge_vote_notes m)) in
+  status_object (status_name_fields "voter" (fst v) ++
+    [("approve", status_bool (snd v)), ("counted", status_bool (mem (fst v) on)),
+     ("reason", nio_json_string (match details with Some (reason, _) => reason | None => "" end)),
+     ("height", match details with Some (_, h) => show h | None => "null" end)]).
+
+status_vote_line (m : obj) (id : nat) (on : list string) (v : string * bool) : string :=
+  let details := lookup (fst v) (get_or [] (show id) (merge_vote_notes m)) in
+  let reason := match details with Some (r, _) => r | None => "" end in
+  let height := match details with Some (_, h) => show h | None => "unknown" end in
+  Stdlib.Strings.String.concat " " ["attestation bid", show id, "by", nio_json_string (status_display_name (fst v)),
+    if snd v then "yes" else "no", "at", height,
+    if mem (fst v) on then "counted" else "not-counted", "reason", nio_json_string reason].
+
+pending_merge_lines (m : obj) : list string :=
+  match pending m with
+  | None => []
+  | Some p =>
+      [Stdlib.Strings.String.concat " " ["pending merge bid", show (pbid p), "proposed by", nio_json_string (status_display_name (pby p)),
+        "at", show (pat p), "approvals", show (counted_approvals m p), "required", show (merge_quorum m p),
+        "no", show (counted_noes m p), "fallback at",
+        if param m "fallback_blocks" =? 0 then "disabled" else show (pat p + param m "fallback_blocks"),
+        "expires at", show (pat p + param m "attest_window")]] ++
+      map (status_vote_line m (pbid p) (merge_roster m p)) (firstn 64 (rev (pvotes p))) ++
+      (if 64 <? length (pvotes p) then ["attestation display truncated after 64 votes"] else [])
+  end.
+
+status_pending_json (m : obj) : string :=
+  match pending m with
+  | None => "null"
+  | Some p => status_object (status_name_fields "proposed_by" (pby p) ++
+      [("bid", show (pbid p)), ("proposed_at", show (pat p)),
+       ("tree", nio_json_string (take_str 128 (ptree p))), ("tree_truncated", status_bool (128 <? slen (ptree p))),
+       ("approvals", show (counted_approvals m p)), ("required_approvals", show (merge_quorum m p)),
+       ("no_votes", show (counted_noes m p)),
+       ("fallback_height", if param m "fallback_blocks" =? 0 then "null" else show (pat p + param m "fallback_blocks")),
+       ("expires_at", show (pat p + param m "attest_window")),
+       ("votes", status_array (map (status_vote_json m (pbid p) (merge_roster m p)) (firstn 64 (rev (pvotes p))))),
+       ("votes_truncated", status_bool (64 <? length (pvotes p)))])
+  end.
+
+status_bid_json (m : obj) (b : bid) : string :=
+  let terminal := lookup (show (bidn b)) (merge_terminals m) in
+  let vs := status_bid_votes m b in
+  status_object (status_name_fields "author" (bidder b) ++
+    [("bid", show (bidn b)), ("task", show (btask b)), ("status", nio_json_string (status_name (bst b))),
+     ("stale", status_bool (stale b)), ("reason", nio_json_string (take_str 4000 (why b))),
+     ("reason_truncated", status_bool (4000 <? slen (why b))),
+     ("proposal_settled_at", match terminal with Some (h, _) => show h | None => "null" end),
+     ("proposal_outcome", match terminal with Some (_, result) => nio_json_string result | None => "null" end),
+     ("votes", status_array (map (status_vote_json m (bidn b) (scope m (bid_repo m b))) (firstn 64 (rev vs)))),
+     ("votes_truncated", status_bool (64 <? length vs))]).
+
+market_status_json (m : obj) : string :=
+  let header := [("schema", nio_json_string "pantheon-status-1"), ("scope", nio_json_string "market"),
+                 ("height", show (mheight m)), ("term", show (term m)), ("version", show (version m))] in
+  let text := status_object (header ++ status_name_fields "leader" (leader m) ++
+      [("pending_merge", status_pending_json m),
+       ("recent_bids", status_array (map (status_bid_json m) (last_n 20 (bids m)))),
+       ("recent_bids_truncated", status_bool (20 <? length (bids m))), ("details_truncated", "false")]) in
+  if 256 * 1024 <? slen text then status_object (header ++ [("details_truncated", "true")]) else text.
+
+settled_merge_lines (m : obj) : list string :=
+  flat_map (fun b =>
+    let i := show (bidn b) in
+    (match lookup i (merge_terminals m) with
+     | Some (h, outcome) => [Stdlib.Strings.String.concat " " ["proposal settled bid", i, "at", show h, outcome]]
+     | None => [] end) ++
+    (if bidn b =? pending_bid_id m then [] else
+       map (status_vote_line m (bidn b) (scope m (bid_repo m b))) (firstn 64 (rev (status_bid_votes m b)))))
+    (last_n 20 (bids m)).
+
 (** Status lines for people and for `pantheon status`. *)
 status_lines (m : obj) : list string :=
   [append "height " (append (show (mheight m)) (append "  term " (append (show (term m)) (append "  leader " (if seq (leader m) "" then "(drawing)" else leader m))))),
@@ -1019,6 +1111,7 @@ status_lines (m : obj) : list string :=
   ++ map (fun t => append "task " (append (show (tid t)) (append (if topen t then " [open] " else " [closed] ") (append (trepo t) (append ": " (spec t)))))) (tasks m)
   ++ map (fun b => append "bid " (append (show (bidn b)) (append " [" (append (status_name (bst b)) (append (if stale b then " stale] task " else "] task ")
                     (append (show (btask b)) (append " by " (append (bidder b) (append " " (why b)))))))))) (bids m)
+  ++ pending_merge_lines m ++ settled_merge_lines m
   ++ map (fun c => append "count " (append (fst c) (append " " (show (snd c))))) (counters m)
   (* for the plan view: the last 20 bids' titles, the leader's, and notes *)
   ++ flat_map (fun b => let i := show (bidn b) in
