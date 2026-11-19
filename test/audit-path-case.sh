@@ -121,6 +121,14 @@ market_paths : list string :=
       "docs/.github/x.md", "foo.git/x", "a/.gitx/y", ".git_", "a.git",
       ".gitattributes", "a/.GitModules", "a/../b", "src/a..b", "a//b", "/a", ""].
 
+market_git_checks : list string :=
+  [check "market bid rejects every .git case spelling"
+     (forallb (fun v => seq (bid_why (append v "/f")) "unsafe path") git_cases),
+   check "market post rejects every .git case spelling"
+     (forallb (fun v => seq (post_why (append v "/f")) "context is up to 8 safe paths") git_cases),
+   check "market bid rejects a nested mixed-case .git component"
+     (seq (bid_why "src/a/.Git/b") "unsafe path")].
+
 execution_checks : list string :=
   [check "execution rejects every .git case spelling"
      (forallb (fun v => match edit_plan_of (append v "/f") "" "x" "none" with
@@ -137,6 +145,7 @@ checks : list string :=
   map git_case_check git_cases
   ++ boundary_checks
   ++ difference_checks
+  ++ market_git_checks
   ++ map bid_agrees market_paths
   ++ map post_agrees market_paths
   ++ execution_checks.
@@ -150,7 +159,7 @@ if ! timeout 600 "$SOMA" run "$tmp" > "$t/out" 2> "$t/err"; then
 fi
 cat "$t/out"
 if grep -q '^FAIL ' "$t/out"; then exit 1; fi
-grep -q '^ok 94 path-policy checks$' "$t/out" || { echo 'FAIL the path-policy checks did not all run'; exit 1; }
+grep -q '^ok 97 path-policy checks$' "$t/out" || { echo 'FAIL the path-policy checks did not all run'; exit 1; }
 
 # The real check command, when the tree has been built: a mixed-case .git
 # component is a bid failure, and an ordinary name that contains ".git" is
