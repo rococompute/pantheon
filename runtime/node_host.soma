@@ -36,7 +36,8 @@ Inductive job_done :=
 | DoneModel (id kind prompt : string) (ctx : list string)
 | DoneCodex (id kind prompt out : string) (ctx : list string)
 | DoneCheck (id out ci : string) (evidence : list string)
-| DoneCi (id tree memory runner : string) (evidence : list string).
+| DoneCi (id tree memory runner : string) (evidence : list string)
+| DoneCleanup (path : string).
 
 (** what goes when it's over: a file, a directory's tree (in the
     background), a container *)
@@ -222,19 +223,34 @@ done_event (d : job_done) (t : string) : list string :=
   | DoneCodex id kind prompt out ctx => "codex_file" :: id :: kind :: prompt :: t :: out :: ctx
   | DoneCheck id out ci evidence => "check_apply_out" :: id :: out :: ci :: t :: evidence
   | DoneCi id tree memory runner evidence => "ci_done" :: id :: tree :: memory :: runner :: t :: evidence
+  | DoneCleanup path => ["cleanup_done", path, t]
   end.
 
 done_ci (d : job_done) : bool := match d with DoneCi _ _ _ _ _ => true | _ => false end.
 
-Fixpoint hcleanup (l : list job_clean) : nprog bool :=
+(** Cleanup stays asynchronous for large trees, but it is a real tracked
+    process: its completion/failure is observed like every other host job.
+    Cleanup jobs own no scratch directory, so cleaning one never recursively
+    creates another cleanup job. *)
+Fixpoint hcleanup (s : host_state) (l : list job_clean) : nprog host_state :=
   match l with
-  | [] => NDone true
+  | [] => NDone s
+  | CleanTree p :: rest =>
+      nbind (nask IoEnvEntries) (fun env =>
+      nbind (nask (IoProcStart "rm" "" "" (ans_list env) ["-rf", "--", p])) (fun a =>
+      if negb (fst a) then
+        nbind (nexec (IoLog (hcat ["cleanup could not start: ", p, ": ", ans_one a])))
+          (fun _ => hcleanup s rest)
+      else nbind (nask IoClock) (fun now =>
+        let j := {| j_id := ans_one a; j_started := ans_float now; j_limit := nio_small 3600;
+                    j_done := DoneCleanup p; j_clean := []; j_overtime := false; j_flooded := false |} in
+        hcleanup {| s with hs_jobs := j :: hs_jobs s |} rest)))
   | c :: rest =>
       nbind (nask (match c with
                    | CleanFile p => IoDiscardFile p
                    | CleanTree p => IoRemoveTree p
                    | CleanContainer n => IoRun "docker" ["rm", "-f", n]
-                   end)) (fun _ => hcleanup rest)
+                   end)) (fun _ => hcleanup s rest)
   end.
 
 hpush (s : host_state) (ev : list string) : host_state := {| s with hs_events := hs_events s ++ [ev] |}.
@@ -261,7 +277,7 @@ hstart_job (s : host_state) (limit : PrimFloat.float) (prog stdin : string) (arg
                 j_clean := CleanTree cwd :: clean; j_overtime := false; j_flooded := false |} in
     NDone ({| s with hs_jobs := j :: hs_jobs s |}, None))
   else
-    nbind (hcleanup (CleanTree cwd :: clean)) (fun _ =>
+    nbind (hcleanup s (CleanTree cwd :: clean)) (fun s =>
     NDone (s, Some (done_event d (append "!" (ans_one a))))))).
 
 (** A CI run's script: its output and errors together, and its exit as the
@@ -444,9 +460,20 @@ hcomplete (hw : hworld) (s : host_state) (id result : string) : nprog (nanswer *
   match hfind_job id (hs_ended s) with
   | None => hkeep s (ans_data true [])
   | Some j =>
-      let s := hpush {| s with hs_ended := hwithout id (hs_ended s) |} (done_event (j_done j) result) in
-      nbind (if done_ci (j_done j) then nbind (nask IoEnvEntries) (fun env => hci_after hw (ans_list env) s) else NDone s) (fun s =>
-      nbind (hcleanup (j_clean j)) (fun _ => NDone (hdrain s)))
+      let s := {| s with hs_ended := hwithout id (hs_ended s) |} in
+      match j_done j with
+      | DoneCleanup p =>
+          nbind (nexec (IoLog (hcat [if starts "!" result then "cleanup failed: " else "cleanup complete: ", p,
+                                    if seq result "" then "" else append ": " result])))
+            (fun _ => NDone (hdrain s))
+      | _ =>
+          let s := hpush s (done_event (j_done j) result) in
+          (* Stop/remove a completed run's container before starting the next
+             CI job; its resource slot cannot be reused before teardown. *)
+          nbind (hcleanup s (j_clean j)) (fun s =>
+          nbind (if done_ci (j_done j) then nbind (nask IoEnvEntries) (fun env => hci_after hw (ans_list env) s) else NDone s)
+            (fun s => NDone (hdrain s)))
+      end
   end.
 
 (** What the runner saw of the jobs, as the node's events: their output as
@@ -525,6 +552,8 @@ host_op (hw : hworld) (s : host_state) (op : node_op) : option (nprog (nanswer *
       if fst result then hkeep s result else
       nbind (nask (IoFail "leader chain could not append or verify its Git history")) (hkeep s)))
   | IoCiLaunch id out tree ci evidence => Some (hci hw s id out tree ci evidence)
+  | IoRemoveTree p => Some (nbind (hcleanup s [CleanTree p])
+      (fun s => hkeep s (ans_data true ["cleanup scheduled"])))
   | IoJobComplete id result => Some (hcomplete hw s id result)
   | IoJobs =>
       Some (hkeep s (ans_data true (nio_frame_lists (List.map (fun j =>

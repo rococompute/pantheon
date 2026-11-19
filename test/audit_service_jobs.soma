@@ -1,0 +1,45 @@
+(** Actual Soma host-job state transitions; no model, daemon or shell mocks. *)
+Import core.util runtime.nodeio runtime.node runtime.node_host.
+Require Soma.Host.
+
+check (name : string) (ok : bool) : string := append (if ok then "ok " else "FAIL ") name.
+world : hworld := {| hw_home := "/home"; hw_backend := ""; hw_repos := []; hw_max_calls := "0";
+  hw_ci := ""; hw_ci_repo := []; hw_ci_memory := "256m"; hw_ci_image := "image"; hw_ci_sandbox := "/runner" |}.
+answers (op : node_op) : nanswer :=
+  match op with
+  | IoProcStart _ _ _ _ _ => ans_data true ["cleanup-job"]
+  | IoClock => ans_data true []
+  | IoEnvEntries => ans_data true ["PATH=/usr/bin:/bin"]
+  | _ => ans_ok
+  end.
+failed_start (op : node_op) : nanswer :=
+  match op with IoProcStart _ _ _ _ _ => ans_data false ["spawn refused"] | _ => answers op end.
+started : host_state := nresult answers (hcleanup host_start [CleanTree "/tree"]).
+ended : host_state := fst (hevent started ["job_ended", "cleanup-job", "exit", "1"]).
+failed_trace : list node_op := ntrace answers (hcomplete world ended "cleanup-job" "!process failed (exit 1):").
+success_trace : list node_op := ntrace answers (hcomplete world ended "cleanup-job" "").
+no_recursive_cleanup : bool :=
+  match hs_jobs started with [j] => match j_done j with
+    DoneCleanup p => seq p "/tree" && (length (j_clean j) =? 0) | _ => false end | _ => false end.
+logs (needle : string) (trace : list node_op) : bool :=
+  existsb (fun op => match op with IoLog text => contains needle text | _ => false end) trace.
+
+main := Host.print_lines [
+  check "tree removal is a tracked rm process with a literal operand"
+    (existsb (fun op => match op with
+      IoProcStart prog _ _ _ args => seq prog "rm" && eq_strs args ["-rf", "--", "/tree"]
+      | _ => false end) (ntrace answers (hcleanup host_start [CleanTree "/tree"]))),
+  check "cleanup job owns no scratch tree and cannot recursively schedule cleanup" no_recursive_cleanup,
+  check "failed cleanup startup is visible and creates no running job"
+    ((length (hs_jobs (nresult failed_start (hcleanup host_start [CleanTree "/tree"]))) =? 0)
+      && logs "cleanup could not start" (ntrace failed_start (hcleanup host_start [CleanTree "/tree"]))),
+  check "actual failed cleanup completion is logged" (logs "cleanup failed: /tree" failed_trace),
+  check "actual successful cleanup completion is logged" (logs "cleanup complete: /tree" success_trace),
+  check "completed cleanup job leaves no recursive job"
+    (length (hs_jobs (snd (nresult answers (hcomplete world ended "cleanup-job" "")))) =? 0),
+  check "runner exit 3 is already an infrastructure problem" (ci_node_problem false (Some "exit 3")),
+  check "Docker runner exit 125 is already an infrastructure problem" (ci_node_problem false (Some "exit 125")),
+  check "wrapped bid failure exit 86 is the bid's failure" (negb (ci_node_problem false (Some "exit 86"))),
+  check "lock wait infrastructure status 75 is a node problem" (ci_node_problem false (Some "exit 75")),
+  "--PAYLOAD--", ci_wrap "exit 3", "--END-PAYLOAD--"
+].

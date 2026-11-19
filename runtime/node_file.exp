@@ -82,8 +82,9 @@ Qed.
 (** ---- a tree removed ---- *)
 
 (** a tree's removal is one thing: rm started on its own with the path as
-    its one operand, after "--"; it never waits and always answers done *)
+    its one operand, after "--"; this one-shot fallback returns the host
+    startup receipt. The persistent node host tracks actual completion. *)
 Theorem remove_tree_starts_rm : forall ans p,
   ntrace ans (remove_tree_prog p) = [IoStartDetached "rm" ["-rf", "--", p]] /\
-  nresult ans (remove_tree_prog p) = ans_ok.
+  nresult ans (remove_tree_prog p) = ans (IoStartDetached "rm" ["-rf", "--", p]).
 Proof. intros ans p. split; reflexivity. Qed.
