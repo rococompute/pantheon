@@ -1787,3 +1787,13 @@ Proof.
   | |- _ <= _ => lia
   end.
 Qed.
+
+Example provider_holds_are_bounded :
+  limit_wait (Some 999999999%float) 900%float = 7200%float /\
+  limit_wait (Some 7195%float) 900%float = 7200%float /\
+  limit_wait None 999999999%float = 7200%float /\
+  limit_wait None (-1)%float = 900%float /\
+  limit_wait_adjusted (Some 999999999%float) 900%float = true /\
+  limit_wait_adjusted (Some 300%float) 900%float = false /\
+  num_after digits_float "9999999999999999999" 0 = None.
+Proof. repeat split; computed. Qed.

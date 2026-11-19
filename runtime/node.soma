@@ -947,7 +947,7 @@ Fixpoint digits_end (fuel : nat) (t : string) (i : nat) : nat :=
 (** the run of digits at [i], read by [of_digits], and the offset after it *)
 num_after (of_digits : string -> float) (t : string) (i : nat) : option (float * nat) :=
   let j := digits_end (slen t) t i in
-  if i <? j then Some (of_digits (substr t i (j - i)), j) else None.
+  if (i <? j) && (j - i <=? 18) then Some (of_digits (substr t i (j - i)), j) else None.
 
 Fixpoint last_bar (fuel : nat) (t : string) (j : nat) : option nat :=
   match fuel, j with
@@ -1009,16 +1009,31 @@ digit_float (c : nat) : float :=
 digits_float (s : string) : float :=
   fold_left (fun a c => PrimFloat.add (PrimFloat.mul a 10%float) (digit_float (nat_of_ascii c))) (chars s) 0%float.
 
-(** how long a limit holds: the time it gives and ten seconds, or the backoff *)
-limit_wait (reset : option float) (backoff : float) : float :=
+(** Provider reset text is untrusted. Keep every accepted hold finite,
+    positive and no longer than the existing two-hour backoff maximum. NaN,
+    zero and negative state use the normal fifteen-minute fallback. *)
+limit_bound_wait (wait : float) : float :=
+  if PrimFloat.ltb 0%float wait then
+    if PrimFloat.leb wait 7200%float then wait else 7200%float
+  else 900%float.
+
+limit_requested_wait (reset : option float) (backoff : float) : float :=
   match reset with
   | Some x => if PrimFloat.ltb 0%float x then PrimFloat.add x 10%float else backoff
   | None => backoff
   end.
 
-(** the backoff doubles, to at most two hours *)
+limit_wait (reset : option float) (backoff : float) : float :=
+  limit_bound_wait (limit_requested_wait reset backoff).
+
+limit_wait_adjusted (reset : option float) (backoff : float) : bool :=
+  negb (PrimFloat.eqb (limit_requested_wait reset backoff) (limit_wait reset backoff)).
+
+(** The sanitized backoff doubles, to at most two hours. *)
 limit_next_backoff (backoff : float) : float :=
-  let d := PrimFloat.mul backoff 2%float in if PrimFloat.leb 7200%float d then 7200%float else d.
+  limit_bound_wait (PrimFloat.mul (limit_bound_wait backoff) 2%float).
+
+limit_clamped_note : string := " [wait bounded to two hours; invalid wait ignored]".
 
 limit_reason_of (text : string) : string := take_str 300 text.
 
@@ -1172,9 +1187,11 @@ reply_prog (id kind prompt0 text : string) (ctx : list string) : nprog (list (li
       let backend := hd "" (ans_list limit) in
       let wait := limit_wait (reset_in float_of_digits now body) backoff in
       let reason := limit_reason_of body in
+      let reported := if limit_wait_adjusted (reset_in float_of_digits now body) backoff
+                      then append reason limit_clamped_note else reason in
       nbind (nand (nexec (IoLimitSet (float_wire (PrimFloat.add now wait)) reason
                                      (float_wire (limit_next_backoff backoff)))) (fun _ =>
-             nand (nexec (IoLog (limit_log_text backend (float_text (PrimFloat.div wait 60%float)) reason)))
+             nand (nexec (IoLog (limit_log_text backend (float_text (PrimFloat.div wait 60%float)) reported)))
                   (fun _ => nexec (IoLlmHold id kind prompt0 ctx)))) (fun held =>
       NDone (if held then [] else [["llm_error", id, "the request couldn't be held"]])))))
   | ReplyError why =>
