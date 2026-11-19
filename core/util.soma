@@ -24,6 +24,11 @@ seq (a b : string) : bool := Stdlib.Strings.String.eqb a b.
     functions; the standard library can't, as they count in [nat]. *)
 slen (s : string) : nat := Stdlib.Strings.String.length s.
 
+(** Admission before an allocation: subtraction, after checking [used],
+    avoids overflowing the extracted machine integer in [used + added]. *)
+budget_fits (used added limit : nat) : bool :=
+  (used <=? limit) && (added <=? limit - used).
+
 (** at most [n] characters of [s] from offset [i]; empty past the end *)
 substr (s : string) (i n : nat) : string := Stdlib.Strings.String.substring i n s.
 
@@ -511,8 +516,9 @@ Fixpoint shallow_json_go (fuel : nat) (s : string) (i : nat) (max items opens cl
   | _, _ => true
   end.
 
-(** Decimal limits, as text. Both callers
-    use depth 4; transactions/peer messages use max_int items, replies 4096. *)
+(** Decimal limits, as text. Callers choose the structural budget separately
+    from byte caps: peer envelopes use 65,536 items, reply objects 4,096,
+    and provider envelopes 16,384. *)
 shallow_json (max max_items s : string) : bool :=
   shallow_json_go (slen s) s 0 (num max) (num max_items) 0 0 false false.
 

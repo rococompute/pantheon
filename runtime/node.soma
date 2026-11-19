@@ -37,7 +37,7 @@ peer_forget (c : node_state) (cid : string) : node_state :=
 peer_remember (c : node_state) (cid : string) (kept : list string) : node_state :=
   match kept with
   | [] => peer_forget c cid
-  | _ => with_pbufs c (put cid kept (pbufs c))
+  | _ => with_pbufs c ((cid, kept) :: filter (fun p => negb (seq cid (fst p))) (pbufs c))
   end.
 
 (** Process output belongs to Soma, separately from peer line buffers. *)
@@ -1224,13 +1224,20 @@ grok_reply_of (toks : option (list string)) (text : string) : option string * st
   | None => (None, append "grok: " (take_str 300 text))
   end.
 
+(** Scan the provider envelope before the recursive JSON parser. Content
+    remains a string and may use the complete model-output byte budget;
+    nesting and punctuation cannot expand it into an unbounded token tree. *)
+grok_envelope_tokens (text : string) : option (list string) :=
+  if (slen text <=? num job_output_limit) && shallow_json "8" "16384" text
+  then json_tokens text else None.
+
 (** A model's raw output: grok's is its content first (an error that
     isn't JSON content goes straight to llm_error, never a limit hold, as
     the shell did); every other backend's is the reply itself. *)
 model_reply_prog (id kind prompt0 text : string) (ctx : list string) : nprog (list (list string)) :=
   nbind (nask IoLimitInfo) (fun limit =>
   if seq (hd "" (ans_list limit)) "grok" then
-    match grok_reply_of (json_tokens text) text with
+    match grok_reply_of (grok_envelope_tokens text) text with
     | (Some content, _) => reply_prog id kind prompt0 content ctx
     | (None, why) => NDone [["llm_error", id, why]]
     end
@@ -1809,9 +1816,18 @@ Fixpoint carry_all_prog (snap : consensus_state) (effs : list (list string)) : n
     bindings): dropped when it is this node's own or an
     already-refused transaction -- neither pays for a verify -- and
     otherwise turned into the event it carries once verified. *)
-(** The peer JSON scan has the old depth four and caller-supplied item
-    cap. Invalid structure is refused before any JSON member reads. *)
-peer_line_shape (items raw : string) : bool := shallow_json "4" items raw.
+(** Preserve the maximum block/patch line size, but bound structural tokens
+    independently of bytes. A caller may impose a smaller item cap. The
+    signed envelope has shallow string fields even for a full block. *)
+peer_line_item_limit : string := "65536".
+
+(** Sixty capped transactions, including worst-case JSON quoting, plus
+    room for the signed envelope rather than spending every byte on bodies. *)
+peer_line_cap (tx_cap : string) : nat := num tx_cap * 120 + num "65536".
+
+peer_line_shape (items raw : string) : bool :=
+  (slen raw <=? peer_line_cap tx_byte_cap)
+  && shallow_json "4" (show (min (num items) (num peer_line_item_limit))) raw.
 
 peer_wire_fields (me : string) (refused : string -> bool)
     (parts : option (string * (string * list string))) : list string :=
@@ -1904,7 +1920,7 @@ peer_line_parts (toks : list string) : option (string * (string * list string)) 
 (** What the shell's Yojson member reads gave: the line through the JSON
     token binding, then its members in Soma. *)
 node_line_parts (raw : string) : option (string * (string * list string)) :=
-  match json_tokens raw with
+  match (if peer_line_shape peer_line_item_limit raw then json_tokens raw else None) with
   | Some toks => peer_line_parts toks
   | None => None
   end.
@@ -2027,7 +2043,35 @@ peer_feed (chunks : list string) (chunk limit : string) : peer_feed_result :=
     transactions at the transaction byte cap, each quoted (at most twice
     its bytes). The cap arrives as a decimal string ([tx_byte_cap]); the
     product is an OCaml int by extraction, never a unary literal. *)
-peer_line_cap (tx_cap : string) : nat := num tx_cap * 120.
+(** At most four maximum-sized incoming block lines can be pending in
+    partial buffers at once. One connection keeps its existing line cap;
+    filling many admitted sockets no longer multiplies it by sixty-four. *)
+peer_buffer_byte_limit : string := "134217728".
+peer_read_byte_limit : string := "65536".
+
+peer_other_buffer_bytes (st : node_state) (cid : string) : nat :=
+  fold_left (fun n p => if seq (fst p) cid then n else n + chunks_len (snd p)) (pbufs st) 0.
+
+peer_kept_fits (st : node_state) (cid : string) (chunks : list string) : bool :=
+  budget_fits (peer_other_buffer_bytes st cid) (chunks_len chunks) (num peer_buffer_byte_limit).
+
+(** Progress refreshes a buffer's position. Under aggregate pressure evict
+    the least recently progressed partials, rather than letting first-comers
+    occupy the entire allowance forever and deny every new peer a turn. *)
+Fixpoint peer_make_room (fuel : nat) (st : node_state) (cid : string)
+    (chunks : list string) (limit : nat) : node_state * list string :=
+  if budget_fits (peer_other_buffer_bytes st cid) (chunks_len chunks) limit
+  then (peer_remember st cid chunks, [])
+  else match fuel with
+    | 0 => (peer_forget st cid, [cid])
+    | Succ remaining =>
+        match last_n 1 (filter (fun p => negb (seq (fst p) cid)) (pbufs st)) with
+        | [(victim, _)] =>
+            let (after, closed) := peer_make_room remaining (peer_forget st victim) cid chunks limit in
+            (after, victim :: closed)
+        | _ => (peer_forget st cid, [cid])
+        end
+    end.
 
 (** One peer read, whole: the chunks to keep, the events its complete
     lines become (each a [peer_raw] fact, in order, which [run_event]
@@ -2190,7 +2234,7 @@ ci_done_prog (id tree memory runner t : string) : nprog bool := ci_done_record_p
     says whether it's its own. *)
 peer_raw_prog (raw : string) : nprog (list string) :=
   nbind (nask IoIdentity) (fun me =>
-  let shaped := peer_line_shape (show (Succ (slen raw))) raw in
+  let shaped := peer_line_shape peer_line_item_limit raw in
   let parts := if shaped then node_line_parts raw else None in
   nbind (match parts with
          | Some (_, (_, ["tx", tx])) => nexec (IoSeenRefused tx)
@@ -2240,14 +2284,16 @@ run_event_prog (st : node_state) (ev : list string) : nprog node_state :=
       | None => nbind (nexec (IoLog (append "ignoring malformed " path))) (fun ok => NDone (kept st ok))
       end
   | ["peer_bytes", cid, chunk] =>
+      if num peer_read_byte_limit <? slen chunk then
+        nbind (nexec (IoConnClose cid)) (fun _ => NDone (peer_forget st cid))
+      else
       let (kept_lines, rest) := peer_read_events (peer_buffer st cid) chunk (peer_line_cap tx_byte_cap) in
       let (evs, over) := rest in
-      let st := peer_remember st cid kept_lines in
+      let (st, closed) := if over then (peer_forget st cid, [cid])
+                         else peer_make_room (length (pbufs st) + 1) st cid kept_lines (num peer_buffer_byte_limit) in
       nbind (queue_prog evs) (fun queued =>
-      if queued then
-        if over then nbind (nexec (IoConnClose cid)) (fun ok => NDone (if ok then peer_forget st cid else with_live st (live st)))
-        else NDone st
-      else NDone (with_live st (live st)))
+      nbind (nall (map (fun name => fun _ => nexec (IoConnClose name)) closed)) (fun shut =>
+      NDone (kept st (queued && shut))))
   | ["job_bytes", id, chunk] =>
       let (kept_out, over) := job_feed (job_buffer st id) chunk
                                 (num job_output_limit) (num job_keep_text) in

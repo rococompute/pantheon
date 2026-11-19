@@ -1,0 +1,55 @@
+(** Consensus owns retention; transport admission is not its memory policy. *)
+Import core.util core.consensus.
+Require Soma.Host.
+
+check (label : string) (ok : bool) : string := append (if ok then "ok " else "FAIL ") label.
+c0 : consensus_state := new_consensus "a" ["a", "b", "c", "d"] 1.
+block : list string := ["valid block"].
+id : string := hash_list block.
+fields (kind : string) (v : list string) : list string := [kind, "1", "0", "0", id] ++ v.
+discarded (who : string) (fs : list string) : bool :=
+  let (c, _) := receive c0 who fs in length (log c) =? 0.
+vote (who : string) (r : nat) : msg := {| kd := Precommit; frm := who; mh := 1; mr := r;
+  vr := 0; vid := id; value := [] |}.
+Fixpoint doubling (n : nat) : string := match n with 0 => "x" | Succ k => let s := doubling k in append s s end.
+cost (messages : list msg) : nat := fold_left (fun n m => n + message_cost m) messages 0.
+count (who : string) (messages : list msg) : nat := length (filter (fun m => seq (frm m) who) messages).
+
+main :=
+  let proposed := fst (receive c0 "b" (fields "proposal" block)) in
+  let agreed := fold_left (fun c who => fst (receive c who (fields "precommit" []))) ["a", "b", "c"] proposed in
+  let flood := map (vote "a") (List.seq 0 1100) in
+  let protected := retain_log c0 (flood ++ [vote "b" 0]) in
+  let large := doubling (num (hd "24" (Host.argv tt))) in
+  let bodies := map (fun r => {| kd := Proposal; frm := "a"; mh := 1; mr := r;
+    vr := 0; vid := show r; value := [large] |}) (List.seq 3 12) in
+  let live := {| kd := Proposal; frm := "a"; mh := 1; mr := 0; vr := 0; vid := id; value := block |} in
+  let bounded := retain_log c0 (bodies ++ [live, vote "b" 0]) in
+  let late := {| c0 with round := 1999; lockr := 2; validr := 3 |} in
+  let late_prop := {| live with mr := 1999; vr := 4 |} in
+  let old_votes := map (vote "a") (List.seq 10 1100) in
+  let critical := retain_log late (old_votes ++ [late_prop, vote "a" 1, vote "a" 2, vote "a" 3, vote "a" 1999]) in
+  Host.print_lines [
+    check "prevotes carrying arbitrary values are rejected" (discarded "a" (fields "prevote" ["junk"])),
+    check "precommits carrying arbitrary values are rejected" (discarded "a" (fields "precommit" ["junk"])),
+    check "a proposal from a non-proposer is rejected" (discarded "a" (fields "proposal" block)),
+    check "oversized vote ids cannot occupy the log"
+      (discarded "a" ["prevote", "1", "0", "0", doubling 8]),
+    check "Done messages keep their canonical round zero shape"
+      (discarded "a" (["done", "1", "1", "0", id] ++ block)),
+    check "a valid proposer and honest quorum still decide"
+      (match r_decide agreed (fun v => seq (hash_list v) id) with Some _ => true | None => false end),
+    check "each validator has an independent message reservation"
+      ((count "a" protected =? 1000) && (count "b" protected =? 1)),
+    check "one validator's payloads cannot spend another validator's budget"
+      ((count "b" bounded =? 1) && (cost (filter (fun m => seq (frm m) "a") bounded) <=? num consensus_log_byte_limit)),
+    check "live-round proposal evidence precedes future payload floods"
+      (existsb (fun m => seq (frm m) "a" && (mr m =? 0) && seq (vid m) id) bounded),
+    check "historical vote saturation cannot evict the current proposal"
+      (existsb (fun m => kind_eq (kd m) Proposal && (mr m =? 1999)) critical),
+    check "lock valid and re-proposal certificates survive old vote saturation"
+      (forallb (fun r => existsb (fun m => kind_eq (kd m) Precommit && (mr m =? r)) critical) [1, 2, 3, 1999]),
+    check "empty string fields are charged for structural storage"
+      (message_cost {| kd := Done; frm := "a"; mh := 1; mr := 0; vr := 0; vid := id; value := ["", ""] |}
+       <? message_cost {| kd := Done; frm := "a"; mh := 1; mr := 0; vr := 0; vid := id; value := ["", "", ""] |})
+  ].

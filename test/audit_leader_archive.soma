@@ -1,0 +1,49 @@
+(** Bound the in-memory projection while retaining every real Git record. *)
+Import core.util core.leader core.market runtime.nodeio runtime.node runtime.node_host runtime.node_shell.
+Require Soma.Host.
+
+check (label : string) (ok : bool) : string := append (if ok then "ok " else "FAIL ") label.
+blank : leader_entry := {| le_number := 0; le_parent := ""; le_hash := ""; le_height := 0;
+  le_term := 0; le_author := ""; le_chain := ""; le_fields := [] |}.
+initial : obj := [("leader_entries", ([] : list leader_entry) : Any), ("leader_tip", "" : Any),
+  ("leader_count", 0 : Any), ("chain", "archive-window-test" : Any)].
+
+Fixpoint fixture (n : nat) (m : obj) (all : list leader_entry) : obj * list leader_entry :=
+  match n with
+  | 0 => (m, rev all)
+  | Succ k =>
+      let repo := if n mod 2 =? 0 then "one" else "two" in
+      let next := fst (leader_append m n 1 "a" ["note", repo, "0", "", "", "", "", "manual", show n]) in
+      fixture k next (hd blank (leader_entries next) :: all)
+  end.
+
+world (home : string) : hworld := {| hw_home := home; hw_backend := "scripted"; hw_repos := [];
+  hw_max_calls := "0"; hw_ci := ""; hw_ci_repo := []; hw_ci_memory := "1g"; hw_ci_image := ""; hw_ci_sandbox := "" |}.
+
+main :=
+  let home := hd "." (Host.argv tt) in
+  let (m, all) := fixture 40 initial [] in
+  let governed := setf (new_market ["a"]) "repos" ([("one", "tree")] : list (string * string)) in
+  let reference repo := Stdlib.Strings.String.concat newline
+    (map leader_entry_json (rev (firstn 12 (filter (fun e => seq repo "" || seq (leader_repo e) repo) (rev all))))) in
+  let archive_ok := run_shell (
+    nbind (nall (map (fun e => fun _ => nbind (hjournal (world home) (le_parent e) (le_hash e) (leader_entry_json e))
+      (fun answer => NDone (fst answer))) all)) (fun written =>
+    nbind (nask (IoGit (append home "/leader-chain.git") ["log", "--reverse", "--format=%s", "refs/heads/leader-chain"])) (fun history =>
+    let oldest := hd blank all in
+    nbind (hjournal (world home) (le_parent oldest) (le_hash oldest) (leader_entry_json oldest)) (fun replay =>
+    NDone (written && fst history && fst replay && eq_strs
+      (filter (fun l => negb (seq l "")) (split_lines (ans_one history))) (map leader_entry_json all)))))) in
+  Host.print_lines [
+    check "full append-only count exceeds the prompt window" (leader_count m =? 40),
+    check "the in-memory projection retains only twelve entries per repo" (length (leader_entries m) =? 24),
+    check "the cryptographic head still names the final archived record"
+      (seq (leader_tip m) (le_hash (last all blank))),
+    check "all-repo and per-repo prompt windows match the unbounded reference"
+      (forallb (fun repo => seq (leader_recent m repo) (reference repo)) ["", "one", "two"]),
+    check "arbitrary repository names cannot create more in-memory windows"
+      (let '(unchanged, _, reason) := apply governed "a"
+        ["leader-note", "note", "unconfigured", "0", "", "", "", "", "manual", "no new bucket"] in
+       seq reason "unknown journal repository" && (leader_count unchanged =? 0)),
+    check "every Git record survives window eviction and old-record replay" archive_ok
+  ].

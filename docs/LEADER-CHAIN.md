@@ -10,7 +10,12 @@ append; there is no edit, replacement, or pruning operation.
 This is a separate logical journal, not a second election or voting network.
 The signed transactions in `blocks.log` remain authoritative. Its in-memory
 index is rebuilt by replay, including observations from authors who no longer
-lead. Journal traffic does not reset the leader's inactivity timer.
+lead. The market keeps the full hash-linked head/count and only the newest
+twelve entries per configured repository in memory. This preserves the exact
+global and per-repository prompt windows without retaining the entire archive
+in RAM. `leader-note` admission requires an existing repository, so arbitrary
+repository names cannot create more windows. Journal traffic does not reset
+the leader's inactivity timer.
 
 Each node also projects that history into `HOME/leader-chain.git`, on branch
 `leader-chain`. Every record has a Git commit and a create-only

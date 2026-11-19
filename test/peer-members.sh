@@ -10,5 +10,5 @@ if ! soma run test/peer_members.soma > "$peer_members_dir/out" 2> "$peer_members
 fi
 cat "$peer_members_dir/out"
 if grep -q '^FAIL ' "$peer_members_dir/out"; then exit 1; fi
-[ "$(grep -c '^ok ' "$peer_members_dir/out")" -eq 13 ]
+[ "$(grep -c '^ok ' "$peer_members_dir/out")" -eq 14 ]
 echo 'PASS peer members'

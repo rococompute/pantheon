@@ -85,7 +85,7 @@ checks : list string := [
     (read_is [] (nl "abcdefgh" "ab") 4 ["ab"] [["peer_raw", "abcdefgh"]] false),
   check "buffer_over is strict" (negb (buffer_over 4 4) && buffer_over 5 4),
   check "the line cap is 60 quoted transactions at the byte cap"
-    (peer_line_cap "262144" =? 31457280),
+    (peer_line_cap "262144" =? num "31522816"),
   (* admission *)
   check "fifteen from a host is admitted" (is_new (conn_offer_decision "a" (repeat "a" 15))),
   check "the sixteenth from a host is refused" (is_refuse (conn_offer_decision "a" (repeat "a" 16))),

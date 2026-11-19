@@ -38,5 +38,6 @@ main := Host.print_lines [
   check "fields not a list" "{""from"":""p"",""sig"":""s"",""fields"":""a""}" None,
   check "not an object" "[""from"",""p""]" None,
   check "not JSON" "{bad}" None,
-  check "wide object" (wide 20000) (Some ("p", ("s", ["tx", "r"])))
+  check "wide object within the structural budget" (wide 5000) (Some ("p", ("s", ["tx", "r"]))),
+  check "unrelated members cannot bypass the structural budget" (wide 20000) None
 ].

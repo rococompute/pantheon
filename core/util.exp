@@ -167,3 +167,17 @@ Example edit_helpers_work :
   shell_safe_path "src/a..b" = true /\ shell_safe_path "../escape" = false /\
   shell_safe_path "sub/.GiT/config" = false.
 Proof. repeat split; computed. Qed.
+
+(** Admission establishes the bound before append, including exact capacity. *)
+Theorem budget_fits_bound : forall used added limit,
+  budget_fits used added limit = true -> used + added <= limit.
+Proof.
+  intros used added limit H. unfold budget_fits in H.
+  apply Bool.andb_true_iff in H. destruct H as [Hu Ha].
+  apply Nat.leb_le in Hu. apply Nat.leb_le in Ha. lia.
+Qed.
+
+Example budget_fits_boundaries :
+  budget_fits 7 3 10 = true /\ budget_fits 7 4 10 = false /\
+  budget_fits 11 0 10 = false /\ budget_fits 10 0 10 = true.
+Proof. repeat split; computed. Qed.
