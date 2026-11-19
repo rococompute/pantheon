@@ -39,7 +39,9 @@ pantheon=${CI_PANTHEON:-/nonexistent/pantheon}
 for p in "$soma/_build/install/default/bin/soma" "$opam" "$switch"; do
   [ -e "$p" ] || { echo "ci-sandbox: no $p: build Soma and Pantheon on this host first (scripts/setup-node.sh)"; exit 3; }
 done
-command -v bwrap >/dev/null || { echo "ci-sandbox: no bwrap: install bubblewrap"; exit 3; }
+for tool in bwrap flock setpriv systemd-run; do
+  command -v "$tool" >/dev/null || { echo "ci-sandbox: no $tool: install bubblewrap, util-linux and systemd"; exit 3; }
+done
 # The lock is held on descriptor 9 by this process, which becomes the
 # scope's shell below; bwrap gets no descriptor 9 (9>&-), so a check can't
 # unlock it and run builds beside other nodes' checks (docs/SECURITY-REVIEW-2.md
@@ -51,7 +53,13 @@ if [ -e "$lock" ] && [ ! -w "$lock" ]; then exec 9<"$lock"; else exec 9>>"$lock"
 wait=${CI_LOCK_WAIT:-900}
 case "$wait" in ''|*[!0-9]*) echo "ci-sandbox: CI_LOCK_WAIT is 0 to 900 seconds"; exit 3 ;; esac
 [ "${#wait}" -le 3 ] && [ "$wait" -le 900 ] || { echo "ci-sandbox: CI_LOCK_WAIT exceeds 900 seconds"; exit 3; }
-flock -w "$wait" -E 75 9 || { echo "ci-sandbox: build lock unavailable after ${wait}s"; exit 75; }
+# Waiting is a child process too: cancel it if the runner is killed before
+# the exec into systemd's scope. The parent check closes the setup race when
+# death preceded installation of the kernel parent-death signal.
+setpriv --pdeathsig KILL sh -c '
+  [ "$PPID" = "$1" ] || exit 75
+  exec flock -w "$2" -E 75 9
+' ci-lock "$$" "$wait" || { echo "ci-sandbox: build lock unavailable after ${wait}s"; exit 75; }
 # systemd-run's scope ends when its command does; the command reads its own
 # cgroup's oom_kill count before that, to tell a kill for memory from a failure
 exec systemd-run --user --scope --quiet --collect -p "MemoryMax=$mem" -p MemorySwapMax=0 -p TasksMax=512 -- \

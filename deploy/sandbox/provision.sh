@@ -70,6 +70,8 @@ install -m 755 "$here/apply-firewall" /usr/local/sbin/pantheon-firewall-apply
 # Preserve supported remote Git/native API IO by default. Untrusted-node
 # deployments select restricted mode with explicit operator-owned destinations.
 [ -f /etc/pantheon/node-egress.json ] || printf '{"mode":"public","allow":[]}\n' > /etc/pantheon/node-egress.json
+chown root:root /etc/pantheon/node-egress.json /etc/pantheon/ci-memory
+chmod 644 /etc/pantheon/node-egress.json /etc/pantheon/ci-memory
 cat > /etc/systemd/system/pantheon-firewall.service <<'U'
 [Unit]
 Description=Pantheon sandbox firewall

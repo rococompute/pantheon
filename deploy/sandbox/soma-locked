@@ -6,7 +6,7 @@
 case "${1:-}" in
   build|run)
     lock=/var/lib/pantheon-build/lock
-    [ -r "$lock" ] && command -v flock >/dev/null || {
+    [ -r "$lock" ] && command -v flock >/dev/null && command -v setpriv >/dev/null || {
       echo "soma: build lock unavailable; provision this machine before building" >&2; exit 3;
     }
     wait=$(cat /etc/pantheon/ci-lock-wait 2>/dev/null || echo 900)
@@ -16,7 +16,10 @@ case "${1:-}" in
     exec 9<"$lock"
     flock -n 9 || {
       echo "soma: waiting at most ${wait}s for the other build on this machine (CI)" >&2
-      flock -w "$wait" -E 75 9 || { echo "soma: build lock wait expired" >&2; exit 75; }
+      setpriv --pdeathsig KILL sh -c '
+        [ "$PPID" = "$1" ] || exit 75
+        exec flock -w "$2" -E 75 9
+      ' soma-lock "$$" "$wait" || { echo "soma: build lock wait expired" >&2; exit 75; }
     } ;;
 esac
 # the real soma by its path: it finds its library from where it was run. A
