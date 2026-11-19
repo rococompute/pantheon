@@ -1,0 +1,9 @@
+(** These are ordinary values, not calls to the same-named primitives. *)
+Definition ordinary_error := 1.
+Definition cast_parameter (cast : nat) := cast.
+Definition unknown_parameters (unknown err unk : nat) := unknown + err + unk.
+Definition implicit_parameter {cast : nat} (x : nat) := cast + x.
+Definition dependent_parameter (cast : nat) (x : cast = cast) := x.
+Definition dependent_result (cast : nat) : cast = cast := eq_refl.
+Definition uppercase_parameter (CAST : nat) := CAST.
+Definition tactic_named_parameter (admit : nat) := 1.

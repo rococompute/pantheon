@@ -48,7 +48,7 @@ def assumptions(text):
                 i += 1
             tokens.append(text[start:i])
         else:
-            m = re.match(r"[\w']+|[^\s]", text[i:])
+            m = re.match(r"[\w']+(?:\.[\w']+)*|[^\s]", text[i:])
             if m:
                 tokens.append(m[0])
                 i += len(m[0])
@@ -60,8 +60,10 @@ def assumptions(text):
     declarations = {'admitted', 'axiom', 'axioms', 'conjecture', 'conjectures',
                     'parameter', 'parameters', 'hypothesis', 'hypotheses',
                     'variable', 'variables', 'context'}
-    escapes = {'unk', 'unknown', 'err', 'cast', 'admit', 'exact_no_check',
-               'vm_cast_no_check', 'native_cast_no_check', 'give_up'}
+    term_escapes = {'unk', 'unknown', 'err', 'cast'}
+    tactic_escapes = {'admit', 'exact_no_check', 'vm_cast_no_check',
+                      'native_cast_no_check', 'give_up'}
+    escapes = term_escapes | tactic_escapes
     named = {'definition', 'abbreviation', 'example', 'lemma', 'theorem',
              'fact', 'remark', 'corollary', 'proposition', 'fixpoint',
              'cofixpoint', 'inductive', 'coinductive', 'record', 'class',
@@ -102,8 +104,58 @@ def assumptions(text):
             binding = start + 1
         elif statement[start + 1:start + 2] == [':']:
             binding = start
-        return any(i != binding and token.lower() in escapes
-                   for i, token in enumerate(statement))
+        # Recognize only explicit, typed declaration parameter groups. A
+        # parameter enters scope after its own complete type, not in that type
+        # or in an earlier group. Scope ends with this statement. In particular
+        # a local fun/let binder does not establish a file-wide safe name.
+        # Unsupported binder syntax stays conservatively guarded; this is not
+        # a Rocq term parser or a semantic no-new-axioms check.
+        parameter_names = set()
+        enters_scope = {}
+        j = binding + 1 if binding is not None else len(statement)
+        # Mutual declarations/where-notations have several distinct scopes.
+        # Do not infer any parameter scope for those commands.
+        parameter_commands = {'definition', 'abbreviation', 'example', 'lemma',
+                              'theorem', 'fact', 'remark', 'corollary', 'proposition'}
+        if (statement[start].lower() in parameter_commands and binding != start
+                and not any(token.lower() in {'with', 'where'} for token in statement)):
+            closing = {'(': ')', '{': '}', '[': ']'}
+            while j < len(statement) and statement[j] in {'(', '{'}:
+                begin = j
+                stack = [closing[statement[j]]]
+                j += 1
+                while j < len(statement) and stack:
+                    if statement[j] in closing:
+                        stack.append(closing[statement[j]])
+                    elif statement[j] in {')', '}', ']'}:
+                        if statement[j] != stack.pop():
+                            break
+                    j += 1
+                if stack or j > len(statement) or statement[j - 1] != closing[statement[begin]]:
+                    break
+                end = j - 1
+                colon = begin + 1
+                while colon < end and re.fullmatch(r"[^\W\d][\w']*", statement[colon]):
+                    colon += 1
+                if (colon == begin + 1 or statement[colon:colon + 1] != [':']
+                        or colon + 1 >= end or statement[colon + 1] == '='):
+                    break
+                parameter_names.update(range(begin + 1, colon))
+                enters_scope[j] = set(statement[begin + 1:colon])
+
+        bound = set()
+        for i, token in enumerate(statement):
+            bound.update(enters_scope.get(i, ()))
+            if i == binding or i in parameter_names:
+                continue
+            parts = token.split('.')
+            if not any(part.lower() in escapes for part in parts):
+                continue
+            # Qualified names can name the real primitive despite an identically
+            # named local variable. Tactic keywords are not term binders either.
+            if len(parts) > 1 or token.lower() in tactic_escapes or token not in bound:
+                return True
+        return False
 
     # Preserve each existing escape's complete statement, not just its count:
     # removing one assumption must not buy permission to introduce another.
