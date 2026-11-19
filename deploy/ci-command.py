@@ -89,21 +89,48 @@ def assumptions(text):
                 break
         return j
 
+    def is_short_definition(statement, start):
+        # Soma's usual `f (x : T) : U := body` has no leading Definition.
+        # Require an actual top-level assignment: `unk : nat` is an ordinary
+        # expression using a primitive, not a declaration named unk. Nested
+        # binder/default/let assignments cannot establish a top-level name.
+        if (not re.fullmatch(r"[^\W\d][\w']*", statement[start])
+                or statement[start + 1:start + 2] not in [[':'], ['('], ['{']]):
+            return False
+        closing = {'(': ')', '{': '}', '[': ']'}
+        stack = []
+        lets = 0
+        for j in range(start + 1, len(statement)):
+            token = statement[j]
+            if token in closing:
+                stack.append(closing[token])
+            elif token in {')', '}', ']'}:
+                if not stack or stack.pop() != token:
+                    return False
+            elif not stack:
+                if token == 'let':
+                    lets += 1
+                elif token == 'in' and lets:
+                    lets -= 1
+                elif not lets and statement[j:j + 2] == [':', '=']:
+                    return True
+        return False
+
     def is_escape(statement):
         start = command_start(statement)
         if start >= len(statement):
             return False
-        short_definition = statement[start + 1:start + 2] == [':']
+        short_definition = is_short_definition(statement, start)
         if not short_definition and statement[start].lower() in declarations:
             return True
         # Do not confuse a declared identifier with a use of the primitive.
         # For ordinary definitions both the Rocq spelling and Soma's short
         # `name := ...` / `name : type := ...` spelling name one identifier.
         binding = None
-        if statement[start].lower() in named:
-            binding = start + 1
-        elif statement[start + 1:start + 2] == [':']:
+        if short_definition:
             binding = start
+        elif statement[start].lower() in named:
+            binding = start + 1
         # Recognize only explicit, typed declaration parameter groups. A
         # parameter enters scope after its own complete type, not in that type
         # or in an earlier group. Scope ends with this statement. In particular
@@ -117,7 +144,7 @@ def assumptions(text):
         # Do not infer any parameter scope for those commands.
         parameter_commands = {'definition', 'abbreviation', 'example', 'lemma',
                               'theorem', 'fact', 'remark', 'corollary', 'proposition'}
-        if (statement[start].lower() in parameter_commands and binding != start
+        if ((short_definition or statement[start].lower() in parameter_commands)
                 and not any(token.lower() in {'with', 'where'} for token in statement)):
             closing = {'(': ')', '{': '}', '[': ']'}
             while j < len(statement) and statement[j] in {'(', '{'}:

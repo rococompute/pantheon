@@ -8,9 +8,12 @@ The trusted compiler and the normal CI checks still run after this guard.
 
 The guard distinguishes declaration names and explicit typed declaration
 parameters from uses. For example, `Definition error := 1.` and
-`Definition f (cast : nat) := cast.` are ordinary definitions. A parameter is
+`Definition f (cast : nat) := cast.` and Soma's normal short spelling
+`f (cast : nat) := cast.` are ordinary definitions. A parameter is
 visible after its type, in later parameter types and in the declaration body.
-Its scope stops at the end of that declaration statement; it never becomes a
+The short spelling must have a top-level `:=` assignment; `unk : nat` is a
+primitive expression, and `let` assignments inside a result type do not establish
+a declaration by themselves. Its scope stops at the end of that declaration statement; it never becomes a
 file-wide exemption. `Definition f (cast : cast nat Type 1) := cast.` is still
 rejected because the parameter is not in scope in its own type.
 
@@ -53,6 +56,8 @@ An enforcing design needs these compiler/tooling contracts first:
 1. A versioned compiler manifest with documented coverage for **all** declarations,
    including unused axioms, all imported modules and checked `.exp` declarations.
    Source/extension/dependency digests must identify exactly the checked input.
+   Discarded bare expressions also need explicit accounting: current `soma hash`
+   reports declarations, so it does not report a bare `unk : nat` expression.
 2. Canonical assumption identities including qualified name and contract hash.
    A same-name changed axiom must not inherit trust from an old baseline. Existing
    approved assumptions form an explicit operator-controlled allowance; changing

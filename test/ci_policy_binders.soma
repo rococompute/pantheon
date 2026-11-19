@@ -7,3 +7,13 @@ Definition dependent_parameter (cast : nat) (x : cast = cast) := x.
 Definition dependent_result (cast : nat) : cast = cast := eq_refl.
 Definition uppercase_parameter (CAST : nat) := CAST.
 Definition tactic_named_parameter (admit : nat) := 1.
+
+short_cast_parameter (cast : nat) := cast.
+short_unknown_parameters (unknown err unk : nat) := unknown + err + unk.
+short_implicit_parameter {cast : nat} (x : nat) := cast + x.
+short_dependent_parameter (cast : nat) (x : cast = cast) := x.
+short_dependent_result (cast : nat) : cast = cast := eq_refl.
+short_uppercase_parameter (CAST : nat) := CAST.
+short_tactic_named_parameter (admit : nat) := 1.
+short_let_result (cast : nat) : let t := nat in t := cast.
+short_nested_let_result (cast : nat) : let t := let u := nat in u in t := cast.

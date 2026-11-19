@@ -23,6 +23,16 @@ POSITIVE = [
     'Definition f (CAST : nat) := CAST.',
     'Definition f (admit : nat) := 1.',
     'Lemma f (cast : nat) : cast = cast. Proof. reflexivity. Qed.',
+    'f (cast : nat) := cast.',
+    'f (unknown err unk : nat) := unknown + err + unk.',
+    'f {cast : nat} (x : nat) := cast + x.',
+    'f (cast : nat) (x : cast = cast) := x.',
+    'f (cast : nat) : cast = cast := eq_refl.',
+    'f (CAST : nat) := CAST.',
+    'f (admit : nat) := 1.',
+    'cast (x : nat) := x.',
+    'f (cast : nat) : let t := nat in t := cast.',
+    'f (cast : nat) : let t := let u := nat in u in t := cast.',
 ]
 NEGATIVE = [
     'Definition f (cast : nat) := Corelib.Gradual.Gradual.cast nat nat cast.',
@@ -48,6 +58,22 @@ NEGATIVE = [
     'Fixpoint f (cast : nat) := cast with g (x : nat) := cast nat nat x.',
     'Inductive f (cast : nat) := mk_f : f cast with g := mk_g : cast nat Type 1.',
     'Definition f (cast : nat) := cast where "foo" := (cast nat nat 1).',
+    'f (cast : nat) := Corelib.Gradual.Gradual.cast nat nat cast.',
+    'f (cast : nat) := cast. g := cast nat nat 1.',
+    'f (cast : cast nat Type 1) := cast.',
+    'f (x : cast nat Type 1) (cast : nat) := cast.',
+    'f (cast : nat) := cast. g := unk.',
+    'f (cast : nat) := cast. g := err nat.',
+    'f (cast : nat) := cast. g := unknown nat.',
+    'f (admit : nat) : False := ltac:(admit).',
+    'f (cast : nat) := cast where "foo" := (cast nat nat 1).',
+    'f (cast : nat] := cast nat nat 1.',
+    'f := ((fun cast : nat => cast) 1, cast nat nat 1).',
+    'f := let cast := cast nat nat 1 in cast.',
+    'cast (x : nat) := cast nat nat x.',
+    'unk : nat.',
+    'unk : (let t := nat in t).',
+    'unk : let t := nat in t.',
 ]
 
 
@@ -76,6 +102,13 @@ class ScopedPolicy(unittest.TestCase):
             ('Fixpoint f (cast : nat) : nat := cast with g (x : nat) : nat := cast nat nat x.',
              'Corelib.Gradual.Gradual.cast'),
             ('Conjecture hole : False.', 'fixture.hole'),
+            ('f (cast : nat) := Corelib.Gradual.Gradual.cast nat nat cast.',
+             'Corelib.Gradual.Gradual.cast'),
+            ('f (cast : nat) := cast. g := cast nat nat 1.',
+             'Corelib.Gradual.Gradual.cast'),
+            ('f := let cast := cast nat nat 1 in cast.',
+             'Corelib.Gradual.Gradual.cast'),
+            ('cast (x : nat) := cast nat nat x.', 'Corelib.Gradual.Gradual.cast'),
         ]
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / 'fixture.soma'
@@ -90,6 +123,22 @@ class ScopedPolicy(unittest.TestCase):
                                    for name in line.split('\t')[4:]}
                     self.assertIn(expected, assumptions)
                     self.assertTrue(POLICY.assumptions(source))
+
+    @unittest.skipUnless(os.environ.get('SOMA'), 'set SOMA for real compiler evidence')
+    def test_bare_type_ascription_is_not_a_declaration(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'fixture.soma'
+            path.write_text('unk : nat.\n')
+            checked = subprocess.run([os.environ['SOMA'], 'check', str(path)],
+                                     capture_output=True, text=True)
+            self.assertEqual(checked.returncode, 0, checked.stdout + checked.stderr)
+            self.assertTrue(POLICY.assumptions(path.read_text()))
+            # Hash reports declarations, not discarded bare expressions. A named
+            # witness confirms the actual unknown primitive behind this syntax.
+            path.write_text('Definition witness := (unk : nat).\n')
+            hashed = subprocess.check_output([os.environ['SOMA'], 'hash', str(path)],
+                                             text=True, env=dict(os.environ, SOMA_HASH_FIELDS='1'))
+            self.assertIn('Corelib.Gradual.Gradual.unknown', hashed)
 
     def test_real_generated_commands(self):
         with tempfile.TemporaryDirectory() as tmp:
