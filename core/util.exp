@@ -117,6 +117,17 @@ Example text_checks : plain_text "a b" = true /\ clean_text "ab" = "ab" /\ lower
   /\ shell_safe_path "src/a..b" = true /\ shell_safe_path "a/../b" = false /\ safe_path "a/.GIT/x" = false.
 Proof. repeat split; computed. Qed.
 
+(** every ASCII case spelling of a .git component is unsafe at any depth,
+    while a name that merely contains ".git" stays an ordinary path *)
+Example safe_path_git_component_case :
+  safe_path ".git" = false /\ safe_path ".Git" = false /\ safe_path ".gIt" = false /\ safe_path ".giT" = false
+  /\ safe_path ".GIt" = false /\ safe_path ".GiT" = false /\ safe_path ".gIT" = false /\ safe_path ".GIT" = false
+  /\ safe_path "a/.gIt/b" = false /\ safe_path "a/b/.GIT/c" = false /\ safe_path "a/.Git/b/.gIT/c" = false
+  /\ safe_path ".gitignore" = true /\ safe_path "a/.GitHub/x" = true /\ safe_path "a.git/x" = true
+  /\ safe_path "a/.gitx/y" = true /\ safe_path "a/.git.git/b" = true
+  /\ safe_path "a/.gitattributes" = false /\ safe_path "a/.GitModules" = false.
+Proof. repeat split; computed. Qed.
+
 (** a failed check's output on chain: secrets out, errors and paths as they were (P-12) *)
 Example redact_hides_secrets :
   redact "File ""core/agent.soma"", line 512: Error: not found" = "File ""core/agent.soma"", line 512: Error: not found"
