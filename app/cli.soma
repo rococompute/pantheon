@@ -323,12 +323,21 @@ key_odd (h : string) : bool :=
 public_key_valid (j : json) : bool :=
   match json_member "size" j, json_string (json_member "n" j), json_string (json_member "e" j) with
   | JNum size, Some n, Some e =>
-      match num_opt size, Crypto.bytes_of_hex n, Crypto.bytes_of_hex e with
-      | Some bits, Some modulus, Some exponent =>
-          (0 <? bits) && (bits =? 8 * length modulus) &&
-          key_odd (key_hex_identity n) && negb (seq (key_hex_identity n) "1") &&
-          key_odd (key_hex_identity e) && negb (seq (key_hex_identity e) "1")
-      | _, _, _ => false
+      (* Bound raw text before decoding, including ignored whitespace. The
+         generated key is 2048 bits with a three-byte exponent. Support up
+         to 4096 bits and an eight-byte exponent without unbounded RSA work. *)
+      if (4096 <? slen n) || (64 <? slen e) then false else
+      match num_opt size with
+      | Some bits =>
+          if (bits =? 0) || (4096 <? bits) then false else
+          match Crypto.bytes_of_hex n, Crypto.bytes_of_hex e with
+          | Some modulus, Some exponent =>
+              (bits =? 8 * length modulus) && (length exponent <=? 8) &&
+              key_odd (key_hex_identity n) && negb (seq (key_hex_identity n) "1") &&
+              key_odd (key_hex_identity e) && negb (seq (key_hex_identity e) "1")
+          | _, _ => false
+          end
+      | None => false
       end
   | _, _, _ => false
   end.
@@ -352,7 +361,7 @@ Fixpoint check_keys (pdir : string) (l : list (string * json)) (seen : list (str
   | (f, j) :: r =>
       cli_str (json_member "name" j) (part_refused pdir f "name is a string") (fun n =>
       if negb (public_key_valid (json_member "pubkey" j)) then
-        cli_fail (part_refused pdir f "pubkey needs a positive byte-aligned size matching its hex modulus, and an odd modulus and exponent greater than one") else
+        cli_fail (part_refused pdir f "pubkey needs a byte-aligned size up to 4096 bits matching its hex modulus, and an odd modulus and exponent greater than one (at most 8 exponent bytes; bounded hex text)") else
       let key := key_text (json_member "pubkey" j) in
       match lookup key seen with
       | Some other => cli_fail (cat ["duplicate public key in genesis parts in ", pdir, ": ", other, " and ", n,
@@ -409,7 +418,7 @@ genesis_network_error (j : json) : option string :=
     | JObj kv =>
         match List.find (fun p => match snd p with
               | JStr v => negb (genesis_param_valid (fst p) v) | _ => true end) kv with
-        | Some (name, _) => Some (cat ["parameter ", name, " must be a string; known numeric parameters require 1 to 18 decimal digits (block_ms is positive)"])
+        | Some (name, _) => Some (cat ["parameter ", name, " must be a string; known numeric parameters are decimal integers at most 1000000000 (block_ms is positive)"])
         | None => None
         end
     | _ => Some "params is an object of string values"
@@ -417,8 +426,8 @@ genesis_network_error (j : json) : option string :=
   match json_member "block_ms" j with
   | JNull => params_error
   | JNum ms => if genesis_param_valid "block_ms" ms then params_error
-               else Some "block_ms is a positive decimal integer of at most 18 digits"
-  | _ => Some "block_ms is a positive decimal integer of at most 18 digits"
+               else Some "block_ms is a positive decimal integer at most 1000000000"
+  | _ => Some "block_ms is a positive decimal integer at most 1000000000"
   end.
 
 (** genesis.json, from NETWORK/network.json and NETWORK/parts/*.json: every
@@ -540,7 +549,7 @@ Fixpoint init_parse (args : list string) (a : init_args) : init_args + string :=
       end
   | "--block-ms" :: p :: r =>
       match number_arg "--block-ms" p with
-      | inl n => if n =? 0 then inr "--block-ms must be positive" else
+      | inl n => if negb (genesis_param_valid "block_ms" p) then inr "--block-ms must be positive and at most 1000000000" else
           init_parse r {| ia_dir := ia_dir a; ia_repos := ia_repos a; ia_port := ia_port a;
                           ia_params := ia_params a; ia_block_ms := n; ia_allow_closed := ia_allow_closed a |}
       | inr e => inr e
@@ -548,7 +557,7 @@ Fixpoint init_parse (args : list string) (a : init_args) : init_args + string :=
   | "--param" :: kv :: r =>
       match kv_arg "--param" kv with
       | inl p => if negb (genesis_param_valid (fst p) (snd p)) then
-          inr (cat ["--param ", fst p, " wants 1 to 18 decimal digits (block_ms is positive), got ", snd p]) else
+          inr (cat ["--param ", fst p, " wants a decimal integer at most 1000000000 (block_ms is positive), got ", snd p]) else
           init_parse r {| ia_dir := ia_dir a; ia_repos := ia_repos a; ia_port := ia_port a;
                           ia_params := ia_params a ++ [p]; ia_block_ms := ia_block_ms a; ia_allow_closed := ia_allow_closed a |}
       | inr e => inr e

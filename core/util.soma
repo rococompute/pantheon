@@ -141,13 +141,18 @@ num_opt (s : string) : option nat :=
 
 (** Known genesis quantities are decimal naturals. Unknown parameters may
     carry string metadata, so do not reinterpret or reject their contents.
-    block_ms must advance time; zero keeps its existing meaning elsewhere. *)
+    block_ms must advance time; zero keeps its existing meaning elsewhere.
+    A billion bounds downstream products (including 5 * max_files and
+    3 + 7 * max_block_txs) safely below the extracted 63-bit integer limit. *)
 genesis_param_valid (k v : string) : bool :=
   if mem k ["block_ms", "term_blocks", "max_merges", "stall_blocks", "attest_window",
             "fallback_blocks", "max_open_tasks", "max_pending_bids", "bid_cooldown",
             "merge_approvals", "reveal_window", "max_files", "keep_settled", "max_block_txs",
             "task_rejects", "task_blocks", "bid_blocks", "finish"] then
-    match num_opt v with Some n => if seq k "block_ms" then 0 <? n else true | None => false end
+    match num_opt v with
+    | Some n => (n <=? 1000 * 1000 * 1000) && (if seq k "block_ms" then 0 <? n else true)
+    | None => false
+    end
   else true.
 
 show (n : nat) : string := to_string n.

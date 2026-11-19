@@ -162,11 +162,11 @@ Proof. repeat split; computed. Qed.
 
 Example genesis_network_rejects_malformed_known_numbers :
   genesis_network_error (JObj [("block_ms", JNum "-1")]) =
-    Some "block_ms is a positive decimal integer of at most 18 digits" /\
+    Some "block_ms is a positive decimal integer at most 1000000000" /\
   genesis_network_error (JObj [("block_ms", JStr "200")]) =
-    Some "block_ms is a positive decimal integer of at most 18 digits" /\
+    Some "block_ms is a positive decimal integer at most 1000000000" /\
   genesis_network_error (JObj [("params", JObj [("merge_approvals", JNum "1")])]) =
-    Some "parameter merge_approvals must be a string; known numeric parameters require 1 to 18 decimal digits (block_ms is positive)" /\
+    Some "parameter merge_approvals must be a string; known numeric parameters are decimal integers at most 1000000000 (block_ms is positive)" /\
   genesis_network_error (JObj [("params", JObj [("label", JStr "two words"), ("finish", JStr "1")])]) = None /\
   node_flags ["--bid-window", "one"] [] [] [] [] = inr "--bid-window wants a number, got one".
 Proof. repeat split; computed. Qed.
