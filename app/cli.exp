@@ -68,10 +68,22 @@ Example json_reads_tokens :
     = Some (JObj [("a", JNum "1"), ("b", JList [JStr "x", JNull])], []).
 Proof. computed. Qed.
 
-Example key_text_sorts_members :
-  key_text (JObj [("size", JNum "2048"), ("n", JStr "ab"), ("e", JStr "01")])
-    = "{""e"":""01"",""n"":""ab"",""size"":2048}".
-Proof. computed. Qed.
+Example key_text_uses_decoded_identity :
+  key_text (JObj [("size", JNum "8"), ("n", JStr "ab"), ("e", JStr "03")])
+    = "[""ab"",""3""]" /\
+  key_text (JObj [("n", JStr "00 AB"), ("e", JStr "0003"), ("size", JNum "16"), ("extra", JBool "true")])
+    = "[""ab"",""3""]".
+Proof. split; computed. Qed.
+
+Example public_key_width_and_fields_are_checked :
+  public_key_valid (JObj [("size", JNum "8"), ("n", JStr "ab"), ("e", JStr "03")]) = true /\
+  public_key_valid (JObj [("size", JNum "16"), ("n", JStr "ab"), ("e", JStr "03")]) = false /\
+  public_key_valid (JObj [("size", JNum "8"), ("n", JStr "ac"), ("e", JStr "03")]) = false /\
+  public_key_valid (JObj [("size", JNum "8"), ("n", JStr "ab"), ("e", JStr "01")]) = false /\
+  public_key_valid (JObj [("size", JNum "8"), ("n", JStr "no"), ("e", JStr "03")]) = false /\
+  public_key_same (JObj [("size", JNum "8"), ("n", JStr "ab"), ("e", JStr "03")])
+                  (JObj [("size", JNum "8"), ("n", JStr "AB"), ("e", JStr "05")]) = false.
+Proof. repeat split; computed. Qed.
 
 Example stamp_as_seconds_and_microseconds :
   stamp_text "1794540934705916" = "1794540934.705916".
