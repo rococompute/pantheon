@@ -177,3 +177,11 @@ Example genesis_numeric_cap_preserves_zero_padding :
   genesis_param_valid "block_ms" "0000000000" = false /\
   genesis_param_valid "merge_approvals" "0000000000" = true.
 Proof. repeat split; computed. Qed.
+
+(** Home is runtime configuration, never source syntax inside a comment.
+    Its actual value is already quoted in node_config by soma_strings. *)
+Example image_home_cannot_close_or_nest_the_comment :
+  image_text "home*) Definition injected := 7. (*" "service" [] =
+  image_text "ordinary" "service" [] /\
+  image_text "home(*" "service" [] = image_text "ordinary" "service" [].
+Proof. split; reflexivity. Qed.
