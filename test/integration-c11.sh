@@ -195,13 +195,13 @@ import sys
 page = open(sys.argv[1]).read()
 goal, rest = page.split("<h2>Contributions</h2>", 1)
 steps, fold = goal.split("<details>", 1)
-assert '<ul class="goals">' in steps and "<li>✅ Add a <code>sub</code> command.</li>" in steps and "<li>⏳ Add a <code>mul</code> command.</li>" in steps
+assert '<ul class="goals">' in steps and "<li>🌳 Add a <code>sub</code> command.</li>" in steps and "<li>🌱 Add a <code>mul</code> command.</li>" in steps
 assert "Keep existing behavior." in fold and "Add a" not in fold
 assert "<p>🟡 not a goal step</p>" in rest, "only the goal's fold is lifted"
 PYG
 printf '## Market\n\nTwo steps:\n\n<details>\n<summary>Details</summary>\n\n🟡 Add a `sub` command.\n\n</details>\n' > "$t/goal.md"
 python3 "$here/integrations/c11/plan-html.py" "$t/goal.md" "$t/goal.html"
-grep -q '<li>🟡 Add a <code>sub</code> command.</li>' "$t/goal.html" && ! grep -q '^<details>$' "$t/goal.html" || fail "a fold left empty goes"
+grep -q '<li>🫘 Add a <code>sub</code> command.</li>' "$t/goal.html" && ! grep -q '^<details>$' "$t/goal.html" || fail "a fold left empty goes"
 
 # Malformed/untrusted input remains readable and cannot alias formatter tokens.
 python3 - "$here/integrations/c11/plan-html.py" <<'PYHTML' || fail "untrusted plan input"
@@ -215,12 +215,16 @@ assert m.inline("**build `calc.sh`**") == "<strong>build <code>calc.sh</code></s
 assert "<details>" in m.body("<details>\n<summary>Details</summary>\nunfinished")
 assert "<img" not in m.body('<img src=x onerror="bad()">')
 assert "🌱" in m.body("## Goals\n\n<details>\n<summary>🌱 working</summary>\n\ntext\n</details>")
+for icon in ("🌳", "🪴", "🌱", "🫘"):
+    page = m.body("## Market\n\n<details>\n<summary>Details</summary>\n\n" + icon + " Keep `calc.sh`.\n\n</details>")
+    assert '<ul class="goals">' in page and '<li>' + icon + ' Keep <code>calc.sh</code>.</li>' in page
+assert "<p>✅ operator text</p>" in m.body("## Market\n\n✅ operator text")
 PYHTML
 
 # the watchdog's pass rewrites the page and reloads its panel when the plan changed
 : > "$t/ledger"
 ( here=$here ST=$d C11_BIN=$t/bin/c11; workspace() { cat "$ST/workspace"; }; die() { :; }; first_uuid() { :; }; . "$here/integrations/c11/mux.sh"; mux_plan_changed )
-grep -q "^browser --workspace $(cat "$d/workspace") --panel $(cat "$d/plan-surface") reload" "$t/ledger" || fail "the page reloaded: $(cat "$t/ledger")"
+grep -q "^browser --panel $(cat "$d/plan-surface") reload" "$t/ledger" || fail "the page reloaded: $(cat "$t/ledger")"
 
 # No own-socket hint: discovery must not inherit either cmux socket alias.
 ( here=$here; die() { exit 1; }; . "$here/integrations/c11/mux.sh"

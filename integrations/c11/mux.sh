@@ -81,7 +81,9 @@ mux_markdown() {
 mux_plan_changed() {
   plan_html "$ST/plan.md" || return 0
   ps_=$(cat "$ST/plan-surface" 2>/dev/null) || return 0
-  [ -z "$ps_" ] || c1 browser --workspace "$(workspace)" --panel "$ps_" reload >/dev/null 2>&1 || true
+  # Browser commands target the globally unique panel UUID; unlike terminal
+  # commands, the browser CLI does not accept --workspace for reload.
+  [ -z "$ps_" ] || c1 browser --panel "$ps_" reload >/dev/null 2>&1 || true
 }
 mux_rename_ws() { c1 rename-workspace --workspace "$1" "$2" >/dev/null 2>&1; }
 mux_notify() { c1 notify --title "$3" --body "$4" --workspace "$1" ${2:+--panel "$2"} >/dev/null 2>&1 || true; }

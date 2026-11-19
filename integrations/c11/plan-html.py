@@ -43,13 +43,17 @@ def inline(s, summary=False):
 
 
 
-GOAL_ICON = re.compile(r"(✅|⏳|🟡) ")
+# Market goal checklists still arrive with legacy icons from the shared
+# Markdown renderer. Display cmux's Goals palette without changing statuses
+# or rewriting icons elsewhere in the operator's text.
+LEGACY_GOAL_ICONS = {"✅": "🌳", "⏳": "🌱", "🟡": "🫘"}
+GOAL_ICON = re.compile(r"(🌳|🪴|🌱|🫘|✅|⏳|🟡) ")
 
 
 def lift_goals(lines):
     """The goal's checklist, out of its fold: pantheon-cmux folds everything
     after the goal's opening paragraph under Details, its steps (each led by
-    its status, ✅ ⏳ 🟡) among the rules. The steps go above the fold, always
+    its status icon) among the rules. The steps go above the fold, always
     in view, as a list; the rest stays folded, and an empty fold goes."""
     headings = 0
     for i, line in enumerate(lines):
@@ -90,6 +94,7 @@ def body(md):
         if line == "</goals>":
             out.append("</ul>"); in_goals = False; continue
         if in_goals:
+            line = GOAL_ICON.sub(lambda m: LEGACY_GOAL_ICONS.get(m[1], m[1]) + " ", line, count=1)
             out.append("<li>" + inline(line) + "</li>"); continue
         summary = re.fullmatch(r"<summary>(.*)</summary>", line)
         heading = re.match(r"(#{2,3}) (.*)", line)
