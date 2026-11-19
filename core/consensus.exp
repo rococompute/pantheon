@@ -1045,3 +1045,42 @@ Proof.
   destruct (precommitter_has_precommit _ _ _ _ Hx2) as (m2 & Hm2 & Hf2 & Hk2 & Hh2 & Hr2 & Hv2).
   exists x, m1, m2. repeat split; try assumption; congruence.
 Qed.
+
+Fixpoint retained_log_cost (messages : list msg) : nat :=
+  match messages with [] => 0 | m :: rest => message_cost m + retained_log_cost rest end.
+
+Theorem log_within_budget_bounds : forall messages slots bytes,
+  length (log_within_budget slots bytes messages) <= slots /\
+  retained_log_cost (log_within_budget slots bytes messages) <= bytes.
+Proof.
+  induction messages as [|m rest IH].
+  - intros slots bytes. destruct slots; simpl; split; lia.
+  - intros [|slots] bytes.
+    + simpl. split; lia.
+    + cbn [log_within_budget].
+      destruct (message_cost m <=? bytes) eqn:E.
+      * apply Nat.leb_le in E. destruct (IH slots (bytes - message_cost m)) as [Hn Hb].
+        cbn [length retained_log_cost]. split; lia.
+      * exact (IH (S slots) bytes).
+Qed.
+
+Lemma retained_log_cost_app : forall a b,
+  retained_log_cost (a ++ b) = retained_log_cost a + retained_log_cost b.
+Proof. induction a; intros b; simpl; [reflexivity|]. rewrite IHa. lia. Qed.
+
+Theorem per_validator_log_is_bounded : forall authors messages bytes,
+  length (flat_map (fun who => log_within_budget 1000 bytes
+    (filter (fun m => seq (frm m) who) messages)) authors) <= 1000 * length authors /\
+  retained_log_cost (flat_map (fun who => log_within_budget 1000 bytes
+    (filter (fun m => seq (frm m) who) messages)) authors) <= bytes * length authors.
+Proof.
+  intros authors messages bytes. induction authors as [|who rest IH]; simpl; [split; lia|].
+  rewrite app_length, retained_log_cost_app.
+  destruct (log_within_budget_bounds (filter (fun m => seq (frm m) who) messages) 1000 bytes) as [Hn Hb].
+  destruct IH as [IHn IHb]. split; lia.
+Qed.
+
+Theorem retained_consensus_log_is_bounded : forall c messages,
+  length (retain_log c messages) <= 1000 * length (nodes c) /\
+  retained_log_cost (retain_log c messages) <= num consensus_log_byte_limit * length (nodes c).
+Proof. intros c messages. unfold retain_log. apply per_validator_log_is_bounded. Qed.
