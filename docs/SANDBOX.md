@@ -296,3 +296,26 @@ an immutable Debian/security package snapshot in `deploy/Dockerfile`.
 Soma. Updating either pin is deliberate; this does not claim that all later
 opam/compiler tooling is fully hermetic. `.dockerignore` excludes Git
 history and build/switch artifacts from the Pantheon build context.
+
+## CI resource and failure boundaries
+
+The root Docker wrapper requires memory, swap and tmpfs to match the
+root-owned `ci-memory` budget. Provisioning creates the shared build lock
+and bidder wrapper. Lock waits are bounded to at most 900 seconds; the host
+runner's `CI_LOCK_WAIT` can lower that wait, and a root-owned
+`ci-lock-wait` file controls the VM wrappers. Parent-death containment also
+stops a lock waiter when its runner is cancelled, before a scope exists.
+The whole Soma CI build has a 900-second ceiling (`SOMA_CI_TIMEOUT` may
+lower it), including compiler bootstrap and downstream checks.
+
+The Docker daemon owns a running container independently of its CLI pid.
+The wrapper therefore refuses a new CI run if any prior Pantheon CI
+container is still running after it acquires the build lock. Within the
+node, Soma tracks failed container teardown as an infrastructure barrier:
+only successful removal or a successful empty exact-name daemon query
+proves completion. A live or unknown container blocks further CI processes
+and produces node-stage errors instead of rejecting another agent's bid.
+Repair the daemon/container and restart the affected node before resuming
+its CI. The wrapper's daemon guard also protects a restarted node whose
+process-local state was cleared. Root metadata queries are restricted to
+one exact hexadecimal Pantheon CI container name.

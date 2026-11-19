@@ -138,12 +138,14 @@ Theorem runs_are_cleanup : forall w made prog args,
   sv_allowed w made (IoRun prog args) = true -> In prog ["rm", "chmod", "docker"].
 Proof.
   intros w made prog args H. cbn [sv_allowed sv_run] in H.
-  destruct args as [| a [| b [| c [| d r]]]]; try discriminate H.
+  destruct args as [| a [| b [| c [| d [| e [| f r]]]]]]; try discriminate H.
   - apply andb_prop in H as [H _]. apply andb_prop in H as [H _]. apply seq_true in H. subst. left. reflexivity.
   - apply Bool.orb_prop in H as [H | H];
       repeat match goal with Hx : (_ && _) = true |- _ => apply andb_prop in Hx as [Hx ?] end;
       match goal with Hs : seq prog _ = true |- _ => apply seq_true in Hs; subst prog end;
       repeat (first [apply List.in_eq | apply List.in_cons]).
+  - apply andb_prop in H as [H _]. apply andb_prop in H as [H _].
+    apply seq_true in H. subst. right; right; left. reflexivity.
 Qed.
 
 (** ---- git ---- *)

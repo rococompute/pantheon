@@ -12,6 +12,7 @@
     looks first). runtime/node_service.exp proves what it refuses, and that what
     the node's host work asks is never refused. *)
 Import core.util runtime.nodeio runtime.node runtime.node_host.
+From Stdlib Require Import Ascii.
 
 (** What the service knows of itself: the node's token, the host's world
     from its setup, its own binary and its environment. *)
@@ -50,11 +51,11 @@ sv_path (w : service_world) (made : list string) (p : string) : bool :=
   sv_no_up p && existsb (fun r => sv_under r p) (sv_roots w made).
 
 (** Background cleanup owns only temporary capabilities minted by this
-    service, plus their conventional separate-git-dir siblings. Repository
+    service, plus their exact conventional separate-git-dir siblings. Repository
     and inbox roots are not blanket cleanup authority. *)
 sv_cleanup_path (made : list string) (p : string) : bool :=
   sv_no_up p && existsb (fun root => starts "/" root &&
-    (sv_under root p || sv_under (append root ".git") p)) made.
+    (seq root p || seq (append root ".git") p)) made.
 
 (** a word an argument may be: not empty, not an option *)
 sv_word (s : string) : bool := (0 <? slen s) && negb (seq (substr s 0 1) "-").
@@ -86,6 +87,14 @@ sv_git (w : service_world) (made : list string) (dir : string) (args : list stri
          && sv_word src && path src && sv_word wt && path wt
      | _ => false
      end.
+
+(** An exact resource-query filter: never a regex chosen by a client. *)
+sv_ci_filter (filter : string) : bool :=
+  let prefix := "name=^/pantheon-ci-" in
+  let tail := take_str (slen filter - slen prefix - 1) (drop_str (slen prefix) filter) in
+  starts prefix filter && ends "$" filter && (0 <? slen tail) && (slen tail <=? 32) &&
+  forallb (fun c => let n := nat_of_ascii c in
+    ((48 <=? n) && (n <=? 57)) || ((97 <=? n) && (n <=? 102))) (chars tail).
 
 (** ---- programs ---- *)
 
@@ -145,6 +154,7 @@ sv_run (w : service_world) (made : list string) (prog : string) (args : list str
   | [a, p] => seq prog "rm" && seq a "-rf" && sv_path w made p
   | [a, b, p] => (seq prog "chmod" && seq a "-R" && seq b "a+rX" && sv_path w made p)
                  || (seq prog "docker" && seq a "rm" && seq b "-f" && starts "pantheon-ci-" p && sv_name p)
+  | [a, b, c, d, filter] => seq prog "docker" && eq_strs [a, b, c, d] ["ps", "-a", "-q", "--filter"] && sv_ci_filter filter
   | _ => false
   end.
 

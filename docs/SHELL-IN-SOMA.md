@@ -522,7 +522,13 @@ Large-tree cleanup stays asynchronous so it cannot stall consensus.
 `runtime/node_host.soma` registers it as a `DoneCleanup` process with the
 literal arguments `rm -rf -- PATH`, observes its real end and logs success,
 failure or failure to start. Cleanup jobs own no cleanup tree themselves,
-so completion cannot create recursive cleanup jobs. A one-shot CLI caller
+so completion cannot create recursive cleanup jobs. Failed container teardown
+sets Soma's `hs_ci_blocked` resource barrier unless a successful exact-name
+daemon query proves that the container is already absent. Queued and future
+CI then receive infrastructure errors without launching another CI process;
+cleanup processes themselves can still finish. Allocation failures are
+checked before starting a check and retain node-stage classification.
+A one-shot CLI caller
 without that event loop receives only a detached-process startup receipt;
 it no longer unconditionally answers that removal is complete.
 
