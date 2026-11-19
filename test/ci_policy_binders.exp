@@ -1,0 +1,8 @@
+Example cast_parameter_value : cast_parameter 12 = 12.
+Proof. reflexivity. Qed.
+Example unknown_parameters_value : unknown_parameters 1 2 3 = 6.
+Proof. reflexivity. Qed.
+Example implicit_parameter_value : @implicit_parameter 4 3 = 7.
+Proof. reflexivity. Qed.
+Example dependent_parameter_value : dependent_parameter 1 eq_refl = eq_refl.
+Proof. reflexivity. Qed.
