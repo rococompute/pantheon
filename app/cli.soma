@@ -356,10 +356,34 @@ Fixpoint foreign_exclusion (rnames : list string) (parts : list (string * list s
 
 key_n (j : json) : option string := json_string (json_member "n" j).
 
+(** Reject malformed numeric configuration before producing a shared genesis.
+    Omitted settings retain their defaults; supplied parameter values are strings. *)
+genesis_network_error (j : json) : option string :=
+  let params_error :=
+    match json_member "params" j with
+    | JNull => None
+    | JObj kv =>
+        match List.find (fun p => match snd p with
+              | JStr v => negb (genesis_param_valid (fst p) v) | _ => true end) kv with
+        | Some (name, _) => Some (cat ["parameter ", name, " must be a string; known numeric parameters require 1 to 18 decimal digits (block_ms is positive)"])
+        | None => None
+        end
+    | _ => Some "params is an object of string values"
+    end in
+  match json_member "block_ms" j with
+  | JNull => params_error
+  | JNum ms => if genesis_param_valid "block_ms" ms then params_error
+               else Some "block_ms is a positive decimal integer of at most 18 digits"
+  | _ => Some "block_ms is a positive decimal integer of at most 18 digits"
+  end.
+
 (** genesis.json, from NETWORK/network.json and NETWORK/parts/*.json: every
     agent builds the same bytes from the same files, so they compare one hash *)
 build_genesis (home net : string) (k : unit -> nprog unit) : nprog unit :=
   cli_read_json (path net "network.json") (fun netj =>
+  match genesis_network_error netj with
+  | Some why => cli_fail (append "network.json: " why)
+  | None =>
   let pdir := path net "parts" in
   cli_ask (IoDirEntries pdir) (fun entries =>
   let files := sort_strings (List.filter (ends ".json") (ans_list entries)) in
@@ -422,7 +446,8 @@ build_genesis (home net : string) (k : unit -> nprog unit) : nprog unit :=
       end
       end)
   | _ => cli_fail "network.json: repos is a list of repositories"
-  end)))))).
+  end)))))
+  end).
 
 cmd_genesis (home net : string) : nprog unit := build_genesis home net (fun _ => NDone tt).
 
@@ -471,14 +496,17 @@ Fixpoint init_parse (args : list string) (a : init_args) : init_args + string :=
       end
   | "--block-ms" :: p :: r =>
       match number_arg "--block-ms" p with
-      | inl n => init_parse r {| ia_dir := ia_dir a; ia_repos := ia_repos a; ia_port := ia_port a;
-                                ia_params := ia_params a; ia_block_ms := n; ia_allow_closed := ia_allow_closed a |}
+      | inl n => if n =? 0 then inr "--block-ms must be positive" else
+          init_parse r {| ia_dir := ia_dir a; ia_repos := ia_repos a; ia_port := ia_port a;
+                          ia_params := ia_params a; ia_block_ms := n; ia_allow_closed := ia_allow_closed a |}
       | inr e => inr e
       end
   | "--param" :: kv :: r =>
       match kv_arg "--param" kv with
-      | inl p => init_parse r {| ia_dir := ia_dir a; ia_repos := ia_repos a; ia_port := ia_port a;
-                                ia_params := ia_params a ++ [p]; ia_block_ms := ia_block_ms a; ia_allow_closed := ia_allow_closed a |}
+      | inl p => if negb (genesis_param_valid (fst p) (snd p)) then
+          inr (cat ["--param ", fst p, " wants 1 to 18 decimal digits (block_ms is positive), got ", snd p]) else
+          init_parse r {| ia_dir := ia_dir a; ia_repos := ia_repos a; ia_port := ia_port a;
+                          ia_params := ia_params a ++ [p]; ia_block_ms := ia_block_ms a; ia_allow_closed := ia_allow_closed a |}
       | inr e => inr e
       end
   | "--allow-closed-plan" :: r =>
@@ -1179,7 +1207,11 @@ Fixpoint node_flags (args : list string) (set : list (string * string)) (events 
   | "--behavior" :: b :: r => node_flags r set (events ++ [["agent", "behavior", b]]) ci_repo no_check
   | "--goal" :: f :: r => node_flags r set (events ++ [["goal_file", f]]) ci_repo no_check
   | "--deny" :: p :: r => node_flags r set (events ++ [["agent", "deny", p]]) ci_repo no_check
-  | "--bid-window" :: n :: r => node_flags r set (events ++ [["agent", "bid_window", n]]) ci_repo no_check
+  | "--bid-window" :: n :: r =>
+      match num_opt n with
+      | Some _ => node_flags r set (events ++ [["agent", "bid_window", n]]) ci_repo no_check
+      | None => inr (append "--bid-window wants a number, got " n)
+      end
   | "--perspective" :: t :: r => node_flags r set (events ++ [["agent", "perspective", t]]) ci_repo no_check
   | "--ci" :: c :: r => node_flags r (put "ci" c set) events ci_repo no_check
   | "--ci-repo" :: n :: c :: r => node_flags r set events ((n, c) :: ci_repo) no_check

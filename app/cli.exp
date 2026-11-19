@@ -135,3 +135,26 @@ Proof.
   intros ans pids. unfold up_wait, cli_do. cbn [ntrace]. f_equal.
   induction pids as [| p r IH]; cbn; [reflexivity | f_equal; exact IH].
 Qed.
+
+Example genesis_numbers_are_checked_before_conversion :
+  genesis_param_valid "merge_approvals" "one" = false /\
+  genesis_param_valid "reveal_window" "-5" = false /\
+  genesis_param_valid "term_blocks" "12x" = false /\
+  genesis_param_valid "term_blocks" "9999999999999999999" = false /\
+  genesis_param_valid "merge_approvals" "0" = true /\
+  genesis_param_valid "term_blocks" "007" = true /\
+  genesis_param_valid "block_ms" "0" = false /\
+  genesis_param_valid "block_ms" "300" = true /\
+  genesis_param_valid "label" "two words" = true.
+Proof. repeat split; computed. Qed.
+
+Example genesis_network_rejects_malformed_known_numbers :
+  genesis_network_error (JObj [("block_ms", JNum "-1")]) =
+    Some "block_ms is a positive decimal integer of at most 18 digits" /\
+  genesis_network_error (JObj [("block_ms", JStr "200")]) =
+    Some "block_ms is a positive decimal integer of at most 18 digits" /\
+  genesis_network_error (JObj [("params", JObj [("merge_approvals", JNum "1")])]) =
+    Some "parameter merge_approvals must be a string; known numeric parameters require 1 to 18 decimal digits (block_ms is positive)" /\
+  genesis_network_error (JObj [("params", JObj [("label", JStr "two words"), ("finish", JStr "1")])]) = None /\
+  node_flags ["--bid-window", "one"] [] [] [] [] = inr "--bid-window wants a number, got one".
+Proof. repeat split; computed. Qed.
