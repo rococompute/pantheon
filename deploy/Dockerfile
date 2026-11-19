@@ -7,9 +7,16 @@
 #
 # The soma build context is Soma's source: its committed files, not a checkout
 # with _build and _opam in it.
-FROM debian:bookworm
+# Multi-architecture manifest digest verified against registry-1.docker.io.
+# Updating the base or Debian packages is an explicit reviewed source change.
+FROM debian:bookworm@sha256:268fb24c39bca92d326dd83ea3abebe4a3f7751c804ffef23bb6d857dd343ff8 AS system-base
+ARG DEBIAN_SNAPSHOT=20261101T000000Z
+RUN rm -f /etc/apt/sources.list.d/* \
+ && printf 'deb [check-valid-until=no] http://snapshot.debian.org/archive/debian/%s bookworm main\n' "$DEBIAN_SNAPSHOT" > /etc/apt/sources.list \
+ && printf 'deb [check-valid-until=no] http://snapshot.debian.org/archive/debian-security/%s bookworm-security main\n' "$DEBIAN_SNAPSHOT" >> /etc/apt/sources.list
 RUN apt-get update -q && apt-get install -y -q --no-install-recommends git python3 ca-certificates build-essential opam jq curl m4 \
       pkg-config libgmp-dev rsync sudo && rm -rf /var/lib/apt/lists/*
+FROM system-base
 RUN useradd -m pantheon
 COPY deploy/pantheon-ci.sh /usr/local/bin/pantheon-ci
 USER pantheon

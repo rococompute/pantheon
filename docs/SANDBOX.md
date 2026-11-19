@@ -289,3 +289,10 @@ restores compatibility mode. The files and renderer are owned by root, not
 by the node or model. Allowlisted services and the system DNS resolver are
 still possible data channels; these controls restrict destinations, not
 what a compromised process can send to a permitted destination.
+
+The Docker CI system-package stage pins both the Debian image manifest and
+an immutable Debian/security package snapshot in `deploy/Dockerfile`.
+`docker build --target system-base` validates that stage without compiling
+Soma. Updating either pin is deliberate; this does not claim that all later
+opam/compiler tooling is fully hermetic. `.dockerignore` excludes Git
+history and build/switch artifacts from the Pantheon build context.
