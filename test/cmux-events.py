@@ -2,6 +2,7 @@
 """Event-to-hook delivery without a running cmux or market."""
 import importlib.util
 import json
+import os
 from pathlib import Path
 import socket
 import subprocess
@@ -9,8 +10,9 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 
-source = Path(__file__).resolve().parents[1] / "integrations/cmux/events.py"
+source = Path(os.environ.get("PANTHEON_EVENTS_SOURCE", str(Path(__file__).resolve().parents[1] / "integrations/cmux/events.py")))
 sys.dont_write_bytecode = True
 spec = importlib.util.spec_from_file_location("events", source)
 events = importlib.util.module_from_spec(spec)
@@ -51,8 +53,8 @@ class TestEvents(unittest.TestCase):
         self.bridge.close()
         self.temp.cleanup()
 
-    def write(self, text):
-        (self.net / "claude-1/status.txt").write_text(text)
+    def write(self, text, agent="claude-1"):
+        (self.net / agent / "status.txt").write_text(text)
 
     def request(self, rid="123-abcd", agent="codex-1", kind="answer"):
         path = self.net / ".cmux" / agent / "inbox" / rid
@@ -64,6 +66,45 @@ class TestEvents(unittest.TestCase):
 
     def calls(self):
         return [json.loads(line) for line in events.read(self.output).splitlines()]
+
+    def test_c11_batches_preserve_every_event_and_utf8(self):
+        self.bridge.c11 = str(self.cmux)
+        queue = [{"type": "task.closed", "task": str(i), "seq": i}
+                 for i in range(1, 200)]
+        self.bridge.state["outbox"]["claude-1"] = list(queue)
+        while self.bridge.state["outbox"]["claude-1"]:
+            self.bridge.deliver()
+        calls = self.calls()
+        bodies = [call[call.index("--body") + 1] for call in calls]
+        self.assertTrue(all(len(body.encode()) <= 4000 for body in bodies))
+        self.assertTrue(all(call[:3] == ["mailbox", "send", "--to"] for call in calls))
+        joined = "\n".join(bodies)
+        for event in queue:
+            self.assertEqual(joined.count("Task #" + event["task"] + " closed."), 1)
+        self.assertTrue(all("unreviewed contribution" in body for body in bodies))
+
+    def test_c11_long_paths_use_complete_compact_notice(self):
+        self.bridge.c11 = str(self.cmux)
+        self.bridge.state["outbox"]["claude-1"] = [
+            {"type": "task.closed", "task": "123", "seq": 1}]
+        original = events.notice
+        def long_notice(batch, desk, compact=False):
+            return original(batch, Path("/" + "🌱" * 1200), compact=compact)
+        with patch.object(events, "notice", side_effect=long_notice):
+            self.bridge.deliver()
+        body = self.calls()[0][-1]
+        self.assertLessEqual(len(body.encode()), 4000)
+        self.assertIn("Task #123 closed.", body)
+        self.assertTrue(body.endswith("approving an unreviewed contribution."))
+        self.assertEqual(self.bridge.state["outbox"]["claude-1"], [])
+
+    def test_c11_oversized_event_is_not_acknowledged(self):
+        self.bridge.c11 = str(self.cmux)
+        queue = [{"type": "task.closed", "task": "9" * 5000, "seq": 1}]
+        self.bridge.state["outbox"]["claude-1"] = list(queue)
+        self.bridge.deliver()
+        self.assertEqual(self.bridge.state["outbox"]["claude-1"], queue)
+        self.assertFalse(self.output.exists())
 
     def test_committed_only_baseline_and_dedup(self):
         self.write(status(bid="merged", task="closed"))
@@ -141,8 +182,152 @@ class TestEvents(unittest.TestCase):
         self.bridge.poll()
         self.write(status(7, "merged", "closed"))
         self.bridge.poll()
-        self.assertEqual(self.bridge.state["seq"], 0)
+        self.assertTrue(all(event["type"] == "relay.status" for event in self.bridge.state["events"]))
+        self.assertEqual(self.bridge.state["source"]["state"], "behind")
         self.assertEqual(self.bridge.state["snapshot"]["height"], 8)
+
+    def test_missing_first_node_uses_another_complete_status(self):
+        (self.net / "claude-1/status.txt").unlink()
+        self.write(status(4), "codex-1")
+        self.bridge.poll()
+        self.assertIsNotNone(self.bridge.state["snapshot"])
+        self.assertEqual(self.bridge.state["snapshot"]["height"], 4)
+        self.assertEqual(self.bridge.state["source"]["agent"], "codex-1")
+
+    def test_lagging_first_node_does_not_stall_committed_progress(self):
+        self.bridge.poll()
+        self.write(status(3, "merged", "closed"), "codex-1")
+        self.bridge.poll()
+        self.bridge.deliver()
+        self.assertEqual(self.bridge.state["snapshot"]["height"], 3)
+        self.assertEqual(len(self.calls()), 2)
+        self.assertTrue(all("Contribution #2 merged" in call[-1] for call in self.calls()))
+
+    def test_stale_higher_status_is_not_selected_on_attachment(self):
+        self.write(status(90, "merged", "closed"))
+        past = time.time() - 120
+        os.utime(self.net / "claude-1/status.txt", (past, past))
+        self.write(status(4), "codex-1")
+        self.bridge.poll()
+        self.assertEqual(self.bridge.state["snapshot"]["height"], 4)
+        self.assertEqual(self.bridge.state["source"]["nodes"]["claude-1"]["state"], "stale")
+        self.assertEqual(self.bridge.state["seq"], 0)
+
+    def test_equal_identical_views_choose_lexical_source(self):
+        self.write(status(5), "codex-1")
+        self.write(status(5))
+        self.bridge.poll()
+        self.assertEqual(self.bridge.state["source"]["agent"], "claude-1")
+        self.assertEqual(self.bridge.state["snapshot"]["height"], 5)
+
+    def test_equal_height_disagreement_freezes_then_recovers(self):
+        self.bridge.poll()
+        self.write(status(2))
+        self.write(status(2, "merged", "closed"), "codex-1")
+        self.bridge.poll()
+        self.bridge.poll()
+        self.bridge.deliver()
+        self.assertEqual(self.bridge.state["snapshot"]["height"], 1)
+        self.assertEqual(self.bridge.state["source"]["state"], "conflict")
+        self.assertEqual(self.calls(), [])
+        self.assertEqual([event["type"] for event in self.bridge.state["events"]], ["relay.status"])
+        self.write(status(3, "merged", "closed"))
+        self.write(status(3, "merged", "closed"), "codex-1")
+        self.bridge.poll()
+        self.bridge.deliver()
+        self.assertEqual(self.bridge.state["snapshot"]["height"], 3)
+        self.assertEqual(self.bridge.state["source"]["state"], "available")
+        self.assertEqual(len(self.calls()), 2)
+
+    def test_same_height_mutation_cannot_invent_a_commit(self):
+        self.bridge.poll()
+        self.write(status(1, "merged", "closed"))
+        self.bridge.poll()
+        self.bridge.deliver()
+        self.assertEqual(self.bridge.state["snapshot"]["bids"]["2"], "pending")
+        self.assertEqual(self.bridge.state["source"]["state"], "conflict")
+        self.assertEqual(self.calls(), [])
+
+    def test_unavailable_status_keeps_inbox_nudges_and_exposes_source_state(self):
+        self.bridge.poll()
+        (self.net / "claude-1/status.txt").unlink()
+        self.request()
+        self.bridge.poll()
+        self.bridge.deliver()
+        self.assertEqual(self.bridge.state["snapshot"]["height"], 1)
+        self.assertEqual(self.bridge.state["source"]["state"], "unavailable")
+        self.assertEqual(len(self.calls()), 1)
+        self.assertIn("Inbox request 123-abcd", self.calls()[0][-1])
+        self.assertEqual(self.bridge.state["events"][0]["type"], "relay.status")
+        self.assertEqual(json.loads(events.read(self.bridge.file))["source"]["state"], "unavailable")
+
+    def test_behind_recovery_never_rolls_back_persisted_height(self):
+        self.write(status(8))
+        self.bridge.poll()
+        (self.net / "claude-1/status.txt").unlink()
+        self.write(status(7, "merged", "closed"), "codex-1")
+        self.bridge.poll()
+        self.assertEqual(self.bridge.state["snapshot"]["height"], 8)
+        self.assertEqual(self.bridge.state["source"]["state"], "behind")
+        self.write(status(9, "merged", "closed"), "codex-1")
+        self.bridge.poll()
+        self.bridge.deliver()
+        self.assertEqual(self.bridge.state["snapshot"]["height"], 9)
+        self.assertEqual(len(self.calls()), 2)
+
+    def test_genesis_disagreement_is_not_a_height_tiebreak(self):
+        self.write(status(3))
+        self.write(status(9, "merged", "closed"), "codex-1")
+        (self.net / "codex-1/genesis.json").write_text('{"chain_id":"another-chain"}')
+        self.bridge.poll()
+        self.bridge.deliver()
+        self.assertIsNone(self.bridge.state["snapshot"])
+        self.assertEqual(self.bridge.state["source"]["reason"], "genesis mismatch")
+        self.assertEqual(self.calls(), [])
+
+    def test_equal_height_display_history_disagreement_is_explicit(self):
+        self.write(status(3).replace("pool 0", "history claude-1\npool 0"))
+        self.write(status(3).replace("pool 0", "history codex-1\npool 0"), "codex-1")
+        self.bridge.poll()
+        self.assertIsNone(self.bridge.state["snapshot"])
+        self.assertEqual(self.bridge.state["source"]["state"], "conflict")
+
+    def test_local_pool_and_backend_annotations_do_not_conflict(self):
+        self.write(status(3) + "checkout wallet " + "b" * 40 + "\nLIMIT backend held\n")
+        self.write(status(3).replace("pool 0", "pool 3") + "checkout wallet " + "c" * 40 + "\n", "codex-1")
+        self.bridge.poll()
+        self.assertEqual(self.bridge.state["snapshot"]["height"], 3)
+        self.assertEqual(self.bridge.state["source"]["state"], "available")
+
+    def test_shared_view_anchor_and_reader_owned_snapshot_survive_fallback(self):
+        self.bridge.poll()
+        self.write(status(3, "merged", "closed"), "codex-1")
+        output = self.net / ".cmux/view reader [one].txt"
+        def view():
+            result = subprocess.run([sys.executable, str(source), str(self.net), "--status-view",
+                                     "--status-output", str(output)], check=True,
+                                    text=True, capture_output=True, timeout=5)
+            return json.loads(result.stdout)
+        first = view()
+        self.assertEqual(first["agent"], "codex-1")
+        self.assertEqual(first["height"], 3)
+        self.assertIn("height 3", output.read_text())
+        (self.net / "codex-1/status.txt").unlink()
+        self.write(status(2))
+        behind = view()
+        self.assertEqual(behind["state"], "behind")
+        self.assertEqual(behind["height"], 3)
+        self.assertIn("height 3", output.read_text())
+        self.bridge.poll()
+        self.assertEqual(self.bridge.state["snapshot"]["height"], 1)
+        self.write(status(4, "merged", "closed"))
+        self.bridge.poll()
+        self.assertEqual(self.bridge.state["snapshot"]["height"], 4)
+
+    def test_status_age_must_be_positive_and_finite(self):
+        for age in (0, -1, float("nan"), float("inf")):
+            with self.assertRaises(ValueError):
+                events.Bridge(self.net, str(self.cmux), status_max_age=age)
 
     def test_terminal_states_with_stale_marker(self):
         self.bridge.poll()

@@ -1,0 +1,12 @@
+#!/bin/sh
+# A Pantheon network as a c11 workspace: integrations/cmux/pantheon-cmux, with
+# c11's adapter (integrations/c11/mux.sh) in place of its calls to cmux. Same
+# commands, layout, watchdog, run record and events; its state is in NET/.c11.
+# Run it from a c11 terminal: c11's socket admits only processes c11 started.
+#
+#   pantheon-c11 up NET [--diplomats "A B"] [--backends A=B,...] [--layout plan|grid] [-- NODE ARGS...]
+#   pantheon-c11 watchdog NET [--check|--once]
+#   pantheon-c11 down NET
+#
+# integrations/c11/README.md says what differs from cmux.
+PANTHEON_MUX=c11 exec sh "$(cd "$(dirname "$0")/.." && pwd)/cmux/pantheon-cmux" "$@"

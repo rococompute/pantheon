@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Read committed status, publish local events, and steer diplomats via cmux hooks."""
+"""Read committed status, publish local events, and steer diplomats via cmux hooks or c11 mail."""
 import argparse
 import fcntl
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -25,8 +26,13 @@ def status(text):
     header = re.match(r"height (\d+)  term (\d+)  leader (\S+)\n", text)
     if not header or not re.search(r"^pool \d+$", text, re.M):
         return None  # Do not interpret an incomplete write as removals.
+    # pool begins node-local checkout/divergence/limit annotations. Keep
+    # the committed display payload in tie checks, not local backend state.
+    pool = re.search(r"^pool \d+$", text, re.M)
     return {
+        "view": hashlib.sha256(text[:pool.start()].encode()).hexdigest(),
         "height": int(header[1]),
+        "term": int(header[2]),
         "leader": header[3],
         "leader_chain": next(({"count": int(count), "tip": tip} for count, tip in
                               re.findall(r"^leader-chain (\d+) ([0-9a-f]*)$", text, re.M)),
@@ -37,6 +43,129 @@ def status(text):
         "repos": dict(re.findall(r"^repo (\S+) ([0-9a-f]+)$", text, re.M)),
         "finished": bool(re.search(r"^finished:", text, re.M)),
     }
+
+
+def same_snapshot(left, right):
+    # Older relay state files did not persist the already-present term.
+    return all(right.get(key) == value for key, value in left.items())
+
+
+def network_agents(net):
+    return sorted(path.name for path in net.iterdir()
+                  if (path / "key.json").is_file() and (path / "genesis.json").is_file())
+
+
+def genesis_identity(path):
+    try:
+        value = json.loads(path.read_text())
+        if not isinstance(value, dict):
+            return None
+        # Compare exact public genesis content, not only a claimed chain_id.
+        return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    except (OSError, UnicodeError, ValueError):
+        return None
+
+
+def observe_status(path, now, max_age):
+    try:
+        before = path.stat()
+        text = path.read_text().strip()
+        after = path.stat()
+        stamp = lambda item: (item.st_ino, item.st_size, item.st_mtime_ns, item.st_ctime_ns)
+        if stamp(before) != stamp(after):
+            return None, {"state": "changing"}, ""
+    except (OSError, UnicodeError):
+        return None, {"state": "unavailable"}, ""
+    try:
+        parsed = status(text)
+    except ValueError:
+        parsed = None
+    if parsed is None:
+        return None, {"state": "incomplete"}, ""
+    info = {"state": "available", "height": parsed["height"], "modified": after.st_mtime}
+    if now - after.st_mtime > max_age or after.st_mtime - now > max_age:
+        info["state"] = "stale"
+        return None, info, ""
+    return parsed, info, text
+
+
+def select_status(net, agents, old, now, max_age):
+    """Observe matching-genesis committed status; never alter consensus."""
+    candidates, nodes, chains = [], {}, set()
+    for agent in agents:
+        chain = genesis_identity(net / agent / "genesis.json")
+        if chain is None:
+            nodes[agent] = {"state": "invalid-genesis"}
+            continue
+        chains.add(chain)
+        snapshot, info, text = observe_status(net / agent / "status.txt", now, max_age)
+        nodes[agent] = info
+        if snapshot is not None:
+            snapshot["chain"] = chain
+            candidates.append((agent, snapshot, text))
+    source = {"state": "unavailable", "agent": None, "height": None, "nodes": nodes,
+              "chain": next(iter(chains)) if len(chains) == 1 else None}
+    # A directory containing another chain must be fixed explicitly; the
+    # observer must not pick a chain or merge histories by height alone.
+    if len(chains) > 1 or (old and old.get("chain") and source["chain"] and old["chain"] != source["chain"]):
+        source.update(state="conflict", reason="genesis mismatch")
+        return None, source, ""
+    if not candidates:
+        if any(info["state"] == "stale" for info in nodes.values()):
+            source["state"] = "stale"
+        return None, source, ""
+    highest = max(snapshot["height"] for _, snapshot, _ in candidates)
+    leaders = sorted((agent, snapshot, text) for agent, snapshot, text in candidates if snapshot["height"] == highest)
+    source["height"] = highest
+    if any(snapshot != leaders[0][1] for _, snapshot, _ in leaders[1:]):
+        source["state"] = "conflict"
+        return None, source, ""
+    agent, snapshot, text = leaders[0]
+    if old and highest < old["height"]:
+        source["state"] = "behind"
+        return None, source, ""
+    if old and highest == old["height"] and not same_snapshot(old, snapshot):
+        source["state"] = "conflict"
+        return None, source, ""
+    source.update(state="available", agent=agent)
+    return snapshot, source, text
+
+
+def atomic_text(path, text):
+    if read(path) == text.strip():
+        return
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(text)
+    tmp.replace(path)
+
+
+def observe_network(net, directory, old=None, max_age=30):
+    """One monotone observation shared by events, views and watchdog readers."""
+    directory.mkdir(parents=True, exist_ok=True)
+    with (directory / "observation.lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        cache = directory / "observation.json"
+        try:
+            saved = json.loads(read(cache))
+            cached = saved.get("snapshot")
+        except (ValueError, AttributeError):
+            saved, cached = {}, None
+        anchor = old
+        if cached and (not anchor or cached["height"] > anchor["height"]):
+            anchor = cached
+        new, source, text = select_status(net, network_agents(net), anchor, time.time(), max_age)
+        if new is not None:
+            saved = {"snapshot": new, "text": text, "agent": source["agent"]}
+        elif anchor and (not cached or anchor["height"] > cached["height"]):
+            saved = {"snapshot": anchor, "text": "", "agent": None}
+        saved["source"] = source
+        atomic_text(cache, json.dumps(saved) + "\n")
+        snapshot = saved.get("snapshot")
+        view = {"text": saved.get("text", ""), "agent": saved.get("agent"),
+                "state": source["state"], "height": snapshot["height"] if snapshot else None,
+                "source": source,
+                "same_chain": bool(snapshot and source["chain"] and snapshot.get("chain") == source["chain"])}
+        return new, source, view
 
 
 def transitions(old, new):
@@ -70,7 +199,7 @@ def requests(inbox, now):
     return result
 
 
-def notice(events, desk):
+def notice(events, desk, compact=False):
     parts = []
     for event in events:
         kind = event["type"]
@@ -85,6 +214,12 @@ def notice(events, desk):
         elif kind == "leader-chain.updated":
             parts.append("Leader handoff journal advanced through record #" + str(event["count"]) +
                          ". Read leader-chain for new check results and findings; these are not merge approvals.")
+    if compact:
+        return ("Pantheon event update: " + " ".join(parts) + "\n"
+                "Read your diplomat instructions and use your inbox wrapper to list requests. "
+                "Answer waiting kind=answer requests, then resume useful patch work. "
+                "Recheck committed status before submitting for a closed task. Preserve edits before skipping. "
+                "These notices do not authorize dropping work or approving an unreviewed contribution.")
     return ("Pantheon event update: " + " ".join(parts) + "\n"
             "At the next safe tool boundary, read " + str(desk / "instructions.md") + ". "
             "Use " + str(desk / "pantheon-inbox") + " list. Answer waiting kind=answer requests "
@@ -94,9 +229,14 @@ def notice(events, desk):
 
 
 class Bridge:
-    def __init__(self, net, cmux, wait=False):
-        self.net, self.cmux = Path(net).resolve(), cmux
-        self.root = self.net / ".cmux"
+    def __init__(self, net, cmux, wait=False, state=".cmux", c11=None, status_max_age=30):
+        # cmux delivers through `cmux agent message`; with c11 set (its CLI),
+        # notices go as c11 mail from Pantheon, rung at the agent's next idle.
+        self.net, self.cmux, self.c11 = Path(net).resolve(), cmux, c11
+        if not math.isfinite(status_max_age) or status_max_age <= 0:
+            raise ValueError("status_max_age must be positive")
+        self.status_max_age = status_max_age
+        self.root = self.net / state
         self.directory = self.root / "events"
         self.directory.mkdir(parents=True, exist_ok=True)
         self.lock = (self.directory / "lock").open("w")
@@ -112,8 +252,7 @@ class Bridge:
         self.server = None
 
     def agents(self):
-        return sorted(p.name for p in self.net.iterdir()
-                      if (p / "key.json").is_file() and (p / "genesis.json").is_file())
+        return network_agents(self.net)
 
     def targets(self):
         return {a: read(self.root / a / "surface") for a in self.agents()
@@ -125,28 +264,37 @@ class Bridge:
         tmp.replace(self.file)
 
     def poll(self):
-        agents = self.agents()
-        new = status(read(self.net / agents[0] / "status.txt")) if agents else None
+        now = time.time()
         old = self.state["snapshot"]
-        if new is None or (old and new["height"] < old["height"]):
-            return
+        previous_source = self.state.get("source")
+        new, source, _ = observe_network(self.net, self.directory, old, self.status_max_age)
         targets = self.targets()
-        events = [(e, [new["leader"]] if new["leader"] in targets else [])
-                  if e["type"] == "leader-chain.updated" else (e, list(targets))
-                  for e in transitions(old, new)]
+        events = [(event, [new["leader"]] if new["leader"] in targets else [])
+                  if event["type"] == "leader-chain.updated" else (event, list(targets))
+                  for event in transitions(old, new)] if new is not None else []
+        # Availability is an observation for subscribers/operators, not an
+        # instruction, consensus decision or terminal market transition.
+        previous_mode = previous_source.get("state") if previous_source else None
+        if previous_mode != source["state"] and (previous_source or source["state"] != "available"):
+            events.append(({"type": "relay.status", "status": source["state"],
+                            "source": source["agent"], "observed_height": source["height"]}, []))
+        current = new or old
         active = {}
-        if not new["finished"]:
+        # A dead/lagging status source must not block local inbox notices.
+        if not current or not current["finished"]:
             for agent in targets:
-                active[agent] = requests(self.root / agent / "inbox", time.time())
+                active[agent] = requests(self.root / agent / "inbox", now)
                 for rid, kind in active[agent].items():
                     if rid not in self.state["requests"].get(agent, {}):
                         events.append(({"type": "request.ready", "agent": agent,
                                         "request": rid, "kind": kind}, [agent]))
-        self.state["snapshot"] = new
+        if new is not None:
+            self.state["snapshot"] = new
+        self.state["source"] = source
         self.state["requests"] = active
         for event, recipients in events:
             self.state["seq"] += 1
-            event.update(seq=self.state["seq"], height=new["height"], time=time.time())
+            event.update(seq=self.state["seq"], height=current["height"] if current else 0, time=now)
             self.state["events"].append(event)
             for agent in recipients:
                 queue = self.state["outbox"].setdefault(agent, [])
@@ -154,8 +302,8 @@ class Bridge:
                 del queue[:-256]
         self.state["events"] = self.state["events"][-256:]
         # Persist the outbox before delivery: a crash can duplicate a notice,
-        # but cannot acknowledge it before cmux has accepted it.
-        if new != old or events or active != getattr(self, "active", None):
+        # but cannot acknowledge it before cmux/C11 has accepted it.
+        if new != old or events or source != previous_source or active != getattr(self, "active", None):
             self.save()
         self.active = active
         for event, _ in events:
@@ -175,9 +323,25 @@ class Bridge:
             # Bound a provider message without dropping the rest of the queue.
             batch = queue[:32]
             text = notice(batch, self.root / agent / "desk")
+            # c11 mail bodies are at most 4096 bytes: send fewer events at once.
+            while self.c11 and len(batch) > 1 and len(text.encode()) > 4000:
+                batch = batch[:len(batch) // 2]
+                text = notice(batch, self.root / agent / "desk")
+            if self.c11:
+                if len(text.encode()) > 4000:
+                    text = notice(batch, self.root / agent / "desk", compact=True)
+                if len(text.encode()) > 4000:
+                    # Never acknowledge an event whose full notice was not sent.
+                    print("pantheon events: one event exceeds c11 mail's size limit for " + agent,
+                          flush=True)
+                    self.retry[agent] = time.monotonic() + 30
+                    continue
+                command = [self.c11, "mailbox", "send", "--to", "id:" + surface, "--from", "Pantheon",
+                           "--topic", "pantheon.events", "--body", text]
+            else:
+                command = [self.cmux, "agent", "message", surface, "--from", "Pantheon", "--", text]
             try:
-                subprocess.run([self.cmux, "agent", "message", surface, "--from", "Pantheon",
-                                "--", text], check=True, timeout=5, stdout=subprocess.DEVNULL,
+                subprocess.run(command, check=True, timeout=5, stdout=subprocess.DEVNULL,
                                stderr=subprocess.PIPE)
             except (OSError, subprocess.SubprocessError) as error:
                 print("pantheon events: hook delivery failed for " + agent + " (" +
@@ -239,7 +403,8 @@ class Bridge:
                 if type(after) is int and (events[0]["seq"] - 1 if events else self.state["seq"]) <= after <= self.state["seq"]:
                     replay = [e for e in events if e["seq"] > after]
                 else:
-                    replay = [{"type": "snapshot", "seq": self.state["seq"], "state": self.state["snapshot"]}]
+                    replay = [{"type": "snapshot", "seq": self.state["seq"], "state": self.state["snapshot"],
+                               "source": self.state.get("source")}]
                 self.clients[stream] = None
                 if replay:
                     self.send(stream, replay)
@@ -261,11 +426,39 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("net")
     parser.add_argument("--cmux", default=os.environ.get("CMUX", "cmux"))
+    parser.add_argument("--c11", help="deliver as c11 mail with this c11 CLI instead of cmux hooks")
+    parser.add_argument("--state", default=".cmux", help="NET's directory for the integration's state")
     parser.add_argument("--parent", type=int)
+    parser.add_argument("--status-output", help="write --status-view text atomically to this reader-owned file")
+    parser.add_argument("--status-view", action="store_true",
+                        help="print the shared committed-status view as JSON, without starting a relay")
+    parser.add_argument("--status-max-age", type=float, default=30,
+                        help="ignore status snapshots older than this many seconds (default: 30)")
     args = parser.parse_args()
     # A replacement watchdog can start before the previous relay exits.
     # Wait for its lock rather than leaving the new watchdog without a relay.
-    bridge = Bridge(args.net, args.cmux, wait=True)
+    if not math.isfinite(args.status_max_age) or args.status_max_age <= 0:
+        parser.error("--status-max-age must be positive")
+    if args.status_view:
+        net = Path(args.net).resolve()
+        directory = net / args.state / "events"
+        old = None
+        try:
+            old = json.loads(read(directory / "state.json")).get("snapshot")
+        except (ValueError, AttributeError):
+            pass
+        _, _, view = observe_network(net, directory, old, args.status_max_age)
+        output = Path(args.status_output) if args.status_output else directory / "committed-status.txt"
+        text = view.pop("text")
+        if text:
+            atomic_text(output, text + "\n")
+        else:
+            output.unlink(missing_ok=True)
+        view["file"] = str(output) if text else None
+        print(json.dumps(view))
+        return
+    bridge = Bridge(args.net, args.cmux, wait=True, state=args.state, c11=args.c11,
+                    status_max_age=args.status_max_age)
     running = True
 
     def stop(*_):

@@ -11,6 +11,7 @@
 # limited; down closes the workspace.
 set -eu
 here=$(cd "$(dirname "$0")/.." && pwd)
+project_here=$here
 t=$(mktemp -d)
 trap 'rm -rf "$t"' EXIT HUP INT TERM
 fail() { echo "FAIL: $*"; cat "$t/ledger" 2>/dev/null | tail -20; exit 1; }
@@ -68,13 +69,21 @@ chmod +x "$t/bin/cmux"
 export PANTHEON_EVENTS=0
 export STUB_DIR="$t" CMUX="$t/bin/cmux" PANTHEON=/bin/true DIPLOMAT_CLI="echo diplomat" PANTHEON_RUNS="$t/runs"
 
+# Canned rendering/watchdog cases attach independently; reset only this
+# fixture's observation anchor when replacing its status with another case.
+write_status_fixture() {
+  cat > "$t/net/claude/status.txt"
+  grep -q '^pool [0-9]' "$t/net/claude/status.txt" || printf 'pool 0\n' >> "$t/net/claude/status.txt"
+  rm -f "$t/net/.cmux/events/observation.json"
+}
+
 # a network: four agents with a key and a genesis
 for a in claude codex grok muse; do mkdir -p "$t/net/$a"; echo '{}' > "$t/net/$a/key.json"; echo '{}' > "$t/net/$a/genesis.json"; done
 printf -- '- add a sub command\n2. add a mul command\n3. Add an `abs` command, with a new test file tests/test_abs.sh.\n4. Add a `sqrt` command.\n5. Add a `cube` command.\nKeep it small.\n' > "$t/goal.txt"
 # a repository's .plan in a node's checkout (not a git repository here: read as the file is)
 mkdir -p "$t/net/claude/repos/calc"
 printf '# a note\n\n2026-11-15\n* add a sub command\nadd a mul command\nadd a div command\nadd a cube command\n- add a pow command\n' > "$t/net/claude/repos/calc/.plan"
-printf 'height 7  term 1  leader codex\ntask 1 [closed] calc: - add a sub command\ntask 2 [open] calc: - add a mul command\ntask 3 [closed] calc: add a mod command\ntask 4 [open] calc: add a neg command\ntask 8 [open] calc: Audit <script>display</script>\n\nKeep this multiline task specification.\n</details> is task text.\nbid 1 [merged] task 1 by grok \nbid 2 [pending stale] task 2 by muse \nbid 3 [rejected] task 3 by codex it breaks <test.sh>\nbid 4 [cleared] task 2 by codex its edits no longer apply\ntask 5 [closed] calc: Step 3 of 4: Add an `abs` command to calc.sh, with a new test file tests/test_abs.sh. (step 1 is done)\nbid 5 [merged] task 5 by grok \ntask 6 [open] calc: Goal step 4: implement square roots\nbid 6 [pending] task 6 by muse \ntask 7 [open] calc: add a cube command\nbid 7 [merged] task 7 by codex \ntitle 1 Adds a sub case to calc.sh\nverdict 1 Fulfills goal step 1: calc can subtract\nnote 1 sub & its test\ntitle 2 Adds mul\nnote 2 a mul case\nverdict 3 Breaks the existing tests\nnote 3 mod\nnote 4 old mul\n' > "$t/net/claude/status.txt"
+printf 'height 7  term 1  leader codex\ntask 1 [closed] calc: - add a sub command\ntask 2 [open] calc: - add a mul command\ntask 3 [closed] calc: add a mod command\ntask 4 [open] calc: add a neg command\ntask 8 [open] calc: Audit <script>display</script>\n\nKeep this multiline task specification.\n</details> is task text.\nbid 1 [merged] task 1 by grok \nbid 2 [pending stale] task 2 by muse \nbid 3 [rejected] task 3 by codex it breaks <test.sh>\nbid 4 [cleared] task 2 by codex its edits no longer apply\ntask 5 [closed] calc: Step 3 of 4: Add an `abs` command to calc.sh, with a new test file tests/test_abs.sh. (step 1 is done)\nbid 5 [merged] task 5 by grok \ntask 6 [open] calc: Goal step 4: implement square roots\nbid 6 [pending] task 6 by muse \ntask 7 [open] calc: add a cube command\nbid 7 [merged] task 7 by codex \ntitle 1 Adds a sub case to calc.sh\nverdict 1 Fulfills goal step 1: calc can subtract\nnote 1 sub & its test\ntitle 2 Adds mul\nnote 2 a mul case\nverdict 3 Breaks the existing tests\nnote 3 mod\nnote 4 old mul\n' | write_status_fixture
 pc=$here/integrations/cmux/pantheon-cmux
 
 # the plan layout (the default)
@@ -129,8 +138,8 @@ grep -q '^<summary>🌳 add a sub command</summary>$' "$pm" || fail "plan's done
 grep -q '^<summary>🌱 add a mul command</summary>$' "$pm" || fail "plan's item being bid on"
 grep -q '^<summary>🫘 add a div command</summary>$' "$pm" || fail "plan's item not picked up: $(cat "$pm")"
 # a finished market's goal is headed Done
-cp "$t/net/claude/status.txt" "$t/status.keep"; echo 'finished: every agent, as leader, found no more tasks' >> "$t/net/claude/status.txt"
-( sed -n "/^ITEMS_AWK='/,/^}'\$/p; /^GOAL_AWK='/,/^}'\$/p; /^BIDS_AWK='/,/^}'\$/p" "$pc"; sed -n '/^market_title()/,/^}/p; /^render_plan()/,/^}/p; /^agents_of()/,/^}/p' "$pc" ) > "$t/fn0.sh"
+cp "$t/net/claude/status.txt" "$t/status.keep"; echo 'finished: every agent, as leader, found no more tasks' >> "$t/net/claude/status.txt"; rm -f "$t/net/.cmux/events/observation.json"
+( sed -n "/^ITEMS_AWK='/,/^}'\$/p; /^GOAL_AWK='/,/^}'\$/p; /^BIDS_AWK='/,/^}'\$/p" "$pc"; sed -n '/^status_observe()/,/^}/p; /^market_title()/,/^}/p; /^render_plan()/,/^}/p; /^mux_plan_changed()/,/^}/p; /^agents_of()/,/^}/p' "$pc" ) > "$t/fn0.sh"
 ( NET=$t/net ST=$t/net/.cmux; . "$t/fn0.sh"; render_plan )
 head -1 "$pm" | grep -q '^## Done$' || fail "a finished market's goal headed Done: $(head -3 "$pm")"
 ! grep -q 'Finished' "$pm" || fail "a finished market's plan has no Finished line"
@@ -167,9 +176,9 @@ PYGOAL
 cp "$t/goal.keep" "$t/goal.txt"
 ( NET=$t/net ST=$t/net/.cmux; . "$t/fn0.sh"; render_plan )
 # while a leader is drawn, Market alone
-sed '1s/leader codex/leader (drawing)/' "$t/status.keep" > "$t/net/claude/status.txt"; ( NET=$t/net ST=$t/net/.cmux; . "$t/fn0.sh"; render_plan )
+sed '1s/leader codex/leader (drawing)/' "$t/status.keep" | write_status_fixture; ( NET=$t/net ST=$t/net/.cmux; . "$t/fn0.sh"; render_plan )
 head -1 "$pm" | grep -q '^## Market$' || fail "goal headed Market while a leader is drawn: $(head -1 "$pm")"
-cp "$t/status.keep" "$t/net/claude/status.txt"; ( NET=$t/net ST=$t/net/.cmux; . "$t/fn0.sh"; render_plan )
+cat "$t/status.keep" | write_status_fixture; ( NET=$t/net ST=$t/net/.cmux; . "$t/fn0.sh"; render_plan )
 head -1 "$pm" | grep -q '^## Market (codex leader)$' || fail "goal headed by its leader again"
 grep -q '^~~add a pow command~~$' "$pm" || fail "plan's dropped item"
 ! grep -q 'a note' "$pm" || fail "plan shows a # note"
@@ -196,7 +205,7 @@ grep -q '^<summary>🪦 (codex) old mul</summary>$' "$pm" || fail "a cleared bid
 [ "$(grep -c '^<details>$' "$pm")" = 13 ] && [ "$(grep -c '^</details>$' "$pm")" = 13 ] || fail "a details block for the market instructions, each plan item and each bid"
 # unchanged, it isn't rewritten (the view doesn't redraw for nothing)
 touch -t 202001010000 "$pm"
-( sed -n "/^ITEMS_AWK='/,/^}'\$/p; /^GOAL_AWK='/,/^}'\$/p; /^BIDS_AWK='/,/^}'\$/p" "$pc"; sed -n '/^market_title()/,/^}/p; /^render_plan()/,/^}/p' "$pc"; sed -n '/^agents_of()/,/^}/p' "$pc" ) > "$t/fn.sh"
+( sed -n "/^ITEMS_AWK='/,/^}'\$/p; /^GOAL_AWK='/,/^}'\$/p; /^BIDS_AWK='/,/^}'\$/p" "$pc"; sed -n '/^status_observe()/,/^}/p; /^market_title()/,/^}/p; /^render_plan()/,/^}/p; /^mux_plan_changed()/,/^}/p' "$pc"; sed -n '/^agents_of()/,/^}/p' "$pc" ) > "$t/fn.sh"
 ( NET=$t/net ST=$t/net/.cmux; . "$t/fn.sh"; render_plan )
 [ -z "$(find "$pm" -newer "$t/goal.txt")" ] || fail "an unchanged plan was rewritten"
 # the node scripts: run from where up ran, each with its backend and the node arguments
@@ -288,24 +297,24 @@ echo idle > "$t/state"; echo 'LIMIT until 5pm' >> "$t/net/claude/status.txt"; : 
 sh "$pc" watchdog "$t/net" --once > /dev/null; sh "$pc" watchdog "$t/net" --once > /dev/null
 ! grep -q '^agent message' "$t/ledger" || fail "nudged a limited agent"
 sh "$pc" watchdog "$t/net" --check | grep -q "watchdog: claude limited" || fail "--check names a limited agent"
-printf 'height 43  term 2  leader grok\n' > "$t/net/claude/status.txt"
+printf 'height 43  term 2  leader grok\n' | write_status_fixture
 sh "$pc" watchdog "$t/net" --check | grep -q "watchdog: claude idle" || fail "--check names the state"
 # each term's leader, from the history line: said once, and kept in leaders.log
 rm -f "$t/net/.cmux/leaders.log"
-printf 'height 50  term 2  leader grok\nhistory  codex grok\n' > "$t/net/claude/status.txt"
+printf 'height 50  term 2  leader grok\nhistory  codex grok\n' | write_status_fixture
 sh "$pc" watchdog "$t/net" --once > "$t/wd"
 grep -q '^pantheon-cmux: term 1: codex leads (seen at h50)$' "$t/wd" && grep -q '^pantheon-cmux: term 2: grok leads (seen at h50)$' "$t/wd" || fail "the watchdog says each term's leader: $(cat "$t/wd")"
-printf 'height 61  term 4  leader claude\nhistory  codex grok muse claude\n' > "$t/net/claude/status.txt"
+printf 'height 61  term 4  leader claude\nhistory  codex grok muse claude\n' | write_status_fixture
 sh "$pc" watchdog "$t/net" --once > "$t/wd"
 ! grep -q 'term [12]:' "$t/wd" || fail "a leader said twice: $(cat "$t/wd")"
 grep -q 'term 3: muse leads (seen at h61)' "$t/wd" && grep -q 'term 4: claude leads (seen at h61)' "$t/wd" || fail "a term shorter than a pass is said too: $(cat "$t/wd")"
 [ "$(cut -d' ' -f1-3 "$t/net/.cmux/leaders.log" | tr '\n' ,)" = "1 codex 50,2 grok 50,3 muse 61,4 claude 61," ] || fail "leaders.log: $(cat "$t/net/.cmux/leaders.log")"
 # the history line holds the last 8 terms' leaders: numbered back from the term
-printf 'height 140  term 12  leader (drawing)\nhistory  grok muse claude codex grok muse claude codex\n' > "$t/net/claude/status.txt"
+printf 'height 140  term 12  leader (drawing)\nhistory  grok muse claude codex grok muse claude codex\n' | write_status_fixture
 sh "$pc" watchdog "$t/net" --once > "$t/wd"
 [ "$(grep -c 'leads' "$t/wd")" = 8 ] && grep -q 'term 5: grok leads (seen at h140)' "$t/wd" && grep -q 'term 12: codex leads' "$t/wd" || fail "terms numbered back from the term: $(cat "$t/wd")"
 # a finished market: an idle diplomat is done, so no nudge, and the loop ends
-printf 'height 44  term 3  leader \nfinished: every agent, as leader, found no more tasks\n' > "$t/net/claude/status.txt"; : > "$t/ledger"
+printf 'height 44  term 3  leader (drawing)\nfinished: every agent, as leader, found no more tasks\n' | write_status_fixture; : > "$t/ledger"
 sh "$pc" watchdog "$t/net" --once > /dev/null; sh "$pc" watchdog "$t/net" --once > /dev/null; sh "$pc" watchdog "$t/net" --once > /dev/null
 ! grep -q '^agent message' "$t/ledger" || fail "nudged a diplomat of a finished market"
 sh "$pc" watchdog "$t/net" --check | grep -q "watchdog: claude finished" || fail "--check names a finished market's diplomat"
@@ -320,13 +329,14 @@ head -1 "$t/net/.cmux/plan.md" | grep -q '^## Done$' || fail "the watchdog rende
 # Completion can land after a status pass but before the loop checks whether
 # to stop. Reproduce that timing without sleeps or a running market.
 sed '/^c=${1:-};/,$d' "$pc" > "$t/watchdog-functions.sh"
-printf 'height 43  term 3  leader codex\nno more tasks: 3 of 4, say claude grok muse\n' > "$t/net/claude/status.txt"
+printf 'height 43  term 3  leader codex\nno more tasks: 3 of 4, say claude grok muse\n' | write_status_fixture
 rm -f "$t/net/.cmux/finished" "$t/net/.cmux/claude/inbox/finished"
 : > "$t/ledger"
 (
   . "$t/watchdog-functions.sh"
+  here=$project_here
   note_leaders() {
-    printf 'height 44  term 3  leader (drawing)\nfinished: every agent, as leader, found no more tasks\n' > "$t/net/claude/status.txt"
+    printf 'height 44  term 3  leader (drawing)\nfinished: every agent, as leader, found no more tasks\n' | write_status_fixture
   }
   sleep() { :; }
   watch_agent() { :; }
@@ -334,17 +344,17 @@ rm -f "$t/net/.cmux/finished" "$t/net/.cmux/claude/inbox/finished"
 ) > "$t/wd" 2>&1 || fail "watchdog completion race: $(cat "$t/wd")"
 head -1 "$pm" | grep -q '^## Done$' || fail "completion between passes left the plan stale"
 [ -e "$t/net/.cmux/claude/inbox/finished" ] && grep -q '^notify --title Pantheon: the market finished' "$t/ledger" || fail "completion between passes left diplomats waiting"
-printf 'height 45  term 4  leader muse\n' > "$t/net/claude/status.txt"; rm -f "$t/net/.cmux/finished"; : > "$t/ledger"
+printf 'height 45  term 4  leader muse\n' | write_status_fixture; rm -f "$t/net/.cmux/finished"; : > "$t/ledger"
 ( timeout 3 sh "$pc" watchdog "$t/net" > /dev/null 2>&1 || true )
 [ "$(grep -c '^rename-workspace --workspace .* Market (muse leader)$' "$t/ledger")" = 1 ] || fail "the watchdog names the workspace for its leader, once: $(grep rename-workspace "$t/ledger")"
 # a finishing market whose leaders begin to say there are no more tasks: the count
 title() { ( NET=$t/net ST=$t/net/.cmux; . "$t/fn0.sh"; market_title ); }
-printf 'height 46  term 5  leader grok\nno more tasks: 1 of 4, say muse\n' > "$t/net/claude/status.txt"
+printf 'height 46  term 5  leader grok\nno more tasks: 1 of 4, say muse\n' | write_status_fixture
 [ "$(title)" = "Market (grok leader, 1/4 to done)" ] || fail "the title with a leader and the count: $(title)"
-printf 'height 47  term 5  leader (drawing)\nno more tasks: 2 of 4, say muse grok\n' > "$t/net/claude/status.txt"
+printf 'height 47  term 5  leader (drawing)\nno more tasks: 2 of 4, say muse grok\n' | write_status_fixture
 [ "$(title)" = "Market (2/4 to done)" ] || fail "the title while a leader is drawn, with the count: $(title)"
 ( NET=$t/net ST=$t/net/.cmux; . "$t/fn0.sh"; render_plan ); head -1 "$t/net/.cmux/plan.md" | grep -q '^## Market (2/4 to done)$' || fail "the plan headed with the count: $(head -1 "$t/net/.cmux/plan.md")"
-printf 'height 43  term 2  leader grok\n' > "$t/net/claude/status.txt"
+printf 'height 43  term 2  leader grok\n' | write_status_fixture
 
 # down: the record is finished, and kept when NET is gone
 echo '{"h":9,"txs":[]}' > "$t/net/codex/blocks.log"
