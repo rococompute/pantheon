@@ -1,0 +1,119 @@
+(** Real Host IO through the production native and image-service handlers.
+    The wire fixture substitutes only socket receive/reply; every other
+    operation executes the actual shell interpreter. No node or model runs. *)
+Import core.util runtime.nodeio runtime.node runtime.node_host runtime.node_service runtime.node_shell.
+Require Soma.Host.
+
+check (name : string) (ok : bool) : string := append (if ok then "ok " else "FAIL ") name.
+world (home : string) : service_world := {| sw_token := "token"; sw_self := "/node"; sw_env := [];
+  sw_world := {| hw_home := home; hw_backend := ""; hw_repos := []; hw_max_calls := "0";
+    hw_ci := ""; hw_ci_repo := []; hw_ci_memory := "256m"; hw_ci_image := "image"; hw_ci_sandbox := "/runner" |} |}.
+
+Fixpoint run_wire {A : Type} (request : list string) (reply : string) (p : nprog A) : A * string :=
+  match p with
+  | NDone a => (a, reply)
+  | NStep op k =>
+      match op with
+      | IoServeNext _ => run_wire request reply (k (ans_data true request))
+      | IoServeReply _ found _ _ => run_wire request found (k ans_ok)
+      | _ => run_wire request reply (k (shell_answer op))
+      end
+  end.
+
+remove_request (sync wire : bool) (w : service_world) (made : list string) (target : string) : nprog bool :=
+  let op := if sync then IoRun "rm" ["-rf", target] else IoRemoveTree target in
+  if wire then
+    let req := ["fixture-connection", sw_token w] ++ io_wire op in
+    let state := {| service_begin with ss_made := made |} in
+    NDone (seq (snd (run_wire req "missing reply" (service_tick_prog w state))) "true")
+  else nbind (sv_serve w made op) (fun answer => NDone (fst answer)).
+
+Fixpoint wait_absent (fuel : nat) (path : string) : nprog bool :=
+  match fuel with
+  | 0 => NDone false
+  | S rest => nbind (nask (IoFileExists path)) (fun found =>
+      if negb (fst found) then NDone true else
+      nbind (nask (IoSockSelect "10" [] [])) (fun _ => wait_absent rest path))
+  end.
+
+cleanup_case (sync wire : bool) (w : service_world) (made : list string)
+    (name target : string) (allowed : bool) : nprog string :=
+  nbind (nask (IoMakeDirs (hjoin (hw_home (sw_world w)) "repos"))) (fun _ =>
+  nbind (nask (IoMakeDirs target)) (fun _ =>
+  nbind (nask (IoSave (hjoin target "keep") "false" "fixture")) (fun _ =>
+  nbind (remove_request sync wire w made target) (fun accepted =>
+  nbind (if allowed then wait_absent 200 target else
+    nbind (nask (IoReadText (hjoin target "keep")))
+      (fun contents => NDone (seq (ans_one contents) "fixture"))) (fun observed =>
+  NDone (check (hcat [if wire then "image service wire " else "native service ",
+    if sync then "synchronous rm " else "legacy tree ", name])
+    (Bool.eqb accepted allowed && observed))))))).
+
+Fixpoint cleanup_cases (sync wire : bool) (w : service_world) (made : list string)
+    (cases : list (string * string * bool)) : nprog (list string) :=
+  match cases with
+  | [] => NDone []
+  | (name, target, allowed) :: rest =>
+      nbind (cleanup_case sync wire w made name target allowed) (fun result =>
+      nbind (cleanup_cases sync wire w made rest) (fun results => NDone (result :: results)))
+  end.
+
+fixture : nprog (list string) :=
+  nbind (nask (IoTempDir "pantheon-cleanup-home")) (fun h =>
+  nbind (nask (IoTempDir "pantheon-cleanup-owned")) (fun m =>
+  let home := ans_one h in let minted := ans_one m in let w := world home in
+  let made := sv_after [] (IoTempDir "pantheon-cleanup-owned") m in
+  let cases (sync : bool) := [("allows minted root", minted, true),
+    ("allows exact git sibling", append minted ".git", true),
+    (if sync then "allows exact worktree .git" else "refuses worktree .git", hjoin minted ".git", sync),
+    ("refuses repository root", hjoin home "repos", false),
+    ("refuses inbox root", hjoin home "inbox", false),
+    ("refuses minted descendant", hjoin minted "child", false),
+    ("refuses worktree .git descendant", hjoin minted ".git/child", false),
+    ("refuses traversal", hjoin home "repos/../inbox", false)] in
+  nbind (cleanup_cases false false w made (cases false)) (fun native =>
+  nbind (cleanup_cases false true w made (cases false)) (fun image =>
+  nbind (cleanup_cases true false w made (cases true)) (fun native_sync =>
+  nbind (cleanup_cases true true w made (cases true)) (fun image_sync =>
+  let preserve := check "failed legacy cleanup keeps minted capability"
+    (eq_strs (sv_after made (IoRemoveTree minted) (ans_data false ["spawn failed"])) made) in
+  let revoke := check "successful legacy cleanup revokes minted capability"
+    (length (sv_after made (IoRemoveTree minted) ans_ok) =? 0) in
+  let sync_preserve := check "failed synchronous cleanup keeps minted capability"
+    (eq_strs (sv_after made (IoRun "rm" ["-rf", minted]) (ans_data false ["rm failed"])) made) in
+  let sync_revoke := check "successful synchronous cleanup revokes minted capability"
+    (length (sv_after made (IoRun "rm" ["-rf", minted]) ans_ok) =? 0) in
+  let sync_git_keeps := check "worktree .git cleanup keeps checkout capability"
+    (eq_strs (sv_after made (IoRun "rm" ["-rf", hjoin minted ".git"]) ans_ok) made) in
+  let sibling_keeps := check "separate git cleanup keeps checkout capability"
+    (eq_strs (sv_after made (IoRun "rm" ["-rf", append minted ".git"]) ans_ok) made) in
+  nbind (nask (IoRun "rm" ["-rf", "--", home, minted, append minted ".git"]))
+    (fun removed => NDone (native ++ image ++ native_sync ++ image_sync ++ [preserve, revoke, sync_preserve, sync_revoke, sync_git_keeps, sibling_keeps, check "owned fixture trees removed" (fst removed)])))))))).
+
+missing_case (sync wire : bool) (w : service_world) (made : list string) (target : string) : nprog (list string) :=
+  let op := if sync then IoRun "rm" ["-rf", target] else IoRemoveTree target in
+  let label := hcat [if wire then "image wire " else "native ",
+    if sync then "synchronous rm " else "legacy cleanup "] in
+  nbind (nask (IoSave (hjoin target "keep") "false" "fixture")) (fun _ =>
+  nbind (if wire then
+    let req := ["fixture-connection", sw_token w] ++ io_wire op in
+    let initial := {| service_begin with ss_made := made |} in
+    let result := run_wire req "missing reply" (service_tick_prog w initial) in
+    NDone (seq (snd result) "true", ss_made (fst result))
+  else nbind (sv_serve w made op) (fun answer => NDone (fst answer, sv_after made op answer))) (fun result =>
+  nbind (nask (IoReadText (hjoin target "keep"))) (fun contents =>
+  NDone [check (append label "reports actual exec failure") (negb (fst result)),
+    check (append label "retains capability after actual exec failure") (eq_strs (snd result) made),
+    check (append label "exec failure preserves fixture contents") (seq (ans_one contents) "fixture")]))).
+
+missing_fixture : nprog (list string) :=
+  nbind (nask (IoTempDir "pantheon-cleanup-missing-exec")) (fun made_answer =>
+  let target := ans_one made_answer in let made := sv_after [] (IoTempDir "owned") made_answer in
+  let w := world target in
+  nbind (missing_case false false w made target) (fun native =>
+  nbind (missing_case false true w made target) (fun image =>
+  nbind (missing_case true false w made target) (fun native_sync =>
+  nbind (missing_case true true w made target) (fun image_sync =>
+  NDone (native ++ image ++ native_sync ++ image_sync)))))).
+
+main := Host.print_lines (run_shell (if eq_strs (Host.argv tt) ["missing-rm"] then missing_fixture else fixture)).
