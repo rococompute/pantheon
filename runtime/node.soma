@@ -767,6 +767,12 @@ shell_fence (token label body : string) : string :=
   append context_fence_open (append token (append context_fence_space (append label (append context_fence_body (append newline
     (append body (append newline (append context_fence_close (append token (append context_fence_body newline)))))))))).
 
+(** Runtime context is inserted after template parsing, so unusual names
+    need an actual fresh-token fence rather than a template-token fence. *)
+shell_name (token name : string) : string :=
+  if seq (prompt_name name) name then name
+  else shell_fence token prompts.common.prompt_name_label name.
+
 (** git ls-files' output, at most [cap] names, then how many more *)
 listing_text (files : string) (cap : nat) : string :=
   let fs := filter (fun l => negb (seq l "")) (split_lines files) in
@@ -820,23 +826,58 @@ repo_files_text (token : string) (cap budget : nat) (files : list (string * opti
 repo_text_of (token r : string) (listing : option string) (files : list (string * option string))
     (cap budget : nat) : string :=
   match listing with
-  | None => append context_repo_absent_start (append r (append context_repo_absent_end newline))
+  | None => append context_repo_absent_start (append (shell_name token r) (append context_repo_absent_end newline))
   | Some l => append (shell_fence token (append context_files_label r) (listing_text l 300))
                      (repo_files_text token cap budget files)
   end.
 
-(** The placeholders in order; each part is read only when its placeholder
-    is there, and {{REPO}} needs a context. Text put in isn't scanned again
-    for an earlier placeholder. *)
+(** Parse only the original template. Inserted repository/plan text and
+    even the fence token are literal values, never another template. Keep
+    complete literal chunks so assembly is linear in template and output. *)
+Inductive prompt_slot := FenceSlot | ReposSlot | PlanSlot | RepoSlot.
+Inductive prompt_part := PromptLiteral (text : string) | PromptSlot (slot : prompt_slot).
+
+Fixpoint prompt_lex_go (cs literal : list ascii) (parts : list prompt_part) : list prompt_part :=
+  let flush := PromptLiteral (of_chars (rev_onto literal [])) :: parts in
+  match cs with
+  | "{"%char :: "{"%char :: "F"%char :: "}"%char :: "}"%char :: rest =>
+      prompt_lex_go rest [] (PromptSlot FenceSlot :: flush)
+  | "{"%char :: "{"%char :: "R"%char :: "E"%char :: "P"%char :: "O"%char :: "S"%char :: "}"%char :: "}"%char :: rest =>
+      prompt_lex_go rest [] (PromptSlot ReposSlot :: flush)
+  | "{"%char :: "{"%char :: "P"%char :: "L"%char :: "A"%char :: "N"%char :: "}"%char :: "}"%char :: rest =>
+      prompt_lex_go rest [] (PromptSlot PlanSlot :: flush)
+  | "{"%char :: "{"%char :: "R"%char :: "E"%char :: "P"%char :: "O"%char :: "}"%char :: "}"%char :: rest =>
+      prompt_lex_go rest [] (PromptSlot RepoSlot :: flush)
+  | c :: rest => prompt_lex_go rest (c :: literal) parts
+  | [] => rev_onto flush []
+  end.
+
+prompt_parts (text : string) : list prompt_part := prompt_lex_go (chars text) [] [].
+
+prompt_has (slot : prompt_slot) (parts : list prompt_part) : bool :=
+  existsb (fun part => match part, slot with
+    | PromptSlot FenceSlot, FenceSlot | PromptSlot ReposSlot, ReposSlot
+    | PromptSlot PlanSlot, PlanSlot | PromptSlot RepoSlot, RepoSlot => true
+    | _, _ => false end) parts.
+
+prompt_render (parts : list prompt_part) (token repos plan : string) (repo : option string) : string :=
+  Stdlib.Strings.String.concat "" (map (fun part => match part with
+    | PromptLiteral text => text
+    | PromptSlot FenceSlot => token
+    | PromptSlot ReposSlot => repos
+    | PromptSlot PlanSlot => plan
+    | PromptSlot RepoSlot => match repo with Some text => text | None => "{{REPO}}" end
+    end) parts).
+
 prompt_assemble (token prompt : string) (ctx : list string) (repos plan : unit -> string)
     (repo : string -> list string -> string) : string :=
-  let p := replace_all prompt "{{F}}" token in
-  let p := if contains "{{REPOS}}" p then replace_all p "{{REPOS}}" (repos tt) else p in
-  let p := if contains "{{PLAN}}" p then replace_all p "{{PLAN}}" (plan tt) else p in
-  match ctx with
-  | r :: paths => if contains "{{REPO}}" p then replace_all p "{{REPO}}" (repo r paths) else p
-  | [] => p
-  end.
+  let parts := prompt_parts prompt in
+  let r := if prompt_has ReposSlot parts then repos tt else "" in
+  let p := if prompt_has PlanSlot parts then plan tt else "" in
+  let x := match ctx with
+    | name :: paths => if prompt_has RepoSlot parts then Some (repo name paths) else None
+    | [] => None end in
+  prompt_render parts token r p x.
 
 (** ---- What a model call's output becomes (step 5) ----
     A reply is held for a usage limit, fails, or becomes an llm_reply
@@ -1508,13 +1549,13 @@ llm_repo_prog (token r : string) (paths : list string) : nprog string :=
     same text). *)
 prompt_prog (token prompt : string) (ctx : list string) (repos plan : nprog string)
     (repo : string -> list string -> nprog string) : nprog string :=
-  let p := replace_all prompt "{{F}}" token in
-  nbind (if contains "{{REPOS}}" p then nbind repos (fun t => NDone (replace_all p "{{REPOS}}" t)) else NDone p) (fun p =>
-  nbind (if contains "{{PLAN}}" p then nbind plan (fun t => NDone (replace_all p "{{PLAN}}" t)) else NDone p) (fun p =>
-  match ctx with
-  | r :: paths => if contains "{{REPO}}" p then nbind (repo r paths) (fun t => NDone (replace_all p "{{REPO}}" t)) else NDone p
-  | [] => NDone p
-  end)).
+  let parts := prompt_parts prompt in
+  nbind (if prompt_has ReposSlot parts then repos else NDone "") (fun r =>
+  nbind (if prompt_has PlanSlot parts then plan else NDone "") (fun p =>
+  nbind (match ctx with
+    | name :: paths => if prompt_has RepoSlot parts then nbind (repo name paths) (fun text => NDone (Some text)) else NDone None
+    | [] => NDone None end) (fun x =>
+  NDone (prompt_render parts token r p x)))).
 
 (** events queued in order, stopping at the first not queued *)
 Fixpoint queue_prog (evs : list (list string)) : nprog bool :=

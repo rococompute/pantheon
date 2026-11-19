@@ -1298,12 +1298,15 @@ Theorem prompt_prog_assembles : forall ans token prompt ctx repos plan repo,
     (fun r ps => nresult ans (repo r ps)).
 Proof.
   intros ans token prompt ctx repos plan repo. unfold prompt_prog, prompt_assemble. cbv beta zeta.
-  assert (part : forall (q tag : string) (part : nprog string),
-    nresult ans (if contains tag q then nbind part (fun t => NDone (replace_all q tag t)) else NDone q) =
-    (if contains tag q then replace_all q tag (nresult ans part) else q)).
-  { intros q tag part. destruct (contains tag q); [rewrite nresult_nbind|]; reflexivity. }
-  rewrite nresult_nbind, part, nresult_nbind, part.
-  destruct ctx as [|r paths]; [reflexivity|]. apply part.
+  rewrite nresult_nbind.
+  destruct (prompt_has ReposSlot (prompt_parts prompt)); cbn;
+  rewrite nresult_nbind;
+  destruct (prompt_has PlanSlot (prompt_parts prompt)); cbn;
+  rewrite nresult_nbind.
+  all: destruct ctx as [|name paths]; cbn.
+  all: try reflexivity.
+  all: destruct (prompt_has RepoSlot (prompt_parts prompt)); cbn;
+       rewrite ?nresult_nbind; reflexivity.
 Qed.
 
 (** A model call over its budget reads the budget, the clock and the

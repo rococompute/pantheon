@@ -89,8 +89,17 @@ violation (a : obj) (m : obj) (b : bid) : string :=
 fence (label body : string) : string :=
   append prompt_fence_open (append (defang label) (append prompt_fence_body (append (defang body) prompt_fence_close))).
 
+(** Plain identifiers cannot introduce framing or placeholders. Preserve
+    their readable spelling; unusual names remain supported as fenced data. *)
+prompt_name (s : string) : string :=
+  if negb (seq s "") && forallb (fun c =>
+       let n := Ascii.nat_of_ascii c in
+       ((48 <=? n) && (n <=? 57)) || ((65 <=? n) && (n <=? 90)) ||
+       ((97 <=? n) && (n <=? 122)) || (n =? 46) || (n =? 95) || (n =? 45)) (chars s)
+  then s else fence prompt_name_label s.
+
 preamble (a : obj) (role : string) : string :=
-  append prompt_identity_start (append (me a) (append prompt_role_intro
+  append prompt_identity_start (append (prompt_name (me a)) (append prompt_role_intro
   (append role (append prompt_role_end (append (perspective a)
   prompt_untrusted_policy))))).
 
@@ -104,7 +113,7 @@ edits_text (b : bid) : string := fold_left (fun s e => append s (edit_text e)) (
 (** the repositories in this agent's scope (genesis may exclude some) *)
 my_repos (a m : obj) : list (string * string) := filter (fun r => negb (excludes m (me a) (fst r))) (repos m).
 
-repo_names (a m : obj) : string := fold_left (fun s r => append s (append " " (fst r))) (my_repos a m) "".
+repo_names (a m : obj) : string := fold_left (fun s r => append s (append " " (prompt_name (fst r)))) (my_repos a m) "".
 
 goal_text (a : obj) : string := fold_left (fun s l => append s (append l "
 ")) (goal a) "".
@@ -170,7 +179,7 @@ rejections (m : obj) (t : task) : string :=
   end.
 
 patch_prompt (a m : obj) (t : task) : string :=
-  append (preamble a (append patch_role_prefix (trepo t)))
+  append (preamble a (append patch_role_prefix (prompt_name (trepo t))))
   (append (fence patch_task_label (spec t)) (append (merged_text m t) (append (rejections m t) (append patch_plan_context
   patch_instructions)))).
 
@@ -178,7 +187,7 @@ pick_prompt (a m : obj) (t : task) (bs : list bid) : string :=
   append (append (preamble a pick_role) (leader_context m (trepo t)))
   (append (fence pick_task_label (spec t)) (append (merged_text m t)
   (append (match bs with [] => pick_no_bids | _ => "" end)
-  (append (fold_left (fun s b => append s (append pick_bid_label (append (show (bidn b)) (append pick_by_label (append (bidder b)
+  (append (fold_left (fun s b => append s (append pick_bid_label (append (show (bidn b)) (append pick_by_label (append (prompt_name (bidder b))
             (append pick_bid_separator (append (fence pick_note_label (note b)) (edits_text b)))))))) bs "")
   (append pick_plan_context
   pick_instructions))))).

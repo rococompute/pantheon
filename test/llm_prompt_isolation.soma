@@ -19,7 +19,7 @@ checks : list string := [
   check "task repository receives paths in order" (assembled "{{REPO}}" ["calc", "a", "b"]) "calca,b",
   check "earlier fence marker in inserted repo text stays literal"
     (prompt_assemble "T" "{{REPOS}}" [] (fun _ => "{{F}}") (fun _ => "unused") (fun _ _ => "unused")) "{{F}}",
-  check "later placeholder in inserted repo listing expands"
-    (prompt_assemble "T" "{{REPOS}}" [] (fun _ => "{{PLAN}}") (fun _ => "open plans") (fun _ _ => "unused")) "open plans"
+  check "later placeholder in inserted repo listing stays literal"
+    (prompt_assemble "T" "{{REPOS}}" [] (fun _ => "{{PLAN}}") (fun _ => "open plans") (fun _ _ => "unused")) "{{PLAN}}"
 ].
 main := Host.print_lines checks.
