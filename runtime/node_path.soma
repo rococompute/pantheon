@@ -7,7 +7,9 @@
     doesn't follow the last part): a symlink anywhere on the way is
     "symlink", so a write can't leave the checkout; a part that isn't
     there ends it, "none"; otherwise what the last part is, "dir" or
-    "file". *)
+    "file". The write/remove primitives separately traverse descriptor-relative
+    paths with O_NOFOLLOW, so the probe is advisory; a concurrent symlink
+    substitution cannot make an operation leave its trusted root. *)
 Import core.util runtime.nodeio.
 From Stdlib Require Import Ascii.
 

@@ -1,12 +1,7 @@
-(** How the binary writes its files (runtime/node_file.soma), whatever the host's
-    primitives answer: a file written whole is touched only by the rename
-    of its temporary file, after the text is put (and on disk, when it
-    must be) and its mode kept; a failed put renames nothing; a durable
-    write syncs the directory after the rename; directories are made only
-    where none is, never "", "." or "/"; a path's write makes the
-    directories above it and writes that file, nothing else; and a save
-    that failed ends the binary rather than going on; a tree is removed by
-    rm started on its own, the path its one operand. *)
+(** Application file effects over explicit Host IO contracts. Whole-file
+    replacement is a single atomic primitive; native Host regression tests
+    exercise its exclusive temporary file and descriptor-relative behavior.
+    Soma selects targets, contents and durability and handles failures. *)
 
 Lemma ntrace_nbind : forall (A B : Type) ans (p : nprog A) (f : A -> nprog B),
   ntrace ans (nbind p f) = ntrace ans p ++ ntrace ans (f (nresult ans p)).
@@ -24,54 +19,22 @@ Ltac pick := repeat match goal with
 
 sync_word (durable : bool) : string := if durable then "true" else "false".
 
-(** the put failed: nothing is renamed, the file is as it was *)
-Theorem failed_put_renames_nothing : forall ans p durable text,
-  fst (ans (IoFilePut (save_tmp p) text (sync_word durable))) = false ->
-  ntrace ans (write_whole p durable text) = [IoFileMode p, IoFilePut (save_tmp p) text (sync_word durable)].
-Proof.
-  intros ans p durable text H. destruct durable; unfold write_whole; cbn -[save_tmp dirname ans_one] in *;
-    rewrite H; reflexivity.
-Qed.
-
-(** it worked: its mode looked at, the text put (on disk first when
-    durable), the mode kept, the rename, then (durable) the directory
-    synced *)
+(** An atomic replacement is one explicit host operation. Its actual
+    descriptor-relative/symlink behavior is exercised by native Host tests;
+    this proof checks the application's requested contents and durability. *)
 Theorem whole_write_order : forall ans p durable text,
-  fst (ans (IoFilePut (save_tmp p) text (sync_word durable))) = true ->
-  (fst (ans (IoFileMode p)) = true -> fst (ans (IoChmod (save_tmp p) (ans_one (ans (IoFileMode p))))) = true) ->
-  fst (ans (IoRename (save_tmp p) p)) = true ->
-  ntrace ans (write_whole p durable text) =
-    [IoFileMode p, IoFilePut (save_tmp p) text (sync_word durable)]
-    ++ (if fst (ans (IoFileMode p)) then [IoChmod (save_tmp p) (ans_one (ans (IoFileMode p)))] else [])
-    ++ IoRename (save_tmp p) p :: (if durable then [IoSyncDir (dirname p)] else []).
-Proof.
-  intros ans p durable text Hw Hm Hr.
-  destruct durable; unfold write_whole; cbn -[save_tmp dirname ans_one] in *; rewrite Hw; cbn -[save_tmp dirname ans_one];
-    (destruct (fst (ans (IoFileMode p))) eqn:M;
-     [cbn -[save_tmp dirname ans_one]; rewrite (Hm eq_refl); cbn -[save_tmp dirname ans_one]; rewrite Hr; reflexivity
-     | cbn -[save_tmp dirname ans_one]; rewrite Hr; reflexivity]).
-Qed.
+  ntrace ans (write_whole p durable text) = [IoFileReplace p text (sync_word durable)].
+Proof. intros. reflexivity. Qed.
 
-(** nothing else: the only operation on the file itself is the rename
-    onto it *)
-Theorem whole_write_only_renames_onto_it : forall ans p durable text op,
+Theorem failed_replace_reports_error : forall ans p durable text,
+  nresult ans (write_whole p durable text) =
+    err_of (ans (IoFileReplace p text (sync_word durable))).
+Proof. intros. reflexivity. Qed.
+
+Theorem whole_write_only_replaces_its_target : forall ans p durable text op,
   In op (ntrace ans (write_whole p durable text)) ->
-  op = IoFileMode p \/ op = IoFilePut (save_tmp p) text (sync_word durable) \/
-  op = IoChmod (save_tmp p) (ans_one (ans (IoFileMode p))) \/ op = IoRename (save_tmp p) p \/
-  op = IoSyncDir (dirname p).
-Proof.
-  intros ans p durable text op H.
-  destruct durable; unfold write_whole in H; cbn -[save_tmp dirname ans_one] in H;
-    destruct (fst (ans (IoFilePut (save_tmp p) text _))); cbn -[save_tmp dirname ans_one] in H;
-    try destruct (fst (ans (IoFileMode p))); cbn -[save_tmp dirname ans_one] in H;
-    try destruct (fst (ans (IoChmod (save_tmp p) _))); cbn -[save_tmp dirname ans_one] in H;
-    try destruct (fst (ans (IoRename (save_tmp p) p))); cbn -[save_tmp dirname ans_one] in H;
-    repeat match goal with
-      | H : _ \/ _ |- _ => destruct H as [H | H]
-      | H : False |- _ => destruct H
-      | H : _ = op |- _ => subst op; pick
-      end.
-Qed.
+  op = IoFileReplace p text (sync_word durable).
+Proof. intros ans p durable text op [H | []]. symmetry. exact H. Qed.
 
 (** ---- directories ---- *)
 
@@ -98,17 +61,10 @@ Qed.
 
 (** a path's write: the directories above it, then that file written
     whole; nothing else *)
-Theorem path_write_writes_its_file : forall ans dir p text op,
-  In op (ntrace ans (path_write_prog dir p text)) ->
-  (exists x, op = IoFileExists x \/ op = IoMakeDir x) \/
-  In op (ntrace ans (write_whole (hjoin dir p) false text)).
-Proof.
-  intros ans dir p text op H. unfold path_write_prog in H.
-  rewrite ntrace_nbind in H. apply List.in_app_or in H as [H | H].
-  - left. unfold make_dirs in H. apply make_dirs_only_where_none in H as [x [[E | [E _]] _]]; exists x; [left | right]; exact E.
-  - cbv beta in H. destruct (seq (nresult ans (make_dirs (dirname (hjoin dir p)))) ""); cbn [negb] in H; [| destruct H].
-    right. rewrite ntrace_nbind in H. apply List.in_app_or in H as [H | H]; [exact H | destruct H].
-Qed.
+Theorem path_write_writes_its_file : forall ans dir p text,
+  ntrace ans (path_write_prog dir p text) = [IoPathReplace dir p text] /\
+  nresult ans (path_write_prog dir p text) = ans_data true [err_of (ans (IoPathReplace dir p text))].
+Proof. intros. split; reflexivity. Qed.
 
 (** a save that failed is said and ends the binary: it never answers as
     if the file were written *)
