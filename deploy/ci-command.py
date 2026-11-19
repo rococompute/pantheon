@@ -54,7 +54,8 @@ def assumptions(text):
                 i += 1
     # Preserve each existing escape's complete statement, not just its count:
     # removing one assumption must not buy permission to introduce another.
-    bad = {'admitted', 'admit', 'axiom', 'axioms', 'parameter', 'parameters',
+    bad = {'admitted', 'admit', 'axiom', 'axioms', 'conjecture', 'conjectures',
+           'parameter', 'parameters',
            'hypothesis', 'hypotheses', 'variable', 'variables', 'context',
            'unk', 'unknown', 'err', 'error', 'cast', 'unsafe',
            'exact_no_check', 'vm_cast_no_check', 'native_cast_no_check', 'give_up'}
