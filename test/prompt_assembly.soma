@@ -89,8 +89,8 @@ checks : list string := [
   check_prompt "repo placeholder without context stays literal" (assembled "{{REPO}}" []) "{{REPO}}",
   check_prompt "inserted earlier placeholders stay literal"
     (prompt_assemble "T" "{{REPOS}}" [] (fun _ => "{{F}}") (fun _ => "unused") (fun _ _ => "unused")) "{{F}}",
-  check_prompt "inserted later placeholders are expanded in order"
-    (prompt_assemble "T" "{{REPOS}}" ["r"] (fun _ => "{{PLAN}}") (fun _ => "{{REPO}}") (fun _ _ => "done {{F}}")) "done {{F}}",
+  check_prompt "inserted later placeholders stay literal"
+    (prompt_assemble "T" "{{REPOS}}" ["r"] (fun _ => "{{PLAN}}") (fun _ => "{{REPO}}") (fun _ _ => "done {{F}}")) "{{PLAN}}",
   check_prompt "replacement never scans its own insertion" (replace_all "{{F}}{{F}}" "{{F}}" "{{F}}!") "{{F}}!{{F}}!",
   check_prompt "replacement is literal and nonoverlapping" (replace_all "aaaaa" "aa" "b") "bba",
   check_prompt "empty replacement pattern" (replace_all "abc" "" "x") "abc",

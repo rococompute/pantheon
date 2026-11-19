@@ -15,8 +15,9 @@ string fragments joined by `prompt_text`; joining inserts no whitespace.
 
 `core/agent.soma` assembles the four roles from these bindings and market data.
 `runtime/node.soma` supplies repository content and expands `{{F}}`, `{{REPOS}}`,
-`{{PLAN}}` and `{{REPO}}`. Keep the fence boundaries, defanging, replacement order
-and JSON fields intact when editing wording. Repository and peer content remains
+`{{PLAN}}` and `{{REPO}}`. Only placeholders in the original template expand; inserted values are never
+rescanned. Each requested context is read once, in repository-list, plan, task-file
+order. Keep fence boundaries, defanging and JSON fields intact when editing wording. Repository and peer content remains
 untrusted data; moving the strings does not change that boundary.
 
 Diplomat session instructions already have their own templates:

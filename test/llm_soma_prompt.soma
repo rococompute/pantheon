@@ -184,7 +184,7 @@ assemble_checks : list string := [
   check "assemble: the context's paths reach REPO" (asm "{{REPO}}" ["r", "a", "b"]) "[r:a|b]",
   check "assemble: no context keeps REPO" (asm "{{F}} {{REPO}}" []) "T {{REPO}}",
   check "assemble: a token holding a placeholder is not expanded again"
-    (prompt_assemble "{{PLAN}}" "{{F}}" [] (fun _ => "R") (fun _ => "P") (fun _ _ => "X")) "P",
+    (prompt_assemble "{{PLAN}}" "{{F}}" [] (fun _ => "R") (fun _ => "P") (fun _ _ => "X")) "{{PLAN}}",
   check "assemble: plan text holding the token placeholder stays literal"
     (prompt_assemble "T" "{{PLAN}}" [] (fun _ => "R") (fun _ => "{{F}}") (fun _ _ => "X")) "{{F}}",
   check "assemble: nothing to fill" (asm "no placeholders" ["r"]) "no placeholders"

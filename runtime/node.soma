@@ -767,6 +767,12 @@ shell_fence (token label body : string) : string :=
   append context_fence_open (append token (append context_fence_space (append label (append context_fence_body (append newline
     (append body (append newline (append context_fence_close (append token (append context_fence_body newline)))))))))).
 
+(** Runtime context is inserted after template parsing, so unusual names
+    need an actual fresh-token fence rather than a template-token fence. *)
+shell_name (token name : string) : string :=
+  if seq (prompt_name name) name then name
+  else shell_fence token prompts.common.prompt_name_label name.
+
 (** git ls-files' output, at most [cap] names, then how many more *)
 listing_text (files : string) (cap : nat) : string :=
   let fs := filter (fun l => negb (seq l "")) (split_lines files) in
@@ -820,23 +826,60 @@ repo_files_text (token : string) (cap budget : nat) (files : list (string * opti
 repo_text_of (token r : string) (listing : option string) (files : list (string * option string))
     (cap budget : nat) : string :=
   match listing with
-  | None => append context_repo_absent_start (append r (append context_repo_absent_end newline))
+  | None => append context_repo_absent_start (append (shell_name token r) (append context_repo_absent_end newline))
   | Some l => append (shell_fence token (append context_files_label r) (listing_text l 300))
                      (repo_files_text token cap budget files)
   end.
 
-(** The placeholders in order; each part is read only when its placeholder
-    is there, and {{REPO}} needs a context. Text put in isn't scanned again
-    for an earlier placeholder. *)
+(** Parse only the original template. Inserted repository/plan text and
+    even the fence token are literal values, never another template. Keep
+    complete literal chunks so assembly is linear in template and output. *)
+Inductive prompt_slot := FenceSlot | ReposSlot | PlanSlot | RepoSlot.
+Inductive prompt_part := PromptLiteral (text : string) | PromptSlot (slot : prompt_slot).
+
+prompt_flush (literal : list ascii) (parts : list prompt_part) : list prompt_part :=
+  PromptLiteral (of_chars (rev_onto literal [])) :: parts.
+
+Fixpoint prompt_lex_go (cs literal : list ascii) (parts : list prompt_part) : list prompt_part :=
+  match cs with
+  | "{"%char :: "{"%char :: "F"%char :: "}"%char :: "}"%char :: rest =>
+      prompt_lex_go rest [] (PromptSlot FenceSlot :: prompt_flush literal parts)
+  | "{"%char :: "{"%char :: "R"%char :: "E"%char :: "P"%char :: "O"%char :: "S"%char :: "}"%char :: "}"%char :: rest =>
+      prompt_lex_go rest [] (PromptSlot ReposSlot :: prompt_flush literal parts)
+  | "{"%char :: "{"%char :: "P"%char :: "L"%char :: "A"%char :: "N"%char :: "}"%char :: "}"%char :: rest =>
+      prompt_lex_go rest [] (PromptSlot PlanSlot :: prompt_flush literal parts)
+  | "{"%char :: "{"%char :: "R"%char :: "E"%char :: "P"%char :: "O"%char :: "}"%char :: "}"%char :: rest =>
+      prompt_lex_go rest [] (PromptSlot RepoSlot :: prompt_flush literal parts)
+  | c :: rest => prompt_lex_go rest (c :: literal) parts
+  | [] => rev_onto (prompt_flush literal parts) []
+  end.
+
+prompt_parts (text : string) : list prompt_part := prompt_lex_go (chars text) [] [].
+
+prompt_has (slot : prompt_slot) (parts : list prompt_part) : bool :=
+  existsb (fun part => match part, slot with
+    | PromptSlot FenceSlot, FenceSlot | PromptSlot ReposSlot, ReposSlot
+    | PromptSlot PlanSlot, PlanSlot | PromptSlot RepoSlot, RepoSlot => true
+    | _, _ => false end) parts.
+
+prompt_render (parts : list prompt_part) (token repos plan : string) (repo : option string) : string :=
+  Stdlib.Strings.String.concat "" (map (fun part => match part with
+    | PromptLiteral text => text
+    | PromptSlot FenceSlot => token
+    | PromptSlot ReposSlot => repos
+    | PromptSlot PlanSlot => plan
+    | PromptSlot RepoSlot => match repo with Some text => text | None => "{{REPO}}" end
+    end) parts).
+
 prompt_assemble (token prompt : string) (ctx : list string) (repos plan : unit -> string)
     (repo : string -> list string -> string) : string :=
-  let p := replace_all prompt "{{F}}" token in
-  let p := if contains "{{REPOS}}" p then replace_all p "{{REPOS}}" (repos tt) else p in
-  let p := if contains "{{PLAN}}" p then replace_all p "{{PLAN}}" (plan tt) else p in
-  match ctx with
-  | r :: paths => if contains "{{REPO}}" p then replace_all p "{{REPO}}" (repo r paths) else p
-  | [] => p
-  end.
+  let parts := prompt_parts prompt in
+  let r := if prompt_has ReposSlot parts then repos tt else "" in
+  let p := if prompt_has PlanSlot parts then plan tt else "" in
+  let x := match ctx with
+    | name :: paths => if prompt_has RepoSlot parts then Some (repo name paths) else None
+    | [] => None end in
+  prompt_render parts token r p x.
 
 (** ---- What a model call's output becomes (step 5) ----
     A reply is held for a usage limit, fails, or becomes an llm_reply
@@ -906,7 +949,7 @@ Fixpoint digits_end (fuel : nat) (t : string) (i : nat) : nat :=
 (** the run of digits at [i], read by [of_digits], and the offset after it *)
 num_after (of_digits : string -> float) (t : string) (i : nat) : option (float * nat) :=
   let j := digits_end (slen t) t i in
-  if i <? j then Some (of_digits (substr t i (j - i)), j) else None.
+  if (i <? j) && (j - i <=? 18) then Some (of_digits (substr t i (j - i)), j) else None.
 
 Fixpoint last_bar (fuel : nat) (t : string) (j : nat) : option nat :=
   match fuel, j with
@@ -968,16 +1011,31 @@ digit_float (c : nat) : float :=
 digits_float (s : string) : float :=
   fold_left (fun a c => PrimFloat.add (PrimFloat.mul a 10%float) (digit_float (nat_of_ascii c))) (chars s) 0%float.
 
-(** how long a limit holds: the time it gives and ten seconds, or the backoff *)
-limit_wait (reset : option float) (backoff : float) : float :=
+(** Provider reset text is untrusted. Keep every accepted hold finite,
+    positive and no longer than the existing two-hour backoff maximum. NaN,
+    zero and negative state use the normal fifteen-minute fallback. *)
+limit_bound_wait (wait : float) : float :=
+  if PrimFloat.ltb 0%float wait then
+    if PrimFloat.leb wait 7200%float then wait else 7200%float
+  else 900%float.
+
+limit_requested_wait (reset : option float) (backoff : float) : float :=
   match reset with
   | Some x => if PrimFloat.ltb 0%float x then PrimFloat.add x 10%float else backoff
   | None => backoff
   end.
 
-(** the backoff doubles, to at most two hours *)
+limit_wait (reset : option float) (backoff : float) : float :=
+  limit_bound_wait (limit_requested_wait reset backoff).
+
+limit_wait_adjusted (reset : option float) (backoff : float) : bool :=
+  negb (PrimFloat.eqb (limit_requested_wait reset backoff) (limit_wait reset backoff)).
+
+(** The sanitized backoff doubles, to at most two hours. *)
 limit_next_backoff (backoff : float) : float :=
-  let d := PrimFloat.mul backoff 2%float in if PrimFloat.leb 7200%float d then 7200%float else d.
+  limit_bound_wait (PrimFloat.mul (limit_bound_wait backoff) 2%float).
+
+limit_clamped_note : string := " [wait bounded to two hours; invalid wait ignored]".
 
 limit_reason_of (text : string) : string := take_str 300 text.
 
@@ -1131,9 +1189,11 @@ reply_prog (id kind prompt0 text : string) (ctx : list string) : nprog (list (li
       let backend := hd "" (ans_list limit) in
       let wait := limit_wait (reset_in float_of_digits now body) backoff in
       let reason := limit_reason_of body in
+      let reported := if limit_wait_adjusted (reset_in float_of_digits now body) backoff
+                      then append reason limit_clamped_note else reason in
       nbind (nand (nexec (IoLimitSet (float_wire (PrimFloat.add now wait)) reason
                                      (float_wire (limit_next_backoff backoff)))) (fun _ =>
-             nand (nexec (IoLog (limit_log_text backend (float_text (PrimFloat.div wait 60%float)) reason)))
+             nand (nexec (IoLog (limit_log_text backend (float_text (PrimFloat.div wait 60%float)) reported)))
                   (fun _ => nexec (IoLlmHold id kind prompt0 ctx)))) (fun held =>
       NDone (if held then [] else [["llm_error", id, "the request couldn't be held"]])))))
   | ReplyError why =>
@@ -1515,13 +1575,13 @@ llm_repo_prog (token r : string) (paths : list string) : nprog string :=
     same text). *)
 prompt_prog (token prompt : string) (ctx : list string) (repos plan : nprog string)
     (repo : string -> list string -> nprog string) : nprog string :=
-  let p := replace_all prompt "{{F}}" token in
-  nbind (if contains "{{REPOS}}" p then nbind repos (fun t => NDone (replace_all p "{{REPOS}}" t)) else NDone p) (fun p =>
-  nbind (if contains "{{PLAN}}" p then nbind plan (fun t => NDone (replace_all p "{{PLAN}}" t)) else NDone p) (fun p =>
-  match ctx with
-  | r :: paths => if contains "{{REPO}}" p then nbind (repo r paths) (fun t => NDone (replace_all p "{{REPO}}" t)) else NDone p
-  | [] => NDone p
-  end)).
+  let parts := prompt_parts prompt in
+  nbind (if prompt_has ReposSlot parts then repos else NDone "") (fun r =>
+  nbind (if prompt_has PlanSlot parts then plan else NDone "") (fun p =>
+  nbind (match ctx with
+    | name :: paths => if prompt_has RepoSlot parts then nbind (repo name paths) (fun text => NDone (Some text)) else NDone None
+    | [] => NDone None end) (fun x =>
+  NDone (prompt_render parts token r p x)))).
 
 (** events queued in order, stopping at the first not queued *)
 Fixpoint queue_prog (evs : list (list string)) : nprog bool :=
@@ -2827,6 +2887,7 @@ genesis_agent (fuel : nat) (a : list string) : option (string * (string * list s
   | Some ps =>
       match genesis_text (genesis_member "name" ps), genesis_text (genesis_member "tip" ps) with
       | Some name, Some tip =>
+          if seq name "" || seq tip "" then None else
           match genesis_member "exclude" ps with
           | Some (("L" :: _) as ex) =>
               match peer_string_list ex with

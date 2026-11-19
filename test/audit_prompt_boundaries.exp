@@ -1,0 +1,25 @@
+Example no_inserted_placeholder_triggers_an_extra_read :
+  ntrace reply_answers
+    (prompt_prog "T" "{{REPOS}}" ["wallet"]
+      (context_program "repos" "{{PLAN}}{{REPO}}")
+      (context_program "plan" "secret") (fun _ _ => context_program "file" "secret")) = [IoLog "repos"].
+Proof. computed. Qed.
+
+Example repeated_original_slots_read_each_context_once :
+  ntrace reply_answers
+    (prompt_prog "T" "{{PLAN}}{{REPOS}}{{PLAN}}{{REPOS}}{{REPO}}{{REPO}}" ["wallet"]
+      (context_program "repos" "r") (context_program "plan" "p") (fun _ _ => context_program "file" "x"))
+    = [IoLog "repos", IoLog "plan", IoLog "file"].
+Proof. computed. Qed.
+
+Example clamped_provider_hold_is_recorded_logged_and_held :
+  ntrace reply_answers (reply_prog "7" "draft" "prompt" "429 try again in 999999999 hours" []) =
+  [IoClock, IoReleaseState, IoLimitInfo,
+   IoLimitSet "7300" "429 try again in 999999999 hours" "1800",
+   IoLog (limit_log_text "claude" "120" (append "429 try again in 999999999 hours" limit_clamped_note)),
+   IoLlmHold "7" "draft" "prompt" []].
+Proof. computed. Qed.
+
+Example direct_boot_rejects_empty_agent_name :
+  runtime.node.genesis_agent 20 ["A", "2", "name", "S", "", "tip", "S", "tip"] = None.
+Proof. computed. Qed.

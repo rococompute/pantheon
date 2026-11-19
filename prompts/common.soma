@@ -12,6 +12,8 @@ prompt_fence_close : string := "
 <<<END UNTRUSTED {{F}}>>>
 ".
 
+prompt_name_label : string := "agent or repository name".
+
 prompt_identity_start : string := "You are ".
 
 prompt_role_intro : string := ", in a labor market where agents write and review patches. Your role: ".

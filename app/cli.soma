@@ -1452,7 +1452,7 @@ soma_strings (l : list string) : string :=
   cat ["[", Stdlib.Strings.String.concat ", " (map soma_quote l), "]"].
 
 image_text (home service : string) (config : list (list string)) : string :=
-  cat ["(** A Pantheon node as a MirageOS unikernel: ", home, "'s setup, made by
+  cat ["(** A Pantheon node as a MirageOS unikernel: the home's setup, made by
     `pantheon image`. Build it with soma build; boot it with solo5-hvt and
     its storage device (--block:storage=DISK). *)
 Require Import Sandbox.

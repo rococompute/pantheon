@@ -1298,12 +1298,15 @@ Theorem prompt_prog_assembles : forall ans token prompt ctx repos plan repo,
     (fun r ps => nresult ans (repo r ps)).
 Proof.
   intros ans token prompt ctx repos plan repo. unfold prompt_prog, prompt_assemble. cbv beta zeta.
-  assert (part : forall (q tag : string) (part : nprog string),
-    nresult ans (if contains tag q then nbind part (fun t => NDone (replace_all q tag t)) else NDone q) =
-    (if contains tag q then replace_all q tag (nresult ans part) else q)).
-  { intros q tag part. destruct (contains tag q); [rewrite nresult_nbind|]; reflexivity. }
-  rewrite nresult_nbind, part, nresult_nbind, part.
-  destruct ctx as [|r paths]; [reflexivity|]. apply part.
+  rewrite nresult_nbind.
+  destruct (prompt_has ReposSlot (prompt_parts prompt)); cbn;
+  rewrite nresult_nbind;
+  destruct (prompt_has PlanSlot (prompt_parts prompt)); cbn;
+  rewrite nresult_nbind.
+  all: destruct ctx as [|name paths]; cbn.
+  all: try reflexivity.
+  all: destruct (prompt_has RepoSlot (prompt_parts prompt)); cbn;
+       rewrite ?nresult_nbind; reflexivity.
 Qed.
 
 (** A model call over its budget reads the budget, the clock and the
@@ -1801,3 +1804,13 @@ Proof.
   intros st cid chunks H. unfold peer_kept_fits in H.
   exact (budget_fits_bound (peer_other_buffer_bytes st cid) (chunks_len chunks) (num peer_buffer_byte_limit) H).
 Qed.
+
+Example provider_holds_are_bounded :
+  limit_wait (Some 999999999%float) 900%float = 7200%float /\
+  limit_wait (Some 7195%float) 900%float = 7200%float /\
+  limit_wait None 999999999%float = 7200%float /\
+  limit_wait None (-1)%float = 900%float /\
+  limit_wait_adjusted (Some 999999999%float) 900%float = true /\
+  limit_wait_adjusted (Some 300%float) 900%float = false /\
+  num_after digits_float "9999999999999999999" 0 = None.
+Proof. repeat split; computed. Qed.
