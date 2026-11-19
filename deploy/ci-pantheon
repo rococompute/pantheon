@@ -1,1 +1,39 @@
-timeout 120 soma build main.soma && timeout 120 test/edits.sh && sh test/ci-policy.sh && python3 -B test/ci-policy-audit.py && timeout 120 bash test/cli.sh && timeout 120 bash test/audit-cli-exit.sh && timeout 120 bash test/genesis.sh && timeout 120 bash test/double-bid.sh && timeout 120 bash test/parallel-tasks.sh && timeout 120 bash test/scopes.sh && timeout 120 bash test/plan-marks.sh && timeout 120 bash test/n-agents.sh && timeout 120 bash test/prompt-assembly.sh && timeout 120 sh test/soma-misc-runner.sh && timeout 120 sh test/host-quoting.sh && timeout 120 sh test/audit-draw-recovery.sh && timeout 120 sh test/audit-head-guard.sh && timeout 120 sh test/audit-genesis-numbers.sh && timeout 120 sh test/audit-genesis-input.sh
+timeout 120 soma build main.soma &&
+timeout 120 test/edits.sh &&
+timeout 120 sh test/ci-policy.sh &&
+timeout 120 python3 -B test/ci-policy-audit.py &&
+timeout 120 bash test/cli.sh &&
+timeout 120 bash test/audit-cli-exit.sh &&
+timeout 120 bash test/genesis.sh &&
+timeout 120 bash test/double-bid.sh &&
+timeout 120 bash test/parallel-tasks.sh &&
+timeout 120 bash test/scopes.sh &&
+timeout 120 bash test/plan-marks.sh &&
+timeout 120 bash test/n-agents.sh &&
+timeout 120 bash test/prompt-assembly.sh &&
+timeout 120 sh test/soma-misc-runner.sh &&
+timeout 120 sh test/host-quoting.sh &&
+timeout 120 sh test/audit-draw-recovery.sh &&
+timeout 120 sh test/audit-head-guard.sh &&
+timeout 120 sh test/audit-genesis-numbers.sh &&
+timeout 120 sh test/audit-genesis-input.sh &&
+timeout 120 sh test/ci-baseline.sh &&
+timeout 120 sh test/audit-ci-binders.sh &&
+timeout 120 sh test/audit-path-case.sh &&
+timeout 120 sh test/audit-prompt-boundaries.sh &&
+timeout 120 sh test/audit-merge-status.sh &&
+timeout 120 sh test/audit-status-cli.sh &&
+timeout 120 sh test/audit-status-unicode.sh &&
+timeout 300 sh test/audit-resource-bounds.sh &&
+timeout 120 sh test/audit-service-jobs.sh &&
+timeout 120 sh test/audit-file-atomic.sh &&
+timeout 120 sh test/audit-leader-archive.sh &&
+timeout 120 python3 -B test/audit-deploy-limits.py &&
+timeout 120 python3 -B test/audit-firewall-policy.py &&
+timeout 120 python3 -B test/audit-network-discovery.py &&
+timeout 120 python3 -B test/audit-provision-setup.py &&
+timeout 120 python3 -B test/audit-install-tools.py &&
+timeout 120 python3 -B test/cmux-events.py &&
+timeout 120 python3 -B test/cmux-status.py &&
+timeout 120 sh test/integration-cmux.sh &&
+timeout 120 sh test/integration-c11.sh
