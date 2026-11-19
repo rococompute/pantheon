@@ -1,0 +1,33 @@
+(** Runtime boot checks must match CLI validation before any num conversion. *)
+Import core.util runtime.node.
+Require Soma.Host.
+
+check (name : string) (ok : bool) : string := append (if ok then "ok " else "FAIL ") name.
+boot (ms key value : string) : option (list (list string)) :=
+  genesis_events (Some ["A", "4", "agents", "L", "0", "block_ms", "I", ms,
+    "params", "A", "1", key, "S", value, "repos", "L", "0"]).
+refused (ms key value : string) : bool :=
+  match boot ms key value with None => true | Some _ => false end.
+
+main := Host.print_lines [
+  check "known numeric parameters reject text" (refused "500" "merge_approvals" "one"),
+  check "known numeric parameters reject trailing garbage" (refused "500" "max_files" "12x"),
+  check "known numeric parameters reject negatives" (refused "500" "reveal_window" "-5"),
+  check "known numeric parameters reject empty strings" (refused "500" "finish" ""),
+  check "known numeric parameters reject overlong decimal values"
+    (refused "500" "term_blocks" "1000000000000000000"),
+  check "block_ms rejects zero" (refused "0" "finish" "0"),
+  check "block_ms rejects negative values" (refused "-1" "finish" "0"),
+  check "block_ms rejects malformed integer tokens" (refused "500x" "finish" "0"),
+  check "block_ms rejects overlong decimals" (refused "1000000000000000000" "finish" "0"),
+  check "a block_ms parameter cannot override the valid timer with zero"
+    (refused "500" "block_ms" "0"),
+  check "zero remains valid for parameters that disable behavior"
+    (negb (refused "500" "finish" "0")),
+  check "the largest supported decimal value remains valid"
+    (negb (refused "999999999999999999" "term_blocks" "999999999999999999")),
+  check "arbitrary string metadata remains accepted"
+    (match boot "500" "label" "a personal experiment" with
+      | Some evs => existsb (fun ev => match ev with ["param", "label", "a personal experiment"] => true | _ => false end) evs
+      | None => false end)
+].

@@ -2801,7 +2801,7 @@ Fixpoint genesis_all {A B : Type} (f : A -> option B) (l : list A) (acc : list B
 
 genesis_param (kv : string * list string) : option (list string) :=
   match genesis_text (Some (snd kv)) with
-  | Some v => Some ["param", fst kv, v]
+  | Some v => if genesis_param_valid (fst kv) v then Some ["param", fst kv, v] else None
   | None => None
   end.
 
@@ -2832,6 +2832,7 @@ genesis_events (tokens : option (list string)) : option (list (list string)) :=
                 (match genesis_member "params" top with Some v => genesis_pairs fuel v | None => None end),
                 items "repos" with
           | Some agents, Some ("I" :: ms :: _), Some params, Some repos =>
+              if negb (genesis_param_valid "block_ms" ms) then None else
               match genesis_all (genesis_agent fuel) agents [],
                     genesis_all genesis_param params [],
                     genesis_all (genesis_repo fuel) repos [] with
