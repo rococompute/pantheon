@@ -213,8 +213,8 @@ safe_path (p : string) : bool :=
   && negb (git_meta_component p).
 
 (** The shell's path policy, moved without changing its accepted paths.
-    Unlike the market's [safe_path], it permits ".." inside a filename,
-    rejects NUL, and rejects every ASCII case spelling of a .git component. *)
+    Unlike the market's [safe_path], it permits ".." inside a filename and
+    rejects NUL; both reject every ASCII case spelling of a .git component. *)
 shell_path_chars (p : string) : bool :=
   forallb (fun c => negb (nat_of_ascii c =? 0) && negb (nat_of_ascii c =? 92)) (chars p).
 
