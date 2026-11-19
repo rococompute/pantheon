@@ -55,5 +55,49 @@ class AssumptionPolicy(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
 
+class AddedTestNames(unittest.TestCase):
+    def test_literal_names_and_environment_are_preserved(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            head = root / 'head'
+            (head / 'test').mkdir(parents=True)
+            generated = subprocess.check_output([
+                'python3', str(ROOT / 'deploy/ci-command.py'), str(head),
+                'export AUDIT_CI_ENV=preserved'], text=True)
+            bid = root / 'bid'
+            shutil.copytree(head, bid)
+            names = ['space name.sh', 'line\nbreak.sh', 'literal*.sh',
+                     "quote'and\\backslash.sh", '$(touch injected).sh']
+            for index, name in enumerate(names):
+                (bid / 'test' / name).write_text(
+                    '#!/bin/sh\n[ "$AUDIT_CI_ENV" = preserved ] || exit 19\n'
+                    + 'echo ran-%d >> results\n' % index)
+            (bid / 'test' / 'bash [test].sh').write_text(
+                '#!/bin/bash\n[[ "$AUDIT_CI_ENV" = preserved ]] || exit 20\necho ran-bash >> results\n')
+            result = subprocess.run(['sh', '-c', generated], cwd=bid, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual(sorted((bid / 'results').read_text().splitlines()),
+                             sorted(['ran-%d' % i for i in range(len(names))] + ['ran-bash']))
+            self.assertFalse((bid / 'injected').exists())
+
+    def test_failure_status_and_skip_after_main_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            head = root / 'head'
+            (head / 'test').mkdir(parents=True)
+            bid = root / 'bid'
+            shutil.copytree(head, bid)
+            (bid / 'test' / 'failure with space.sh').write_text('#!/bin/sh\nexit 7\n')
+            for command, expected in [('true', 7), ('exit 23', 23)]:
+                generated = subprocess.check_output([
+                    'python3', str(ROOT / 'deploy/ci-command.py'), str(head), command], text=True)
+                result = subprocess.run(['sh', '-c', generated], cwd=bid, capture_output=True, text=True)
+                self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
+                if command == 'true':
+                    self.assertIn('failed (exit 7)', result.stdout)
+                else:
+                    self.assertNotIn('this tree adds it', result.stdout)
+
+
 if __name__ == '__main__':
     unittest.main()

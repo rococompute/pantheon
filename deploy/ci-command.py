@@ -172,6 +172,30 @@ def verify(root, baseline):
                 raise ValueError('new unproved assumption: ' + name)
 
 
+# This trusted runner receives a JSON list, not shell words or lines. POSIX
+# filenames may contain spaces, newlines and glob metacharacters. Running it
+# after the command in the same shell also preserves any exported toolchain
+# environment the command selected for its added tests.
+ADDED_TEST_RUNNER = r'''import json, os, subprocess, sys
+with open(sys.argv[1]) as stream:
+    names = json.load(stream)
+os.unlink(sys.argv[1])
+for name in names:
+    print("CI: " + name + " (this tree adds it)", flush=True)
+    try:
+        with open(name, "rb") as stream:
+            first = stream.readline(4096)
+        shell = "bash" if first.startswith(b"#!") and b"bash" in first else "sh"
+        status = subprocess.run(["timeout", os.environ.get("PANTHEON_TEST_TIMEOUT", "600"), shell, name]).returncode
+    except OSError as error:
+        print("CI: " + name + ": " + str(error), file=sys.stderr, flush=True)
+        status = 127
+    if status:
+        print("CI: " + name + " failed (exit " + str(status) + ")", flush=True)
+        sys.exit(status)
+'''
+
+
 if __name__ == '__main__':
     if sys.argv[1] == '--verify':
         try:
@@ -179,25 +203,18 @@ if __name__ == '__main__':
             verify(Path.cwd(), baseline)
             for name in deployment_changes(Path.cwd(), baseline):
                 print('CI: this tree changes ' + name + ' (deployment: CI ran the deployed copy; it takes effect once the operator deploys it)', file=sys.stderr)
-            for name in added_tests(Path.cwd(), baseline):
-                print(name)
+            print(json.dumps(added_tests(Path.cwd(), baseline)))
         except (ValueError, OSError) as e:
             sys.exit('CI policy: ' + str(e))
     else:
         root = Path(sys.argv[1]).resolve()
         baseline = json.dumps(manifest(root), separators=(',', ':'))
         source = Path(__file__).read_text()
-        # the policy check, then the command, then each test the bid adds,
-        # each within PANTHEON_TEST_TIMEOUT seconds (default 600), in bash if
-        # its first line asks for it
-        # (the list goes through a file: a here-document inside $(...) trips
-        # bash 3.2 when it holds a case pattern)
-        print('pantheon_added_file=${TMPDIR:-/tmp}/pantheon-added.$$\n'
+        # The policy check, then the command, then each test the bid adds.
+        # A private temporary JSON manifest transports arbitrary filenames;
+        # the EXIT trap also removes it when policy or the command fails.
+        print('pantheon_added_file=$(mktemp "${TMPDIR:-/tmp}/pantheon-added.XXXXXXXX") || exit 3\n'
+              'trap \'rm -f "$pantheon_added_file"\' 0\n'
               'python3 - --verify ' + shlex.quote(baseline) + " > \"$pantheon_added_file\" <<'PANTHEON_CI_POLICY'\n" + source +
               '\nPANTHEON_CI_POLICY\npolicy_status=$?; [ "$policy_status" -eq 0 ] || exit "$policy_status"\n'
-              'pantheon_added=$(cat "$pantheon_added_file"); rm -f "$pantheon_added_file"\n'
-              '{\n' + sys.argv[2] + '\n} && for pantheon_test in $pantheon_added; do\n'
-              '  echo "CI: $pantheon_test (this tree adds it)"\n'
-              '  case $(head -n 1 "$pantheon_test") in \'#!\'*bash*) pantheon_sh=bash ;; *) pantheon_sh=sh ;; esac\n'
-              '  timeout "${PANTHEON_TEST_TIMEOUT:-600}" "$pantheon_sh" "$pantheon_test" || { s=$?; echo "CI: $pantheon_test failed (exit $s)"; exit $s; }\n'
-              'done')
+              '{\n' + sys.argv[2] + '\n} && python3 -c ' + shlex.quote(ADDED_TEST_RUNNER) + ' "$pantheon_added_file"')
