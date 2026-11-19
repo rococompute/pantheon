@@ -125,11 +125,11 @@ PY
 pm=$t/net/.cmux/plan.md
 head -1 "$pm" | grep -q '^## Market (codex leader)$' || fail "plan opens on its goal, headed by its leader, with no title or chain line: $(cat "$pm")"
 # each item leads with its icon: its task merged and closed, open with bids, or none
-grep -q '^✅ add a sub command$' "$pm" || fail "goal's done item: $(cat "$pm")"
-grep -q '^⏳ add a mul command$' "$pm" || fail "goal's numbered item being bid on: $(cat "$pm")"
-grep -q '^✅ Add an `abs` command, with a new test file tests/test_abs.sh.$' "$pm" || fail "an item a task paraphrases (to calc.sh put in): $(cat "$pm")"
-grep -q '^⏳ Add a `sqrt` command.$' "$pm" || fail "a numbered item a task names by its step at its start"
-grep -q '^✅ Add a `cube` command.$' "$pm" || fail "an item done once a bid for it merged, its task still open"
+grep -q '^🌳 add a sub command$' "$pm" || fail "goal's done item: $(cat "$pm")"
+grep -q '^🌱 add a mul command$' "$pm" || fail "goal's numbered item being bid on: $(cat "$pm")"
+grep -q '^🌳 Add an `abs` command, with a new test file tests/test_abs.sh.$' "$pm" || fail "an item a task paraphrases (to calc.sh put in): $(cat "$pm")"
+grep -q '^🌱 Add a `sqrt` command.$' "$pm" || fail "a numbered item a task names by its step at its start"
+grep -q '^🪴 Add a `cube` command.$' "$pm" || fail "merged work progresses a goal until its task closes"
 grep -q '^Keep it small.$' "$pm" || fail "goal's prose line, as it is"
 grep -q '^## Goals$' "$pm" || fail "Goals heading"
 ! grep -q '^## Plan:' "$pm" || fail "repository name in Goals heading"
@@ -149,10 +149,10 @@ import sys
 text = open(sys.argv[1]).read()
 goal = text[:text.index("## Goals")]
 summary, details = goal.split("<details>", 1)
-assert "✅ add a sub command" in summary
+assert "🌳 add a sub command" in summary
 assert "add a mul command" not in summary
 assert "<summary>Details</summary>" in details
-assert "⏳ add a mul command" in details and "Keep it small." in details
+assert "🌱 add a mul command" in details and "Keep it small." in details
 assert details.rstrip().endswith("</details>")
 PYGOAL
 # Prose keeps its complete opening paragraph; a short goal needs no empty fold.
@@ -376,4 +376,5 @@ grep -q "rename-tab .* watchdog" "$t/ledger" && ! grep -q "rename-tab .* status"
 if sh "$pc" up "$t/net" --layout tiles > "$t/out4" 2>&1; then fail "--layout tiles"; fi
 grep -q -- "--layout tiles: plan" "$t/out4" || fail "--layout tiles refused: $(cat "$t/out4")"
 sh "$pc" down "$t/net" > /dev/null
+python3 -B "$here/test/plan-items.py" || fail "goal/task association"
 echo "PASS pantheon-cmux: a network as a cmux workspace (the plan beside a pane per agent, or a grid), its name, watchdog and down"

@@ -207,6 +207,8 @@ page = open(sys.argv[1]).read()
 goal, rest = page.split("<h2>Contributions</h2>", 1)
 steps, fold = goal.split("<details>", 1)
 assert '<ul class="goals">' in steps and "<li>🌳 Add a <code>sub</code> command.</li>" in steps and "<li>🌱 Add a <code>mul</code> command.</li>" in steps
+assert '<p class="goals-legend"><em>🫘 open  🌱 working  🪴 progressing  🌳 done</em></p>' in steps
+assert page.count('class="goals-legend"') == 1
 assert "Keep existing behavior." in fold and "Add a" not in fold
 assert "<p>🟡 not a goal step</p>" in rest, "only the goal's fold is lifted"
 PYG

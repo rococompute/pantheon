@@ -60,6 +60,12 @@ The sidebar and the plan heading show the same committed completion count
 the current plan before updating the sidebar or announcing **Done**. A failed
 refresh is retried even when the plan text has not changed.
 
+The goal checklist includes the same legend as cmux: 🫘 open, 🌱 working,
+🪴 progressing, 🌳 done. A merged contribution progresses a goal; closing its
+task completes it. Task descriptions are matched to one unambiguous goal so
+mentions of another step in background or remaining-work notes do not update
+both icons. Repository `.plan` completion marks remain authoritative there.
+
 c11's size-aware splits keep areas usable. In a narrow window the agents'
 grid stacks into one column instead of two rows (c11 prints a `note:` when it
 does).

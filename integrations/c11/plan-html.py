@@ -49,6 +49,7 @@ def inline(s, summary=False):
 # or rewriting icons elsewhere in the operator's text.
 LEGACY_GOAL_ICONS = {"✅": "🌳", "⏳": "🌱", "🟡": "🫘"}
 GOAL_ICON = re.compile(r"(🌳|🪴|🌱|🫘|✅|⏳|🟡) ")
+GOALS_LEGEND = "🫘 open  🌱 working  🪴 progressing  🌳 done"
 
 
 def lift_goals(lines):
@@ -91,7 +92,9 @@ def body(md):
             para.clear()
     for line in lines:
         if line == "<goals>":
-            flush(); out.append('<ul class="goals">'); in_goals = True; continue
+            flush()
+            out.append('<p class="goals-legend"><em>' + GOALS_LEGEND + '</em></p>')
+            out.append('<ul class="goals">'); in_goals = True; continue
         if line == "</goals>":
             out.append("</ul>"); in_goals = False; continue
         if in_goals:
