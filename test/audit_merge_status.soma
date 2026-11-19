@@ -1,0 +1,135 @@
+(** D-7: real Soma agent -> signed vote -> settlement -> status, no nodes. *)
+Import core.util core.market core.agent runtime.nodeio runtime.node app.cli test.nio_tables.
+Require Soma.Host.
+From Soma Require Import OCaml.
+
+check_status (label : string) (ok : bool) : string := append (if ok then "ok " else "FAIL ") label.
+status_rows (m : obj) : string := Stdlib.Strings.String.concat newline (status_lines m).
+status_error (result : obj * list (list string) * string) : string := snd result.
+status_after (result : obj * list (list string) * string) : obj := fst (fst result).
+status_roster : list string := ["leader", "agent-a", "agent-b", "agent-c"].
+status_base : obj :=
+  let m := new_market status_roster in
+  let m := setf (setf (setf m "leader" "leader") "awaiting" false) "h" 10 in
+  let m := setf m "repos" ([("wallet", "tree0")] : list (string * string)) in
+  let m := setf m "params" ([("fallback_blocks", 20), ("attest_window", 100)] : list (string * nat)) in
+  let m := setf m "chain" test_chain in
+  setf m "keys" (map (fun who => (who, tl test_key_wire)) status_roster).
+status_posted : obj := status_after (apply status_base "leader" ["post", "wallet", "wallet input checks"]).
+status_bidder : string := match task_by status_posted 1 with Some t => hd "" (bidders_for status_posted t) | None => "" end.
+status_proposed : obj :=
+  let m := status_after (apply status_posted status_bidder ["bid", "1", "0", "implementation", "wallet.txt", "", "work"]) in
+  status_after (apply m "leader" ["merge", "1", "tree1", "tree0"]).
+status_attestors : list string := filter (fun who => negb (seq who "leader") && negb (seq who status_bidder)) status_roster.
+status_voter1 : string := hd "" status_attestors.
+status_voter2 : string := hd "" (tl status_attestors).
+status_reason : string := "missing input check: ""keys""
+with newline".
+status_agent_answer : obj := on_answer (new_agent status_voter1) status_proposed ["attest", "1", "tree1"]
+  ["approve", "false", "reason", status_reason].
+status_vote1_fields : list string := hd [] (queue status_agent_answer).
+status_vote2_fields : list string := attestation_fields "1" false "" "chain update is not verified".
+status_vote1_raw : string := nio_encode_tx test_chain status_voter1 test_key "1" status_vote1_fields.
+status_vote2_raw : string := nio_encode_tx test_chain status_voter2 test_key "1" status_vote2_fields.
+status_one_no : obj := fst (apply_block status_proposed 11 [status_vote1_raw]).
+status_rejected : obj := fst (apply_block status_one_no 12 [status_vote2_raw]).
+status_rejected_bid : option bid := bid_by status_rejected 1.
+status_one_yes : obj := status_after (apply (setf status_proposed "h" 11) status_voter1
+  (attestation_fields "1" true "tree1" "checked the patch")).
+status_merged : obj := fst (settle (setf status_one_yes "h" 30)).
+status_expired : obj := fst (settle (setf status_one_no "h" 110)).
+status_reproposed : obj := status_after (apply status_expired "leader" ["merge", "1", "tree1", "tree0"]).
+status_pruned : obj := prune (setf status_rejected "params" ([("keep_settled", 0)] : list (string * nat))).
+
+(** Stress a large retained diagnostic view: generation may summarize it,
+    but must emit a bounded valid object explicitly marked as truncated. *)
+status_budget_market : obj :=
+  let voters := map (fun n => append "attestor-" (show n)) (List.seq 1 64) in
+  let vs := map (fun who => (who, false)) voters in
+  let reason := Stdlib.Strings.String.concat "" (repeat "x" 700) in
+  let notes := map (fun who => (who, (reason, 12))) voters in
+  let ids := List.seq 1 20 in
+  let bs := map (fun id => {| bidn := id; btask := 1; bidder := "worker"; base := 0;
+      edits := []; note := ""; bst := Rejected; stale := false; why := reason; votes := vs |}) ids in
+  setf (setf (new_market status_roster) "bids" bs) "merge_vote_notes"
+    (map (fun id => (show id, notes)) ids).
+
+status_budget_ok (m : obj) : bool :=
+  let text := market_status_json m in
+  (slen text <=? 256 * 1024) &&
+  match json_of text with Some j => match json_member "details_truncated" j with
+    JBool "true" => true | _ => false end | None => false end.
+
+status_answers (op : node_op) : nanswer :=
+  match op with
+  | IoReadText "home/status.json" => ans_data true ["{""schema"":""pantheon-status-1"",""height"":11}"]
+  | _ => (true, (0%float, [])) end.
+
+(** Keep expensive signed-state fixtures abstract while elaborating checks;
+    the extracted test computes real signatures and predicates at runtime. *)
+checks_for (status_proposed status_one_no status_rejected status_one_yes status_merged
+            status_expired status_reproposed status_pruned : obj)
+           (status_vote1_fields : list string) (status_vote1_raw : string)
+           (status_rejected_bid : option bid) : list string := [
+  check_status "fixture creates a pending proposal and two eligible attestors"
+    (negb (seq status_bidder "") && (pending_bid_id status_proposed =? 1) && (length status_attestors =? 2)),
+  check_status "model no reason becomes a nonlegacy signed field"
+    (match status_vote1_fields with ["attest", "1", "no", reason] => seq reason status_reason | _ => false end),
+  check_status "real signature verifies with reason attached"
+    (eq_strs (decode_tx status_proposed status_vote1_raw) (status_voter1 :: "1" :: status_vote1_fields)),
+  check_status "changing only the reason invalidates the signature"
+    (eq_strs (decode_tx status_proposed (replace_all status_vote1_raw "missing input check" "tampered check")) []),
+  check_status "first signed no retains reason and remains pending"
+    ((pending_bid_id status_one_no =? 1) && seq (fst (merge_note_for status_one_no 1 status_voter1)) status_reason),
+  check_status "pending status shows thresholds and per-vote reason"
+    (contains "fallback at 30 expires at 110" (status_rows status_one_no) &&
+     contains (nio_json_string status_reason) (status_rows status_one_no) && contains "no at 11 counted" (status_rows status_one_no)),
+  check_status "second signed no rejects and preserves both authored reasons"
+    (match status_rejected_bid with Some b => status_beq (bst b) Rejected &&
+      contains "missing input check" (why b) && contains "chain update is not verified" (why b) | None => false end),
+  check_status "rejected proposal records actual settlement height"
+    (match lookup "1" (merge_terminals status_rejected) with Some (12, "rejected") => true | _ => false end),
+  check_status "settled text status retains voter diagnostics"
+    (contains "proposal settled bid 1 at 12 rejected" (status_rows status_rejected) &&
+     contains (nio_json_string status_reason) (status_rows status_rejected)),
+  check_status "JSON preserves escaped reason and structured vote result"
+    (match json_of (market_status_json status_one_no) with
+     | Some j => match json_member "pending_merge" j with
+       | JObj kv => match json_member "votes" (JObj kv) with
+         | JList [vote] => seq (match json_string (json_member "reason" vote) with Some r => r | None => "" end) status_reason &&
+             match json_member "approve" vote with JBool "false" => true | _ => false end
+         | _ => false end
+       | _ => false end | None => false end),
+  check_status "yes vote waits for fallback then merges at threshold"
+    ((pending_bid_id status_one_yes =? 1) && match bid_by status_merged 1 with Some b => status_beq (bst b) Merged | None => false end),
+  check_status "merged proposal records actual settlement height"
+    (match lookup "1" (merge_terminals status_merged) with Some (30, "merged") => true | _ => false end),
+  check_status "expiry retains diagnostic votes without closing the bid"
+    ((pending_bid_id status_expired =? 0) && match bid_by status_expired 1 with Some b => is_pending (bst b) &&
+       (length (status_bid_votes status_expired b) =? 1) | None => false end),
+  check_status "reproposal clears stale reasons, votes and terminal marker"
+    ((pending_bid_id status_reproposed =? 1) && seq (fst (merge_note_for status_reproposed 1 status_voter1)) "" &&
+     match lookup "1" (merge_terminals status_reproposed), lookup "1" (merge_recorded_votes status_reproposed) with None, None => true | _, _ => false end),
+  check_status "pruning drops diagnostic metadata with settled bids"
+    (match bid_by status_pruned 1, lookup "1" (merge_vote_notes status_pruned), lookup "1" (merge_terminals status_pruned), lookup "1" (merge_recorded_votes status_pruned) with
+      None, None, None, None => true | _, _, _, _ => false end),
+  check_status "legacy no arity remains valid"
+    (seq (status_error (apply status_proposed status_voter1 ["attest", "1", "no"])) ""),
+  check_status "legacy yes arity remains valid"
+    (seq (status_error (apply status_proposed status_voter1 ["attest", "1", "yes", "tree1"])) ""),
+  check_status "malformed vote flag is refused"
+    (negb (seq (status_error (apply status_proposed status_voter1 ["attest", "1", "maybe"])) "")),
+  check_status "oversized vote reason is refused"
+    (negb (seq (status_error (apply status_proposed status_voter1 ["attest", "1", "no", Stdlib.Strings.String.concat "" (repeat "x" 701)])) "")),
+  check_status "a yes on another tree records a diagnostic no"
+    (let bad := status_after (apply status_proposed status_voter1 ["attest", "1", "yes", "other-tree", "my check differs"]) in
+     match pending bad with Some prop => (counted_noes bad prop =? 1) &&
+       contains "checked tree differs from proposal" (fst (merge_note_for bad 1 status_voter1)) | None => false end),
+  check_status "control bytes cannot inject status lines through a reason"
+    (negb (seq (status_error (apply status_proposed status_voter1 ["attest", "1", "no", nio_nul])) "")),
+  check_status "duplicate voter cannot replace its signed explanation"
+    (negb (seq (status_error (apply status_one_no status_voter1 ["attest", "1", "no", "different"])) ""))
+].
+main := Host.print_lines ((checks_for status_proposed status_one_no status_rejected status_one_yes status_merged
+  status_expired status_reproposed status_pruned status_vote1_fields status_vote1_raw status_rejected_bid) ++
+  [check_status "oversized diagnostic view is explicitly summarized within JSON budget" (status_budget_ok status_budget_market)]).

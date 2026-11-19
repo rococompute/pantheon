@@ -1,0 +1,8 @@
+Example json_status_writes_a_separate_named_file :
+  ntrace status_answers (output_prog ["status-json", "{}"]) = [IoFileWrite "status.json" "false" "{}"].
+Proof. computed. Qed.
+
+Example cli_json_reads_the_market_snapshot_directly :
+  ntrace status_answers (cmd_status_json "home") =
+  [IoReadText "home/status.json", IoPrint "{""schema"":""pantheon-status-1"",""height"":11}"].
+Proof. computed. Qed.
