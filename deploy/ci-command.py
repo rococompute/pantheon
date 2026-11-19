@@ -91,7 +91,8 @@ def assumptions(text):
         start = command_start(statement)
         if start >= len(statement):
             return False
-        if statement[start].lower() in declarations:
+        short_definition = statement[start + 1:start + 2] == [':']
+        if not short_definition and statement[start].lower() in declarations:
             return True
         # Do not confuse a declared identifier with a use of the primitive.
         # For ordinary definitions both the Rocq spelling and Soma's short
