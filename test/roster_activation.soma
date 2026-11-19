@@ -27,7 +27,7 @@ bidder_of (m : obj) : string :=
 proposed (ags : list string) : obj :=
   let '(m, _, _) := apply (base ags) "a1" ["post", "calc", "roster task"] in
   let '(m, _, _) := apply m (bidder_of m) ["bid", "1", "0", "roster bid", "f.txt", "", "x"] in
-  let '(m, _, _) := apply m "a1" ["merge", "1", "tree1"] in m.
+  let '(m, _, _) := apply m "a1" ["merge", "1", "tree1", "tree0"] in m.
 
 attestors (ags : list string) : list string :=
   let m := proposed ags in filter (fun a => negb (seq a "a1") && negb (seq a (bidder_of m))) ags.

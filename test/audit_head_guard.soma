@@ -1,0 +1,35 @@
+(** Missing HEAD must not bypass the check-to-merge stale-head guard. *)
+Import core.util core.market.
+Require Soma.Host.
+
+check (name : string) (ok : bool) : string := append (if ok then "ok " else "FAIL ") name.
+task0 : task := {| tid := 1; trepo := "r"; spec := "task"; poster := "a"; tctx := []; topen := true; posted_at := 0 |}.
+bid0 : bid := {| bidn := 1; btask := 1; bidder := "b"; base := 0;
+  edits := [{| epath := "x"; eold := ""; enew := "value" |}]; note := "candidate";
+  bst := Pending; stale := false; why := ""; votes := [] |}.
+market : obj :=
+  let m := setf (setf (new_market ["a", "b", "c", "d"]) "leader" "a") "awaiting" false in
+  let m := setf m "repos" ([("r", "current-head")] : list (string * string)) in
+  setf (setf m "tasks" [task0]) "bids" [bid0].
+
+refused (tx : list string) : bool :=
+  let '(m, outs, reason) := apply market "a" tx in
+  negb (seq reason "") && (pending_bid_id m =? 0) && (version m =? 0) && (length outs =? 0)
+    && seq (get_or "" "r" (repos m)) "current-head".
+proposed (tx : list string) : bool :=
+  let '(m, _, reason) := apply market "a" tx in seq reason "" && (pending_bid_id m =? 1).
+
+main := Host.print_lines [
+  check "merge omitting HEAD is refused without changing the market" (refused ["merge", "1", "checked-tree"]),
+  check "merge with empty HEAD is refused" (refused ["merge", "1", "checked-tree", ""]),
+  check "merge with stale HEAD remains refused" (refused ["merge", "1", "checked-tree", "old-head"]),
+  check "merge naming the current HEAD still proposes" (proposed ["merge", "1", "checked-tree", "current-head"]),
+  check "mark omitting HEAD is refused without changing the market" (refused ["mark", "1", "a plan line", "checked-tree"]),
+  check "mark with empty HEAD is refused" (refused ["mark", "1", "a plan line", "checked-tree", ""]),
+  check "mark with stale HEAD remains refused" (refused ["mark", "1", "a plan line", "checked-tree", "old-head"]),
+  check "mark naming the current HEAD still proposes" (proposed ["mark", "1", "a plan line", "checked-tree", "current-head"]),
+  check "merge reports the required HEAD argument"
+    (contains "names the head" (snd (apply market "a" ["merge", "1", "checked-tree"]))),
+  check "mark reports the required HEAD argument"
+    (contains "names the head" (snd (apply market "a" ["mark", "1", "a plan line", "checked-tree"])))
+].

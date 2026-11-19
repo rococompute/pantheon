@@ -29,7 +29,7 @@ first_bidder (m : obj) : string :=
 proposed (n : nat) : obj :=
   let '(m, _, _) := apply (base n) "a1" ["post", "calc", "an n-agent task"] in
   let '(m, _, _) := apply m (first_bidder m) ["bid", "1", "0", "a bid", "f.txt", "", "x"] in
-  let '(m, _, _) := apply m "a1" ["merge", "1", "tree1"] in m.
+  let '(m, _, _) := apply m "a1" ["merge", "1", "tree1", "tree0"] in m.
 
 attestors (n : nat) : list string :=
   let m := proposed n in

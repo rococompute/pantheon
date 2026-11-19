@@ -68,8 +68,8 @@ lines_leader : list string :=
   let (_, wc) := post (base "x1" 0) "x1" "calc" "a calc task" in
   (* a lib bid made under claude, then x1 leads *)
   let m := setf (with_lib_bid "claude" 0) "leader" "x1" in
-  let '(_, _, wm) := apply m "x1" ["merge", "1", "tree1"] in
-  let '(_, _, wk) := apply m "x1" ["mark", "1", "a plan line", "tree1"] in
+  let '(_, _, wm) := apply m "x1" ["merge", "1", "tree1", "l0"] in
+  let '(_, _, wk) := apply m "x1" ["mark", "1", "a plan line", "tree1", "l0"] in
   say (has wl "outside this leader's scope") "a leader doesn't post on a repository outside its scope"
   ++ say (seq wc "") "it posts on one inside"
   ++ say (has wm "outside this leader's scope") "nor merges a bid there"
@@ -79,7 +79,7 @@ lines_quorum : list string :=
   let m := with_lib_bid "claude" 0 in
   let bidder := first_bidder m 1 in
   let other := match filter (fun a => negb (seq a "claude") && negb (seq a bidder)) ["codex", "grok"] with a :: _ => a | [] => "" end in
-  let '(m, _, _) := apply m "claude" ["merge", "1", "tree1"] in
+  let '(m, _, _) := apply m "claude" ["merge", "1", "tree1", "l0"] in
   let '(_, _, wx) := apply m "x2" ["attest", "1", "yes", "tree1"] in
   let n := match pending m with Some p => merge_n m p | None => 0 end in
   let '(mn, _, _) := apply m other ["attest", "1", "no"] in
@@ -89,12 +89,12 @@ lines_quorum : list string :=
 
 lines_alone : list string :=
   let m := with_lib_bid "claude" 1 in
-  let '(m, _, w) := apply m "claude" ["merge", "1", "tree1"] in
+  let '(m, _, w) := apply m "claude" ["merge", "1", "tree1", "l0"] in
   let (ms, o) := settle m in
   let m8 := base "claude" 0 in
   let (mc, _) := post m8 "claude" "calc" "a calc task" in
   let '(mc, _, _) := apply mc (first_bidder mc 1) ["bid", "1", "0", "calc bid", "f.txt", "", "x"] in
-  let '(mc, _, _) := apply mc "claude" ["merge", "1", "tree1"] in
+  let '(mc, _, _) := apply mc "claude" ["merge", "1", "tree1", "t0"] in
   let (mcs, _) := settle mc in
   say (seq w "" && seq (status_of ms 1) "merged" && (version ms =? 1)) "merge_approvals 1: the leader's merge lands with no attestor"
   ++ say (existsb (fun x => match x with "merge" :: _ => true | _ => false end) o) "and the node is told to apply it"
@@ -127,7 +127,7 @@ lines_agent : list string :=
   let (_, oc) := lead (setf (setf (llm "claude") "goal" ["- more"]) "bid_window" 1) m in
   let (_, ox) := lead (setf (setf (llm "x1") "goal" ["- more"]) "bid_window" 1) (setf m "leader" "x1") in
   let (_, dx) := lead (setf (llm "x1") "goal" ["- more"]) (setf (base "x1" 0) "leader" "x1") in
-  let '(mp, _, _) := apply m "claude" ["merge", "1", "tree1"] in
+  let '(mp, _, _) := apply m "claude" ["merge", "1", "tree1", "l0"] in
   let other := match filter (fun a => negb (seq a (first_bidder m 1))) ["codex", "grok"] with a :: _ => a | [] => "" end in
   let (_, ax) := attest_duty (llm "x3") mp in
   let (_, ai) := attest_duty (llm other) mp in
@@ -159,7 +159,7 @@ lines_moved : list string :=
   let (_, ofresh) := answered a m "1" ["ok", "true", "tree", "tree1"] in
   say (seq wok "") "a merge naming the head its tree was checked on is taken"
   ++ say (has wold "checked on another head") "one naming a head the repository has moved past is refused"
-  ++ say (seq wnone "") "one naming no head is taken, as before"
+  ++ say (has wnone "names the head") "one naming no head is refused"
   ++ say (has wmk "checked on another head") "a mark naming a moved head is refused"
   ++ say ((length (submits ostale) =? 0) && (check_reqs ostale =? 1)) "a check answering after the head moved is asked again on the head, not merged"
   ++ say (existsb (fun tx => match tx with ["merge", "1", "tree1", "l0"] => true | _ => false end) (submits ofresh)) "one answering on the head merges, naming it".
