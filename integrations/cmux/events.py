@@ -4,6 +4,7 @@ import argparse
 import fcntl
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -27,6 +28,7 @@ def status(text):
         return None  # Do not interpret an incomplete write as removals.
     return {
         "height": int(header[1]),
+        "term": int(header[2]),
         "leader": header[3],
         "leader_chain": next(({"count": int(count), "tip": tip} for count, tip in
                               re.findall(r"^leader-chain (\d+) ([0-9a-f]*)$", text, re.M)),
@@ -37,6 +39,69 @@ def status(text):
         "repos": dict(re.findall(r"^repo (\S+) ([0-9a-f]+)$", text, re.M)),
         "finished": bool(re.search(r"^finished:", text, re.M)),
     }
+
+
+def same_snapshot(left, right):
+    # Older relay state files did not persist the already-present term.
+    return all(right.get(key) == value for key, value in left.items())
+
+
+def observe_status(path, now, max_age):
+    try:
+        before = path.stat()
+        text = path.read_text().strip()
+        after = path.stat()
+        stamp = lambda item: (item.st_ino, item.st_size, item.st_mtime_ns, item.st_ctime_ns)
+        if stamp(before) != stamp(after):
+            return None, {"state": "changing"}
+    except (OSError, UnicodeError):
+        return None, {"state": "unavailable"}
+    try:
+        parsed = status(text)
+    except ValueError:
+        parsed = None
+    if parsed is None:
+        return None, {"state": "incomplete"}
+    info = {"state": "available", "height": parsed["height"], "modified": after.st_mtime}
+    if now - after.st_mtime > max_age or after.st_mtime - now > max_age:
+        info["state"] = "stale"
+        return None, info
+    return parsed, info
+
+
+def select_status(net, agents, old, now, max_age):
+    """Observe local committed status, never vote on or alter consensus.
+
+    Use the greatest recently observed height. Equal-height disagreement
+    freezes progress notices instead of arbitrarily interpreting one side.
+    Equal identical views use the lexical agent name for reproducibility.
+    """
+    candidates, nodes = [], {}
+    for agent in agents:
+        snapshot, info = observe_status(net / agent / "status.txt", now, max_age)
+        nodes[agent] = info
+        if snapshot is not None:
+            candidates.append((agent, snapshot))
+    source = {"state": "unavailable", "agent": None, "height": None, "nodes": nodes}
+    if not candidates:
+        if any(info["state"] == "stale" for info in nodes.values()):
+            source["state"] = "stale"
+        return None, source
+    highest = max(snapshot["height"] for _, snapshot in candidates)
+    leaders = sorted((agent, snapshot) for agent, snapshot in candidates if snapshot["height"] == highest)
+    source["height"] = highest
+    if any(snapshot != leaders[0][1] for _, snapshot in leaders[1:]):
+        source["state"] = "conflict"
+        return None, source
+    agent, snapshot = leaders[0]
+    if old and highest < old["height"]:
+        source["state"] = "behind"
+        return None, source
+    if old and highest == old["height"] and not same_snapshot(old, snapshot):
+        source["state"] = "conflict"
+        return None, source
+    source.update(state="available", agent=agent)
+    return snapshot, source
 
 
 def transitions(old, new):
@@ -100,10 +165,13 @@ def notice(events, desk, compact=False):
 
 
 class Bridge:
-    def __init__(self, net, cmux, wait=False, state=".cmux", c11=None):
+    def __init__(self, net, cmux, wait=False, state=".cmux", c11=None, status_max_age=30):
         # cmux delivers through `cmux agent message`; with c11 set (its CLI),
         # notices go as c11 mail from Pantheon, rung at the agent's next idle.
         self.net, self.cmux, self.c11 = Path(net).resolve(), cmux, c11
+        if not math.isfinite(status_max_age) or status_max_age <= 0:
+            raise ValueError("status_max_age must be positive")
+        self.status_max_age = status_max_age
         self.root = self.net / state
         self.directory = self.root / "events"
         self.directory.mkdir(parents=True, exist_ok=True)
@@ -133,28 +201,37 @@ class Bridge:
         tmp.replace(self.file)
 
     def poll(self):
-        agents = self.agents()
-        new = status(read(self.net / agents[0] / "status.txt")) if agents else None
+        now = time.time()
         old = self.state["snapshot"]
-        if new is None or (old and new["height"] < old["height"]):
-            return
+        previous_source = self.state.get("source")
+        new, source = select_status(self.net, self.agents(), old, now, self.status_max_age)
         targets = self.targets()
-        events = [(e, [new["leader"]] if new["leader"] in targets else [])
-                  if e["type"] == "leader-chain.updated" else (e, list(targets))
-                  for e in transitions(old, new)]
+        events = [(event, [new["leader"]] if new["leader"] in targets else [])
+                  if event["type"] == "leader-chain.updated" else (event, list(targets))
+                  for event in transitions(old, new)] if new is not None else []
+        # Availability is an observation for subscribers/operators, not an
+        # instruction, consensus decision or terminal market transition.
+        previous_mode = previous_source.get("state") if previous_source else None
+        if previous_mode != source["state"] and (previous_source or source["state"] != "available"):
+            events.append(({"type": "relay.status", "status": source["state"],
+                            "source": source["agent"], "observed_height": source["height"]}, []))
+        current = new or old
         active = {}
-        if not new["finished"]:
+        # A dead/lagging status source must not block local inbox notices.
+        if not current or not current["finished"]:
             for agent in targets:
-                active[agent] = requests(self.root / agent / "inbox", time.time())
+                active[agent] = requests(self.root / agent / "inbox", now)
                 for rid, kind in active[agent].items():
                     if rid not in self.state["requests"].get(agent, {}):
                         events.append(({"type": "request.ready", "agent": agent,
                                         "request": rid, "kind": kind}, [agent]))
-        self.state["snapshot"] = new
+        if new is not None:
+            self.state["snapshot"] = new
+        self.state["source"] = source
         self.state["requests"] = active
         for event, recipients in events:
             self.state["seq"] += 1
-            event.update(seq=self.state["seq"], height=new["height"], time=time.time())
+            event.update(seq=self.state["seq"], height=current["height"] if current else 0, time=now)
             self.state["events"].append(event)
             for agent in recipients:
                 queue = self.state["outbox"].setdefault(agent, [])
@@ -162,8 +239,8 @@ class Bridge:
                 del queue[:-256]
         self.state["events"] = self.state["events"][-256:]
         # Persist the outbox before delivery: a crash can duplicate a notice,
-        # but cannot acknowledge it before cmux has accepted it.
-        if new != old or events or active != getattr(self, "active", None):
+        # but cannot acknowledge it before cmux/C11 has accepted it.
+        if new != old or events or source != previous_source or active != getattr(self, "active", None):
             self.save()
         self.active = active
         for event, _ in events:
@@ -263,7 +340,8 @@ class Bridge:
                 if type(after) is int and (events[0]["seq"] - 1 if events else self.state["seq"]) <= after <= self.state["seq"]:
                     replay = [e for e in events if e["seq"] > after]
                 else:
-                    replay = [{"type": "snapshot", "seq": self.state["seq"], "state": self.state["snapshot"]}]
+                    replay = [{"type": "snapshot", "seq": self.state["seq"], "state": self.state["snapshot"],
+                               "source": self.state.get("source")}]
                 self.clients[stream] = None
                 if replay:
                     self.send(stream, replay)
@@ -288,10 +366,15 @@ def main():
     parser.add_argument("--c11", help="deliver as c11 mail with this c11 CLI instead of cmux hooks")
     parser.add_argument("--state", default=".cmux", help="NET's directory for the integration's state")
     parser.add_argument("--parent", type=int)
+    parser.add_argument("--status-max-age", type=float, default=30,
+                        help="ignore status snapshots older than this many seconds (default: 30)")
     args = parser.parse_args()
     # A replacement watchdog can start before the previous relay exits.
     # Wait for its lock rather than leaving the new watchdog without a relay.
-    bridge = Bridge(args.net, args.cmux, wait=True, state=args.state, c11=args.c11)
+    if not math.isfinite(args.status_max_age) or args.status_max_age <= 0:
+        parser.error("--status-max-age must be positive")
+    bridge = Bridge(args.net, args.cmux, wait=True, state=args.state, c11=args.c11,
+                    status_max_age=args.status_max_age)
     running = True
 
     def stop(*_):

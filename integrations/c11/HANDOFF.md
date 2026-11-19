@@ -65,3 +65,16 @@ isolated calculator/network, uses a stub diplomat and scripted nodes, writes
 results there, and calls down. It has not been run live. The C11 README and
 checked-in tests are the portable handoff; the local helper is supplementary.
 
+
+## Completion-pass observation
+
+The shared event relay now observes all nodes, selects the highest recent
+complete status, and reports stale/unavailable/conflicting observations without
+inventing market transitions. Its source/availability diagnostics are in
+`NET/.c11/events/state.json`, as for cmux.
+
+A sanctioned native UI attempt during the completion pass failed before any
+interaction: `computer-use daemon failed to start: Computer Use onboarding is
+still in progress. Finish setup in cmux, then retry.` No C11 workspace was
+created, and its process-ancestry socket policy was not bypassed. Native layout,
+mailbox delivery and browser behavior therefore still need the live check.

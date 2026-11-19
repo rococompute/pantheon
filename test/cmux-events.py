@@ -2,6 +2,7 @@
 """Event-to-hook delivery without a running cmux or market."""
 import importlib.util
 import json
+import os
 from pathlib import Path
 import socket
 import subprocess
@@ -11,7 +12,7 @@ import time
 import unittest
 from unittest.mock import patch
 
-source = Path(__file__).resolve().parents[1] / "integrations/cmux/events.py"
+source = Path(os.environ.get("PANTHEON_EVENTS_SOURCE", str(Path(__file__).resolve().parents[1] / "integrations/cmux/events.py")))
 sys.dont_write_bytecode = True
 spec = importlib.util.spec_from_file_location("events", source)
 events = importlib.util.module_from_spec(spec)
@@ -52,8 +53,8 @@ class TestEvents(unittest.TestCase):
         self.bridge.close()
         self.temp.cleanup()
 
-    def write(self, text):
-        (self.net / "claude-1/status.txt").write_text(text)
+    def write(self, text, agent="claude-1"):
+        (self.net / agent / "status.txt").write_text(text)
 
     def request(self, rid="123-abcd", agent="codex-1", kind="answer"):
         path = self.net / ".cmux" / agent / "inbox" / rid
@@ -181,8 +182,98 @@ class TestEvents(unittest.TestCase):
         self.bridge.poll()
         self.write(status(7, "merged", "closed"))
         self.bridge.poll()
-        self.assertEqual(self.bridge.state["seq"], 0)
+        self.assertTrue(all(event["type"] == "relay.status" for event in self.bridge.state["events"]))
+        self.assertEqual(self.bridge.state["source"]["state"], "behind")
         self.assertEqual(self.bridge.state["snapshot"]["height"], 8)
+
+    def test_missing_first_node_uses_another_complete_status(self):
+        (self.net / "claude-1/status.txt").unlink()
+        self.write(status(4), "codex-1")
+        self.bridge.poll()
+        self.assertIsNotNone(self.bridge.state["snapshot"])
+        self.assertEqual(self.bridge.state["snapshot"]["height"], 4)
+        self.assertEqual(self.bridge.state["source"]["agent"], "codex-1")
+
+    def test_lagging_first_node_does_not_stall_committed_progress(self):
+        self.bridge.poll()
+        self.write(status(3, "merged", "closed"), "codex-1")
+        self.bridge.poll()
+        self.bridge.deliver()
+        self.assertEqual(self.bridge.state["snapshot"]["height"], 3)
+        self.assertEqual(len(self.calls()), 2)
+        self.assertTrue(all("Contribution #2 merged" in call[-1] for call in self.calls()))
+
+    def test_stale_higher_status_is_not_selected_on_attachment(self):
+        self.write(status(90, "merged", "closed"))
+        past = time.time() - 120
+        os.utime(self.net / "claude-1/status.txt", (past, past))
+        self.write(status(4), "codex-1")
+        self.bridge.poll()
+        self.assertEqual(self.bridge.state["snapshot"]["height"], 4)
+        self.assertEqual(self.bridge.state["source"]["nodes"]["claude-1"]["state"], "stale")
+        self.assertEqual(self.bridge.state["seq"], 0)
+
+    def test_equal_identical_views_choose_lexical_source(self):
+        self.write(status(5), "codex-1")
+        self.write(status(5))
+        self.bridge.poll()
+        self.assertEqual(self.bridge.state["source"]["agent"], "claude-1")
+        self.assertEqual(self.bridge.state["snapshot"]["height"], 5)
+
+    def test_equal_height_disagreement_freezes_then_recovers(self):
+        self.bridge.poll()
+        self.write(status(2))
+        self.write(status(2, "merged", "closed"), "codex-1")
+        self.bridge.poll()
+        self.bridge.poll()
+        self.bridge.deliver()
+        self.assertEqual(self.bridge.state["snapshot"]["height"], 1)
+        self.assertEqual(self.bridge.state["source"]["state"], "conflict")
+        self.assertEqual(self.calls(), [])
+        self.assertEqual([event["type"] for event in self.bridge.state["events"]], ["relay.status"])
+        self.write(status(3, "merged", "closed"))
+        self.write(status(3, "merged", "closed"), "codex-1")
+        self.bridge.poll()
+        self.bridge.deliver()
+        self.assertEqual(self.bridge.state["snapshot"]["height"], 3)
+        self.assertEqual(self.bridge.state["source"]["state"], "available")
+        self.assertEqual(len(self.calls()), 2)
+
+    def test_same_height_mutation_cannot_invent_a_commit(self):
+        self.bridge.poll()
+        self.write(status(1, "merged", "closed"))
+        self.bridge.poll()
+        self.bridge.deliver()
+        self.assertEqual(self.bridge.state["snapshot"]["bids"]["2"], "pending")
+        self.assertEqual(self.bridge.state["source"]["state"], "conflict")
+        self.assertEqual(self.calls(), [])
+
+    def test_unavailable_status_keeps_inbox_nudges_and_exposes_source_state(self):
+        self.bridge.poll()
+        (self.net / "claude-1/status.txt").unlink()
+        self.request()
+        self.bridge.poll()
+        self.bridge.deliver()
+        self.assertEqual(self.bridge.state["snapshot"]["height"], 1)
+        self.assertEqual(self.bridge.state["source"]["state"], "unavailable")
+        self.assertEqual(len(self.calls()), 1)
+        self.assertIn("Inbox request 123-abcd", self.calls()[0][-1])
+        self.assertEqual(self.bridge.state["events"][0]["type"], "relay.status")
+        self.assertEqual(json.loads(events.read(self.bridge.file))["source"]["state"], "unavailable")
+
+    def test_behind_recovery_never_rolls_back_persisted_height(self):
+        self.write(status(8))
+        self.bridge.poll()
+        (self.net / "claude-1/status.txt").unlink()
+        self.write(status(7, "merged", "closed"), "codex-1")
+        self.bridge.poll()
+        self.assertEqual(self.bridge.state["snapshot"]["height"], 8)
+        self.assertEqual(self.bridge.state["source"]["state"], "behind")
+        self.write(status(9, "merged", "closed"), "codex-1")
+        self.bridge.poll()
+        self.bridge.deliver()
+        self.assertEqual(self.bridge.state["snapshot"]["height"], 9)
+        self.assertEqual(len(self.calls()), 2)
 
     def test_terminal_states_with_stale_marker(self):
         self.bridge.poll()
