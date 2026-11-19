@@ -275,6 +275,60 @@ class TestEvents(unittest.TestCase):
         self.assertEqual(self.bridge.state["snapshot"]["height"], 9)
         self.assertEqual(len(self.calls()), 2)
 
+    def test_genesis_disagreement_is_not_a_height_tiebreak(self):
+        self.write(status(3))
+        self.write(status(9, "merged", "closed"), "codex-1")
+        (self.net / "codex-1/genesis.json").write_text('{"chain_id":"another-chain"}')
+        self.bridge.poll()
+        self.bridge.deliver()
+        self.assertIsNone(self.bridge.state["snapshot"])
+        self.assertEqual(self.bridge.state["source"]["reason"], "genesis mismatch")
+        self.assertEqual(self.calls(), [])
+
+    def test_equal_height_display_history_disagreement_is_explicit(self):
+        self.write(status(3).replace("pool 0", "history claude-1\npool 0"))
+        self.write(status(3).replace("pool 0", "history codex-1\npool 0"), "codex-1")
+        self.bridge.poll()
+        self.assertIsNone(self.bridge.state["snapshot"])
+        self.assertEqual(self.bridge.state["source"]["state"], "conflict")
+
+    def test_local_pool_and_backend_annotations_do_not_conflict(self):
+        self.write(status(3) + "checkout wallet " + "b" * 40 + "\nLIMIT backend held\n")
+        self.write(status(3).replace("pool 0", "pool 3") + "checkout wallet " + "c" * 40 + "\n", "codex-1")
+        self.bridge.poll()
+        self.assertEqual(self.bridge.state["snapshot"]["height"], 3)
+        self.assertEqual(self.bridge.state["source"]["state"], "available")
+
+    def test_shared_view_anchor_and_reader_owned_snapshot_survive_fallback(self):
+        self.bridge.poll()
+        self.write(status(3, "merged", "closed"), "codex-1")
+        output = self.net / ".cmux/view reader [one].txt"
+        def view():
+            result = subprocess.run([sys.executable, str(source), str(self.net), "--status-view",
+                                     "--status-output", str(output)], check=True,
+                                    text=True, capture_output=True, timeout=5)
+            return json.loads(result.stdout)
+        first = view()
+        self.assertEqual(first["agent"], "codex-1")
+        self.assertEqual(first["height"], 3)
+        self.assertIn("height 3", output.read_text())
+        (self.net / "codex-1/status.txt").unlink()
+        self.write(status(2))
+        behind = view()
+        self.assertEqual(behind["state"], "behind")
+        self.assertEqual(behind["height"], 3)
+        self.assertIn("height 3", output.read_text())
+        self.bridge.poll()
+        self.assertEqual(self.bridge.state["snapshot"]["height"], 1)
+        self.write(status(4, "merged", "closed"))
+        self.bridge.poll()
+        self.assertEqual(self.bridge.state["snapshot"]["height"], 4)
+
+    def test_status_age_must_be_positive_and_finite(self):
+        for age in (0, -1, float("nan"), float("inf")):
+            with self.assertRaises(ValueError):
+                events.Bridge(self.net, str(self.cmux), status_max_age=age)
+
     def test_terminal_states_with_stale_marker(self):
         self.bridge.poll()
         self.write(status(2, "merged stale"))

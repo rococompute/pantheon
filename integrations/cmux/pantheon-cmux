@@ -514,6 +514,19 @@ END {
   }
 }'
 
+# One shared monotone observer supplies the view, readiness and history.
+# Each watchdog reader owns its snapshot file, so the relay cannot replace
+# it midway through rendering. Metadata is data, never evaluated as shell.
+status_observe() {
+  obs_=$(python3 "$here/integrations/cmux/events.py" "$NET" --state "${MUX_STATE:-$(basename "$ST")}" \
+    --status-view --status-output "$ST/status-view.$$.txt") || obs_='{}'
+  STATUS_FILE=$(printf '%s' "$obs_" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("file") or "/dev/null")')
+  STATUS_AGENT=$(printf '%s' "$obs_" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("agent") or "")')
+  STATUS_STATE=$(printf '%s' "$obs_" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("state") or "unavailable")')
+  STATUS_HEIGHT=$(printf '%s' "$obs_" | python3 -c 'import json,sys; v=json.load(sys.stdin).get("height"); print(v if v is not None else "unknown")')
+  STATUS_SAME_CHAIN=$(printf '%s' "$obs_" | python3 -c 'import json,sys; print("yes" if json.load(sys.stdin).get("same_chain") else "no")')
+}
+
 # The market's title, the goal's heading and the workspace's name: Market (X
 # leader) while X leads, Market while a leader is drawn, and Done once the
 # market finished. In a finishing market (genesis finish=1) whose leaders
@@ -522,7 +535,10 @@ END {
 # (No height or term: with them it changed with every block; the leader
 # changes once a term.)
 market_title() {
-  f_=$NET/$(agents_of "$NET" | head -1)/status.txt
+  if [ "$#" -gt 0 ]; then f_=$1 state_=${2:-available}; else
+    status_observe; f_=$STATUS_FILE state_=$STATUS_STATE
+  fi
+  if [ "$state_" != available ]; then printf 'Market (status %s)' "$state_"; return 0; fi
   [ -f "$f_" ] || { printf 'Market'; return 0; }
   grep -q '^finished:' "$f_" && { printf 'Done'; return 0; }
   awk 'NR == 1 { for (i = 1; i < NF; i++) if ($i == "leader") l = $(i + 1) }
@@ -533,18 +549,34 @@ market_title() {
 }
 
 render_plan() {
-  a1=$(agents_of "$NET" | head -1) f=$NET/$a1/status.txt
+  if [ "$#" -ge 4 ]; then
+    f=$1 a1=$2 state_=$3 observed_=$4
+  else
+    status_observe
+    a1=$STATUS_AGENT f=$STATUS_FILE state_=$STATUS_STATE observed_=$STATUS_HEIGHT
+  fi
   sf=$f; [ -f "$sf" ] || sf=/dev/null
   {
-    head=$(market_title)
+    head=$(market_title "$sf" "$state_")
+    if [ "$state_" != available ]; then
+      printf '_Status observation: %s; last accepted committed height %s._\n\n' "$state_" "$observed_"
+    fi
     g=$(cat "$ST/goal" 2>/dev/null || true)
     if [ -n "$g" ] && [ -f "$g" ]; then
       printf '## %s\n\n' "$head"
       awk -v items=goal "$ITEMS_AWK" "$sf" "$g" | awk "$GOAL_AWK"; printf '\n'
     fi
     for r in "$NET/$a1"/repos/*/; do
-      # at the node's head (its checkout follows it), else as the file is
-      plan=$(git -C "$r" show HEAD:.plan 2>/dev/null || cat "$r/.plan" 2>/dev/null) || continue
+      [ -n "$a1" ] || break
+      repo_name_=$(basename "$r")
+      tree_=$(awk -v repo="$repo_name_" '$1 == "repo" && $2 == repo { print $3; exit }' "$sf")
+      if [ -n "$tree_" ]; then
+        # Read exactly the committed tree named by this status, rather than
+        # a newer HEAD or an uncommitted working copy at the selected node.
+        plan=$(git -C "$r" show "$tree_:.plan" 2>/dev/null) || continue
+      else
+        plan=$(git -C "$r" show HEAD:.plan 2>/dev/null || cat "$r/.plan" 2>/dev/null) || continue
+      fi
       [ -n "$plan" ] || continue
       printf '## Goals\n\n'
       printf '_🫘 open  🌱 working  🪴 progressing  🌳 done_\n\n'
@@ -604,14 +636,16 @@ record() {
 # (genesis finish=1) finished (its nodes stop on their own), word to the
 # diplomats (their inbox wait says so) and to you, once
 status_pass() {
-  w=$(workspace) title=$(market_title)
+  status_observe
+  pass_file_=$STATUS_FILE pass_agent_=$STATUS_AGENT pass_state_=$STATUS_STATE
+  pass_height_=$STATUS_HEIGHT pass_chain_=$STATUS_SAME_CHAIN
+  w=$(workspace) title=$(market_title "$pass_file_" "$pass_state_")
   if [ "$title" != "$(cat "$ST/title" 2>/dev/null || true)" ]; then
     mux_rename_ws "$w" "$title" && printf '%s\n' "$title" > "$ST/title"
   fi
-  render_plan
+  render_plan "$pass_file_" "$pass_agent_" "$pass_state_" "$pass_height_"
   record
-  a1=$(agents_of "$NET" | head -1)
-  if [ ! -e "$ST/finished" ] && grep -q '^finished:' "$NET/$a1/status.txt" 2>/dev/null; then
+  if [ ! -e "$ST/finished" ] && market_finished "$pass_file_" "$pass_state_" "$pass_chain_"; then
     BUNDLE=1 record
     : > "$ST/finished"
     for a in $(agents_of "$NET"); do [ -d "$ST/$a/inbox" ] && : > "$ST/$a/inbox/finished"; done
@@ -629,8 +663,14 @@ session_state() {
 # a finishing market (genesis finish=1) that finished: its nodes stopped, and
 # no request will come, so a diplomat that stopped is done, not stuck
 market_finished() {
-  for a_ in $(agents_of "$NET"); do grep -q '^finished:' "$NET/$a_/status.txt" 2>/dev/null && return 0; done
-  return 1
+  if [ "$#" -ge 3 ]; then
+    finished_file_=$1 finished_state_=$2 finished_chain_=$3
+  else
+    status_observe
+    finished_file_=$STATUS_FILE finished_state_=$STATUS_STATE finished_chain_=$STATUS_SAME_CHAIN
+  fi
+  [ "$finished_state_" != conflict ] && [ "$finished_chain_" = yes ] \
+    && [ -f "$finished_file_" ] && grep -q '^finished:' "$finished_file_"
 }
 
 # An unanswered request whose backend is still waiting. Claimed requests
@@ -720,7 +760,9 @@ watch_agent() {
 # NET/.cmux/leaders.log, a line a term: TERM LEADER HEIGHT TIME, the height
 # and time the watchdog saw it at
 note_leaders() {
-  f=$NET/$(agents_of "$NET" | head -1)/status.txt
+  status_observe
+  [ "$STATUS_STATE" = available ] || return 0
+  f=$STATUS_FILE
   [ -f "$f" ] || return 0
   seen=0; [ -s "$ST/leaders.log" ] && seen=$(tail -1 "$ST/leaders.log" | cut -d' ' -f1)
   awk -v seen="$seen" -v now="$(date '+%H:%M:%S')" '

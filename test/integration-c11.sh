@@ -81,7 +81,7 @@ unset C11_SOCKET 2>/dev/null || true
 
 for a in claude codex grok muse; do mkdir -p "$t/net/$a"; echo '{}' > "$t/net/$a/key.json"; echo '{}' > "$t/net/$a/genesis.json"; done
 printf -- '- add a sub command\n' > "$t/goal.txt"
-printf 'height 7  term 1  leader codex\n' > "$t/net/claude/status.txt"
+printf 'height 7  term 1  leader codex\npool 0\n' > "$t/net/claude/status.txt"
 pc=$here/integrations/c11/pantheon-c11
 d=$t/net/.c11
 

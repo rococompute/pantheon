@@ -68,9 +68,11 @@ checked-in tests are the portable handoff; the local helper is supplementary.
 
 ## Completion-pass observation
 
-The shared event relay now observes all nodes, selects the highest recent
-complete status, and reports stale/unavailable/conflicting observations without
-inventing market transitions. Its source/availability diagnostics are in
+The shared observer now serves event relay, plan/title, readiness and leader
+history. It checks matching public genesis, selects the highest recent complete
+status, and reports stale/unavailable/conflicting observations without inventing
+market transitions. Reader-owned files and status-pinned Git trees keep plan
+rendering consistent. Its source/availability diagnostics are in
 `NET/.c11/events/state.json`, as for cmux.
 
 A sanctioned native UI attempt during the completion pass failed before any

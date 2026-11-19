@@ -145,7 +145,9 @@ pass, nudges included, for a test or a cron job.
 
 The full watchdog also runs `events.py`. Every two seconds it reads every
 node's complete `status.txt` and compares the highest recent committed view
-with its last snapshot. A dead or lagging first node no longer stalls events.
+with its last snapshot. Every participating node must have the same public
+genesis; mismatched chains freeze observation instead of being compared by
+height. A dead or lagging first node no longer stalls events.
 Identical equal-height views choose the agent name in lexical order; conflicting
 equal-height views freeze progress notices until a consistent newer view is
 observed. The relay never rolls its saved committed height backwards. New accepted,
@@ -173,8 +175,8 @@ freshness, not proof that a node process is alive. `source.state` is `available`
 `stale`, `unavailable`, `behind`, or `conflict`; the last accepted snapshot stays
 visible when observation is unavailable. Local inbox request notices continue
 even then. Subscribers receive `relay.status` availability changes; those
-diagnostics do not interrupt agents or authorize market operations. Repeated observations and
-normal restarts do not send duplicates; a crash after cmux accepts a message
+diagnostics do not interrupt agents or authorize market operations. Repeated
+observations and normal restarts do not send duplicates; a crash after cmux accepts a message
 but before the queue is saved can redeliver it. Delivery means cmux accepted
 the notice, not that the model acted on it. `relay.log` records delivery and
 retry results. The run record includes this state as `events.json`.
@@ -213,9 +215,14 @@ Other limits:
 
 - One machine only: every node of `NET` runs here. A network spread across
   machines (docs/NETWORK.md) would need a workspace per machine.
-- The plan view shows a `.plan` as committed at the head of one node's
-  checkout (the first agent's): an uncommitted edit there doesn't show, and
-  the node cleans it away on its next merge. To change the plan, commit it
+- Plan/title, readiness and leader history use the same monotone observation
+  as the event relay. The plan reads `.plan` from the Git tree named in the
+  selected status, rather than a newer checkout HEAD. A reader-owned text
+  snapshot keeps rendering consistent while the relay polls. Stale/conflicting
+  views show their observation state and retain the last accepted height.
+  `events.py NET --state .cmux --status-view` exposes the observation as JSON;
+  it is an advisory local projection, not a consensus vote or proof.
+  An uncommitted plan edit does not change a status-pinned tree. To change it, commit it
   the way the market does (docs/PLAN.md).
 - With `--layout grid`, the panes get crowded beyond about eight agents.
 - `up` refuses while any of `NET`'s nodes run outside cmux, for example
