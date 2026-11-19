@@ -9,6 +9,11 @@
 #
 # Needs main.exe: build it with `soma build main.soma`.
 set -u
+ALL="bidders bidder-fallback bidder-timeout happy crash restart-lock equivocate double-vote silent bad-sig withhold bad-tree future-nonce deny silent-model policy model stuck limit limit-cli prune epoch text network ci cifail ciflood cispoof nocheck parallel scope flood"
+case ${1:-} in
+  --list) printf '%s\n' $ALL; exit 0 ;;
+  --help|-h) printf 'Usage: %s [SCENARIO ...]\nRun scripted real-node scenarios; --list lists names without starting nodes.\n' "$0"; exit 0 ;;
+esac
 cd "$(dirname "$0")/.."
 BIN=$PWD/main.exe
 [ -x "$BIN" ] || { echo "no main.exe: run soma build main.soma"; exit 1; }
@@ -970,7 +975,6 @@ run() {
   esac
 }
 
-ALL="bidders bidder-fallback bidder-timeout happy crash restart-lock equivocate double-vote silent bad-sig withhold bad-tree future-nonce deny silent-model policy model stuck limit limit-cli prune epoch text network ci cifail ciflood cispoof nocheck parallel scope flood"
 want=${*:-$ALL}
 # at most E2E_JOBS scenarios at once (four nodes each): every node signs
 # its lines with Soma's RSA, so a whole run at once starves a flooding

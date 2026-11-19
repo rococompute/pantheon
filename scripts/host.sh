@@ -51,7 +51,7 @@
 #   CODEX_ENV     the Codex Cloud environment for codex's workers (codex cloud lists them)
 #   GROK_MODEL    the Cursor CLI's model for grok (default: grok-4.7-high; cursor-agent models lists them,
 #                 and diplomats checks it's one)
-#   SOMA_REMOTE   Soma's repository, for the agents to read (default: https://github.com/yevbar/soma.git)
+#   SOMA_REMOTE   Soma's repository, for the agents to read (default: https://github.com/rococompute/soma.git)
 #   BRANCH        the branch of REMOTE the market publishes to and workers start from (default: its default branch)
 #   SOMA_REF      the branch there at the commit SOMA_DIR is built from (default: gradual, Soma's default branch)
 #   EXCLUDE       repositories outside this host's agents' scope, e.g. "soma" on a host with no room for
@@ -99,7 +99,7 @@ valid_branch() {
 valid_branch "$BRANCH" || { printf 'host: BRANCH %s is not a plain git branch name (letters, digits, . _ / -): set BRANCH to one\n' "$(printf '%s' "$BRANCH" | tr -c 'A-Za-z0-9._/-' '?')" >&2; exit 1; }
 CODEX_ENV=${CODEX_ENV:-}
 GROK_MODEL=${GROK_MODEL:-grok-4.7-high}
-SOMA_REMOTE=${SOMA_REMOTE:-https://github.com/yevbar/soma.git}
+SOMA_REMOTE=${SOMA_REMOTE:-https://github.com/rococompute/soma.git}
 SOMA_REF=${SOMA_REF:-gradual}
 soma_commit() { git -C "$SOMA" rev-parse HEAD 2>/dev/null || echo unknown; }
 # whether the network's genesis governs Soma too (scripts/sandbox.sh's JOIN
