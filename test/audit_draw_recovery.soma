@@ -49,5 +49,5 @@ main := Host.print_lines [
     (negb (seq (snd (apply missed "a" ["reveal", "forged"])) "")),
   check "an exhausted chain sends nothing"
     (negb (existsb (fun xs => seq (hd "" xs) "push")
-      (operations (setf initial "tips" ([("a", secret)] : list (string * string))) "")))
+      (operations (setf initial "tips" ([("a", hashes 1)] : list (string * string))) "")))
 ].
