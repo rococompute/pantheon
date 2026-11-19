@@ -57,27 +57,122 @@
 # node's own NET/AGENT/inbox (that one is for transactions).
 set -eu
 here=$(cd "$(dirname "$0")/../.." && pwd)
-self=$here/integrations/cmux/pantheon-cmux
-export CMUX_QUIET=1
 GROK_MODEL=${GROK_MODEL:-}
 
-say() { printf 'pantheon-cmux: %s\n' "$*"; }
-die() { printf 'pantheon-cmux: %s\n' "$*" >&2; exit 1; }
+# The multiplexer: cmux, or with PANTHEON_MUX=c11 (integrations/c11/pantheon-c11)
+# c11, whose adapter (integrations/c11/mux.sh) replaces the mux_* calls below.
+# MUX names it in messages, MUX_STATE is NET's directory for what this keeps.
+MUX=cmux MUX_STATE=.cmux prog=pantheon-cmux
+self=$here/integrations/cmux/pantheon-cmux
+
+say() { printf '%s: %s\n' "$prog" "$*"; }
+die() { printf '%s: %s\n' "$prog" "$*" >&2; exit 1; }
 # a word for sh, single-quoted
 q() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
 
-if [ -z "${CMUX_BIN:-}" ]; then
-  if [ -n "${CMUX:-}" ]; then CMUX_BIN=$CMUX
-  elif command -v cmux >/dev/null 2>&1; then CMUX_BIN=cmux
-  elif [ -n "${CMUX_BUNDLED_CLI_PATH:-}" ] && [ -x "$CMUX_BUNDLED_CLI_PATH" ]; then CMUX_BIN=$CMUX_BUNDLED_CLI_PATH
-  else CMUX_BIN=/Applications/cmux.app/Contents/Resources/bin/cmux
+# "OK surface:N (UUID) ..." -> the first UUID, or the first ref
+first_uuid() { grep -o '([0-9A-Fa-f-]\{36\})' | head -1 | tr -d '()'; }
+
+# --- cmux: every call to the multiplexer goes through these ---------------
+mux_setup() {
+  export CMUX_QUIET=1
+  if [ -z "${CMUX_BIN:-}" ]; then
+    if [ -n "${CMUX:-}" ]; then CMUX_BIN=$CMUX
+    elif [ -n "${CMUX_BUNDLED_CLI_PATH:-}" ] && [ -x "$CMUX_BUNDLED_CLI_PATH" ]; then CMUX_BIN=$CMUX_BUNDLED_CLI_PATH
+    elif [ -x /Applications/cmux.app/Contents/Resources/bin/cmux ]; then CMUX_BIN=/Applications/cmux.app/Contents/Resources/bin/cmux
+    elif command -v cmux >/dev/null 2>&1; then CMUX_BIN=cmux
+    else CMUX_BIN=/Applications/cmux.app/Contents/Resources/bin/cmux
+    fi
   fi
-fi
+}
 cm() { "$CMUX_BIN" "$@"; }
-need_cmux() {
+mux_need() {
   command -v "$CMUX_BIN" >/dev/null 2>&1 || [ -x "$CMUX_BIN" ] || die "no cmux CLI at $CMUX_BIN: install cmux (cmux.com), or set CMUX to its CLI"
   cm list-workspaces >/dev/null 2>&1 || die "cmux doesn't answer: start cmux.app (or run this from a cmux terminal)"
 }
+# is workspace W open
+mux_alive() { cm --json --id-format uuids list-workspaces 2>/dev/null | grep -q "$1"; }
+# a workspace named NAME, described DESC, in CWD, its first tab running CMD: its id
+mux_new_workspace() {
+  out=$(cm --id-format both new-workspace --name "$1" --description "$2" \
+    --cwd "$3" --command "$4") || die "cmux couldn't make the workspace: $out"
+  # new-workspace names it by ref only: its id, for later
+  ref=$(printf '%s' "$out" | grep -o 'workspace:[0-9]*' | head -1)
+  # (it is listed a moment after it's made)
+  nw="" tries=0
+  while [ -z "$nw" ] && [ "$tries" -lt 20 ]; do
+    nw=$(cm --json --id-format both list-workspaces | python3 -c '
+import json, sys
+for x in json.load(sys.stdin)["workspaces"]:
+    if x.get("ref") == sys.argv[1]: print(x["id"]); break' "$ref")
+    [ -n "$nw" ] || { tries=$((tries + 1)); sleep 0.5; }
+  done
+  [ -n "$nw" ] || die "cmux made a workspace but it isn't listed: $out"
+  printf '%s' "$nw"
+}
+# workspace W's first tab
+mux_first_surface() {
+  cm --json --id-format both list-panes --workspace "$1" | python3 -c 'import json,sys; print(json.load(sys.stdin)["panes"][0]["surface_ids"][0])'
+}
+# the pane that holds surface S (a ref or UUID) in workspace W
+mux_pane_of() {
+  cm --json --id-format both list-panes --workspace "$1" | python3 -c '
+import json, sys
+s = sys.argv[1]
+for p in json.load(sys.stdin)["panes"]:
+    if s in p.get("surface_ids", []) + p.get("surface_refs", []):
+        print(p["id"]); break' "$2"
+}
+# a new pane DIR (right, down) of surface FROM in workspace W running CMD: its tab's id
+mux_split() { cm --id-format both new-split "$1" --workspace "$2" --surface "$3" --focus false --command "$4" | first_uuid; }
+# a new tab in pane P of workspace W running CMD: its id
+mux_new_tab() { cm --id-format both new-surface --pane "$1" --workspace "$2" --focus false --command "$3" | first_uuid; }
+mux_rename_tab() { cm rename-tab --workspace "$1" --surface "$2" "$3" >/dev/null; }
+# tab S of workspace W to position INDEX, selected if FOCUS is true
+mux_reorder() { cm reorder-surface --workspace "$1" --surface "$2" --index "$3" ${4:+--focus "$4"} >/dev/null 2>&1 || true; }
+# the plan's view of FILE (plan.md), left of surface S in workspace W: "PANE SURFACE", or nothing
+mux_markdown() {
+  mo=$(cm --id-format both markdown open "$1" --workspace "$2" --surface "$3" --direction left --focus false) || return 0
+  printf '%s %s' "$(printf '%s' "$mo" | sed -n 's/.*pane=pane:[0-9]* (\([0-9A-Fa-f-]*\)).*/\1/p')" "$(printf '%s' "$mo" | first_uuid)"
+}
+mux_rename_ws() { cm rename-workspace --workspace "$1" "$2" >/dev/null 2>&1; }
+# a notification TITLE, BODY about workspace W (and tab S)
+mux_notify() { cm notify --title "$3" --body "$4" --workspace "$1" ${2:+--surface "$2"} >/dev/null 2>&1 || true; }
+# a diplomat's tab S in workspace W, once it's made
+mux_diplomat_tab() { :; }
+# the session state in tab S, from cmux's hooks: working, idle, done, completed,
+# waiting, needs_input, blocked, or none (no agent seen in it)
+mux_state() {
+  cm --json current --limit 200 2>/dev/null | python3 -c '
+import json, sys
+s = sys.argv[1].lower()
+for it in json.load(sys.stdin).get("items", []):
+    refs = [e.get("reference", "").lower() for e in it.get("evidence", [])]
+    if any(r.endswith(s) for r in refs):
+        states = [a.get("state", "") for a in it.get("agents", [])]
+        print(states[0] if states else "none"); break
+else:
+    print("none")' "$1"
+}
+# TEXT to the agent in tab S, through its provider's hooks
+mux_message() { cm agent message "$1" --from Pantheon -- "$2" >/dev/null; }
+mux_close() { cm close-workspace --force --workspace "$1" >/dev/null; }
+# Called in a background subshell: exec keeps the watchdog as Python's parent.
+# Keep paths as arguments, never split/glob a serialized command line.
+mux_events() {
+  exec python3 "$here/integrations/cmux/events.py" "$NET" --state "$MUX_STATE" --cmux "$CMUX_BIN" --parent "$$"
+}
+# plan.md was rewritten: cmux's markdown view follows the file on its own
+mux_plan_changed() {
+  :
+}
+# what diplomat.md says of the multiplexer
+MUX_NOTICES="Pantheon event notices arrive through cmux's agent hooks, including while you are working."
+# --------------------------------------------------------------------------
+
+[ "${PANTHEON_MUX:-cmux}" = cmux ] || . "$here/integrations/${PANTHEON_MUX}/mux.sh"
+mux_setup
+need_cmux() { mux_need; }
 need_pantheon() {
   if [ -z "${PANTHEON:-}" ]; then
     if command -v pantheon >/dev/null 2>&1; then PANTHEON=$(command -v pantheon)
@@ -97,28 +192,17 @@ agents_of() {
 kind() { printf '%s' "${1%%-*}"; }
 in_list() { case " $2 " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
 net_arg() {
-  [ -n "${1:-}" ] || die "which network? pantheon-cmux $2 NET (a directory made by pantheon init)"
+  [ -n "${1:-}" ] || die "which network? $prog $2 NET (a directory made by pantheon init)"
   [ -d "$1" ] || die "no directory $1: make a network with pantheon init $1 first"
-  NET=$(cd "$1" && pwd) ST=$NET/.cmux
+  NET=$(cd "$1" && pwd) ST=$NET/$MUX_STATE
   [ -n "$(agents_of "$NET")" ] || die "$NET has no network (no agent with key.json and genesis.json): run pantheon init $1 first"
 }
 workspace() { cat "$ST/workspace" 2>/dev/null || true; }
 workspace_alive() {
   w=$(workspace); [ -n "$w" ] || return 1
-  cm --json --id-format uuids list-workspaces 2>/dev/null | grep -q "$w"
+  mux_alive "$w"
 }
-
-# "OK surface:N (UUID) ..." -> the first UUID, or the first ref
-first_uuid() { grep -o '([0-9A-F-]\{36\})' | head -1 | tr -d '()'; }
-# the pane that holds surface S (a ref or UUID) in workspace W
-pane_of() {
-  cm --json --id-format both list-panes --workspace "$1" | python3 -c '
-import json, sys
-s = sys.argv[1]
-for p in json.load(sys.stdin)["panes"]:
-    if s in p.get("surface_refs", []) + p.get("surface_ids", []):
-        print(p["id"]); break' "$2"
-}
+pane_of() { mux_pane_of "$@"; }
 
 # backends from --backends A=B,C=D
 backend_of() {
@@ -162,10 +246,11 @@ PANTHEON_INBOX=$(q "$d/inbox") exec $(q "$here/scripts/bidder-inbox.sh")
 B
   chmod 755 "$d/desk/pantheon-inbox" "$d/backend.sh"
   # the values reach Python through its environment, never its source
-  R_AGENT=$a R_NET=$NET R_DESK=$d/desk R_PANTHEON=$PANTHEON python3 - "$here/integrations/cmux/diplomat.md" "$d/desk/instructions.md" <<'PY'
+  R_AGENT=$a R_NET=$NET R_DESK=$d/desk R_PANTHEON=$PANTHEON R_MUX=$MUX R_INBOX=$d/inbox R_NOTICES=$MUX_NOTICES \
+    python3 - "$here/integrations/cmux/diplomat.md" "$d/desk/instructions.md" <<'PY'
 import os, sys
 t = open(sys.argv[1]).read()
-for k in ["AGENT", "NET", "DESK", "PANTHEON"]:
+for k in ["AGENT", "NET", "DESK", "PANTHEON", "MUX", "INBOX", "NOTICES"]:
     t = t.replace("{{%s}}" % k, os.environ["R_" + k])
 open(sys.argv[2], "w").write(t)
 PY
@@ -177,10 +262,10 @@ PY
 
 # a tab in pane P running COMMAND, named NAME, at position INDEX: its id
 tab() {
-  t_s=$(cm --id-format both new-surface --pane "$1" --workspace "$w" --focus false --command "$2" | first_uuid)
-  [ -n "$t_s" ] || die "cmux didn't make the tab $3"
-  cm rename-tab --workspace "$w" --surface "$t_s" "$3" >/dev/null
-  cm reorder-surface --workspace "$w" --surface "$t_s" --index "$4" >/dev/null 2>&1 || true
+  t_s=$(mux_new_tab "$1" "$w" "$2")
+  [ -n "$t_s" ] || die "$MUX didn't make the tab $3"
+  mux_rename_tab "$w" "$t_s" "$3"
+  mux_reorder "$w" "$t_s" "$4"
   printf '%s' "$t_s"
 }
 
@@ -191,21 +276,21 @@ tab() {
 # its node) and then, for a diplomat, its node's tab.
 layout_plan() {
   render_plan
-  cm rename-tab --workspace "$w" --surface "$s1" "$first" >/dev/null
-  mo=$(cm --id-format both markdown open "$ST/plan.md" --workspace "$w" --surface "$s1" --direction left --focus false) \
-    || say "cmux didn't open the plan's view: open $ST/plan.md in it by hand"
+  mux_rename_tab "$w" "$s1" "$first"
+  mo=$(mux_markdown "$ST/plan.md" "$w" "$s1")
+  [ -n "${mo# }" ] || say "$MUX didn't open the plan's view: open $ST/plan.md in it by hand"
   # the agents' grid, split from the first agent's pane (the right half)
   cols=$(( (n + 1) / 2 )) i=1 tops=$s1
   for a in $agents; do
     if [ "$i" -gt 1 ]; then
       if [ "$i" -le "$cols" ]; then from=$(printf '%s\n' $tops | tail -1) dir=right
       else from=$(printf '%s\n' $tops | sed -n "$((i - cols))p") dir=down; fi
-      s=$(cm --id-format both new-split "$dir" --workspace "$w" --surface "$from" --focus false --command "sh $(q "$(main_of "$a")")" | first_uuid)
-      [ -n "$s" ] || die "cmux didn't split a pane for $a"
+      s=$(mux_split "$dir" "$w" "$from" "sh $(q "$(main_of "$a")")")
+      [ -n "$s" ] || die "$MUX didn't split a pane for $a"
       [ "$i" -le "$cols" ] && tops="$tops $s"
-      cm rename-tab --workspace "$w" --surface "$s" "$a" >/dev/null
+      mux_rename_tab "$w" "$s" "$a"
     else s=$s1; fi
-    if in_list "$a" "$sessions"; then printf '%s\n' "$s" > "$ST/$a/surface"; else printf '%s\n' "$s" > "$ST/$a/node-surface"; fi
+    if in_list "$a" "$sessions"; then printf '%s\n' "$s" > "$ST/$a/surface"; mux_diplomat_tab "$w" "$s"; else printf '%s\n' "$s" > "$ST/$a/node-surface"; fi
     i=$((i + 1))
   done
   # a diplomat's node, in its agent's pane
@@ -213,34 +298,33 @@ layout_plan() {
     s=$(tab "$(pane_of "$w" "$(cat "$ST/$a/surface")")" "sh $(q "$ST/$a/node.sh")" "$a node" 1)
     printf '%s\n' "$s" > "$ST/$a/node-surface"
   done
-  # the plan's pane, from what markdown open says (pane=pane:N (UUID)); without
+  # the plan's pane and tab, from mux_markdown; without
   # one, the watchdog goes in the first agent's pane
-  lp=$(printf '%s' "$mo" | sed -n 's/.*pane=pane:[0-9]* (\([0-9A-Fa-f-]*\)).*/\1/p')
-  plan_s=$(printf '%s' "$mo" | first_uuid)
+  lp=${mo%% *} plan_s=${mo#* }
   if [ -n "$lp" ]; then j=1; else lp=$(pane_of "$w" "$s1") j=2 plan_s=""; fi
   tab "$lp" "sh $(q "$self") watchdog $(q "$NET")" watchdog "$j" >/dev/null
   # (each new tab is selected as it's made: back to each diplomat's session,
   # the plan, and last the first agent's tab, which keeps the focus)
   for a in $sessions; do
-    cm reorder-surface --workspace "$w" --surface "$(cat "$ST/$a/surface")" --index 0 --focus true >/dev/null 2>&1 || true
+    mux_reorder "$w" "$(cat "$ST/$a/surface")" 0 true
   done
-  [ -z "$plan_s" ] || cm reorder-surface --workspace "$w" --surface "$plan_s" --index 0 --focus true >/dev/null 2>&1 || true
-  cm reorder-surface --workspace "$w" --surface "$s1" --index 0 --focus true >/dev/null 2>&1 || true
+  [ -z "$plan_s" ] || mux_reorder "$w" "$plan_s" 0 true
+  mux_reorder "$w" "$s1" 0 true
 }
 
 # A pane per agent in a grid of two rows, its node's tab and its diplomat's;
 # the watchdog in the first pane
 layout_grid() {
-  cm rename-tab --workspace "$w" --surface "$s1" "$first node" >/dev/null
+  mux_rename_tab "$w" "$s1" "$first node"
   cols=$(( (n + 1) / 2 )) i=1 tops=$s1
   for a in $agents; do
     if [ "$i" -gt 1 ]; then
       if [ "$i" -le "$cols" ]; then from=$(printf '%s\n' $tops | tail -1) dir=right
       else from=$(printf '%s\n' $tops | sed -n "$((i - cols))p") dir=down; fi
-      s=$(cm --id-format both new-split "$dir" --workspace "$w" --surface "$from" --focus false --command "sh $(q "$ST/$a/node.sh")" | first_uuid)
-      [ -n "$s" ] || die "cmux didn't split a pane for $a"
+      s=$(mux_split "$dir" "$w" "$from" "sh $(q "$ST/$a/node.sh")")
+      [ -n "$s" ] || die "$MUX didn't split a pane for $a"
       [ "$i" -le "$cols" ] && tops="$tops $s"
-      cm rename-tab --workspace "$w" --surface "$s" "$a node" >/dev/null
+      mux_rename_tab "$w" "$s" "$a node"
     else s=$s1; fi
     printf '%s\n' "$s" > "$ST/$a/node-surface"
     i=$((i + 1))
@@ -248,6 +332,7 @@ layout_grid() {
   for a in $sessions; do
     s=$(tab "$(pane_of "$w" "$(cat "$ST/$a/node-surface")")" "sh $(q "$ST/$a/session.sh")" "$a diplomat" 1)
     printf '%s\n' "$s" > "$ST/$a/surface"
+    mux_diplomat_tab "$w" "$s"
   done
   p1=$(pane_of "$w" "$s1")
   k=1; in_list "$first" "$sessions" && k=2
@@ -271,9 +356,9 @@ cmd_up() {
   need_cmux; need_pantheon
   agents=$(agents_of "$NET")
   for a in $dips; do in_list "$a" "$(echo $agents)" || die "--diplomats: $a isn't an agent of $NET ($(echo $agents))"; done
-  if workspace_alive; then die "$NET is up already, in workspace $(workspace): pantheon-cmux down $NET first"; fi
+  if workspace_alive; then die "$NET is up already, in workspace $(workspace): $prog down $NET first"; fi
   if pgrep -f -- "node $NET/" >/dev/null 2>&1; then
-    die "$NET's nodes are running outside cmux (pantheon up?): stop them first ($(pgrep -f -- "node $NET/" | tr '\n' ' '))"
+    die "$NET's nodes are running outside $MUX (pantheon up?): stop them first ($(pgrep -f -- "node $NET/" | tr '\n' ' '))"
   fi
   mkdir -p "$ST"
   # each node's script: the node in the foreground, its output on screen and in node.log
@@ -300,32 +385,20 @@ cmd_up() {
   # what an agent's tab runs in the plan layout: its diplomat, else its node
   main_of() { if in_list "$1" "$sessions"; then echo "$ST/$1/session.sh"; else echo "$ST/$1/node.sh"; fi; }
   if [ "$layout" = plan ]; then start=$(main_of "$first"); else start=$ST/$first/node.sh; fi
-  out=$(cm --id-format both new-workspace --name Market --description "${goal:-a Pantheon network}" \
-    --cwd "$NET" --command "sh $(q "$start")") || die "cmux couldn't make the workspace: $out"
-  # new-workspace names it by ref only: its id, for later
-  ref=$(printf '%s' "$out" | grep -o 'workspace:[0-9]*' | head -1)
-  # (it is listed a moment after it's made)
-  w="" tries=0
-  while [ -z "$w" ] && [ "$tries" -lt 20 ]; do
-    w=$(cm --json --id-format both list-workspaces | python3 -c '
-import json, sys
-for x in json.load(sys.stdin)["workspaces"]:
-    if x.get("ref") == sys.argv[1]: print(x["id"]); break' "$ref")
-    [ -n "$w" ] || { tries=$((tries + 1)); sleep 0.5; }
-  done
-  [ -n "$w" ] || die "cmux made a workspace but it isn't listed: $out"
+  w=$(mux_new_workspace Market "${goal:-a Pantheon network}" "$NET" "sh $(q "$start")")
+  [ -n "$w" ] || die "$MUX didn't make the workspace"
   printf '%s\n' "$w" > "$ST/workspace"
   # the run's record, outside NET
   rec=${PANTHEON_RUNS:-$HOME/.pantheon/runs}/$(basename "$NET" | sed 's/^\.//')-$(date +%Y%m%d-%H%M%S)
   mkdir -p "$rec" && printf '%s\n' "$rec" > "$ST/record"
   { printf 'network %s\nstarted %s\ndiplomats%s\nnode arguments%s\n' "$NET" "$(date)" "${sessions:- none}" "$nargs"; } > "$rec/run.txt"
   record
-  s1=$(cm --json --id-format both list-panes --workspace "$w" | python3 -c 'import json,sys; print(json.load(sys.stdin)["panes"][0]["surface_ids"][0])')
+  s1=$(mux_first_surface "$w")
   if [ "$layout" = plan ]; then layout_plan; else layout_grid; fi
-  say "$NET is up in a cmux workspace named for its market (Market, then Market (X leader), then Done) ($w): $([ "$layout" = plan ] && echo "the market's plan on the left with the watchdog, a pane per agent on the right (the agent, then its node)" || echo "a pane per agent") ($(echo $agents))"
+  say "$NET is up in a $MUX workspace named for its market (Market, then Market (X leader), then Done) ($w): $([ "$layout" = plan ] && echo "the market's plan on the left with the watchdog, a pane per agent on the right (the agent, then its node)" || echo "a pane per agent") ($(echo $agents))"
   [ -z "$sessions" ] || say "diplomats:$sessions, in their agents' tabs, with approvals off"
   say "its record (chain, statuses, logs; repositories once it ends) is kept in $rec"
-  say "stop it with: pantheon-cmux down $NET"
+  say "stop it with: $prog down $NET"
 }
 
 # The market as markdown, for the plan's view: the chain, the goal, each
@@ -486,7 +559,7 @@ render_plan() {
     fi
   } > "$ST/plan.md.tmp"
   [ -s "$ST/plan.md.tmp" ] || printf 'No goal, plan or tasks yet.\n' > "$ST/plan.md.tmp"
-  if cmp -s "$ST/plan.md.tmp" "$ST/plan.md"; then rm -f "$ST/plan.md.tmp"; else mv "$ST/plan.md.tmp" "$ST/plan.md"; fi
+  if cmp -s "$ST/plan.md.tmp" "$ST/plan.md"; then rm -f "$ST/plan.md.tmp"; else mv "$ST/plan.md.tmp" "$ST/plan.md"; mux_plan_changed; fi
 }
 
 # The run's record (see the top): every node's chain, status and log, never a
@@ -533,7 +606,7 @@ record() {
 status_pass() {
   w=$(workspace) title=$(market_title)
   if [ "$title" != "$(cat "$ST/title" 2>/dev/null || true)" ]; then
-    cm rename-workspace --workspace "$w" "$title" >/dev/null 2>&1 && printf '%s\n' "$title" > "$ST/title"
+    mux_rename_ws "$w" "$title" && printf '%s\n' "$title" > "$ST/title"
   fi
   render_plan
   record
@@ -542,24 +615,15 @@ status_pass() {
     BUNDLE=1 record
     : > "$ST/finished"
     for a in $(agents_of "$NET"); do [ -d "$ST/$a/inbox" ] && : > "$ST/$a/inbox/finished"; done
-    cm notify --title "Pantheon: the market finished" --body "Every agent, as leader, found no more tasks: the nodes stopped. pantheon-cmux down $NET closes the workspace." --workspace "$w" >/dev/null 2>&1 || true
+    mux_notify "$w" "" "Pantheon: the market finished" "Every agent, as leader, found no more tasks: the nodes stopped. $prog down $NET closes the workspace."
   fi
 }
 
-# AGENT's session state, from cmux's hooks: working, idle, done, completed,
-# waiting, needs_input, blocked, or none (no agent seen in its tab)
+# AGENT's session state, from the multiplexer (mux_state): working, idle,
+# done, completed, waiting, needs_input, blocked, or none (no agent seen in its tab)
 session_state() {
   s=$(cat "$ST/$1/surface" 2>/dev/null) || { echo none; return 0; }
-  cm --json current --limit 200 2>/dev/null | python3 -c '
-import json, sys
-s = sys.argv[1].lower()
-for it in json.load(sys.stdin).get("items", []):
-    refs = [e.get("reference", "").lower() for e in it.get("evidence", [])]
-    if any(r.endswith(s) for r in refs):
-        states = [a.get("state", "") for a in it.get("agents", [])]
-        print(states[0] if states else "none"); break
-else:
-    print("none")' "$s"
+  mux_state "$s"
 }
 
 # a finishing market (genesis finish=1) that finished: its nodes stopped, and
@@ -629,7 +693,7 @@ watch_agent() {
     needs_input|blocked|waiting)
       # a person's call: say so once, and nudge no one
       if [ ! -f "$st.asked" ] && [ -z "${dry:-}" ]; then
-        cm notify --title "Pantheon: $a" --body "$a's diplomat waits on you ($state): its tab is \"$a diplomat\"" --workspace "$(workspace)" --surface "$(cat "$ST/$a/surface")" >/dev/null 2>&1 || true
+        mux_notify "$(workspace)" "$(cat "$ST/$a/surface")" "Pantheon: $a" "$a's diplomat waits on you ($state): its tab is \"$a diplomat\""
         : > "$st.asked"
       fi
       idle=0 ;;
@@ -646,7 +710,7 @@ watch_agent() {
   n=$(( $(cat "$st" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$st"
   [ "$n" -ge 2 ] && [ $(( (n - 2) % 5 )) -eq 0 ] || return 0
   msg="Your inbox still has an unanswered request ($request). Check it and continue the wait, answer, repeat loop (your instructions: $ST/$a/desk/instructions.md). If your provider says you've hit a usage limit, report it with limited as they say, then stop."
-  cm agent message "$(cat "$ST/$a/surface")" --from Pantheon -- "$msg" >/dev/null \
+  mux_message "$(cat "$ST/$a/surface")" "$msg" \
     && say "watchdog: $a idle with request $request unanswered for $n checks: nudged it back to its inbox"
 }
 
@@ -668,7 +732,7 @@ note_leaders() {
 
 cmd_watchdog() {
   net_arg "${1:-}" watchdog; need_cmux
-  [ -n "$(workspace)" ] || die "$NET isn't up in cmux: pantheon-cmux up $NET"
+  [ -n "$(workspace)" ] || die "$NET isn't up in $MUX: $prog up $NET"
   case ${2:-} in
     --check) for a in $(agents_of "$NET"); do dry=1 watch_agent "$a"; done; return 0 ;;
     --once) note_leaders; for a in $(agents_of "$NET"); do watch_agent "$a" || true; done; return 0 ;;
@@ -676,7 +740,7 @@ cmd_watchdog() {
   events_pid=""
   if [ "${PANTHEON_EVENTS:-1}" != 0 ]; then
     mkdir -p "$ST/events"
-    python3 "$here/integrations/cmux/events.py" "$NET" --cmux "$CMUX_BIN" --parent "$$" >> "$ST/events/relay.log" 2>&1 &
+    mux_events >> "$ST/events/relay.log" 2>&1 &
     events_pid=$!
     trap 'stop_events' EXIT
     trap 'exit 129' HUP
@@ -709,10 +773,9 @@ cmd_down() {
   net_arg "${1:-}" down; need_cmux
   # the record, before anything stops
   BUNDLE=1 record; rec=$(cat "$ST/record" 2>/dev/null || true)
-  if workspace_alive; then
-    cm close-workspace --force --workspace "$(workspace)" >/dev/null && say "closed $NET's workspace"
-  else say "$NET has no cmux workspace up"; fi
-  rm -f "$ST/workspace"
+  if ! workspace_alive; then say "$NET has no $MUX workspace up"; rm -f "$ST/workspace"
+  elif mux_close "$(workspace)"; then say "closed $NET's workspace"; rm -f "$ST/workspace"
+  else say "$MUX didn't close $NET's workspace ($(workspace)); its nodes stop anyway. Close it yourself, or run down again"; fi
   # its nodes end with their terminals, in a few seconds; one that doesn't is terminated
   tries=0
   while pgrep -f -- "node $NET/" >/dev/null 2>&1 && [ "$tries" -lt 20 ]; do tries=$((tries + 1)); sleep 0.5; done

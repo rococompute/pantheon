@@ -130,7 +130,7 @@ grep -q '^<summary>🌱 add a mul command</summary>$' "$pm" || fail "plan's item
 grep -q '^<summary>🫘 add a div command</summary>$' "$pm" || fail "plan's item not picked up: $(cat "$pm")"
 # a finished market's goal is headed Done
 cp "$t/net/claude/status.txt" "$t/status.keep"; echo 'finished: every agent, as leader, found no more tasks' >> "$t/net/claude/status.txt"
-( sed -n "/^ITEMS_AWK='/,/^}'\$/p; /^GOAL_AWK='/,/^}'\$/p; /^BIDS_AWK='/,/^}'\$/p" "$pc"; sed -n '/^market_title()/,/^}/p; /^render_plan()/,/^}/p; /^agents_of()/,/^}/p' "$pc" ) > "$t/fn0.sh"
+( sed -n "/^ITEMS_AWK='/,/^}'\$/p; /^GOAL_AWK='/,/^}'\$/p; /^BIDS_AWK='/,/^}'\$/p" "$pc"; sed -n '/^market_title()/,/^}/p; /^render_plan()/,/^}/p; /^mux_plan_changed()/,/^}/p; /^agents_of()/,/^}/p' "$pc" ) > "$t/fn0.sh"
 ( NET=$t/net ST=$t/net/.cmux; . "$t/fn0.sh"; render_plan )
 head -1 "$pm" | grep -q '^## Done$' || fail "a finished market's goal headed Done: $(head -3 "$pm")"
 ! grep -q 'Finished' "$pm" || fail "a finished market's plan has no Finished line"
@@ -196,7 +196,7 @@ grep -q '^<summary>🪦 (codex) old mul</summary>$' "$pm" || fail "a cleared bid
 [ "$(grep -c '^<details>$' "$pm")" = 13 ] && [ "$(grep -c '^</details>$' "$pm")" = 13 ] || fail "a details block for the market instructions, each plan item and each bid"
 # unchanged, it isn't rewritten (the view doesn't redraw for nothing)
 touch -t 202001010000 "$pm"
-( sed -n "/^ITEMS_AWK='/,/^}'\$/p; /^GOAL_AWK='/,/^}'\$/p; /^BIDS_AWK='/,/^}'\$/p" "$pc"; sed -n '/^market_title()/,/^}/p; /^render_plan()/,/^}/p' "$pc"; sed -n '/^agents_of()/,/^}/p' "$pc" ) > "$t/fn.sh"
+( sed -n "/^ITEMS_AWK='/,/^}'\$/p; /^GOAL_AWK='/,/^}'\$/p; /^BIDS_AWK='/,/^}'\$/p" "$pc"; sed -n '/^market_title()/,/^}/p; /^render_plan()/,/^}/p; /^mux_plan_changed()/,/^}/p' "$pc"; sed -n '/^agents_of()/,/^}/p' "$pc" ) > "$t/fn.sh"
 ( NET=$t/net ST=$t/net/.cmux; . "$t/fn.sh"; render_plan )
 [ -z "$(find "$pm" -newer "$t/goal.txt")" ] || fail "an unchanged plan was rewritten"
 # the node scripts: run from where up ran, each with its backend and the node arguments

@@ -15,6 +15,7 @@ there too. A diplomat is a coding agent's CLI working its node's inbox
 | Folder | Where it runs | Status |
 |---|---|---|
 | [`cmux/`](cmux/README.md) | A Mac with [cmux](https://cmux.com) | Works. Tested with `test/integration-cmux.sh` against a stub of cmux, and by hand in cmux with scripted nodes and a stub diplomat. |
+| [`c11/`](c11/README.md) | A Mac with [c11](https://github.com/stage-11-agentics/c11), run from a c11 terminal | Checkpoint. `pantheon-cmux` with a c11 adapter; stub regression tests pass. Current native C11 validation is pending; see [`c11/HANDOFF.md`](c11/HANDOFF.md). |
 | [`standalone/`](standalone/README.md) | Any machine, no multiplexer: nodes as binaries or (a Mac) unikernels, agents remote over HTTP or each in a Docker container | Works. Tested with `test/integration-standalone.sh` (real nodes, a stub of docker) and `test/integration-standalone-image.sh` (a real unikernel, on a Mac with Soma's MirageOS switch). |
 | [`herdr/`](herdr/README.md) | The Linux host (`scripts/host.sh`) | Reference: not run since the network went laptop-only, and it may not work right now. |
 
@@ -39,11 +40,12 @@ there too. A diplomat is a coding agent's CLI working its node's inbox
    agent whose node is holding requests for a usage limit, and one that
    waits on a person.
 
-To add another multiplexer, copy `cmux/pantheon-cmux` and swap its calls to
-`cmux` for the other tool's: making a workspace, a split and a tab, renaming
-a tab, setting status, reading a session's state, and pasting a message into
-a session. Then copy `test/integration-cmux.sh`, which tests against a stub
-of the CLI, so the new integration is tested without the multiplexer.
+To add another multiplexer, write an adapter like `c11/mux.sh`: the
+`mux_*` functions that `cmux/pantheon-cmux` calls for making a workspace, a
+split and a tab, renaming a tab, reading a session's state, and sending a
+message to a session. Add an entry script like `c11/pantheon-c11`, and copy
+`test/integration-c11.sh`, which tests against a stub of the CLI, so the new
+integration is tested without the multiplexer.
 
 ## Isolation
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read committed status, publish local events, and steer diplomats via cmux hooks."""
+"""Read committed status, publish local events, and steer diplomats via cmux hooks or c11 mail."""
 import argparse
 import fcntl
 import hashlib
@@ -70,7 +70,7 @@ def requests(inbox, now):
     return result
 
 
-def notice(events, desk):
+def notice(events, desk, compact=False):
     parts = []
     for event in events:
         kind = event["type"]
@@ -85,6 +85,12 @@ def notice(events, desk):
         elif kind == "leader-chain.updated":
             parts.append("Leader handoff journal advanced through record #" + str(event["count"]) +
                          ". Read leader-chain for new check results and findings; these are not merge approvals.")
+    if compact:
+        return ("Pantheon event update: " + " ".join(parts) + "\n"
+                "Read your diplomat instructions and use your inbox wrapper to list requests. "
+                "Answer waiting kind=answer requests, then resume useful patch work. "
+                "Recheck committed status before submitting for a closed task. Preserve edits before skipping. "
+                "These notices do not authorize dropping work or approving an unreviewed contribution.")
     return ("Pantheon event update: " + " ".join(parts) + "\n"
             "At the next safe tool boundary, read " + str(desk / "instructions.md") + ". "
             "Use " + str(desk / "pantheon-inbox") + " list. Answer waiting kind=answer requests "
@@ -94,9 +100,11 @@ def notice(events, desk):
 
 
 class Bridge:
-    def __init__(self, net, cmux, wait=False):
-        self.net, self.cmux = Path(net).resolve(), cmux
-        self.root = self.net / ".cmux"
+    def __init__(self, net, cmux, wait=False, state=".cmux", c11=None):
+        # cmux delivers through `cmux agent message`; with c11 set (its CLI),
+        # notices go as c11 mail from Pantheon, rung at the agent's next idle.
+        self.net, self.cmux, self.c11 = Path(net).resolve(), cmux, c11
+        self.root = self.net / state
         self.directory = self.root / "events"
         self.directory.mkdir(parents=True, exist_ok=True)
         self.lock = (self.directory / "lock").open("w")
@@ -175,9 +183,25 @@ class Bridge:
             # Bound a provider message without dropping the rest of the queue.
             batch = queue[:32]
             text = notice(batch, self.root / agent / "desk")
+            # c11 mail bodies are at most 4096 bytes: send fewer events at once.
+            while self.c11 and len(batch) > 1 and len(text.encode()) > 4000:
+                batch = batch[:len(batch) // 2]
+                text = notice(batch, self.root / agent / "desk")
+            if self.c11:
+                if len(text.encode()) > 4000:
+                    text = notice(batch, self.root / agent / "desk", compact=True)
+                if len(text.encode()) > 4000:
+                    # Never acknowledge an event whose full notice was not sent.
+                    print("pantheon events: one event exceeds c11 mail's size limit for " + agent,
+                          flush=True)
+                    self.retry[agent] = time.monotonic() + 30
+                    continue
+                command = [self.c11, "mailbox", "send", "--to", "id:" + surface, "--from", "Pantheon",
+                           "--topic", "pantheon.events", "--body", text]
+            else:
+                command = [self.cmux, "agent", "message", surface, "--from", "Pantheon", "--", text]
             try:
-                subprocess.run([self.cmux, "agent", "message", surface, "--from", "Pantheon",
-                                "--", text], check=True, timeout=5, stdout=subprocess.DEVNULL,
+                subprocess.run(command, check=True, timeout=5, stdout=subprocess.DEVNULL,
                                stderr=subprocess.PIPE)
             except (OSError, subprocess.SubprocessError) as error:
                 print("pantheon events: hook delivery failed for " + agent + " (" +
@@ -261,11 +285,13 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("net")
     parser.add_argument("--cmux", default=os.environ.get("CMUX", "cmux"))
+    parser.add_argument("--c11", help="deliver as c11 mail with this c11 CLI instead of cmux hooks")
+    parser.add_argument("--state", default=".cmux", help="NET's directory for the integration's state")
     parser.add_argument("--parent", type=int)
     args = parser.parse_args()
     # A replacement watchdog can start before the previous relay exits.
     # Wait for its lock rather than leaving the new watchdog without a relay.
-    bridge = Bridge(args.net, args.cmux, wait=True)
+    bridge = Bridge(args.net, args.cmux, wait=True, state=args.state, c11=args.c11)
     running = True
 
     def stop(*_):

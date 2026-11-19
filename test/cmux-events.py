@@ -9,6 +9,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 
 source = Path(__file__).resolve().parents[1] / "integrations/cmux/events.py"
 sys.dont_write_bytecode = True
@@ -64,6 +65,45 @@ class TestEvents(unittest.TestCase):
 
     def calls(self):
         return [json.loads(line) for line in events.read(self.output).splitlines()]
+
+    def test_c11_batches_preserve_every_event_and_utf8(self):
+        self.bridge.c11 = str(self.cmux)
+        queue = [{"type": "task.closed", "task": str(i), "seq": i}
+                 for i in range(1, 200)]
+        self.bridge.state["outbox"]["claude-1"] = list(queue)
+        while self.bridge.state["outbox"]["claude-1"]:
+            self.bridge.deliver()
+        calls = self.calls()
+        bodies = [call[call.index("--body") + 1] for call in calls]
+        self.assertTrue(all(len(body.encode()) <= 4000 for body in bodies))
+        self.assertTrue(all(call[:3] == ["mailbox", "send", "--to"] for call in calls))
+        joined = "\n".join(bodies)
+        for event in queue:
+            self.assertEqual(joined.count("Task #" + event["task"] + " closed."), 1)
+        self.assertTrue(all("unreviewed contribution" in body for body in bodies))
+
+    def test_c11_long_paths_use_complete_compact_notice(self):
+        self.bridge.c11 = str(self.cmux)
+        self.bridge.state["outbox"]["claude-1"] = [
+            {"type": "task.closed", "task": "123", "seq": 1}]
+        original = events.notice
+        def long_notice(batch, desk, compact=False):
+            return original(batch, Path("/" + "🌱" * 1200), compact=compact)
+        with patch.object(events, "notice", side_effect=long_notice):
+            self.bridge.deliver()
+        body = self.calls()[0][-1]
+        self.assertLessEqual(len(body.encode()), 4000)
+        self.assertIn("Task #123 closed.", body)
+        self.assertTrue(body.endswith("approving an unreviewed contribution."))
+        self.assertEqual(self.bridge.state["outbox"]["claude-1"], [])
+
+    def test_c11_oversized_event_is_not_acknowledged(self):
+        self.bridge.c11 = str(self.cmux)
+        queue = [{"type": "task.closed", "task": "9" * 5000, "seq": 1}]
+        self.bridge.state["outbox"]["claude-1"] = list(queue)
+        self.bridge.deliver()
+        self.assertEqual(self.bridge.state["outbox"]["claude-1"], queue)
+        self.assertFalse(self.output.exists())
 
     def test_committed_only_baseline_and_dedup(self):
         self.write(status(bid="merged", task="closed"))
