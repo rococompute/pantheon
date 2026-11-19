@@ -202,7 +202,7 @@ Definition q7_bidder (m : obj) : string :=
 Definition q7_proposed : obj :=
   let '(m, _, _) := apply q7_base "a1" ["post", "calc", "seven agent task"] in
   let '(m, _, _) := apply m (q7_bidder m) ["bid", "1", "0", "seven bid", "f.txt", "", "x"] in
-  let '(m, _, _) := apply m "a1" ["merge", "1", "tree1"] in m.
+  let '(m, _, _) := apply m "a1" ["merge", "1", "tree1", "tree0"] in m.
 
 Definition q7_attestors : list string :=
   filter (fun a => negb (seq a "a1") && negb (seq a (q7_bidder q7_proposed))) q7_agents.
@@ -670,11 +670,11 @@ Qed.
 (** A leader never merges its own bid (docs/PROOFS.md, item 8): a merge
     naming a bid its sender made fails, with a reason, and leaves the whole
     market as it was, an already pending proposal included. *)
-Theorem self_merge_makes_no_proposal : forall (m : obj) (a i tree : string) (b : bid),
+Theorem self_merge_makes_no_proposal : forall (m : obj) (a i tree on : string) (b : bid),
   bid_by m (num i) = Some b -> bidder b = a ->
-  exists why, why <> "" /\ apply m a ["merge", i, tree] = (m, [], why).
+  exists why, why <> "" /\ apply m a ["merge", i, tree, on] = (m, [], why).
 Proof.
-  intros m a i tree b Hb Ha. subst a.
+  intros m a i tree on b Hb Ha. subst a.
   assert (Hs : seq (bidder b) (bidder b) = true)
     by (unfold seq; apply Stdlib.Strings.String.eqb_refl).
   assert (Ho : forall x : bool, (x || true) = true) by (intros [|]; reflexivity).
@@ -703,11 +703,11 @@ Qed.
 
 (** And every merge that goes through names an existing bid made by
     someone else, sent by the term leader. *)
-Theorem merge_needs_leader_and_others_bid : forall (m m' : obj) (a i tree : string) (outs : list (list string)),
-  apply m a ["merge", i, tree] = (m', outs, "") ->
+Theorem merge_needs_leader_and_others_bid : forall (m m' : obj) (a i tree on : string) (outs : list (list string)),
+  apply m a ["merge", i, tree, on] = (m', outs, "") ->
   exists b, bid_by m (num i) = Some b /\ bidder b <> a /\ is_leader m a = true.
 Proof.
-  intros m m' a i tree outs H.
+  intros m m' a i tree on outs H.
   unfold apply in H. cbn beta iota zeta in H.
   Ltac why_differs H :=
     apply (f_equal (fun p => Stdlib.Strings.String.eqb (snd p) "")) in H;

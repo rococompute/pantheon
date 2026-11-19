@@ -13,7 +13,7 @@ python3 "$here/deploy/ci-command.py" "$t/head" 'sh test/check.sh' > "$t/command"
 run() { (cd "$t/bid" && sh "$t/command"); }
 reset() { rm -rf "$t/bid"; cp -R "$t/head" "$t/bid"; }
 refuse() { if run > "$t/output" 2>&1; then echo "FAIL accepted $1"; exit 1; fi; grep -q 'CI policy:' "$t/output"; echo "ok refuses $1"; }
-for assumption in 'Lemma hole : False. Admitted.' 'Axiom hole : False.' 'hole : False := unk.'; do
+for assumption in 'Lemma hole : False. Admitted.' 'Axiom hole : False.' 'Conjecture hole : False.' 'Global Polymorphic Conjectures hole : False.' 'hole : False := unk.'; do
   reset
   case "$assumption" in Lemma*) file=main.exp ;; *) file=main.soma ;; esac
   printf '%s\n' "$assumption" >> "$t/bid/$file"

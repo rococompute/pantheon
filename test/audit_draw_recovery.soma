@@ -1,0 +1,53 @@
+(** Exercise the real agent -> output program -> market reveal path. *)
+Import core.util core.market core.agent runtime.nodeio runtime.node.
+Require Soma.Host.
+
+check (name : string) (ok : bool) : string := append (if ok then "ok " else "FAIL ") name.
+secret : string := "draw recovery fixture".
+hashes (n : nat) : string := draw_link n secret.
+initial : obj := setf (new_market ["a", "b", "c", "d"]) "tips"
+  ([("a", hashes 4)] : list (string * string)).
+
+answers (byz : string) (op : node_op) : nanswer :=
+  match op with IoDraw => ans_data true [byz, "4", secret] | _ => ans_ok end.
+operations (m : obj) (byz : string) : list (list string) :=
+  flat_map (fun out => map io_wire (ntrace (answers byz) (output_prog out)))
+    (snd (reveal_duty (new_agent "a") m)).
+queued_link (m : obj) : string :=
+  match find (fun xs => seq (hd "" xs) "push") (operations m "") with
+  | Some ["push", "local_tx", "reveal", link] => link
+  | _ => ""
+  end.
+
+missed : obj := setf (setf initial "term" 2) "h" 30.
+recovery := apply missed "a" ["reveal", queued_link missed].
+advanced : obj := fst (fst recovery).
+next_draw : obj := setf (setf advanced "term" 3) "reveals" ([] : list (string * string)).
+after_restart : node_state := fst (step empty_node ["tip", "a", get_or "" "a" (tips advanced)]).
+restarted : obj := setf (mkt after_restart) "agents" (["a", "b", "c", "d"] : list string).
+
+main := Host.print_lines [
+  check "first draw sends the next committed link" (seq (queued_link initial) (hashes 3)),
+  check "missed draws retain the same outstanding link" (seq (queued_link missed) (hashes 3)),
+  check "a lost transaction is retried without consuming a link"
+    (seq (queued_link initial) (queued_link missed)),
+  check "recovery reveal is accepted by the real market" (seq (snd recovery) ""),
+  check "accepted reveal advances the agreed tip" (seq (get_or "" "a" (tips advanced)) (hashes 3)),
+  check "the next draw sends exactly one further link" (seq (queued_link next_draw) (hashes 2)),
+  check "restarted node selects from its replayed tip" (seq (queued_link restarted) (hashes 2)),
+  check "an odd fault-injected draw only logs"
+    (existsb (fun xs => eq_strs xs ["log", "FAULT INJECTION: holding back my link for draw 3"]) (operations missed "withhold")
+      && negb (existsb (fun xs => seq (hd "" xs) "push") (operations missed "withhold"))),
+  check "an even fault-injected draw can recover after withholding"
+    (existsb (fun xs => eq_strs xs ["push", "local_tx", "reveal", hashes 3])
+      (operations (setf initial "term" 1) "withhold")),
+  check "withheld agents remain excluded while another agent is eligible"
+    (negb (mem "a" (draw_pool ["a", "b"] ["a"] [] []))),
+  check "skipped links are still rejected"
+    (negb (seq (snd (apply missed "a" ["reveal", hashes 2])) "")),
+  check "unrelated forged links are still rejected"
+    (negb (seq (snd (apply missed "a" ["reveal", "forged"])) "")),
+  check "an exhausted chain sends nothing"
+    (negb (existsb (fun xs => seq (hd "" xs) "push")
+      (operations (setf initial "tips" ([("a", hashes 1)] : list (string * string))) "")))
+].

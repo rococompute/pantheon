@@ -301,14 +301,67 @@ Fixpoint check_names (pdir : string) (l : list (string * json)) (seen : list str
       else check_names pdir r (n :: seen) k)
   end.
 
-(** a key as the duplicate check compares it: its members by name *)
-key_text (j : json) : string := match j with JObj kv => json_text (JObj (kv_sort kv)) | other => json_text other end.
+(** Public-key identity is the decoded modulus and exponent, not the
+    spelling/order of JSON members, optional metadata, declared width, hex
+    case, whitespace or redundant leading zero bytes. *)
+Fixpoint key_drop_zeros (cs : list ascii) : list ascii :=
+  match cs with "0"%char :: rest => key_drop_zeros rest | _ => cs end.
+
+key_hex_identity (s : string) : string :=
+  match Crypto.bytes_of_hex s with
+  | Some bs => of_chars (key_drop_zeros (chars (Crypto.hex_of_bytes bs)))
+  | None => ""
+  end.
+
+key_text (j : json) : string :=
+  json_text (JList (map (fun field => JStr (match json_string (json_member field j) with
+                            Some h => key_hex_identity h | None => "" end)) ["n", "e"])).
+
+key_odd (h : string) : bool :=
+  mem (substr h (slen h - 1) 1) ["1", "3", "5", "7", "9", "b", "d", "f"].
+
+public_key_valid (j : json) : bool :=
+  match json_member "size" j, json_string (json_member "n" j), json_string (json_member "e" j) with
+  | JNum size, Some n, Some e =>
+      (* Bound raw text before decoding, including ignored whitespace. The
+         generated key is 2048 bits with a three-byte exponent. Support up
+         to 4096 bits and an eight-byte exponent without unbounded RSA work. *)
+      if (4096 <? slen n) || (64 <? slen e) then false else
+      match num_opt size with
+      | Some bits =>
+          if (bits =? 0) || (4096 <? bits) then false else
+          match Crypto.bytes_of_hex n, Crypto.bytes_of_hex e with
+          | Some modulus, Some exponent =>
+              (bits =? 8 * length modulus) && (length exponent <=? 8) &&
+              key_odd (key_hex_identity n) && negb (seq (key_hex_identity n) "1") &&
+              key_odd (key_hex_identity e) && negb (seq (key_hex_identity e) "1")
+          | _, _ => false
+          end
+      | None => false
+      end
+  | _, _, _ => false
+  end.
+
+(** A local key must also use the same byte width as its roster entry. *)
+public_key_same (a b : json) : bool :=
+  public_key_valid a && public_key_valid b && seq (key_text a) (key_text b) &&
+  match json_member "size" a, json_member "size" b with
+  | JNum sa, JNum sb => num sa =? num sb
+  | _, _ => false
+  end.
+
+part_fields_valid (j : json) : bool :=
+  forallb (fun field => match json_string (json_member field j) with
+                Some s => negb (seq s "") | None => false end) ["name", "addr", "tip"] &&
+  public_key_valid (json_member "pubkey" j).
 
 Fixpoint check_keys (pdir : string) (l : list (string * json)) (seen : list (string * string)) (k : unit -> nprog unit) : nprog unit :=
   match l with
   | [] => k tt
   | (f, j) :: r =>
       cli_str (json_member "name" j) (part_refused pdir f "name is a string") (fun n =>
+      if negb (public_key_valid (json_member "pubkey" j)) then
+        cli_fail (part_refused pdir f "pubkey needs a byte-aligned size up to 4096 bits matching its hex modulus, and an odd modulus and exponent greater than one (at most 8 exponent bytes; bounded hex text)") else
       let key := key_text (json_member "pubkey" j) in
       match lookup key seen with
       | Some other => cli_fail (cat ["duplicate public key in genesis parts in ", pdir, ": ", other, " and ", n,
@@ -320,6 +373,8 @@ Fixpoint check_keys (pdir : string) (l : list (string * json)) (seen : list (str
 (** a part as the genesis holds it, with its name and what it excludes *)
 genesis_part (pdir : string) (fj : string * json) (k : (string * list string * json) -> nprog unit) : nprog unit :=
   let '(f, j) := fj in
+  if negb (part_fields_valid j) then
+    cli_fail (part_refused pdir f "name, addr and tip are nonempty strings and pubkey is a valid public key") else
   cli_str (json_member "name" j) (part_refused pdir f "name is a string") (fun n =>
   if negb (seq (append n ".json") f) then cli_fail (cat [pdir, "/", f, " is named ", n, " inside: rename the file to ", n, ".json"]) else
   let refused := cli_fail (part_refused pdir f "exclude is a list of repository names") in
@@ -354,12 +409,34 @@ Fixpoint foreign_exclusion (rnames : list string) (parts : list (string * list s
       end
   end.
 
-key_n (j : json) : option string := json_string (json_member "n" j).
+(** Reject malformed numeric configuration before producing a shared genesis.
+    Omitted settings retain their defaults; supplied parameter values are strings. *)
+genesis_network_error (j : json) : option string :=
+  let params_error :=
+    match json_member "params" j with
+    | JNull => None
+    | JObj kv =>
+        match List.find (fun p => match snd p with
+              | JStr v => negb (genesis_param_valid (fst p) v) | _ => true end) kv with
+        | Some (name, _) => Some (cat ["parameter ", name, " must be a string; known numeric parameters are decimal integers at most 1000000000 (block_ms is positive)"])
+        | None => None
+        end
+    | _ => Some "params is an object of string values"
+    end in
+  match json_member "block_ms" j with
+  | JNull => params_error
+  | JNum ms => if genesis_param_valid "block_ms" ms then params_error
+               else Some "block_ms is a positive decimal integer at most 1000000000"
+  | _ => Some "block_ms is a positive decimal integer at most 1000000000"
+  end.
 
 (** genesis.json, from NETWORK/network.json and NETWORK/parts/*.json: every
     agent builds the same bytes from the same files, so they compare one hash *)
 build_genesis (home net : string) (k : unit -> nprog unit) : nprog unit :=
   cli_read_json (path net "network.json") (fun netj =>
+  match genesis_network_error netj with
+  | Some why => cli_fail (append "network.json: " why)
+  | None =>
   let pdir := path net "parts" in
   cli_ask (IoDirEntries pdir) (fun entries =>
   let files := sort_strings (List.filter (ends ".json") (ans_list entries)) in
@@ -411,18 +488,19 @@ build_genesis (home net : string) (k : unit -> nprog unit) : nprog unit :=
         cli_say (cat ["wrote ", gp, ": chain ", id, ", genesis hash ", sha256 text, ". Every agent should get the same hash"]) k))) in
       if negb has_key then written tt else
       cli_read_json ours (fun kj =>
-      match json_string (json_member "agent" kj), key_n (json_member "key" kj) with
-      | Some me, Some kn =>
+      match json_string (json_member "agent" kj) with
+      | Some me =>
           if List.existsb (fun p => match p with (pn, _, j) =>
-               seq pn me && match key_n (json_member "pubkey" j) with Some pk => seq pk kn | None => false end end) parts
+               seq pn me && public_key_same (json_member "pubkey" j) (json_member "key" kj) end) parts
           then written tt
           else cli_fail (cat [me, "'s key isn't in ", pdir, ": add this agent's public.json as parts/", me, ".json"])
-      | _, _ => cli_fail (cat ["cannot read ", ours, ": is this a home made by `pantheon init`?"])
+      | None => cli_fail (cat ["cannot read ", ours, ": is this a home made by `pantheon init`?"])
       end))
       end
       end)
   | _ => cli_fail "network.json: repos is a list of repositories"
-  end)))))).
+  end)))))
+  end).
 
 cmd_genesis (home net : string) : nprog unit := build_genesis home net (fun _ => NDone tt).
 
@@ -471,14 +549,17 @@ Fixpoint init_parse (args : list string) (a : init_args) : init_args + string :=
       end
   | "--block-ms" :: p :: r =>
       match number_arg "--block-ms" p with
-      | inl n => init_parse r {| ia_dir := ia_dir a; ia_repos := ia_repos a; ia_port := ia_port a;
-                                ia_params := ia_params a; ia_block_ms := n; ia_allow_closed := ia_allow_closed a |}
+      | inl n => if negb (genesis_param_valid "block_ms" p) then inr "--block-ms must be positive and at most 1000000000" else
+          init_parse r {| ia_dir := ia_dir a; ia_repos := ia_repos a; ia_port := ia_port a;
+                          ia_params := ia_params a; ia_block_ms := n; ia_allow_closed := ia_allow_closed a |}
       | inr e => inr e
       end
   | "--param" :: kv :: r =>
       match kv_arg "--param" kv with
-      | inl p => init_parse r {| ia_dir := ia_dir a; ia_repos := ia_repos a; ia_port := ia_port a;
-                                ia_params := ia_params a ++ [p]; ia_block_ms := ia_block_ms a; ia_allow_closed := ia_allow_closed a |}
+      | inl p => if negb (genesis_param_valid (fst p) (snd p)) then
+          inr (cat ["--param ", fst p, " wants a decimal integer at most 1000000000 (block_ms is positive), got ", snd p]) else
+          init_parse r {| ia_dir := ia_dir a; ia_repos := ia_repos a; ia_port := ia_port a;
+                          ia_params := ia_params a ++ [p]; ia_block_ms := ia_block_ms a; ia_allow_closed := ia_allow_closed a |}
       | inr e => inr e
       end
   | "--allow-closed-plan" :: r =>
@@ -1179,7 +1260,11 @@ Fixpoint node_flags (args : list string) (set : list (string * string)) (events 
   | "--behavior" :: b :: r => node_flags r set (events ++ [["agent", "behavior", b]]) ci_repo no_check
   | "--goal" :: f :: r => node_flags r set (events ++ [["goal_file", f]]) ci_repo no_check
   | "--deny" :: p :: r => node_flags r set (events ++ [["agent", "deny", p]]) ci_repo no_check
-  | "--bid-window" :: n :: r => node_flags r set (events ++ [["agent", "bid_window", n]]) ci_repo no_check
+  | "--bid-window" :: n :: r =>
+      match num_opt n with
+      | Some _ => node_flags r set (events ++ [["agent", "bid_window", n]]) ci_repo no_check
+      | None => inr (append "--bid-window wants a number, got " n)
+      end
   | "--perspective" :: t :: r => node_flags r set (events ++ [["agent", "perspective", t]]) ci_repo no_check
   | "--ci" :: c :: r => node_flags r (put "ci" c set) events ci_repo no_check
   | "--ci-repo" :: n :: c :: r => node_flags r set events ((n, c) :: ci_repo) no_check
@@ -1222,6 +1307,7 @@ Fixpoint env_value (name : string) (entries : list string) : string :=
 
 (** a genesis agent as the node needs it: name, addr, and its key's size, n and e *)
 genesis_agent (j : json) : option (list string) :=
+  if negb (part_fields_valid j) then None else
   let pk := json_member "pubkey" j in
   match json_string (json_member "name" j), json_string (json_member "addr" j), json_member "size" pk with
   | Some n, Some a, JNum size =>
@@ -1288,8 +1374,9 @@ node_setup (home : string) (flags : list string) : nprog (option (list (list str
   match json_string (json_member "secret" chain), json_string (json_member "chain_id" gen), json_member "agents" gen with
   | Some secret, Some chain_id, JList agents_j =>
   match genesis_agents agents_j with None => cli_fail "genesis.json: each agent has a name, an addr and a pubkey with its size" | Some agents =>
-  if negb (List.existsb (fun a => match a with n :: _ => seq n me | [] => false end) agents) then
-    cli_fail (cat [me, " isn't one of genesis.json's agents: is this home's key.json from another network?"]) else
+  if negb (List.existsb (fun a => match json_string (json_member "name" a) with
+                 Some n => seq n me && public_key_same (json_member "pubkey" a) kj | None => false end) agents_j) then
+    cli_fail (cat [me, "'s public key isn't in genesis.json: is this home's key.json from another network?"]) else
   cli_ask IoEnvEntries (fun env =>
   let byz := env_value "PANTHEON_BYZ" (ans_list env) in
   let faulty k := if seq byz "" then k tt else cli_say (cat ["FAULT INJECTION: this node misbehaves on purpose (", byz, ")"]) k in
