@@ -1784,3 +1784,20 @@ Proof.
   | |- _ <= _ => lia
   end.
 Qed.
+
+Theorem grok_tokens_require_a_bounded_envelope : forall text tokens,
+  grok_envelope_tokens text = Some tokens ->
+  (slen text <=? num job_output_limit) = true /\ shallow_json "8" "16384" text = true.
+Proof.
+  intros text tokens H. unfold grok_envelope_tokens in H.
+  destruct ((slen text <=? num job_output_limit) && shallow_json "8" "16384" text) eqn:E;
+    [apply Bool.andb_true_iff in E; exact E|discriminate H].
+Qed.
+
+Theorem retained_peer_chunks_fit_aggregate_budget : forall st cid chunks,
+  peer_kept_fits st cid chunks = true ->
+  peer_other_buffer_bytes st cid + chunks_len chunks <= num peer_buffer_byte_limit.
+Proof.
+  intros st cid chunks H. unfold peer_kept_fits in H.
+  exact (budget_fits_bound (peer_other_buffer_bytes st cid) (chunks_len chunks) (num peer_buffer_byte_limit) H).
+Qed.

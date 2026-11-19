@@ -1,0 +1,44 @@
+(** Real Soma admission/IO plans, including the actual 64 MiB send boundary. *)
+Import core.util runtime.nodeio runtime.node_net.
+Require Soma.Host.
+
+check (label : string) (ok : bool) : string := append (if ok then "ok " else "FAIL ") label.
+Fixpoint doubling (n : nat) : string :=
+  match n with 0 => "x" | Succ k => let s := doubling k in append s s end.
+link (fd text : string) : nlink := {| l_fd := fd; l_dialed := true; l_connecting := false; l_obuf := text |}.
+state (links : list nlink) : net_state := {| (net_start "") with ns_links := links |}.
+answers (op : node_op) : nanswer :=
+  match op with IoSockAccept _ _ => ans_data true ["new"] | _ => ans_ok end.
+closed (ops : list node_op) (fd : string) : bool :=
+  existsb (fun op => match op with IoSockClose name => seq name fd | _ => false end) ops.
+
+main :=
+  let cap := doubling (num (hd "26" (Host.argv tt))) in
+  let below := substr cap 0 (slen cap - 1) in
+  let full := state [link "full" cap] in
+  let overflow := net_send (state [link "short" below]) "short" "xx" in
+  let exact := net_send (state [link "short" below]) "short" "x" in
+  let global := state [link "a" cap, link "b" cap, link "c" cap, link "d" cap, link "free" ""] in
+  let clients := map (fun n => {| c_fd := show n; c_buf := "" |}) (List.seq 0 16) in
+  let service := {| (net_start "") with ns_serve := Some "listener"; ns_clients := clients |} in
+  let admitted := nresult answers (serve_ready_fd service "listener") in
+  Host.print_lines [
+    check "a send crossing the 64 MiB boundary is rejected before append" (negb (fst (fst overflow))),
+    check "a rejected send retains the original bytes" (match net_find (snd overflow) "short" with
+      Some l => slen (l_obuf l) =? slen below | None => false end),
+    check "a send ending exactly at capacity remains accepted"
+      (fst (fst exact) && match net_find (snd exact) "short" with Some l => slen (l_obuf l) =? slen cap | None => false end),
+    check "a full link never silently acknowledges discarded bytes" (negb (fst (fst (net_send full "full" "x")))),
+    check "aggregate send buffers cannot exceed 256 MiB" (negb (fst (fst (net_send global "free" "x")))),
+    check "send failure closes and releases the slow link"
+      (closed (ntrace answers (net_send_prog full "full" "x")) "full"
+       && (length (ns_links (snd (nresult answers (net_send_prog full "full" "x")))) =? 0)),
+    check "a seventeenth service client is closed and not retained"
+      ((length (ns_clients admitted) =? 16) && closed (ntrace answers (serve_ready_fd service "listener")) "new"),
+    check "a supported maximum frame plus header still fits"
+      (serve_bytes_fit 0 0 (num "1073741828")),
+    check "service aggregate capacity is enforced independently of one client"
+      (negb (serve_bytes_fit 0 (num serve_total_byte_limit) 1)),
+    check "service client capacity is enforced independently of the aggregate"
+      (negb (serve_bytes_fit (num serve_client_byte_limit) 0 1))
+  ].

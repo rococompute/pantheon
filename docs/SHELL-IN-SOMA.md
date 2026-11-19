@@ -369,7 +369,8 @@ in the binary too: `runtime/node_net.soma`, the binary runner's layer
 asks `host_op`), with its state (`net_state`) handed from one operation
 to the next and from one turn to the next. It keeps the node's home, the
 listener, the links (a peer's, read as it comes; one the kernel dialed,
-with the bytes waiting to go, 64 MiB at most, and whether it is still
+with the bytes waiting to go, 64 MiB at most per link and 256 MiB across links,
+checked before append, and whether it is still
 connecting), the service's listener and clients with the bytes each
 sent past its last whole request, and the jobs' processes. A mailbox is one select over the
 listener, peers' links, dialed links with bytes to write or still
@@ -383,7 +384,28 @@ answers are frames of frames, `Soma.Wire`'s `frame` and `take_frame`
 (Soma's, which Sandbox exports and the image sends and receives with):
 a request is taken whole from a client's bytes, one over 1 GiB drops
 the client, and an answer is written out whole (a client's socket
-blocks).
+blocks). At most sixteen service clients are admitted. Per-client buffered
+bytes allow the 1 GiB frame, its four-byte header and one 64 KiB read; the
+aggregate is bounded to twice that allowance. Overflow drops the client
+before another append. A failed peer send closes/releases the slow link and
+reports failure to the kernel, which can reconnect and resend.
+
+Peer JSON retains its maximum block/patch wire allowance while structural
+items are capped at 65,536 before token parsing. Partial peer buffers share
+a 128 MiB allowance; pressure evicts the partials that made progress least
+recently, so first-comers cannot reserve it forever. Slow connections can
+still be closed under pressure; this is admission fairness, not a guarantee
+of availability against arbitrary network flooding. Grok envelopes
+are scanned at depth eight and 16,384 structural items before JSON parsing,
+with the existing 4 MiB model-output byte allowance.
+
+Consensus retains at most 1,000 messages and 128 MiB of accounted payload,
+metadata and structural storage per roster validator. A validator cannot
+spend another validator's reservation. Current proposals and votes needed
+by the live round, lock, valid value or a live re-proposal precede catch-up
+and unrelated historical/future messages. Vote values must be empty;
+non-proposer proposals and malformed Done rounds are refused. These
+decisions and their bounds are defined and checked in Soma, for both runners.
 
 What it asks the shell for: a socket by name (`IoSockListen`,
 `IoSockDial`, which doesn't wait, `IoSockSelect` of names to read and

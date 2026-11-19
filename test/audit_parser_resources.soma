@@ -1,0 +1,49 @@
+(** A provider envelope and a peer envelope are bounded before JSON parsing. *)
+Import core.util core.market runtime.nodeio runtime.node test.nio_tables.
+Require Soma.Host.
+
+check (label : string) (ok : bool) : string := append (if ok then "ok " else "FAIL ") label.
+none {A : Type} (x : option A) : bool := match x with None => true | Some _ => false end.
+flat : string := append "[" (append (Stdlib.Strings.String.concat "," (repeat "0" (num "70000"))) "]").
+deep : string := Stdlib.Strings.String.concat "" (repeat "[" (num "100000")).
+Fixpoint doubling (n : nat) : string := match n with 0 => "x" | Succ k => let s := doubling k in append s s end.
+
+main :=
+  let base := nio_encode_tx test_chain "claude" test_key "7" ["bid", ""] in
+  let quoted := Stdlib.Strings.String.concat ""
+    (repeat (SCons (Ascii.ascii_of_nat 92) (SCons (Ascii.ascii_of_nat 34) SNil))
+      (num (hd "131072" (Host.argv tt)))) in
+  let room := num tx_byte_cap - slen base in
+  let payload := append (substr quoted 0 (room / 2)) (if room mod 2 =? 0 then "" else "x") in
+  let tx := nio_encode_tx test_chain "claude" test_key "7" ["bid", payload] in
+  let fields := ["proposal", "1", "0", "0", hash_list (repeat tx 60)] ++ repeat tx 60 in
+  let signature := nio_sign test_key (nio_msg_bytes test_chain "claude" fields) in
+  let envelope := nio_wire_line_signed "claude" fields signature in
+  let parts := node_line_parts envelope in
+  Host.print_lines [
+    check "deep provider input is refused before recursive parsing" (none (grok_envelope_tokens deep)),
+    check "wide provider input is refused before token expansion" (none (grok_envelope_tokens flat)),
+    check "a normal nested provider envelope remains accepted"
+      (negb (none (grok_envelope_tokens "{""choices"":[{""message"":{""content"":""ok""}}]}"))),
+    check "a flat unauthenticated peer token flood is refused" (none (node_line_parts flat)),
+    check "a large caller item limit cannot disable the peer cap"
+      (negb (peer_line_shape (show (slen flat + 1)) flat)),
+    check "the maximum-size transaction fixture actually reaches the byte cap" (slen tx =? num tx_byte_cap),
+    check "the legacy sixty-transaction envelope stays within the wire cap"
+      ((slen envelope <=? peer_line_cap tx_byte_cap) && peer_line_shape peer_line_item_limit envelope),
+    check "a maximum-block-sized signed envelope still parses and verifies"
+      (match parts with Some (who, (sg, actual)) => seq who "claude" && eq_strs actual fields
+        && nio_line_verify test_key_wire who sg actual | None => false end),
+    check "aggregate partial peers cannot borrow beyond their shared budget"
+      (negb (budget_fits (num peer_buffer_byte_limit) 1 (num peer_buffer_byte_limit))),
+    check "first-comer buffers cannot deny a new peer all progress"
+      (let crowded := peer_remember (peer_remember empty_node "old" ["12345"]) "recent" ["67890"] in
+       let (admitted, evicted) := peer_make_room 3 crowded "new" ["x"] 10 in
+       eq_strs evicted ["old"] && eq_strs (peer_buffer admitted "new") ["x"]
+       && eq_strs (peer_buffer admitted "recent") ["67890"]),
+    check "buffer progress refreshes eviction order"
+      (let crowded := peer_remember (peer_remember empty_node "old" ["12345"]) "recent" ["67890"] in
+       let refreshed := peer_remember crowded "old" ["12345"] in
+       let (admitted, evicted) := peer_make_room 3 refreshed "new" ["x"] 10 in
+       eq_strs evicted ["recent"] && eq_strs (peer_buffer admitted "old") ["12345"])
+  ].

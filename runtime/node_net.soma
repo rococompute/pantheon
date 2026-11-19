@@ -83,11 +83,21 @@ net_connect (s : net_state) (host port : string) : nprog (nanswer * net_state) :
 (** only a dialed link is written to (the kernel sends on its links to its
     peers); its bytes wait in its buffer, 64 MiB at most: a peer that
     reads nothing doesn't take the node's memory *)
+net_link_byte_limit : string := "67108864".
+net_total_byte_limit : string := "268435456".
+
+net_output_bytes (s : net_state) : nat :=
+  fold_left (fun n l => n + slen (l_obuf l)) (ns_links s) 0.
+
+net_send_bytes_fit (link total added : nat) : bool :=
+  budget_fits link added (num net_link_byte_limit)
+  && budget_fits total added (num net_total_byte_limit).
+
 net_send (s : net_state) (id data : string) : nanswer * net_state :=
   match net_find s id with
   | Some l =>
-      if l_dialed l then
-        (ans_ok, if slen (l_obuf l) <? num "67108864" then net_put s {| l with l_obuf := append (l_obuf l) data |} else s)
+      if l_dialed l && net_send_bytes_fit (slen (l_obuf l)) (net_output_bytes s) (slen data) then
+        (ans_ok, net_put s {| l with l_obuf := append (l_obuf l) data |})
       else (ans_flag false, s)
   | None => (ans_flag false, s)
   end.
@@ -97,6 +107,14 @@ net_close (s : net_state) (id : string) : nprog (nanswer * net_state) :=
   | Some _ => nbind (net_drop s id) (fun s' => NDone (ans_ok, s'))
   | None => NDone (ans_ok, s)
   end.
+
+(** A failed send is visible to the kernel, which reconnects/resends. Close
+    and release the slow link too, so rejected buffers and descriptors do
+    not accumulate after the kernel has forgotten its peer binding. *)
+net_send_prog (s : net_state) (id data : string) : nprog (nanswer * net_state) :=
+  let (answer, after) := net_send s id data in
+  if fst answer then NDone (answer, after)
+  else nbind (net_close after id) (fun closed => NDone (ans_flag false, snd closed)).
 
 (** ---- the mailbox: one select ---- *)
 
@@ -182,6 +200,23 @@ net_mailbox (s : net_state) (ms : string) : nprog (nanswer * net_state) :=
     one): 1 GiB, past which a client is dropped *)
 serve_limit : N := 1073741824%N.
 
+(** Preserve the supported 1 GiB frame, including its header and one socket
+    read of pipelined bytes. Two such requests may be in flight across at
+    most sixteen local image clients; accepted clients do not reserve bytes. *)
+serve_client_byte_limit : string := "1073807364".
+serve_total_byte_limit : string := "2147614728".
+serve_client_limit : nat := 16.
+
+serve_buffer_bytes (s : net_state) : nat :=
+  fold_left (fun n c => n + slen (c_buf c)) (ns_clients s) 0.
+
+serve_bytes_fit (client total added : nat) : bool :=
+  budget_fits client added (num serve_client_byte_limit)
+  && budget_fits total added (num serve_total_byte_limit).
+
+serve_buffer_fits (s : net_state) (c : nclient) (data : string) : bool :=
+  serve_bytes_fit (slen (c_buf c)) (serve_buffer_bytes s) (slen data).
+
 (** the first client with a whole request, that request (its descriptor,
     then its fields) taken out of its buffer *)
 serve_take (s : net_state) : option (list string * net_state) :=
@@ -210,7 +245,10 @@ serve_ready_fd (s : net_state) (fd : string) : nprog net_state :=
   if match ns_serve s with Some l => nio_eq l fd | None => false end then
     nbind (nask (IoSockAccept fd "false")) (fun a =>
     match ans_found a with
-    | Some (c :: _) => NDone {| s with ns_clients := {| c_fd := c; c_buf := "" |} :: ns_clients s |}
+    | Some (c :: _) =>
+        if length (ns_clients s) <? serve_client_limit
+        then NDone {| s with ns_clients := {| c_fd := c; c_buf := "" |} :: ns_clients s |}
+        else nbind (nask (IoSockClose c)) (fun _ => NDone s)
     | _ => NDone s
     end)
   else
@@ -220,6 +258,7 @@ serve_ready_fd (s : net_state) (fd : string) : nprog net_state :=
         nbind (nask (IoSockRead fd)) (fun a =>
         match ans_list a with
         | ["bytes", data] =>
+            if negb (serve_buffer_fits s c data) then serve_drop s fd else
             let b := append (c_buf c) data in
             match take_frame serve_limit b with
             | Oversized => serve_drop s fd
@@ -351,7 +390,7 @@ net_op (s : net_state) (op : node_op) : option (nprog (nanswer * net_state)) :=
   | IoNetListen host port => Some (net_listen s host port)
   | IoNetMailbox ms => Some (net_mailbox s ms)
   | IoNetConnect host port _ => Some (net_connect s host port)
-  | IoNetSend conn data => Some (NDone (net_send s conn data))
+  | IoNetSend conn data => Some (net_send_prog s conn data)
   | IoNetClose conn => Some (net_close s conn)
   | IoFileRead name => Some (nbind (nask (IoReadText (file name))) (fun a => NDone (a, s)))
   | IoFileWrite name durable text => Some (nbind (nask (IoSave (file name) durable text)) (fun a => NDone (a, s)))

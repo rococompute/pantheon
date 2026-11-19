@@ -1,0 +1,19 @@
+Theorem net_send_respects_both_byte_budgets : forall link total added,
+  net_send_bytes_fit link total added = true ->
+  link + added <= num net_link_byte_limit /\ total + added <= num net_total_byte_limit.
+Proof.
+  intros link total added H. unfold net_send_bytes_fit in H.
+  apply Bool.andb_true_iff in H. destruct H as [Hl Ht].
+  exact (conj (budget_fits_bound link added (num net_link_byte_limit) Hl)
+    (budget_fits_bound total added (num net_total_byte_limit) Ht)).
+Qed.
+
+Theorem service_read_respects_both_byte_budgets : forall client total added,
+  serve_bytes_fit client total added = true ->
+  client + added <= num serve_client_byte_limit /\ total + added <= num serve_total_byte_limit.
+Proof.
+  intros client total added H. unfold serve_bytes_fit in H.
+  apply Bool.andb_true_iff in H. destruct H as [Hl Ht].
+  exact (conj (budget_fits_bound client added (num serve_client_byte_limit) Hl)
+    (budget_fits_bound total added (num serve_total_byte_limit) Ht)).
+Qed.
