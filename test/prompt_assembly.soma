@@ -131,7 +131,7 @@ checks : list string := [
     listings, open plan lines, edit fences and placeholder-looking source. *)
 role_goldens : list (string * string) := [
   ("leader draft", "47f1fe4be14b54a51a14e24d3b2f05ea2d42e0a874e845e03cef8686e2191669"),
-  ("leader pick", "f65e1ed1d4caa744a4061f3d4ef34f0c65ed4191266eb50288ba07bd02b57627"),
+  ("leader pick", "7d99b7bb6b4493ad0f3a92c78b0fbd389c9cadf5824ffadf588b5d23792f968f"),
   ("bidder", "e4d10164ea242751de895b3c8927fb0de03d635d961e5fc09e4b9d4190f00e6c"),
   ("attestor", "b33236d48d961637854f70f41c4d9666f7f51b4fe1674443163438327eb1d158")
 ].
