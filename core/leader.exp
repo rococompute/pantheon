@@ -1,0 +1,20 @@
+(** The projection's update caps each repo while leaving full archival
+    emission, the hash-linked head and the monotone count independent. *)
+Theorem leader_trim_repo_bound : forall repo entries keep,
+  length (filter (fun e => seq (leader_repo e) repo) (leader_trim_repo repo keep entries)) <= keep.
+Proof.
+  intros repo entries. induction entries as [|e rest IH]; intros keep; simpl; [lia|].
+  destruct (seq (leader_repo e) repo) eqn:E.
+  - destruct keep as [|k]; simpl.
+    + apply IH.
+    + rewrite E. simpl. pose proof (IH k). lia.
+  - simpl. rewrite E. apply IH.
+Qed.
+
+Theorem leader_window_repo_bound : forall e entries,
+  length (filter (fun x => seq (leader_repo x) (leader_repo e)) (leader_window e entries)) <= 12.
+Proof.
+  intros e entries. unfold leader_window. simpl.
+  unfold seq at 1. rewrite Stdlib.Strings.String.eqb_refl. simpl.
+  pose proof (leader_trim_repo_bound (leader_repo e) entries 11). lia.
+Qed.
