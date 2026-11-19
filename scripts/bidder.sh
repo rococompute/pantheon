@@ -96,15 +96,15 @@ cd "$PANTHEON_WORKTREE" || exit 1
 [ -n "${BIDDER_USER:-}" ] && chmod -R a+rwX .
 cat >> "$prompt" <<'I'
 
-You have tools, and the current directory is a checkout of the repository at the market's head. Make the change by editing the files here, instead of writing edits in the reply. Keep it to what the task asks. If there is a soma.toml, check your work with `soma build` on the project's main file (main.soma, or the file you changed), and run the tests if there are any. Don't commit, don't push, and don't touch anything outside this directory.
+You have tools, and the current directory is a checkout of the repository at the market's head. Make the change by editing the files here, instead of writing edits in the reply. Keep it to what the task asks. If there is a soma.toml, use `soma check` on the project's main file for quick type/proof feedback, then `soma build` for its products. Run the repository's documented `./scripts/check` when present; otherwise run `soma test` and the tests if there are any. Don't commit, don't push, and don't touch anything outside this directory.
 Ignore the reply format above. When you're done, end with one line: a short note on what you changed.
 I
 
 case $MODEL in
   claude)
-    echo 'Run shell commands one at a time, not chained with ; && or || and not piped: only these run, `soma build`, `soma run`, `soma explore`, `sh test.sh`, `sh tests/...`, `sh test/...`, `git diff`, `git status`, `ls`, and, in a checkout of Soma itself, `soma-dev-build` (builds it) and `./_build/install/default/bin/soma ...` (the Soma you built). A command run another way is refused, and your work goes in unchecked. Read and edit files with your file tools.' >> "$prompt"
+    echo 'Run shell commands one at a time, not chained with ; && or || and not piped: only these run, `soma check`, `soma test`, `./scripts/check`, `soma build`, `soma run`, `soma explore`, `sh test.sh`, `sh tests/...`, `sh test/...`, `git diff`, `git status`, `ls`, and, in a checkout of Soma itself, `soma-dev-build` (builds it) and `./_build/install/default/bin/soma ...` (the Soma you built). A command run another way is refused, and your work goes in unchecked. Read and edit files with your file tools.' >> "$prompt"
     note=$(as_bidder claude -p --tools "Read,Edit,Write,Glob,Bash" \
-      --allowedTools "Read(./**)" "Edit(./**)" "Glob" "Bash(soma build:*)" "Bash(soma run:*)" "Bash(soma explore:*)" \
+      --allowedTools "Read(./**)" "Edit(./**)" "Glob" "Bash(soma check:*)" "Bash(soma test:*)" "Bash(./scripts/check:*)" "Bash(soma build:*)" "Bash(soma run:*)" "Bash(soma explore:*)" \
                      "Bash(sh test.sh:*)" "Bash(sh tests/:*)" "Bash(sh test/:*)" "Bash(git diff:*)" "Bash(git status)" "Bash(ls:*)" \
                      "Bash(soma-dev-build)" "Bash(./_build/install/default/bin/soma:*)" \
       --permission-mode dontAsk --strict-mcp-config --no-session-persistence --setting-sources "" --output-format text < "$prompt" 2>"$err" | tail -n 1) ;;
@@ -117,7 +117,7 @@ case $MODEL in
     # codex sometimes ends with the reply format's JSON: its note, then
     case $note in '{'*) note=$(printf '%s' "$note" | jq -r '.note // empty' 2>/dev/null || printf '%s' "$note") ;; esac ;;
   grok)
-    echo 'Run shell commands one at a time, not chained with ; && or ||: only these run, `soma build`, `soma run`, `soma explore`, `sh test.sh`, `sh tests/...`, `sh test/...`, `git diff`, `git status`, `ls`, and `cursor-agent`. Read and edit files with your file tools.' >> "$prompt"
+    echo 'Run shell commands one at a time, not chained with ; && or ||: only these run, `soma check`, `soma test`, `./scripts/check`, `soma build`, `soma run`, `soma explore`, `sh test.sh`, `sh tests/...`, `sh test/...`, `git diff`, `git status`, `ls`, and `cursor-agent`. Read and edit files with your file tools.' >> "$prompt"
     if as_bidder sh -c 'command -v cursor-agent' >/dev/null 2>&1; then
       echo 'The Cursor CLI is here too: `cursor-agent -p --output-format text "..."` hands a subtask to Cursor'"'"'s agent, in this directory.' >> "$prompt"
     fi
@@ -131,7 +131,7 @@ case $MODEL in
       set -- --yolo --deny "Bash(git commit*)" --deny "Bash(git push*)"
     else
       set -- --permission-mode dontAsk
-      for r in "Read(./**)" "Edit(./**)" "Glob" "Bash(soma build:*)" "Bash(soma run:*)" "Bash(soma explore:*)" "Bash(sh test.sh:*)" \
+      for r in "Read(./**)" "Edit(./**)" "Glob" "Bash(soma check:*)" "Bash(soma test:*)" "Bash(./scripts/check:*)" "Bash(soma build:*)" "Bash(soma run:*)" "Bash(soma explore:*)" "Bash(sh test.sh:*)" \
                "Bash(sh tests/:*)" "Bash(sh test/:*)" "Bash(git diff:*)" "Bash(git status)" "Bash(ls:*)" "Bash(cursor-agent:*)"; do set -- "$@" --allow "$r"; done
     fi
     note=$(as_bidder grok --prompt-file "$prompt" --cwd "$PANTHEON_WORKTREE" $(grok_model) --no-subagents --disable-web-search \

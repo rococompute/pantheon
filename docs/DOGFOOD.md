@@ -15,8 +15,8 @@ and real tokens are involved.
 
 ## Before you start
 
-1. **Both repositories on GitHub.** Soma is at `github.com/yevbar/soma`
-   (private), branch `gradual`. Pantheon is at `github.com/yevbar/pantheon`,
+1. **Both repositories on GitHub.** Soma is at `github.com/rococompute/soma`
+   (branch `gradual`). Pantheon is at `github.com/rococompute/pantheon`,
    branch `master`. Each machine needs read access to both, for example a
    deploy key per machine. The node that runs the mirror needs push access
    to the default branches.
@@ -49,7 +49,7 @@ Every attestor runs CI before voting yes, in the image `deploy/Dockerfile`
 builds. Build the image once per machine:
 
 ```bash
-mkdir /tmp/soma-src && git -C ~/soma-checkout archive HEAD | tar -x -C /tmp/soma-src && docker build -f deploy/Dockerfile --build-context soma=/tmp/soma-src -t pantheon:dev .
+mkdir /tmp/soma-src && git -C "${SOMA_DIR:-$HOME/.soma}" archive HEAD | tar -x -C /tmp/soma-src && docker build -f deploy/Dockerfile --build-context soma=/tmp/soma-src -t pantheon:dev .
 ```
 
 Then the node:

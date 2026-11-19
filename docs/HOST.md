@@ -29,7 +29,7 @@ Nothing listens beyond localhost. The nodes talk on 127.0.0.1. Muse's VM (Lima o
   - Claude Code on the web needs its GitHub app on the repository.
   - Codex Cloud needs an environment for it: pass its id as `CODEX_ENV`.
   - Cursor Cloud Agents need Cursor's GitHub app on the repository.
-  - For a worker to check its own work, its environment needs Soma: `SOMA_REPO=https://github.com/yevbar/soma.git scripts/setup-node.sh` (Soma's default branch, `gradual`, which has what the market merged into Soma), which needs read access to Soma. Without it, the diplomat checks the work on the host.
+  - For a worker to check its own work, its environment needs Soma: `SOMA_REPO=https://github.com/rococompute/soma.git scripts/setup-node.sh` (Soma's default branch, `gradual`, which has what the market merged into Soma), which needs read access to Soma. Without it, the diplomat checks the work on the host.
 
 ## What can go wrong
 

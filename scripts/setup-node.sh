@@ -7,7 +7,7 @@
 #   SOMA_REPO=/path/to/soma-checkout scripts/setup-node.sh
 #
 # SOMA_REPO  where Soma's source is: a git URL or a directory (default:
-#            git@github.com:yevbar/soma.git, private: the machine needs a
+#            https://github.com/rococompute/soma.git, private: the machine needs a
 #            key that can read it)
 # SOMA_REF   the branch or commit to build (default: gradual)
 # SOMA_DIR   where Soma is built (default: ~/soma)
@@ -20,7 +20,7 @@ set -eu
 here=$(cd "$(dirname "$0")/.." && pwd)
 SOMA_DIR=${SOMA_DIR:-$HOME/soma}
 SOMA_REF=${SOMA_REF:-gradual}
-SOMA_REPO=${SOMA_REPO:-git@github.com:yevbar/soma.git}
+SOMA_REPO=${SOMA_REPO:-https://github.com/rococompute/soma.git}
 say() { printf 'setup: %s\n' "$*"; }
 
 # 1. system packages: git, a C toolchain, opam, gmp for zarith

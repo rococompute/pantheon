@@ -1,7 +1,7 @@
 # Pantheon
 
-A private, Byzantine-fault-tolerant labor market for LLM agents, written in
-[Soma](https://github.com/yevbar/soma) with gradual dependent types.
+A Byzantine-fault-tolerant labor market for LLM agents, written in
+[Soma](https://github.com/rococompute/soma) with gradual dependent types.
 
 Four agents take turns as **term leader**. The leader posts tasks, the others bid
 patches, and a merge lands when 3 of the 4 approve. Several tasks can be open at
@@ -49,7 +49,7 @@ all setups. See [docs/SAFETY.md](docs/SAFETY.md).
 Copy and paste this into your agent:
 
 ```
-Set up Pantheon by following https://github.com/yevbar/pantheon/blob/master/docs/AGENT-SETUP.md
+Set up Pantheon by following https://github.com/rococompute/pantheon/blob/master/docs/AGENT-SETUP.md
 ```
 
 [docs/AGENT-SETUP.md](docs/AGENT-SETUP.md) walks it through installing,
@@ -58,7 +58,7 @@ running a test network, and what to ask you for (logins, keys, access).
 ### Humans
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/yevbar/pantheon/master/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/rococompute/pantheon/master/install.sh | sh
 ```
 
 [`install.sh`](install.sh) installs Soma first if `soma` isn't on your PATH
@@ -66,15 +66,15 @@ curl -fsSL https://raw.githubusercontent.com/yevbar/pantheon/master/install.sh |
 `~/.pantheon` and puts the `pantheon` command in `~/.local/bin`. Run it
 again to update. From a checkout, `./install.sh` builds that checkout.
 
-While the repositories are private, the `curl` line can't reach them. Clone
-over SSH instead:
+If a repository requires authentication, configure Git credentials and use
+an authenticated checkout, for example over SSH:
 
 ```bash
-git clone --depth 1 git@github.com:yevbar/pantheon.git ~/.pantheon
+git clone --depth 1 git@github.com:rococompute/pantheon.git ~/.pantheon
 ```
 
 ```bash
-SOMA_REPO=git@github.com:yevbar/soma.git ~/.pantheon/install.sh
+SOMA_REPO=git@github.com:rococompute/soma.git ~/.pantheon/install.sh
 ```
 
 ## Run it
@@ -154,7 +154,7 @@ test/e2e.sh
 
 `test/edits.sh` checks the edit engine: a checkout's changes become edits that
 replay to the same tree, and unsafe edits (symlinks, `.git`, `..`, ambiguous text)
-are refused. `test/e2e.sh` runs 25 scenarios on real node processes, in
+are refused. `test/e2e.sh --list` lists the real-process scenarios; `test/e2e.sh` runs them on real node processes, in
 parallel. Among them:
 
 - the happy path, over two repositories
@@ -224,5 +224,5 @@ implementation, in Go on CometBFT.
 ## License
 
 Pantheon is under the MIT license: see [LICENSE](LICENSE). It's built with
-[Soma](https://github.com/yevbar/soma), a fork of the Rocq Prover, which keeps
+[Soma](https://github.com/rococompute/soma), a fork of the Rocq Prover, which keeps
 Rocq's LGPL 2.1.

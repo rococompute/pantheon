@@ -2,14 +2,14 @@
 # Installs Pantheon: Soma if it isn't installed, then Pantheon built with it,
 # and a `pantheon` command on your PATH.
 #
-#   curl -fsSL https://raw.githubusercontent.com/yevbar/pantheon/master/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/rococompute/pantheon/master/install.sh | sh
 #   ./install.sh                      (from a checkout: builds that checkout)
 #
 # Run it again to update: it fetches PANTHEON_REF and rebuilds. Soma's first
 # install takes about 30 minutes and 3 GB; Pantheon's first build then makes
 # Soma's OCaml switch for programs (~/.cache/soma/ocaml), a few minutes more.
 #
-# PANTHEON_REPO  where to fetch Pantheon from (default: https://github.com/yevbar/pantheon.git)
+# PANTHEON_REPO  where to fetch Pantheon from (default: https://github.com/rococompute/pantheon.git)
 # PANTHEON_REF   the branch, tag or commit to build (default: master)
 # PANTHEON_DIR   where Pantheon is kept and built (default: ~/.pantheon; ignored
 #                when run from a checkout, which is built in place and never fetched)
@@ -18,10 +18,10 @@
 #                passed to Soma's install.sh when Soma is missing (see its top)
 set -eu
 
-PANTHEON_REPO=${PANTHEON_REPO:-https://github.com/yevbar/pantheon.git}
+PANTHEON_REPO=${PANTHEON_REPO:-https://github.com/rococompute/pantheon.git}
 PANTHEON_REF=${PANTHEON_REF:-master}
 PANTHEON_BIN=${PANTHEON_BIN:-$HOME/.local/bin}
-SOMA_REPO=${SOMA_REPO:-https://github.com/yevbar/soma.git}
+SOMA_REPO=${SOMA_REPO:-https://github.com/rococompute/soma.git}
 SOMA_REF=${SOMA_REF:-gradual}
 export SOMA_REPO SOMA_REF
 say() { printf 'pantheon-install: %s\n' "$*"; }
@@ -48,7 +48,7 @@ else
   if [ -z "$script" ]; then
     tmp=$(mktemp -d)
     git clone -q --depth 1 -b "$SOMA_REF" "$SOMA_REPO" "$tmp/soma" \
-      || die "fetching Soma from $SOMA_REPO failed. While yevbar/soma is private, use SSH: SOMA_REPO=git@github.com:yevbar/soma.git"
+      || die "fetching Soma from $SOMA_REPO failed. If authentication is required, configure Git credentials or use SSH: SOMA_REPO=git@github.com:rococompute/soma.git"
     script=$(cat "$tmp/soma/install.sh")
     rm -rf "$tmp"
   fi
@@ -56,6 +56,23 @@ else
   SOMA=$SOMA_BIN/soma
 fi
 [ -x "$SOMA" ] || die "no soma command at $SOMA"
+
+# Catch an unrelated/old command before fetching Pantheon or starting its
+# expensive build. Exercise the gradual checker, not just a version label.
+probe=$(mktemp -d)
+trap 'rm -rf "$probe"' EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+printf 'probe (x : Any) : N := x * x.\nprobe 12%%N.\n' > "$probe/compat.soma"
+if ! "$SOMA" help > "$probe/help" 2>&1 ||
+   ! grep -q 'check' "$probe/help" || ! grep -q 'test' "$probe/help" ||
+   ! "$SOMA" check "$probe/compat.soma" > "$probe/check.log" 2>&1; then
+  [ ! -f "$probe/check.log" ] || tail -8 "$probe/check.log" >&2
+  die "$SOMA is not a compatible gradual Soma build. Update $SOMA_REPO branch $SOMA_REF, then put its soma command first on PATH."
+fi
+rm -rf "$probe"
+trap - EXIT HUP INT TERM
 
 # 2. The source: this checkout if the script is in one, otherwise
 # PANTHEON_DIR, fetched at PANTHEON_REF. Piped into sh, $0 is the shell.
@@ -72,7 +89,7 @@ else
   git -C "$PANTHEON_DIR" remote add origin "$PANTHEON_REPO"
   say "fetching $PANTHEON_REF from $PANTHEON_REPO into $PANTHEON_DIR"
   git -C "$PANTHEON_DIR" fetch -q --depth 1 origin "$PANTHEON_REF" \
-    || die "fetching $PANTHEON_REF from $PANTHEON_REPO failed. While yevbar/pantheon is private, use SSH: PANTHEON_REPO=git@github.com:yevbar/pantheon.git"
+    || die "fetching $PANTHEON_REF from $PANTHEON_REPO failed. If authentication is required, configure Git credentials or use SSH: PANTHEON_REPO=git@github.com:rococompute/pantheon.git"
   git -C "$PANTHEON_DIR" checkout -q --force --detach FETCH_HEAD
 fi
 cd "$PANTHEON_DIR"
