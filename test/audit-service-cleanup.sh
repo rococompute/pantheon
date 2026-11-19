@@ -22,3 +22,46 @@ TMPDIR="$fixture_dir" PATH="$fixture_dir/empty" "$fixture_dir/app/_build/default
 cat "$failed"
 ! grep -q '^FAIL ' "$failed"
 test "$(grep -c '^ok ' "$failed")" -eq 12
+
+run_runtime_case() {
+  mode=$1
+  runtime_path=$2
+  wanted=$3
+  printf 'case %s\n' "$mode"
+  TMPDIR="$fixture_dir" PATH="$runtime_path" "$fixture_dir/app/_build/default/soma_main.exe" "$mode" > "$out" 2>&1 || { cat "$out"; exit 1; }
+  cat "$out"
+  ! grep -q '^FAIL ' "$out"
+  test "$(grep -c '^ok ' "$out")" -eq "$wanted"
+}
+# These are valid programs that really start, then exit 1 or receive SIGKILL.
+mkdir "$fixture_dir/fail-bin" "$fixture_dir/kill-bin"
+printf '#!/bin/sh\nexit 1\n' > "$fixture_dir/fail-bin/rm"
+printf '#!/bin/sh\nexec /bin/sleep 2\n' > "$fixture_dir/kill-bin/rm"
+chmod 700 "$fixture_dir/fail-bin/rm" "$fixture_dir/kill-bin/rm"
+run_runtime_case modern-exit1 "$fixture_dir/fail-bin:$PATH" 12
+run_runtime_case modern-kill "$fixture_dir/kill-bin:$PATH" 12
+run_runtime_case modern-success "$PATH" 12
+run_runtime_case pair-exit1 "$fixture_dir/fail-bin:$PATH" 12
+run_runtime_case pair-kill "$fixture_dir/kill-bin:$PATH" 12
+run_runtime_case pair-success "$PATH" 12
+mkdir "$fixture_dir/partial-bin"
+cat > "$fixture_dir/partial-bin/rm" <<'PARTIAL_RM'
+#!/bin/sh
+if [ -f "$PANTHEON_AUDIT_PARTIAL_STATE" ]; then exec /bin/rm "$@"; fi
+: > "$PANTHEON_AUDIT_PARTIAL_STATE"
+/bin/rm -rf -- "$4"
+exit 1
+PARTIAL_RM
+chmod 700 "$fixture_dir/partial-bin/rm"
+export PANTHEON_AUDIT_PARTIAL_STATE="$fixture_dir/partial-once"
+run_runtime_case pair-partial "$fixture_dir/partial-bin:$PATH" 12
+run_runtime_case discard "$PATH" 16
+"${SOMA:-soma}" run test/audit_service_cleanup_lifetime.soma > "$out" 2>&1 || { cat "$out"; exit 1; }
+cat "$out"
+! grep -q '^FAIL ' "$out"
+test "$(grep -c '^ok ' "$out")" -eq 36
+
+"${SOMA:-soma}" run test/audit_inbox_cleanup.soma > "$out" 2>&1 || { cat "$out"; exit 1; }
+cat "$out"
+! grep -q '^FAIL ' "$out"
+test "$(grep -c '^ok ' "$out")" -eq 9

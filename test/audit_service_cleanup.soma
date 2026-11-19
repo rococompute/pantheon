@@ -1,7 +1,7 @@
 (** Real Host IO through the production native and image-service handlers.
     The wire fixture substitutes only socket receive/reply; every other
     operation executes the actual shell interpreter. No node or model runs. *)
-Import core.util runtime.nodeio runtime.node runtime.node_host runtime.node_service runtime.node_shell.
+Import core.util runtime.nodeio runtime.node runtime.node_host runtime.node_service runtime.node_shell runtime.node_net.
 Require Soma.Host.
 
 check (name : string) (ok : bool) : string := append (if ok then "ok " else "FAIL ") name.
@@ -116,4 +116,154 @@ missing_fixture : nprog (list string) :=
   nbind (missing_case true true w made target) (fun image_sync =>
   NDone (native ++ image ++ native_sync ++ image_sync)))))).
 
-main := Host.print_lines (run_shell (if eq_strs (Host.argv tt) ["missing-rm"] then missing_fixture else fixture)).
+(** Modern cleanup starts a real native process through the service's real
+    run_net interpreter; only socket request/reply operations are substituted. *)
+Fixpoint run_live_wire {A : Type} (request : list string) (reply : nanswer)
+    (net : net_state) (p : nprog A) : (A * nanswer) * net_state :=
+  match p with
+  | NDone a => ((a, reply), net)
+  | NStep op k => match op with
+      | IoServeNext _ => run_live_wire request reply net (k (ans_data true request))
+      | IoServeReply _ found _ fields =>
+          run_live_wire request (ans_data (seq found "true") fields) net (k ans_ok)
+      | _ => let next := run_net net (nask op) in
+          run_live_wire request reply (snd next) (k (fst next))
+      end
+  end.
+
+Record live_fixture := { lf_service : service_state; lf_net : net_state; lf_reply : nanswer }.
+live_step (w : service_world) (s : service_state) (net : net_state) (fields : list string) : live_fixture :=
+  let result := run_live_wire ("fixture-connection" :: sw_token w :: fields) (ans_flag false) net (service_tick_prog w s) in
+  {| lf_service := fst (fst result); lf_net := snd result; lf_reply := snd (fst result) |}.
+
+Fixpoint poll_terminal (fuel : nat) (w : service_world) (s : live_fixture) (job : string)
+    : nprog (live_fixture * option (list string)) :=
+  match fuel with
+  | 0 => NDone (s, None)
+  | S rest =>
+      let next := live_step w (lf_service s) (lf_net s) ["events", "0"] in
+      match find (fun event => match event with ["job_ended", id, _, _] => seq id job | _ => false end)
+        (nio_lists (ans_list (lf_reply next))) with
+      | Some event => NDone (next, Some event)
+      | None => nbind (nask (IoSockSelect "10" [] [])) (fun _ => poll_terminal rest w next job)
+      end
+  end.
+
+terminal_matches (mode job : string) (event : option (list string)) : bool :=
+  match event with
+  | Some ["job_ended", id, how, value] => seq id job &&
+      (if seq mode "modern-kill" then seq how "signal" else
+       seq how "exit" && seq value (if seq mode "modern-success" then "0" else "1"))
+  | _ => false
+  end.
+
+modern_fixture (mode : string) (paired : bool) : nprog (list string) :=
+  nbind (nask (IoTempDir "pantheon-cleanup-modern")) (fun allocated =>
+  nbind (nask IoEnvEntries) (fun env =>
+  let target := ans_one allocated in
+  let made := sv_after [] (IoTempDir "owned") allocated in
+  let w := {| (world target) with sw_env := ans_list env |} in
+  let initial := {| service_begin with ss_made := made |} in
+  let git := append target ".git" in
+  let operands := if paired then [git, target] else [target] in
+  let op := IoProcStart "rm" "" "" (sw_env w) (["-rf", "--"] ++ operands) in
+  nbind (if paired then nbind (nask (IoMakeDirs git)) (fun _ => nask (IoSave (hjoin git "keep") "false" "fixture")) else NDone ans_ok) (fun _ =>
+  nbind (nask (IoSave (hjoin target "keep") "false" "fixture")) (fun _ =>
+  let started := live_step w initial (net_start target) (io_wire op) in
+  let job := ans_one (lf_reply started) in
+  let duplicate := live_step w (lf_service started) (lf_net started) (io_wire op) in
+  let before_terminal := if seq mode "modern-kill"
+    then live_step w (lf_service duplicate) (lf_net duplicate) (io_wire (IoProcKill job)) else duplicate in
+  nbind (poll_terminal 300 w before_terminal job) (fun ended =>
+  let completed := fst ended in
+  let retain := negb (seq mode "modern-success") in
+  nbind (nask (IoFileExists target)) (fun root_present =>
+  nbind (nask (IoFileExists git)) (fun git_present =>
+  let probed := live_step w (lf_service completed) (lf_net completed) (io_wire (IoPathProbe target "")) in
+  let retried := live_step w (lf_service probed) (lf_net probed) (io_wire op) in
+  let retry_job := ans_one (lf_reply retried) in
+  let retry_ready := if retain && fst (lf_reply retried) && seq mode "modern-kill"
+    then live_step w (lf_service retried) (lf_net retried) (io_wire (IoProcKill retry_job)) else retried in
+  nbind (if retain && fst (lf_reply retried) then poll_terminal 300 w retry_ready retry_job else NDone (retry_ready, None)) (fun final =>
+  let results := [
+    check "modern rm successfully starts a real native process"
+      (fst (lf_reply started) && (length (ns_procs (lf_net started)) =? 1)),
+    check "modern start receipt retains the root until terminal outcome"
+      (eq_strs (ss_made (lf_service started)) made),
+    check "a duplicate cleanup cannot start a second active process"
+      (negb (fst (lf_reply duplicate)) && (length (ns_procs (lf_net duplicate)) =? 1)),
+    check "cleanup and kill requests do not consume the root before an event"
+      (eq_strs (ss_made (lf_service before_terminal)) made),
+    check "modern cleanup observes actual trusted exit or signal status" (terminal_matches mode job (snd ended)),
+    check "terminal success consumes and terminal failure retains the root"
+      (if retain then eq_strs (ss_made (lf_service completed)) made else length (ss_made (lf_service completed)) =? 0),
+    check "failed or killed cleanup keeps the root probeable"
+      (Bool.eqb (fst (lf_reply probed)) retain),
+    check "failed or killed cleanup can be retried"
+      (Bool.eqb (fst (lf_reply retried)) retain),
+    check "modern fixture reaps all real processes"
+      (length (ns_procs (lf_net (fst final))) =? 0),
+    check "cleanup operands reflect the actual terminal effect"
+      (if seq mode "modern-partial" then negb (fst root_present) && fst git_present else
+       if seq mode "modern-success" then negb (fst root_present) && (negb paired || negb (fst git_present))
+       else fst root_present && (negb paired || fst git_present)),
+    check "retry terminal results preserve or consume the right capability"
+      (if seq mode "modern-partial" || seq mode "modern-success" then
+         length (ss_made (lf_service (fst final))) =? 0 else
+         eq_strs (ss_made (lf_service (fst final))) made)] in
+  nbind (nask (IoRun "/bin/rm" ["-rf", "--", target, git]))
+    (fun removed => NDone (results ++ [check "modern fixture tree removed" (fst removed)])))))))))).
+
+discard_request (wire : bool) (w : service_world) (made : list string) (target : string) : nprog (bool * list string) :=
+  let op := IoDiscardFile target in
+  if wire then
+    let req := ["fixture-connection", sw_token w] ++ io_wire op in
+    let initial := {| service_begin with ss_made := made |} in
+    let result := run_wire req "missing reply" (service_tick_prog w initial) in
+    NDone (seq (snd result) "true", ss_made (fst result))
+  else nbind (sv_serve w made op) (fun answer => NDone (fst answer, sv_after made op answer)).
+
+discard_case (wire : bool) : nprog (list string) :=
+  nbind (nask (IoTempDir "pantheon-discard-directory")) (fun dir =>
+  nbind (nask (IoTempFile "pantheon-discard-file" ".txt" "fixture")) (fun file =>
+  nbind (nask (IoTempFile "pantheon-discard-missing" ".txt" "fixture")) (fun absent =>
+  let directory := ans_one dir in let filename := ans_one file in
+  let missing_filename := ans_one absent in
+  let made := sv_after (sv_after (sv_after [] (IoTempDir "owned") dir) (IoTempFile "owned" ".txt" "fixture") file) (IoTempFile "owned" ".txt" "fixture") absent in
+  let w := world directory in let label := if wire then "wire " else "native " in
+  nbind (nask (IoRemoveFile missing_filename)) (fun _ =>
+  nbind (discard_request wire w made missing_filename) (fun missing_result =>
+  nbind (nask (IoSave (hjoin directory "keep") "false" "fixture")) (fun _ =>
+  nbind (discard_request wire w (snd missing_result) directory) (fun failed =>
+  nbind (nask (IoReadText (hjoin directory "keep"))) (fun contents =>
+  nbind (discard_request wire w (snd failed) filename) (fun removed =>
+  nbind (nask (IoFileExists filename)) (fun present =>
+  let results := [
+    check (append label "already absent file reports false") (negb (fst missing_result)),
+    check (append label "failed absent-file unlink retains ownership") (eq_strs (snd missing_result) made),
+    check (append label "directory unlink reports actual failure") (negb (fst failed)),
+    check (append label "failed directory unlink retains capabilities") (eq_strs (snd failed) made),
+    check (append label "failed directory unlink leaves contents") (seq (ans_one contents) "fixture"),
+    check (append label "ordinary temp-file unlink succeeds") (fst removed),
+    check (append label "successful unlink consumes only the file capability") (eq_strs (snd removed) [missing_filename, directory]),
+    check (append label "successful temp-file unlink removes its file") (negb (fst present))] in
+  nbind (nask (IoRun "/bin/rm" ["-rf", "--", directory, filename, missing_filename])) (fun _ => NDone results))))))))))).
+
+discard_fixture : nprog (list string) :=
+  nbind (discard_case false) (fun native =>
+  nbind (discard_case true) (fun image => NDone (native ++ image))).
+
+main :=
+  let args := Host.argv tt in
+  Host.print_lines (run_shell (match args with
+    | ["missing-rm"] => missing_fixture
+    | ["modern-exit1"] => modern_fixture "modern-exit1" false
+    | ["modern-kill"] => modern_fixture "modern-kill" false
+    | ["modern-success"] => modern_fixture "modern-success" false
+    | ["pair-exit1"] => modern_fixture "modern-exit1" true
+    | ["pair-kill"] => modern_fixture "modern-kill" true
+    | ["pair-success"] => modern_fixture "modern-success" true
+    | ["pair-partial"] => modern_fixture "modern-partial" true
+    | ["discard"] => discard_fixture
+    | _ => fixture
+    end)).

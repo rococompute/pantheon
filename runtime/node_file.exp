@@ -88,3 +88,8 @@ Theorem remove_tree_starts_rm : forall ans p,
   ntrace ans (remove_tree_prog p) = [IoStartDetached "rm" ["-rf", "--", p]] /\
   nresult ans (remove_tree_prog p) = ans (IoStartDetached "rm" ["-rf", "--", p]).
 Proof. intros ans p. split; reflexivity. Qed.
+
+(** Service ownership is consumed only after the actual unlink result. *)
+Theorem discard_reports_actual_unlink : forall p,
+  file_op (IoDiscardFile p) = Some (nask (IoRemoveFile p)).
+Proof. intros. reflexivity. Qed.

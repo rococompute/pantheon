@@ -24,9 +24,13 @@ Record service_world := {
 
 (** What it keeps: the events the image hasn't taken yet, and the
     temporary files and directories it made, newest first. *)
-Record service_state := { ss_pending : list (list string); ss_made : list string }.
+Record service_state := {
+  ss_pending : list (list string);
+  ss_made : list string;
+  (** active cleanup job, owning root, whether success consumes that root *)
+  ss_cleanup : list (string * string * bool) }.
 
-service_begin : service_state := {| ss_pending := []; ss_made := [] |}.
+service_begin : service_state := {| ss_pending := []; ss_made := []; ss_cleanup := [] |}.
 
 (** ---- paths ---- *)
 
@@ -124,6 +128,16 @@ sv_ci_docker (w : service_world) (made : list string) (args : list string) : boo
   starts "pantheon-ci-" name && sv_name name && ends ":/work:ro" vol && sv_path w made out
   && eq_strs args (ci_docker_args name (hw_ci_memory hw) out (hw_ci_image hw) script).
 
+(** Cleanup operands are absolute capabilities. A known tool checkout may
+    request its exact separate git sibling and worktree in one tracked job. *)
+sv_cleanup_args (made : list string) (args : list string) : bool :=
+  match args with
+  | ["-rf", "--", p] => sv_cleanup_path made p
+  | ["-rf", "--", git, root] =>
+      seq git (append root ".git") && existsb (seq root) made && sv_cleanup_path made root
+  | _ => false
+  end.
+
 (** The programs the host's work runs: the node's own binary checking a
     bid, the model as backend_launch launches it (codex's reply file and
     grok's header file ones the service made), CI (in docker, or the
@@ -144,9 +158,7 @@ sv_program (w : service_world) (made : list string) (prog : string) (args : list
   || (seq prog "curl"
       && (let h := nth 4 args "" in
           starts "@" h && path (drop_str 1 h) && eq_strs args (hswap "@HDR@" h (sv_launch_args "grok"))))
-  || (seq prog "rm" && match args with
-       | [a, sep, p] => seq a "-rf" && seq sep "--" && sv_cleanup_path made p
-       | _ => false end)
+  || (seq prog "rm" && sv_cleanup_args made args)
   || (seq prog "docker" && sv_ci_docker w made args)
   || (negb (seq (hw_ci_sandbox hw) "") && seq prog (hw_ci_sandbox hw)
       && match args with [mem, out, _] => seq mem (hw_ci_memory hw) && path out | _ => false end)
@@ -180,7 +192,9 @@ sv_allowed (w : service_world) (made : list string) (op : node_op) : bool :=
   | IoTempDir prefix => sv_name prefix
   | IoTempFile prefix suffix _ => sv_name prefix && sv_name suffix
   | IoRun prog args => sv_run w made prog args
-  | IoProcStart prog _ cwd env args => path cwd && forallb (sv_env_ok w) env && sv_program w made prog args
+  | IoProcStart prog _ cwd env args =>
+      (path cwd || (seq cwd "" && seq prog "rm" && sv_cleanup_args made args))
+      && forallb (sv_env_ok w) env && sv_program w made prog args
   | IoRandomHex count => (0 <? slen count) && (slen count <? 3)
   | IoProcKill _ | IoSelfExe | IoEnvEntries => true
   | _ => false
@@ -199,7 +213,8 @@ sv_guard (w : service_world) (made : list string) (op : node_op) : option (strin
   match op with
   | IoPathStat p | IoReadText p | IoDirEntries p | IoDiscardFile p | IoRemoveTree p => sv_guard_path w made p
   | IoPathWrite dir p _ | IoPathRemove dir p => sv_guard_path w made (hjoin dir p)
-  | IoProcStart prog _ _ _ [a, sep, p] =>
+  | IoProcStart prog _ _ _ [a, sep, p]
+  | IoProcStart prog _ _ _ [a, sep, _, p] =>
       if seq prog "rm" && seq a "-rf" && seq sep "--" then sv_guard_path w made p else None
   | IoRun prog [a, p] =>
       if seq prog "rm" && seq a "-rf" then sv_guard_path w made p else None
@@ -222,6 +237,19 @@ sv_execute (op : node_op) : nprog nanswer :=
   | _ => nask op
   end.
 
+(** Both exact leaves of paired cleanup are probed. Missing operands remain
+    legal for idempotent/partial-delete retries; symlinks are refused. A leaf
+    concurrently replaced by a symlink is still only unlinked by rm, not followed. *)
+sv_execute_guarded (op : node_op) : nprog nanswer :=
+  match op with
+  | IoProcStart "rm" _ _ _ ["-rf", "--", git, root] =>
+      nbind (nask (IoPathStat git)) (fun a =>
+      nbind (nask (IoPathStat root)) (fun b =>
+      if seq (hd "" (ans_list a)) "symlink" || seq (hd "" (ans_list b)) "symlink"
+      then sv_refuse op "a symlink cleanup operand" else sv_execute op))
+  | _ => sv_execute op
+  end.
+
 (** An operation carried out, or refused: one not allowed runs nothing;
     one on a path runs only after the path is looked at and isn't
     through a symlink. *)
@@ -230,8 +258,8 @@ sv_serve (w : service_world) (made : list string) (op : node_op) : nprog nanswer
   else match sv_guard w made op with
        | Some (r, rel) =>
            nbind (nask (IoPathProbe r rel)) (fun a =>
-           if seq (ans_one a) "symlink" then sv_refuse op "a symlink on the way" else sv_execute op)
-       | None => sv_execute op
+           if seq (ans_one a) "symlink" then sv_refuse op "a symlink on the way" else sv_execute_guarded op)
+       | None => sv_execute_guarded op
        end.
 
 (** what it made, after an operation's answer: a temporary file or
@@ -241,14 +269,70 @@ sv_after (made : list string) (op : node_op) (a : nanswer) : list string :=
   | IoTempDir _ | IoTempFile _ _ _ =>
       if fst a && starts "/" (ans_one a) then ans_one a :: made else made
   | IoRemoveTree p => if fst a then filter (fun m => negb (seq m p)) made else made
-  | IoDiscardFile p => filter (fun m => negb (seq m p)) made
+  | IoDiscardFile p => if fst a then filter (fun m => negb (seq m p)) made else made
   | IoRun prog [flag, p] =>
       if fst a && seq prog "rm" && seq flag "-rf"
       then filter (fun m => negb (seq m p)) made else made
-  | IoProcStart prog _ _ _ [flag, sep, p] =>
-      if fst a && seq prog "rm" && seq flag "-rf" && seq sep "--"
-      then filter (fun m => negb (seq m p)) made else made
   | _ => made
+  end.
+
+(** A root stays usable for probes while cleanup runs. One cleanup per owning
+    capability may be active, across tracked and synchronous cleanup routes. *)
+sv_cleanup_owner (made : list string) (p : string) : option string :=
+  match find (fun root => seq root p) made with
+  | Some root => Some root
+  | None => find (fun root => seq (append root ".git") p || seq (hjoin root ".git") p) made
+  end.
+
+sv_cleanup_target (op : node_op) : option string :=
+  match op with
+  | IoRemoveTree p | IoDiscardFile p => Some p
+  | IoRun "rm" ["-rf", p]
+  | IoProcStart "rm" _ _ _ ["-rf", "--", p]
+  | IoProcStart "rm" _ _ _ ["-rf", "--", _, p] => Some p
+  | _ => None
+  end.
+
+sv_cleanup_busy (s : service_state) (op : node_op) : bool :=
+  match sv_cleanup_target op with
+  | Some p => match sv_cleanup_owner (ss_made s) p with
+      | Some root => existsb (fun entry => let '(_, owner, _) := entry in seq owner root) (ss_cleanup s)
+      | None => false end
+  | None => false
+  end.
+
+sv_dispatch (w : service_world) (s : service_state) (op : node_op) : nprog nanswer :=
+  if sv_cleanup_busy s op then sv_refuse op "cleanup still running for this root"
+  else sv_serve w (ss_made s) op.
+
+(** A successful process start records responsibility, not completion. The
+    runner's job ids are unique; one active entry per root bounds this map by
+    the service's existing owned-root set, not the number of historical jobs. *)
+sv_after_request (s : service_state) (op : node_op) (answer : nanswer) : service_state :=
+  let active := match op, ans_found answer with
+    | IoProcStart "rm" _ _ _ ["-rf", "--", p], Some [job]
+    | IoProcStart "rm" _ _ _ ["-rf", "--", _, p], Some [job] =>
+        match sv_cleanup_owner (ss_made s) p with
+        | Some root => if seq job "" || sv_cleanup_busy s op then ss_cleanup s
+                       else (job, root, seq root p) :: ss_cleanup s
+        | None => ss_cleanup s end
+    | _, _ => ss_cleanup s end in
+  {| s with ss_made := sv_after (ss_made s) op answer; ss_cleanup := active |}.
+
+(** Only fresh runner events reach here, never client-supplied fields or queued
+    event replays. Every terminal outcome drops its job record. Only exit 0
+    consumes the root; failed/killed work leaves its capability for retry. *)
+sv_cleanup_event (s : service_state) (event : list string) : service_state :=
+  match event with
+  | ["job_ended", job, how, value] =>
+      match find (fun entry => let '(id, _, _) := entry in seq id job) (ss_cleanup s) with
+      | Some (_, root, consumes) =>
+          {| s with
+             ss_made := if consumes && seq how "exit" && seq value "0"
+                        then filter (fun p => negb (seq p root)) (ss_made s) else ss_made s;
+             ss_cleanup := filter (fun entry => let '(id, _, _) := entry in negb (seq id job)) (ss_cleanup s) |}
+      | None => s end
+  | _ => s
   end.
 
 (** One turn: the next request, answered; the events the image hasn't
@@ -259,14 +343,16 @@ service_tick_prog (w : service_world) (s : service_state) : nprog service_state 
   | Some (conn :: fields) =>
       match service_request_of (sw_token w) fields with
       | ServeOp op =>
-          nbind (sv_serve w (ss_made s) op) (fun r =>
+          nbind (sv_dispatch w s op) (fun r =>
           nbind (nexec (IoServeReply conn (if fst r then "true" else "false") (float_wire (ans_float r)) (ans_list r)))
-            (fun _ => NDone {| ss_pending := ss_pending s; ss_made := sv_after (ss_made s) op r |}))
+            (fun _ => NDone (sv_after_request s op r)))
       | ServeEvents =>
           nbind (nask (IoEvents "0")) (fun got =>
-          let (now, later) := service_batch 0 (ss_pending s ++ service_kept (nio_lists (ans_list got))) in
+          let observed := nio_lists (ans_list got) in
+          let s := List.fold_left sv_cleanup_event observed s in
+          let (now, later) := service_batch 0 (ss_pending s ++ service_kept observed) in
           nbind (nexec (IoServeReply conn "true" "0" (nio_frame_lists now)))
-            (fun _ => NDone {| ss_pending := later; ss_made := ss_made s |}))
+            (fun _ => NDone {| s with ss_pending := later |}))
       | ServeRefused => nbind (nexec (IoServeReply conn "false" "0" [])) (fun _ => NDone s)
       end
   | _ => NDone s

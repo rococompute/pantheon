@@ -233,21 +233,34 @@ done_ci (d : job_done) : bool := match d with DoneCi _ _ _ _ _ => true | _ => fa
     process: its completion/failure is observed like every other host job.
     Cleanup jobs own no scratch directory, so cleaning one never recursively
     creates another cleanup job. The startup receipt reports failures too. *)
-hcleanup_tree (s : host_state) (p : string) : nprog (nanswer * host_state) :=
+hcleanup_targets (s : host_state) (targets : list string) : nprog (nanswer * host_state) :=
+  let label := Stdlib.Strings.String.concat " + " targets in
   nbind (nask IoEnvEntries) (fun env =>
-  nbind (nask (IoProcStart "rm" "" p (ans_list env) ["-rf", "--", p])) (fun a =>
+  nbind (nask (IoProcStart "rm" "" "" (ans_list env) (["-rf", "--"] ++ targets))) (fun a =>
   if negb (fst a) then
-    nbind (nexec (IoLog (hcat ["cleanup could not start: ", p, ": ", ans_one a])))
+    nbind (nexec (IoLog (hcat ["cleanup could not start: ", label, ": ", ans_one a])))
       (fun _ => NDone (a, s))
   else nbind (nask IoClock) (fun now =>
     let j := {| j_id := ans_one a; j_started := ans_float now; j_limit := nio_small 3600;
-                j_done := DoneCleanup p; j_clean := []; j_overtime := false; j_flooded := false |} in
+                j_done := DoneCleanup label; j_clean := []; j_overtime := false; j_flooded := false |} in
     NDone (ans_data true ["cleanup scheduled", ans_one a], {| s with hs_jobs := j :: hs_jobs s |})))) .
 
+hcleanup_tree (s : host_state) (p : string) : nprog (nanswer * host_state) :=
+  hcleanup_targets s [p].
+
+(** The tool explicitly requests [git, worktree]. One asynchronous job owns
+    both exact operands, so a single service capability is not raced by aliases. *)
 Fixpoint hcleanup (s : host_state) (l : list job_clean) : nprog host_state :=
   match l with
   | [] => NDone s
-  | CleanTree p :: rest => nbind (hcleanup_tree s p) (fun r => hcleanup (snd r) rest)
+  | CleanTree p :: rest =>
+      match rest with
+      | CleanTree root :: more =>
+          if seq p (append root ".git") then
+            nbind (hcleanup_targets s [p, root]) (fun r => hcleanup (snd r) more)
+          else nbind (hcleanup_tree s p) (fun r => hcleanup (snd r) rest)
+      | _ => nbind (hcleanup_tree s p) (fun r => hcleanup (snd r) rest)
+      end
   | CleanContainer name :: rest =>
       nbind (nask (IoRun "docker" ["rm", "-f", name])) (fun removed =>
       if fst removed then hcleanup s rest else

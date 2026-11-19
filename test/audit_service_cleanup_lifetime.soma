@@ -1,0 +1,112 @@
+(** Pure assertions over actual service state transitions and entry-point traces. *)
+Import core.util runtime.nodeio runtime.node runtime.node_host runtime.node_service.
+Require Soma.Host.
+check (name : string) (ok : bool) : string := append (if ok then "ok " else "FAIL ") name.
+root : string := "/tmp/owned".
+world : service_world := {| sw_token := "token"; sw_self := "/node"; sw_env := [];
+  sw_world := {| hw_home := "/home"; hw_backend := ""; hw_repos := []; hw_max_calls := "0";
+    hw_ci := ""; hw_ci_repo := []; hw_ci_memory := "256m"; hw_ci_image := "image"; hw_ci_sandbox := "/runner" |} |}.
+operation : node_op := IoProcStart "rm" "" root [] ["-rf", "--", root].
+initial : service_state := {| service_begin with ss_made := [root] |}.
+started : service_state := sv_after_request initial operation (ans_data true ["job"]).
+failed : service_state := sv_cleanup_event started ["job_ended", "job", "exit", "1"].
+killed : service_state := sv_cleanup_event started ["job_ended", "job", "signal", "9"].
+succeeded : service_state := sv_cleanup_event started ["job_ended", "job", "exit", "0"].
+retried : service_state := sv_after_request failed operation (ans_data true ["retry"]).
+sibling : service_state := sv_after_request initial
+  (IoProcStart "rm" "" root [] ["-rf", "--", append root ".git"]) (ans_data true ["git"]).
+request_answers (fields : list string) (events : list (list string)) (op : node_op) : nanswer :=
+  match op with
+  | IoServeNext _ => ans_data true ("connection" :: "token" :: fields)
+  | IoEvents _ => ans_data true (nio_frame_lists events)
+  | IoPathProbe _ _ => ans_data true ["dir"]
+  | _ => ans_ok
+  end.
+forged : service_state := nresult (request_answers ["job_ended", "job", "exit", "0"] []) (service_tick_prog world started).
+queued : service_state := {| started with ss_pending := [["job_ended", "job", "exit", "0"]] |}.
+replayed : service_state := nresult (request_answers ["events", "0"] []) (service_tick_prog world queued).
+observed : service_state := nresult (request_answers ["events", "0"] [["job_ended", "job", "exit", "0"]])
+  (service_tick_prog world started).
+second_root : string := "/tmp/other".
+two : service_state := sv_after_request {| started with ss_made := [root, second_root] |}
+  (IoProcStart "rm" "" second_root [] ["-rf", "--", second_root]) (ans_data true ["other"]).
+drained : service_state := List.fold_left sv_cleanup_event
+  [["job_ended", "job", "exit", "1"], ["job_ended", "other", "signal", "9"]] two.
+same_roots (s : service_state) : bool := eq_strs (ss_made s) [root].
+empty_jobs (s : service_state) : bool := length (ss_cleanup s) =? 0.
+pair_op : node_op := IoProcStart "rm" "" "" [] ["-rf", "--", append root ".git", root].
+pair_started : service_state := sv_after_request initial pair_op (ans_data true ["pair"]).
+pair_answers (op : node_op) : nanswer := match op with
+  | IoProcStart _ _ _ _ _ => ans_data true ["pair"]
+  | _ => request_answers [] [] op end.
+pair_trace : list node_op := ntrace pair_answers (hcleanup host_start [CleanTree (append root ".git"), CleanTree root]).
+symlink_answers (op : node_op) : nanswer := match op with
+  | IoPathStat p => ans_data true [if seq p (append root ".git") then "symlink" else "dir"]
+  | _ => pair_answers op end.
+server_pair_trace : list node_op := ntrace pair_answers (sv_dispatch world initial pair_op).
+inbox_failed (op : node_op) : nanswer := match op with IoDiscardFile _ => ans_flag false | _ => ans_ok end.
+inbox_queue_failed (op : node_op) : nanswer := match op with IoQueue _ => ans_flag false | _ => ans_ok end.
+inbox_fresh (op : node_op) : nanswer := match op with
+  | IoInboxState => ans_data true ["/inbox"]
+  | IoTurnNow => ans_time (nio_small 10)
+  | IoDirEntries _ => ans_data true ["next.json"]
+  | IoReadText _ => ans_data true ["next"]
+  | _ => ans_ok end.
+main := Host.print_lines [
+  check "a start receipt alone does not consume a capability" (eq_strs (sv_after [root] operation ans_ok) [root]),
+  check "a real job id records responsibility while retaining its owner" (same_roots started && (length (ss_cleanup started) =? 1)),
+  check "an active owner refuses duplicate tracked cleanup" (sv_cleanup_busy started operation),
+  check "an active owner refuses competing legacy cleanup" (sv_cleanup_busy started (IoRemoveTree root)),
+  check "an active owner refuses competing synchronous cleanup" (sv_cleanup_busy started (IoRun "rm" ["-rf", root])),
+  check "an active owner refuses a competing discard" (sv_cleanup_busy started (IoDiscardFile root)),
+  check "an active root remains available for probes" (negb (sv_cleanup_busy started (IoPathProbe root "")) && sv_allowed world (ss_made started) (IoPathProbe root "")),
+  check "a duplicate start receipt cannot grow the job map" (length (ss_cleanup (sv_after_request started operation (ans_data true ["duplicate"]))) =? 1),
+  check "failed cleanup drops its job record but keeps ownership" (empty_jobs failed && same_roots failed),
+  check "killed cleanup drops its job record but keeps ownership" (empty_jobs killed && same_roots killed),
+  check "successful cleanup drops both its job record and owner" (empty_jobs succeeded && (length (ss_made succeeded) =? 0)),
+  check "unknown terminal jobs cannot consume another root" (same_roots (sv_cleanup_event started ["job_ended", "other", "exit", "0"]) && (length (ss_cleanup (sv_cleanup_event started ["job_ended", "other", "exit", "0"])) =? 1)),
+  check "process output cannot forge completion" (same_roots (sv_cleanup_event started ["job_bytes", "job", "job_ended exit 0"]) && (length (ss_cleanup (sv_cleanup_event started ["job_bytes", "job", "job_ended exit 0"])) =? 1)),
+  check "old terminal replay cannot consume a retried job's owner" (same_roots (sv_cleanup_event retried ["job_ended", "job", "exit", "0"]) && (length (ss_cleanup (sv_cleanup_event retried ["job_ended", "job", "exit", "0"])) =? 1)),
+  check "successful git-sibling cleanup keeps the checkout owner" (same_roots (sv_cleanup_event sibling ["job_ended", "git", "exit", "0"]) && empty_jobs (sv_cleanup_event sibling ["job_ended", "git", "exit", "0"])),
+  check "failed process start creates no cleanup record" (empty_jobs (sv_after_request initial operation (ans_data false ["spawn failed"])) && same_roots (sv_after_request initial operation (ans_data false ["spawn failed"]))),
+  check "failed direct discard cannot revoke ownership" (eq_strs (sv_after [root] (IoDiscardFile root) (ans_data false ["unlink failed"])) [root]),
+  check "terminal failures leave no historical bookkeeping" (empty_jobs drained && eq_strs (ss_made drained) [root, second_root]),
+  check "active cleanup entries are bounded by owned roots" (length (ss_cleanup two) <=? length (ss_made two)),
+  check "failure releases the owner for an explicit retry" (negb (sv_cleanup_busy failed operation) && existsb (fun op => match op with IoProcStart _ _ _ _ _ => true | _ => false end) (ntrace (request_answers [] []) (sv_dispatch world failed operation))),
+  check "client request fields cannot impersonate runner completion" (same_roots forged && (length (ss_cleanup forged) =? 1)),
+  check "queued event replay is not used as fresh completion" (same_roots replayed && (length (ss_cleanup replayed) =? 1)),
+  check "fresh trusted runner completion releases the root" (empty_jobs observed && (length (ss_made observed) =? 0)),
+  check "a requested exact git/worktree pair is authorized" (sv_allowed world [root] pair_op),
+  check "a derived sibling cannot mint a git.git pair" (negb (sv_allowed world [root]
+    (IoProcStart "rm" "" "" [] ["-rf", "--", append root ".git.git", append root ".git"]))),
+  check "unrelated paired cleanup operands are refused" (negb (sv_allowed world [root]
+    (IoProcStart "rm" "" "" [] ["-rf", "--", "/tmp/other", root]))),
+  check "empty cwd is not a generic process exception" (negb (sv_allowed world [root]
+    (IoProcStart "claude" "" "" [] (sv_launch_args "claude")))),
+  check "empty cwd does not allow unowned cleanup" (negb (sv_allowed world [root]
+    (IoProcStart "rm" "" "" [] ["-rf", "--", "/tmp/unowned"]))),
+  check "requested git/worktree cleanup groups into one async job"
+    ((length (filter (fun op => match op with IoProcStart _ _ _ _ _ => true | _ => false end) pair_trace) =? 1) &&
+     existsb (fun op => eq_strs (io_wire op) (io_wire pair_op)) pair_trace),
+  check "a paired job owns one capability slot" (same_roots pair_started && (length (ss_cleanup pair_started) =? 1)),
+  check "both paired cleanup leaves are probed"
+    (existsb (fun op => match op with IoPathStat p => seq p root | _ => false end) server_pair_trace &&
+     existsb (fun op => match op with IoPathStat p => seq p (append root ".git") | _ => false end) server_pair_trace),
+  check "a symlink operand prevents paired process startup"
+    (negb (existsb (fun op => match op with IoProcStart _ _ _ _ _ => true | _ => false end)
+      (ntrace symlink_answers (sv_dispatch world initial pair_op)))),
+  check "generic ndo failure semantics remain unchanged"
+    (match ntrace inbox_failed (ndo (IoDiscardFile "missing") (fun _ => nexec (IoQueue ["next"]))) with
+     [IoDiscardFile p] => seq p "missing" | _ => false end),
+  check "an unlink failure cannot starve the remaining inbox actions"
+    (nresult inbox_failed (inbox_actions_prog [InboxRemove "missing", InboxQueue "next" "data"]) &&
+     existsb (fun op => match op with IoQueue fields => eq_strs fields ["inbox_file", "next", "data"] | _ => false end)
+       (ntrace inbox_failed (inbox_actions_prog [InboxRemove "missing", InboxQueue "next" "data"]))),
+  check "failed inbox enqueue still stops before discarding its file"
+    (match ntrace inbox_queue_failed (inbox_actions_prog [InboxQueue "keep" "data", InboxRemove "keep"]) with
+     [IoQueue _] => negb (nresult inbox_queue_failed (inbox_actions_prog [InboxQueue "keep" "data", InboxRemove "keep"])) | _ => false end),
+  check "a later due inbox poll refreshes and processes the remaining files"
+    (nresult inbox_fresh poll_inbox_prog && existsb (fun op => match op with
+      IoQueue fields => eq_strs fields ["inbox_file", "/inbox/next.json", "next"] | _ => false end)
+      (ntrace inbox_fresh poll_inbox_prog))
+].

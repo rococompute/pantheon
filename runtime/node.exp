@@ -1372,6 +1372,17 @@ Theorem inbox_poll_not_due : forall ans,
   ntrace ans poll_inbox_prog = [IoInboxState, IoTurnNow].
 Proof. intros ans H. unfold poll_inbox_prog. cbn -[inbox_poll_due ans_float]. rewrite H. reflexivity. Qed.
 
+(** Cleanup is best effort after an inbox fact has been queued. Its actual
+    unlink result remains available to IO ownership bookkeeping, but it cannot
+    starve the remaining inbox actions. Generic ndo/queue failure stays closed. *)
+Theorem inbox_cleanup_continues : forall ans path rest,
+  nresult ans (inbox_actions_prog (InboxRemove path :: rest)) =
+  nresult ans (inbox_actions_prog rest).
+Proof.
+  intros ans path rest. cbn [inbox_actions_prog nask nbind nexec nresult].
+  destruct (fst (ans (IoDiscardFile path))); reflexivity.
+Qed.
+
 (** A fresh node (no signed.log, no snapshot, nothing to replay) reads
     signed.log, then its boot events, then how many blocks it replayed:
     no refusal, no replay log line before the start step. *)

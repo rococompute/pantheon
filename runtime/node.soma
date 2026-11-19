@@ -2591,7 +2591,11 @@ Fixpoint inbox_actions_prog (actions : list inbox_file_action) : nprog bool :=
   | [] => NDone true
   | InboxQueue path content :: rest =>
       ndo (IoQueue ["inbox_file", path, content]) (fun _ => inbox_actions_prog rest)
-  | InboxRemove path :: rest => ndo (IoDiscardFile path) (fun _ => inbox_actions_prog rest)
+  | InboxRemove path :: rest =>
+      nbind (nask (IoDiscardFile path)) (fun removed =>
+      nbind (if fst removed then NDone true else
+        nexec (IoLog (hcat ["inbox cleanup failed: ", path, ": ", ans_one removed])))
+        (fun _ => inbox_actions_prog rest))
   end.
 
 Fixpoint read_inbox_prog (paths : list string) : nprog bool :=
