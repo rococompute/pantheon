@@ -40,7 +40,7 @@ close_marks (a : obj) : list (string * string) := getf a "close_marks".
 merge_titles (a : obj) : list (string * string) := getf a "merge_titles".
 
 (** a title as the market takes it: plain, up to 60 characters *)
-short_title (s : string) : string := trim (take_str 60 (clean_text s)).
+short_title (s : string) : string := trim (diagnostic_prefix 60 (clean_text s)).
 (** when this agent first saw a task's latest merge: task id and merge count
     to the height *)
 merge_seen (a : obj) : list (string * nat) := getf a "merge_seen".
@@ -223,7 +223,7 @@ implemented by " (me a)), "title", append "task " (append t (append " by " (me a
 (** A reason is part of the signed vote, not a discarded model field.
     Empty reasons keep the legacy wire shape for old scripted clients. *)
 attestation_fields (bid : string) (approve : bool) (tree reason : string) : list string :=
-  let reason := take_str 700 (clean_text (redact reason)) in
+  let reason := diagnostic_prefix 700 (clean_text (redact reason)) in
   (["attest", bid, if approve then "yes" else "no"] ++ (if approve then [tree] else [])) ++
   (if seq reason "" then [] else [reason]).
 

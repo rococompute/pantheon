@@ -1176,3 +1176,10 @@ Proof.
   unfold commit_chain_roster_fields in H.
   eapply certified_admission_keeps_commit_height_quorums. exact H.
 Qed.
+
+Example diagnostic_prefix_preserves_utf8_boundaries :
+  diagnostic_prefix 1 "é" = "" /\ diagnostic_prefix 2 "éx" = "é" /\
+  diagnostic_prefix 2 "€" = "" /\ diagnostic_prefix 3 "€x" = "€" /\
+  diagnostic_prefix 3 "😀" = "" /\ diagnostic_prefix 4 "😀x" = "😀" /\
+  diagnostic_prefix 3 "abcde" = "abc" /\ diagnostic_prefix 0 "é" = "".
+Proof. repeat split; computed. Qed.

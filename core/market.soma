@@ -223,6 +223,22 @@ bids (m : obj) : list bid := getf m "bids".
 nbids (m : obj) : nat := getf m "nbids".
 pending (m : obj) : option proposal := getf m "pending".
 
+(** A diagnostic byte budget may fall inside a UTF-8 code point. Move
+    the cut back over continuation bytes; valid input stays valid UTF-8.
+    This is deliberately a prefix boundary, not a replacement JSON codec. *)
+Fixpoint diagnostic_utf8_boundary (fuel : nat) (text : string) (cut : nat) : nat :=
+  match fuel, cut with
+  | Succ remaining, Succ previous =>
+      let byte := match char_at text cut with Some c => Ascii.nat_of_ascii c | None => 0 end in
+      if (128 <=? byte) && (byte <? 192)
+      then diagnostic_utf8_boundary remaining text previous else cut
+  | _, _ => cut
+  end.
+
+diagnostic_prefix (cap : nat) (text : string) : string :=
+  if slen text <=? cap then text
+  else substr text 0 (diagnostic_utf8_boundary cap text cap).
+
 (** Diagnostic metadata follows the current proposal for each retained bid.
     It does not change the bool votes used by quorum proofs. Reproposal resets
     it and pruning removes it with the bid; one voter contributes once. *)
@@ -791,7 +807,7 @@ apply (m : obj) (a : string) (fields : list string) : obj * list (list string) *
                           else reason in
             let p := {| pbid := pbid p; pby := pby p; pat := pat p; pvotes := (a, agree) :: pvotes p; ptree := ptree p |} in
             let note := if seq yes "yes" && negb agree then [["log", append a (append "'s yes named another tree than the leader's, " (ptree p))]] else [] in
-            let m := if seq reason "" then m else record_merge_note m (pbid p) a (take_str 700 reason) in
+            let m := if seq reason "" then m else record_merge_note m (pbid p) a (diagnostic_prefix 700 reason) in
             let '(m, o) := settle (setf m "pending" (Some p)) in (m, o ++ note, "")
       | _, _ => fail "nothing to attest"
       end
@@ -1018,10 +1034,10 @@ status_object (fields : list (string * string)) : string :=
   append "{" (append (Stdlib.Strings.String.concat "," (map (fun p =>
     append (nio_json_string (fst p)) (append ":" (snd p))) fields)) "}").
 status_name_fields (key name : string) : list (string * string) :=
-  [(key, nio_json_string (take_str 256 name)), (append key "_truncated", status_bool (256 <? slen name))] ++
+  [(key, nio_json_string (diagnostic_prefix 256 name)), (append key "_truncated", status_bool (256 <? slen name))] ++
   (if 256 <? slen name then [(append key "_sha256", nio_json_string (sha256 name))] else []).
 status_display_name (name : string) : string :=
-  if 256 <? slen name then append (take_str 256 name) (append "... [sha256 " (append (sha256 name) "]")) else name.
+  if 256 <? slen name then append (diagnostic_prefix 256 name) (append "... [sha256 " (append (sha256 name) "]")) else name.
 
 status_bid_votes (m : obj) (b : bid) : list (string * bool) :=
   match pending m with
@@ -1061,7 +1077,7 @@ status_pending_json (m : obj) : string :=
   | None => "null"
   | Some p => status_object (status_name_fields "proposed_by" (pby p) ++
       [("bid", show (pbid p)), ("proposed_at", show (pat p)),
-       ("tree", nio_json_string (take_str 128 (ptree p))), ("tree_truncated", status_bool (128 <? slen (ptree p))),
+       ("tree", nio_json_string (diagnostic_prefix 128 (ptree p))), ("tree_truncated", status_bool (128 <? slen (ptree p))),
        ("approvals", show (counted_approvals m p)), ("required_approvals", show (merge_quorum m p)),
        ("no_votes", show (counted_noes m p)),
        ("fallback_height", if param m "fallback_blocks" =? 0 then "null" else show (pat p + param m "fallback_blocks")),
@@ -1075,7 +1091,7 @@ status_bid_json (m : obj) (b : bid) : string :=
   let vs := status_bid_votes m b in
   status_object (status_name_fields "author" (bidder b) ++
     [("bid", show (bidn b)), ("task", show (btask b)), ("status", nio_json_string (status_name (bst b))),
-     ("stale", status_bool (stale b)), ("reason", nio_json_string (take_str 4000 (why b))),
+     ("stale", status_bool (stale b)), ("reason", nio_json_string (diagnostic_prefix 4000 (why b))),
      ("reason_truncated", status_bool (4000 <? slen (why b))),
      ("proposal_settled_at", match terminal with Some (h, _) => show h | None => "null" end),
      ("proposal_outcome", match terminal with Some (_, result) => nio_json_string result | None => "null" end),

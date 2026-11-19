@@ -1,0 +1,38 @@
+(** Emit raw formatter bytes so an independent JSON/UTF-8 parser can check
+    multibyte boundaries. All truncation policy remains in Soma. *)
+Import core.util core.market core.agent runtime.nodeio.
+Require Soma.Host.
+
+unicode_source (padding : nat) (rune : string) : string :=
+  append (Stdlib.Strings.String.concat "" (repeat "x" padding)) rune.
+unicode_bid (author reason : string) : bid :=
+  {| bidn := 1; btask := 1; bidder := author; base := 0; edits := []; note := "";
+     bst := Rejected; stale := false; why := reason; votes := [] |}.
+unicode_market (author reason : string) : obj :=
+  setf (new_market ["leader", "worker", "v1", "v2"]) "bids" [unicode_bid author reason].
+unicode_emit (label value : string) : string :=
+  status_object [("label", nio_json_string label), ("value", value)].
+unicode_name (padding : nat) (rune : string) : string :=
+  unicode_emit (append "name:" (append (show padding) rune))
+    (market_status_json (unicode_market (unicode_source padding rune) "" )).
+unicode_reason (padding : nat) (rune : string) : string :=
+  unicode_emit (append "reason:" (append (show padding) rune))
+    (market_status_json (unicode_market "worker" (unicode_source padding rune))).
+unicode_title (padding : nat) (rune : string) : string :=
+  unicode_emit (append "title:" (append (show padding) rune)) (nio_json_string (short_title (unicode_source padding rune))).
+unicode_vote (padding : nat) (rune : string) : string :=
+  unicode_emit (append "vote:" (append (show padding) rune))
+    (nio_json_strings (attestation_fields "1" false "" (unicode_source padding rune))).
+unicode_tree (padding : nat) (rune : string) : string :=
+  unicode_emit (append "tree:" (append (show padding) rune))
+    (market_status_json (setf (unicode_market "worker" "") "pending"
+      (Some {| pbid := 1; pby := "leader"; pat := 0; pvotes := []; ptree := unicode_source padding rune |}))).
+
+main := Host.print_lines (
+  flat_map (fun p => map (unicode_name (fst p)) (snd p))
+    [(255, ["é", "€", "😀"]), (254, ["é", "€", "😀"]), (253, ["€", "😀"]), (252, ["😀"])] ++
+  map (fun p => unicode_reason (fst p) (snd p)) [(3999,"é"),(3998,"€"),(3997,"😀"),(3998,"é"),(3997,"€"),(3996,"😀")] ++
+  map (fun p => unicode_title (fst p) (snd p)) [(59,"é"),(58,"€"),(57,"😀"),(58,"é"),(57,"€"),(56,"😀")] ++
+  map (fun p => unicode_vote (fst p) (snd p)) [(699,"é"),(698,"€"),(697,"😀"),(698,"é"),(697,"€"),(696,"😀")] ++
+  map (fun p => unicode_tree (fst p) (snd p)) [(127,"é"),(126,"€"),(125,"😀"),(126,"é"),(125,"€"),(124,"😀")]
+).
