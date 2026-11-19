@@ -170,3 +170,10 @@ Example genesis_network_rejects_malformed_known_numbers :
   genesis_network_error (JObj [("params", JObj [("label", JStr "two words"), ("finish", JStr "1")])]) = None /\
   node_flags ["--bid-window", "one"] [] [] [] [] = inr "--bid-window wants a number, got one".
 Proof. repeat split; computed. Qed.
+
+Example genesis_numeric_cap_preserves_zero_padding :
+  genesis_param_valid "max_files" "0001000000000" = true /\
+  genesis_param_valid "max_files" "0001000000001" = false /\
+  genesis_param_valid "block_ms" "0000000000" = false /\
+  genesis_param_valid "merge_approvals" "0000000000" = true.
+Proof. repeat split; computed. Qed.

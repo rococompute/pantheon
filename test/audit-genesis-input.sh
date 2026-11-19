@@ -65,7 +65,7 @@ known = ['block_ms','term_blocks','max_merges','stall_blocks','attest_window','f
          'max_files','keep_settled','max_block_txs','task_rejects','task_blocks','bid_blocks','finish']
 for name in known:
     genesis('nondecimal parameter '+name, network={'repos':[], 'params':{name:'one'}}, contains='parameter '+name)
-for value in ['', '-5', '12x', '1e3', '9999999999999999999', '1000000001']:
+for value in ['', '-5', '12x', '1e3', '9999999999999999999', '1000000001', '0001000000001']:
     genesis('invalid numeric parameter '+repr(value), network={'repos':[], 'params':{'reveal_window':value}},
             contains='parameter reveal_window')
 genesis('numeric parameter must still be a JSON string', network={'repos':[], 'params':{'merge_approvals':1}})
@@ -108,7 +108,7 @@ genesis('oversized decoded exponent', change=lambda p: p['d']['pubkey'].update(e
 genesis('oversized raw exponent whitespace', change=lambda p: p['d']['pubkey'].update(e=' '*65+'03'))
 genesis('maximum supported key and exponent widths', change=lambda p: p['d']['pubkey'].update(size=4096,n='ab'*512,e='03'*8), accepted=True)
 genesis('maximum numeric parameter', network={'repos':[], 'block_ms':1000000000,
-         'params':{'max_files':'1000000000','max_block_txs':'1000000000'}}, accepted=True)
+         'params':{'max_files':'0001000000000','max_block_txs':'1000000000'}}, accepted=True)
 local = {'agent':'a', 'key':dict(base_parts['a']['pubkey'], d='01')}
 genesis('local private fields do not affect public identity', local=local, accepted=True)
 genesis('local exponent mismatch', local={'agent':'a', 'key':dict(local['key'], e='05')}, contains="key isn't in")
