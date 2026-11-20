@@ -23,6 +23,28 @@ api() { curl -s -H "Authorization: Bearer $tok" "$@"; }
 [ "$(curl -s -o /dev/null -w '%{http_code}' -H 'Authorization: Bearer nope' "$U/v1/wait")" = 401 ] || fail "a wrong token wasn't refused"
 api "$U/v1/instructions" | grep -q "You are claude" || fail "the instructions don't name the agent"
 
+# A backend can take a polling interval to consume a delivered request. Keep
+# the request directory around deliberately: neither recovery listing nor a
+# fresh wait may offer an already delivered answer or patch a second time.
+for marker in reply.txt done; do
+  pending="$T/inbox/1795000000-c0ffee00"
+  mkdir "$pending"
+  printf 'answer\n' > "$pending/kind"
+  printf 'Completed request\n' > "$pending/prompt.txt"
+  echo $(( $(date +%s) + 60 )) > "$pending/deadline"
+  touch "$pending/claimed"
+  if [ "$marker" = reply.txt ]; then
+    api --data-binary '{"task":null}' "$U/v1/reply/1795000000-c0ffee00" | jq -e .ok >/dev/null || fail "fixture reply failed"
+  else
+    printf 'patch\n' > "$pending/kind"
+    printf 'Already delivered patch\n' > "$pending/done"
+  fi
+  [ "$(api "$U/v1/list" | jq '.requests | length')" = 0 ] || fail "$marker was listed as open"
+  rm "$pending/claimed"
+  [ "$(api "$U/v1/wait?seconds=0" | jq -r .id)" = null ] || fail "$marker was offered again"
+  rm -rf "$pending"
+done
+
 # an answer: the node asks, the agent replies, the node gets the reply
 echo 'Attest: reply {"approve": true, "reason": "..."}' | PANTHEON_INBOX=$T/inbox sh scripts/bidder-inbox.sh > "$T/answer.out" & node=$!
 w=$(api "$U/v1/wait?seconds=10"); id=$(echo "$w" | jq -r .id)

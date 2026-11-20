@@ -48,6 +48,10 @@ def open_requests(inbox):
         return []
     return [d for d in names if ID.match(d) and os.path.isfile(os.path.join(inbox, d, 'prompt.txt'))
             and not os.path.exists(os.path.join(inbox, d, 'expired'))
+            # Delivery precedes the backend's next poll/cleanup. A recovering
+            # worker must not claim or repeat work already handed in.
+            and not os.path.exists(os.path.join(inbox, d, 'reply.txt'))
+            and not os.path.exists(os.path.join(inbox, d, 'done'))
             # a request left by a node that stopped never gets its expired mark
             and seconds_left(os.path.join(inbox, d)) > 0]
 
