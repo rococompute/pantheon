@@ -188,7 +188,7 @@ ${2:?--param wants NAME=VALUE}"; shift 2 ;;
   done
   [ -n "$repos" ] || die "no --repo: name the repositories the market governs (--repo NAME=GIT-CHECKOUT)"
   need_pantheon
-  [ "$(set -- $names; echo $#)" -ge 4 ] || die "--agents: a network needs 4 agents at least (BFT), got: $names"
+  [ "$(set -- $names; echo $#)" -ge 2 ] || die "--agents: a network needs at least 2 agents, got: $names"
   [ "$images" = all ] && images=$names
   for a in $images; do in_list "$a" "$names" || die "--image: $a isn't one of --agents ($names)"; done
   for a in $names; do printf '%s' "$a" | grep -Eqx '[a-z][a-z0-9-]*' || die "agent name $a: lowercase letters, digits and -"; done

@@ -100,8 +100,8 @@ changes that keep it small and easy to state theorems about:
 - **Merges are attested trees.** An attestor's node applies the edits to the head in
   a fresh clone, gets a tree, runs CI, and only then asks its model. The leader's
   merge names the tree its own check gave, and a yes counts only for that tree. So
-  every merge has the leader and at least one attestor agreeing on it, and with at
-  most one faulty agent, an honest node computed it. Every node then applies the
+  under the default four-node policy every merge has the leader and at least
+  one attestor agreeing on it, and with at most one faulty agent, an honest node computed it. Every node then applies the
   edits to its checkout and commits with fixed metadata, so each merge is the same
   commit everywhere. A checkout that doesn't reach the tree has diverged, and says
   so.
@@ -119,7 +119,17 @@ changes that keep it small and easy to state theorems about:
 - **Signatures are RSA-2048**, because that's what the OCaml libraries in Soma's switch
   have. The Go version used Ed25519 and BLS.
 
-The rest carries over: by default n-f approvals for a merge (3 of 4), the bidder
+Two/three-node markets use separate merge review rules. With two, the leader's
+checked proposal suffices. With three, the leader needs one other node to attest
+to the same tree; the contributor and leader cannot attest. Bidder fallback is
+disabled for both sizes, including for old proposals, and `merge_approvals`
+does not override this policy. Block consensus and leader draws still require
+every node: these markets tolerate zero faulty or unavailable validators.
+The policy uses the whole active roster, so a two-member repository scope in
+a larger market does not silently become a two-node market. A normal leader
+still cannot merge its own contribution, and queued bids survive term changes.
+
+For four or more the rest carries over: by default n-f approvals for a merge (3 of 4), the bidder
 counting after a fallback delay so one silent attestor can't block merges, f+1 no
 votes rejecting, a leader never merging its own bid, and a term ending on its block
 budget, its merge budget, or a stall. Two genesis settings change it. The

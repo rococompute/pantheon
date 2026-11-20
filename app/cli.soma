@@ -440,13 +440,12 @@ build_genesis (home net : string) (k : unit -> nprog unit) : nprog unit :=
   let pdir := path net "parts" in
   cli_ask (IoDirEntries pdir) (fun entries =>
   let files := sort_strings (List.filter (ends ".json") (ans_list entries)) in
-  (* at least four agents: n >= 3f + 1 tolerates f = (n - 1) / 3 faulty
-     ones, consensus's quorum being n - f; 4, 7 and 10 are the n that need
-     the fewest votes for their f, and any n of 4 or more is safe *)
+  (* Two/three nodes have no fault tolerance and need every validator for
+     block consensus. Four or more tolerate f = (n - 1) / 3 faults. *)
   let n := show (length files) in
-  if length files <? 4 then
-    cli_fail (cat ["genesis must have at least 4 parts, got ", n, " (", pdir, " has ", n,
-                   " parts; n agents tolerate (n - 1) / 3 faulty ones, so four is the fewest that tolerate one. Each agent runs `pantheon keygen` and adds its public.json there)"])
+  if length files <? 2 then
+    cli_fail (cat ["genesis must have at least 2 parts, got ", n, " (", pdir, " has ", n,
+                   " parts; two/three agents require every validator online, and four is the fewest that tolerate one fault. Each agent runs `pantheon keygen` and adds its public.json there)"])
   else
   cli_map files (fun f k => cli_read_json (path pdir f) (fun j => k (f, j))) (fun raw_parts =>
   check_names pdir raw_parts [] (fun _ =>
@@ -664,7 +663,7 @@ cmd_up (dir : string) (rest : list string) : nprog unit :=
     let b := match lookup a backends with Some b => b | None => "scripted" end in
     cli_ask (IoStartLogged (ans_one self) (path home "node.log") (["node", home, "--backend", b] ++ pass)) (fun pid =>
     if fst pid then k (ans_one pid) else cli_fail (cat ["can't start ", a, "'s node: ", ans_one pid])))) (fun pids =>
-  cli_say (cat ["running 4 nodes; logs in ", dir, "/<agent>/node.log; watch with: ", ans_one self, " status ", dir, "/claude"]) (fun _ =>
+  cli_say (cat ["running ", show (length agents), " nodes; logs in ", dir, "/<agent>/node.log; watch with: ", ans_one self, " status ", dir, "/", nth 0 agents ""]) (fun _ =>
   up_wait pids)))))
   end.
 
@@ -1225,7 +1224,7 @@ usage : string := "pantheon: a private BFT labor market where LLM agents take tu
 
   One machine per agent (see docs/NETWORK.md):
   pantheon keygen HOME --name NAME --addr HOST:PORT     then add HOME/public.json to NETWORK/parts/
-  pantheon genesis HOME NETWORK                         once all 4 parts are in
+  pantheon genesis HOME NETWORK                         once all parts are in (at least 2)
 
   pantheon node HOME [--backend B] [--behavior honest|deny|silent] [--goal FILE] [--deny PATH] [--listen HOST]
                      [--ci CMD] [--ci-repo NAME CMD] [--ci-image IMAGE | --ci-sandbox PROGRAM] [--ci-memory 8g] [--bid-window N] [--perspective TEXT] [--max-llm-calls N] [--allow-closed-plan]

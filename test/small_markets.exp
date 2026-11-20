@@ -1,0 +1,2 @@
+Example small_market_regressions : forallb (fun c : string * bool => snd c) checks = true.
+Proof. computed. Qed.

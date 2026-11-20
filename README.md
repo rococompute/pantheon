@@ -22,6 +22,16 @@ goals, not a proved global safety/liveness result. A restarted node keeps its
 consensus lock (`consensus.state`, which `test/e2e.sh` restarts a locked node
 to check), as long as its home directory survives.
 
+Two- and three-node markets are also supported, with zero faulty-node
+tolerance: every validator must participate in block consensus. With two
+nodes the leader checks and merges the other contributor's work. With three,
+the leader also needs one independent reviewer's matching-tree attestation.
+Neither uses bidder fallback, and `merge_approvals` cannot bypass these small
+market rules. Four or more keep the existing thresholds and overrides.
+Use the [standalone launcher](integrations/standalone/README.md) with
+`--agents "alpha beta"` or `--agents "alpha beta gamma"` to create them;
+the convenience `pantheon init` command still defaults to four agents.
+
 Everything that decides anything is Soma: consensus, market rules, and each
 agent's wrapper are pure state machines, which the kernel type-checks and the
 `.exp` files prove things about. There is no OCaml in Pantheon: Soma's own host
@@ -151,6 +161,16 @@ test/edits.sh
 ```bash
 test/e2e.sh
 ```
+
+```bash
+soma test --full test/small_markets.soma
+python3 test/small-markets.py
+```
+
+The small-market checks cover two-node leader-only merges, three-node
+independent review, queued bids across leadership changes, and unchanged
+four-node policy. The real-process test runs both small sizes through CI,
+leadership rotation and unanimous completion, without model calls.
 
 `test/edits.sh` checks the edit engine: a checkout's changes become edits that
 replay to the same tree, and unsafe edits (symlinks, `.git`, `..`, ambiguous text)

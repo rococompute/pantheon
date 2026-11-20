@@ -58,7 +58,7 @@ x4 : string := nth 0 atts4 "".
 y4 : string := nth 1 atts4 "".
 m4 : obj := with_changes (proposed four) [(y4, false, 12)].
 c4 : obj := with_changes (proposed four) [(y4, false, 12), (y4, true, 20)].
-rejoin_votes : obj := vote (vote (at_h c4 15) y4 true) x4 true.
+rejoin_votes : obj := vote (at_h c4 15) y4 true.
 
 (** the leader leaves at 12 with its merge pending *)
 lead_gone : obj := at_h (with_changes (proposed seven) [("a1", false, 12)]) 12.
@@ -97,18 +97,19 @@ main := Host.print_lines [
   check "7 to 6: four approvals on the roster stay pending, five merge"
     (seq (status_of (vote (at_h yes7 12) (nth 2 atts7 "") true)) "pending" &&
      seq (status_of (vote (vote (at_h yes7 12) (nth 2 atts7 "") true) (nth 3 atts7 "") true)) "merged"),
-  check "4 to 3: quorums 3/2 at 11, 3/1 at 12"
-    (pair_is (quorums (at_h m4 11)) 3 2 && pair_is (quorums (at_h m4 12)) 3 1),
+  check "4 to 3: merge/reject thresholds 3/2 at 11, 2/1 at 12"
+    (pair_is (quorums (at_h m4 11)) 3 2 && pair_is (quorums (at_h m4 12)) 2 1),
   check "4 to 3: the removed agent's no doesn't count at 12; one no on the roster rejects"
     (seq (status_of (settled (at_h (vote m4 y4 false) 11))) "pending" &&
      seq (status_of (settled (at_h (vote m4 y4 false) 12))) "pending" &&
      seq (status_of (vote (at_h (vote m4 y4 false) 12) x4 false)) "rejected"),
-  check "rejoin: three at 15, four again at 20, quorums 3/1 then 3/2"
+  check "rejoin: three at 15, four again at 20, thresholds 2/1 then 3/2"
     ((length (roster_now (at_h c4 15)) =? 3) && (length (roster_now (at_h c4 20)) =? 4) &&
-     mem y4 (roster_now (at_h c4 20)) && pair_is (quorums (at_h c4 15)) 3 1 && pair_is (quorums (at_h c4 20)) 3 2),
+     mem y4 (roster_now (at_h c4 20)) && pair_is (quorums (at_h c4 15)) 2 1 && pair_is (quorums (at_h c4 20)) 3 2),
   check "rejoin: a yes while removed doesn't count at 15, and counts once back at 20"
-    ((yes_of rejoin_votes =? 2) && seq (status_of rejoin_votes) "pending" &&
-     seq (status_of (settled (at_h rejoin_votes 20))) "merged"),
+    ((yes_of rejoin_votes =? 1) && seq (status_of rejoin_votes) "pending" &&
+     (yes_of (at_h rejoin_votes 20) =? 2) &&
+     seq (status_of (vote (at_h rejoin_votes 20) x4 true)) "merged"),
   check "a removed leader's term ends though its merge is pending; at 11 it still leads"
     (awaiting (maybe_end_term lead_gone) && seq (leader (maybe_end_term lead_gone)) "" &&
      (pending_bid_id (maybe_end_term lead_gone) =? 1) &&

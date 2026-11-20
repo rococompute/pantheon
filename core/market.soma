@@ -1,5 +1,6 @@
 (** The market: n agents take turns as term leader. The leader posts tasks,
-    the others bid patches, and a merge lands when n - (n-1)/3 approve. Up to
+    the others bid patches. Two nodes use leader review, three require an
+    independent attestor too, and four or more default to n - (n-1)/3 approvals. Up to
     max_open_tasks tasks are open at once, each with its own bids and its own
     record of rejections.
 
@@ -15,8 +16,9 @@
     rejection, and its bidder writes an updated bid. Attestors apply the edits to the head, and a yes names the tree
     they got. The leader's merge names the tree its own check gave, and an
     attestor's yes counts only for that same tree. A merge needs merge_quorum
-    approvals (core/market.exp): genesis's merge_approvals (1 is the leader
-    alone), or by default n-f of the agents whose scope has the repository,
+    approvals (core/market.exp): one in a two-node market, two in a three-node
+    market, otherwise genesis's merge_approvals (1 is the leader alone) or
+    by default n-f of the agents whose scope has the repository,
     of which the leader and bidder supply at most two. Every node then checks its own
     checkout reaches it.
 
@@ -470,7 +472,8 @@ finalize (m : obj) (p : proposal) : obj * list (list string) :=
       (m, [("merge" :: r :: show v :: ptree p :: show (bidn b) :: show (btask b) :: bidder b :: spec_of :: flat_edits (edits b))])
   end.
 
-(** Quorums for a roster of n agents, tolerating f = (n-1)/3 faults.
+(** Base fault quorums for a roster of n agents, tolerating f = (n-1)/3 faults.
+    Small-market merge review below is separate; block/reveal quorums stay n-f.
     The leader approves by proposing; the bidder counts after fallback_blocks.
     f+1 no votes make n-f approvals impossible. *)
 faults (n : nat) : nat := (n - 1) / 3.
@@ -619,7 +622,15 @@ merge_roster (m : obj) (p : proposal) : list string :=
 
 merge_n (m : obj) (p : proposal) : nat := length (merge_roster m p).
 
+(** Two/three-validator markets keep unanimous block consensus, but use
+    leader review / leader plus one independent attestor for merges. This
+    depends on the whole active market, not a small scope in a larger one. *)
+small_market (m : obj) : bool :=
+  (length (roster_now m) =? 2) || (length (roster_now m) =? 3).
+
 merge_quorum (m : obj) (p : proposal) : nat :=
+  if length (roster_now m) =? 2 then 1 else
+  if length (roster_now m) =? 3 then 2 else
   match param m "merge_approvals" with 0 => quorum (merge_n m p) | k => k end.
 
 approvals (p : proposal) (age fb : nat) : nat :=
@@ -630,7 +641,8 @@ approvals (p : proposal) (age fb : nat) : nat :=
     removed no longer counts, yes or no. The leader's implicit approval and
     the bidder's fallback count the same way. With the genesis roster this
     is [approvals]: every attestor, the leader and the bidder are in scope
-    already (apply refuses the others). *)
+    already (apply refuses the others). Small markets never count a bidder
+    fallback: three nodes must receive an actual independent attestation. *)
 counted_votes (m : obj) (p : proposal) : list (string * bool) :=
   filter (fun v => mem (fst v) (merge_roster m p)) (pvotes p).
 
@@ -639,7 +651,7 @@ counted_approvals (m : obj) (p : proposal) : nat :=
   let fb := param m "fallback_blocks" in
   let bidder_on := match bid_by m (pbid p) with Some b => mem (bidder b) on | None => true end in
   (if mem (pby p) on then 1 else 0) + length (filter snd (counted_votes m p)) +
-  (if (0 <? fb) && (fb <=? mheight m - pat p) && bidder_on then 1 else 0).
+  (if (0 <? fb) && (fb <=? mheight m - pat p) && bidder_on && negb (small_market m) then 1 else 0).
 
 counted_noes (m : obj) (p : proposal) : nat :=
   length (filter (fun v => negb (snd v)) (counted_votes m p)).
@@ -1066,7 +1078,7 @@ pending_merge_lines (m : obj) : list string :=
       [Stdlib.Strings.String.concat " " ["pending merge bid", show (pbid p), "proposed by", nio_json_string (status_display_name (pby p)),
         "at", show (pat p), "approvals", show (counted_approvals m p), "required", show (merge_quorum m p),
         "no", show (counted_noes m p), "fallback at",
-        if param m "fallback_blocks" =? 0 then "disabled" else show (pat p + param m "fallback_blocks"),
+        if small_market m || (param m "fallback_blocks" =? 0) then "disabled" else show (pat p + param m "fallback_blocks"),
         "expires at", show (pat p + param m "attest_window")]] ++
       map (status_vote_line m (pbid p) (merge_roster m p)) (firstn 64 (rev (pvotes p))) ++
       (if 64 <? length (pvotes p) then ["attestation display truncated after 64 votes"] else [])
@@ -1080,7 +1092,7 @@ status_pending_json (m : obj) : string :=
        ("tree", nio_json_string (diagnostic_prefix 128 (ptree p))), ("tree_truncated", status_bool (128 <? slen (ptree p))),
        ("approvals", show (counted_approvals m p)), ("required_approvals", show (merge_quorum m p)),
        ("no_votes", show (counted_noes m p)),
-       ("fallback_height", if param m "fallback_blocks" =? 0 then "null" else show (pat p + param m "fallback_blocks")),
+       ("fallback_height", if small_market m || (param m "fallback_blocks" =? 0) then "null" else show (pat p + param m "fallback_blocks")),
        ("expires_at", show (pat p + param m "attest_window")),
        ("votes", status_array (map (status_vote_json m (pbid p) (merge_roster m p)) (firstn 64 (rev (pvotes p))))),
        ("votes_truncated", status_bool (64 <? length (pvotes p)))])

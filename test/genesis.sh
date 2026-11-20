@@ -1,5 +1,5 @@
 #!/bin/bash
-# Genesis validation on its own: at least four parts, unique names and
+# Genesis validation on its own: at least two parts, unique names and
 # unique public keys, and valid four-, five- and seven-part geneses build.
 #
 #   test/genesis.sh
@@ -56,10 +56,18 @@ rm -rf "$T/home"; mkdir -p "$T/home"
   && ok "valid five-part genesis builds" || fail "five-part genesis failed: $(cat "$T/genesis.log")"
 rm -rf "$T/home"; mkdir -p "$T/home"
 
-# three parts (wrong count the other way)
-copy4
-rm "$T/net/parts/d.json"
-expect_refused "three parts" 'genesis must have at least 4 parts, got 3'
+# Small markets are valid; a single node is still unsupported.
+for n in 2 3; do
+  copy4
+  rm "$T/net/parts/d.json"
+  [ "$n" -ne 2 ] || rm "$T/net/parts/c.json"
+  rm -rf "$T/home"; mkdir -p "$T/home"
+  "$BIN" genesis "$T/home" "$T/net" > "$T/genesis.log" 2>&1 \
+    && jq -e ".agents | length == $n" "$T/home/genesis.json" >/dev/null \
+    && ok "valid $n-part genesis builds" || fail "$n-part genesis failed: $(cat "$T/genesis.log")"
+done
+rm "$T/net/parts/b.json" "$T/net/parts/c.json"
+expect_refused "one part" 'genesis must have at least 2 parts, got 1'
 
 # seven parts (n = 3f + 1 with f = 2): a genesis with seven agents
 copy4

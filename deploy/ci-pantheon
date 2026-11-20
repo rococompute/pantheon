@@ -10,6 +10,8 @@ timeout 120 bash test/parallel-tasks.sh &&
 timeout 120 bash test/scopes.sh &&
 timeout 120 bash test/plan-marks.sh &&
 timeout 120 bash test/n-agents.sh &&
+timeout 120 soma test --full test/small_markets.soma &&
+timeout 120 python3 -B test/small-markets.py &&
 timeout 120 bash test/prompt-assembly.sh &&
 timeout 120 sh test/soma-misc-runner.sh &&
 timeout 120 sh test/host-quoting.sh &&

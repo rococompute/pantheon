@@ -1,0 +1,53 @@
+(** Small-market review is separate from unanimous block consensus. *)
+Import core.util core.market.
+Require Soma.Host.
+roster (n : nat) : list string := firstn n ["a1", "a2", "a3", "a4"].
+base (n : nat) : obj :=
+  setf (setf (setf (setf (new_market (roster n)) "leader" "a1") "awaiting" false)
+    "h" 10) "repos" ([("calc", "tree0")] : list (string * string)).
+applied (m : obj) (a : string) (xs : list string) : obj := fst (fst (apply m a xs)).
+bidder_of (m : obj) : string :=
+  match task_by m 1 with Some t => nth 0 (bidders_for m t) "" | None => "" end.
+queued (n : nat) : obj :=
+  let m := applied (base n) "a1" ["post", "calc", "small market task"] in
+  applied m (bidder_of m) ["bid", "1", "0", "first contribution", "f.txt", "", "x"].
+proposed (n : nat) : obj := applied (queued n) "a1" ["merge", "1", "tree1", "tree0"].
+settled (m : obj) : obj := fst (settle m).
+bid_status (m : obj) (i : nat) : string := match bid_by m i with Some b => status_name (bst b) | None => "none" end.
+reviewer (n : nat) : string :=
+  nth 0 (filter (fun a => negb (seq a "a1") && negb (seq a (bidder_of (queued n)))) (roster n)) "".
+vote (m : obj) (a yes tree : string) : obj := applied m a ["attest", "1", yes, tree].
+need (m : obj) : nat := match pending m with Some p => merge_quorum m p | None => 99 end.
+yes_count (m : obj) : nat := match pending m with Some p => counted_approvals m p | None => 99 end.
+late_three : obj := setf (proposed 3) "h" 70.
+override_three : obj := setf (proposed 3) "params" ([("merge_approvals", 1)] : list (string * nat)).
+switched : obj := setf (queued 2) "leader" "a2".
+next_bid : obj := applied switched "a1" ["bid", "1", "0", "second contribution", "g.txt", "", "y"].
+next_merge : obj := settled (applied next_bid "a2" ["merge", "2", "tree1", "tree0"]).
+old_merge : obj := settled (applied (setf next_merge "leader" "a1") "a1" ["merge", "1", "tree2", "tree1"]).
+scoped_four : obj := setf (proposed 4) "excluded"
+  (map (fun a : string => (a, "calc"))
+    (filter (fun a => negb (seq a "a1") && negb (seq a (bidder_of (queued 4)))) (roster 4))).
+checks : list (string * bool) := [
+  ("two: leader merges immediately", (need (proposed 2) =? 1) && seq (bid_status (settled (proposed 2)) 1) "merged"),
+  ("two: author cannot merge its queued contribution", negb (seq (snd (apply switched "a2" ["merge", "1", "tree1", "tree0"])) "")),
+  ("two: contribution survives leadership change", seq (bid_status switched 1) "pending"),
+  ("two: new leader merges the other author's work", seq (bid_status next_merge 2) "merged" && seq (bid_status next_merge 1) "pending"),
+  ("two: old queued work merges after leadership returns", seq (bid_status old_merge 1) "merged" && seq (bid_status old_merge 2) "merged"),
+  ("three: leader alone waits", (need (proposed 3) =? 2) && seq (bid_status (settled (proposed 3)) 1) "pending"),
+  ("three: fallback never substitutes for a reviewer", (yes_count late_three =? 1) && seq (bid_status (settled late_three) 1) "pending"),
+  ("three: one independent yes merges", seq (bid_status (vote (proposed 3) (reviewer 3) "yes" "tree1") 1) "merged"),
+  ("three: a reviewer no rejects", seq (bid_status (vote (proposed 3) (reviewer 3) "no" "") 1) "rejected"),
+  ("three: wrong checked tree rejects", seq (bid_status (vote (proposed 3) (reviewer 3) "yes" "wrong") 1) "rejected"),
+  ("three: author cannot attest", (yes_count (vote (proposed 3) (bidder_of (queued 3)) "yes" "tree1") =? 1)),
+  ("three: leader cannot attest twice", (yes_count (vote (proposed 3) "a1" "yes" "tree1") =? 1)),
+  ("three: approval override cannot bypass reviewer", (need override_three =? 2) && seq (bid_status (settled override_three) 1) "pending"),
+  ("three: status has no fallback countdown", contains ("""fallback_height"":null") (status_pending_json (proposed 3))),
+  ("four: default still requires three approvals", need (proposed 4) =? 3),
+  ("four: leader and one reviewer still wait", seq (bid_status (vote (proposed 4) (reviewer 4) "yes" "tree1") 1) "pending"),
+  ("four: existing fallback still applies", seq (bid_status (settled (setf (vote (proposed 4) (reviewer 4) "yes" "tree1") "h" 70)) 1) "merged"),
+  ("four: small repository scope retains its existing quorum", (need scoped_four =? 2) && seq (bid_status (settled scoped_four) 1) "pending"),
+  ("four: existing explicit approval override still applies", seq (bid_status (settled (setf (proposed 4) "params" ([("merge_approvals", 1)] : list (string * nat)))) 1) "merged"),
+  ("consensus/reveal thresholds stay unanimous for two and three", (quorum 2 =? 2) && (quorum 3 =? 3) && negb (draw_ready 2 1 true) && negb (draw_ready 3 2 true))
+].
+main := Host.print_lines (map (fun c : string * bool => append (if snd c then "ok " else "FAIL ") (fst c)) checks).

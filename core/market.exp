@@ -58,8 +58,9 @@ Example thresholds_eight :
   map (fun k => draw_ready 8 k false) [6, 7, 8] = [false, false, true].
 Proof. repeat split; computed. Qed.
 
-(** The other roster sizes the network runs at, the current six among them:
-    n = 2 and 3 tolerate no fault (every agent approves, one no rejects); 5
+(** The other base fault thresholds: n = 2 and 3 tolerate no fault (every
+    validator commits, one no rejects); small-market merge review is tested
+    separately in test/small_markets.soma. Sizes 5
     and 6 tolerate one, so 4 and 5 approvals merge and 2 no votes reject. *)
 Example thresholds_two :
   (quorum 2, reject_quorum 2) = (2, 1) /\
@@ -617,8 +618,8 @@ Proof.
 Qed.
 
 (** A newly Merged bid in a block came from finalize, at a settlement state
-    with the approvals merge_quorum asks: genesis's merge_approvals, or by
-    default n-f, n being the agents whose scope has the bid's repository
+    with the approvals merge_quorum asks: the small-market review policy,
+    otherwise genesis's merge_approvals or default n-f, n being the agents whose scope has the bid's repository
     (every agent unless genesis excludes some: scope_all). Existing Merged bids may survive a block;
     their presence alone does not assert a new finalization. *)
 Theorem merged_only_through_finalize_with_quorum_approvals :
@@ -1067,17 +1068,21 @@ Proof.
   apply roster_unchanged_at_commit.
 Qed.
 
-(** By default a merge's quorums are those of the roster at the height. *)
+(** In markets of four or more, default merge quorums remain those of the
+    roster at the height. Small markets have a separate review policy. *)
 Theorem merge_quorums_are_the_heights : forall (m : obj) (p : proposal),
+  4 <= length (roster_now m) ->
   param m "merge_approvals" = 0 -> excluded m = [] ->
   merge_quorum m p = quorum_at (agents m) (roster_changes m) (mheight m) /\
   reject_quorum (merge_n m p) = reject_quorum_at (agents m) (roster_changes m) (mheight m).
 Proof.
-  intros m p Hk He.
+  intros m p Hsize Hk He.
   assert (Hn : merge_n m p = length (roster_now m)).
   { unfold merge_n, merge_roster. destruct (bid_by m (pbid p)) as [b|];
       [rewrite (scope_all m (bid_repo m b) He)|]; reflexivity. }
-  unfold merge_quorum. rewrite Hk.
+  assert (H2 : (length (roster_now m) =? 2) = false) by (apply Nat.eqb_neq; lia).
+  assert (H3 : (length (roster_now m) =? 3) = false) by (apply Nat.eqb_neq; lia).
+  unfold merge_quorum. rewrite H2, H3, Hk.
   change (quorum (merge_n m p) = quorum_at (agents m) (roster_changes m) (mheight m) /\
     reject_quorum (merge_n m p) = reject_quorum_at (agents m) (roster_changes m) (mheight m)).
   rewrite Hn. split; reflexivity.
@@ -1121,7 +1126,7 @@ Theorem counted_attestors_must_approve : forall (n : nat) (m : obj) (p : proposa
   quorum n - 2 <= length (filter snd (counted_votes m p)).
 Proof.
   intros n m p H. unfold counted_approvals in H. cbv zeta in H.
-  destruct (mem (pby p) (merge_roster m p)); destruct (_ && _ && _); lia.
+  destruct (mem (pby p) (merge_roster m p)); destruct (_ && _ && _ && _); lia.
 Qed.
 
 (** A merge's approvals and rejections at one height still exclude each
@@ -1133,7 +1138,23 @@ Proof.
   intros n m p Hl Hy Hn. unfold counted_noes in Hn.
   pose proof (quorum_plus_reject n). pose proof (votes_split (counted_votes m p)).
   unfold counted_approvals in Hy. cbv zeta in Hy.
-  destruct (mem (pby p) (merge_roster m p)); destruct (_ && _ && _); lia.
+  destruct (mem (pby p) (merge_roster m p)); destruct (_ && _ && _ && _); lia.
+Qed.
+
+(** Even an arbitrarily old three-node proposal and a genesis override need
+    a counted yes vote. The leader and bidder are refused by apply's attest
+    branch, so a reachable ordinary merge gets it from the third node. *)
+Theorem three_node_merge_needs_a_counted_yes : forall (m : obj) (p : proposal),
+  length (roster_now m) = 3 ->
+  merge_quorum m p <= counted_approvals m p ->
+  1 <= length (filter snd (counted_votes m p)).
+Proof.
+  intros m p Hsize Hyes.
+  assert (Hneed : merge_quorum m p = 2) by (unfold merge_quorum; rewrite Hsize; reflexivity).
+  assert (Hsmall : small_market m = true) by (unfold small_market; rewrite Hsize; reflexivity).
+  rewrite Hneed in Hyes. unfold counted_approvals in Hyes. cbv zeta in Hyes.
+  rewrite Hsmall in Hyes. cbn [negb] in Hyes. rewrite Bool.andb_false_r in Hyes.
+  destruct (mem (pby p) (merge_roster m p)); simpl in Hyes; lia.
 Qed.
 
 (** The draw counts reveals of the roster at the height only. *)

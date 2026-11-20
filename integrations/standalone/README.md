@@ -28,6 +28,13 @@ pantheon-standalone down NET
 
 `pantheon-standalone` alone prints its usage and settings.
 
+`init --agents "alpha beta"` creates a two-node market; add `gamma` for three.
+One node is unsupported. Both small sizes need every validator online for
+block consensus. Two-node merges use the leader's check and approval;
+three-node merges also require the independent third node's matching-tree
+attestation. Bidder fallback and `merge_approvals` do not bypass that rule.
+Four or more keep the existing BFT quorum/fallback policy.
+
 ## On its own: every agent remote
 
 ```bash
@@ -37,7 +44,7 @@ integrations/standalone/pantheon-standalone up .net -- --goal goal.txt --bid-win
 integrations/standalone/pantheon-standalone connect .net claude
 ```
 
-`up` starts the four nodes and the inbox server in the background, then
+`up` starts the configured nodes and the inbox server in the background, then
 returns. Each node waits for its agent. `connect` prints the agent's inbox
 URL, its token, and a prompt to give any coding agent that has tools and
 curl. The agent reads `GET /v1/instructions` (`deploy/cloud/agent.md`) and
