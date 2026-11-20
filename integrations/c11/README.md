@@ -7,6 +7,10 @@
 the plan view, the watchdog, the run record and the event relay are the same,
 and the cmux README describes them. This page covers only what differs.
 
+The shared mode labels appear in both the workspace title and HTML plan:
+**Monopoly** for one node, **Oligopoly** for two or three, with **(Done)** once
+finished. Larger markets keep the existing **Market** / **Done** titles.
+
 ```
 pantheon-c11 up NET [--diplomats "A B"] [--backends A=B,...] [--layout plan|grid] [-- NODE ARGS...]
 pantheon-c11 watchdog NET [--check|--once]

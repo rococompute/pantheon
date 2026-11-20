@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Real 2/3-node markets: genesis, scripted work, CI, rotation and completion.
+"""Real monopoly/oligopoly markets: genesis, work, CI and completion.
 No model calls. Run after building main.exe. Failure logs are retained.
 """
 import json
@@ -63,13 +63,14 @@ try:
     ci.chmod(0o700)
     # Exercise both real launchers and all participants, never a fabricated
     # lower quorum in a four-node genesis.
-    for n in (2, 3):
+    for n in (1, 2, 3):
         names = ["alpha", "beta", "gamma"][:n]
         net = root / f"net{n}"
         run(launcher, "init", net, "--repo", f"calc={seed}", "--agents", " ".join(names),
-            "--base-port", free_base(n), "--block-ms", "200", "--param", "finish=1",
+            "--base-port", free_base(n), "--block-ms", "200",
             "--param", "term_blocks=50", "--param", "max_merges=1", "--param", "bid_cooldown=2",
-            "--param", "fallback_blocks=60", "--param", "attest_window=160", "--param", "reveal_window=4")
+            "--param", "fallback_blocks=60", "--param", "attest_window=160", "--param", "reveal_window=4",
+            *([] if n == 1 else ["--param", "finish=1"]))
         genesis = json.loads((net / names[0] / "genesis.json").read_text())
         assert len(genesis["agents"]) == n
         running.append(net)
@@ -91,6 +92,10 @@ try:
         heads = [run("git", "rev-parse", "HEAD", cwd=net/a/"repos/calc") for a in names]
         assert len(set(heads)) == 1, "governed heads disagree"
         status = (net / names[0] / "status.txt").read_text()
+        mode = "monopoly" if n == 1 else "oligopoly"
+        assert f"market-mode {mode}\n" in status, "missing market mode label"
+        snapshot = json.loads(run(binary, "status", net/names[0], "--json"))
+        assert snapshot["mode"] == mode and snapshot["validators"] == n
         accepted = {int(m[0]): m[1] for m in re.findall(r"^bid (\d+) \[merged\] task \d+ by (\S+)", status, re.M)}
         assert len(accepted) >= 2, "work did not merge"
         history = re.search(r"^history\s+(.*)$", status, re.M).group(1).split()
@@ -108,15 +113,15 @@ try:
                     yes_votes.setdefault(int(fields[1]), []).append(author)
         for bid, contributor in accepted.items():
             leader = proposed[bid]
-            assert contributor != leader, "self-authored ordinary merge"
+            assert (contributor == leader) == (n == 1), "wrong self-review policy"
             reviewers = [a for a in yes_votes.get(bid, []) if a not in (leader, contributor)]
             if n == 3:
                 assert reviewers, "three-node merge omitted independent attestation"
             else:
-                assert not reviewers, "two-node market invented an independent reviewer"
+                assert not reviewers, "small market invented an independent reviewer"
         logs = "\n".join((net / a / "node.log").read_text() for a in names)
         assert re.search(r"CI for request .*: passed", logs), "no actual successful CI checks"
-        print(f"PASS {n} nodes: {len(accepted)} merges, CI, independent-review policy, rotation, unanimous history and completion", flush=True)
+        print(f"PASS {mode} ({n} nodes): {len(accepted)} merges, CI, review policy, history and completion", flush=True)
     print(f"PASS small markets; zero model calls; logs: {root}", flush=True)
 finally:
     for net in running:

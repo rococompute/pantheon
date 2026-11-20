@@ -676,9 +676,10 @@ Proof.
 Qed.
 
 Theorem bidders_for_excludes_leader : forall (m : obj) (t : task),
+  monopoly m = false ->
   ~ In (leader m) (bidders_for m t).
 Proof.
-  intros m t Hin. unfold bidders_for in Hin.
+  intros m t Hmono Hin. unfold bidders_for in Hin. rewrite Hmono in Hin. cbn [orb] in Hin.
   match type of Hin with In _ (firstn 2 ?xs) =>
     assert (H : In (leader m) xs) by
       (rewrite <- (firstn_skipn 2 xs); apply in_or_app; left; exact Hin)
@@ -687,19 +688,20 @@ Proof.
   unfold seq in H. rewrite Stdlib.Strings.String.eqb_refl in H. discriminate.
 Qed.
 
-(** A leader never merges its own bid (docs/PROOFS.md, item 8): a merge
+(** Outside a monopoly a leader never merges its own bid (docs/PROOFS.md, item 8): a merge
     naming a bid its sender made fails, with a reason, and leaves the whole
     market as it was, an already pending proposal included. *)
 Theorem self_merge_makes_no_proposal : forall (m : obj) (a i tree on : string) (b : bid),
+  monopoly m = false ->
   bid_by m (num i) = Some b -> bidder b = a ->
   exists why, why <> "" /\ apply m a ["merge", i, tree, on] = (m, [], why).
 Proof.
-  intros m a i tree on b Hb Ha. subst a.
+  intros m a i tree on b Hmono Hb Ha. subst a.
   assert (Hs : seq (bidder b) (bidder b) = true)
     by (unfold seq; apply Stdlib.Strings.String.eqb_refl).
   assert (Ho : forall x : bool, (x || true) = true) by (intros [|]; reflexivity).
   unfold apply. cbn beta iota zeta.
-  rewrite Hb, Hs, Ho.
+  rewrite Hb, Hs, Hmono. cbn [negb andb]. rewrite Ho.
   repeat match goal with |- context [if ?c then _ else _] => destruct c eqn:? end.
   all: match goal with |- exists w, _ /\ (_, _, ?r) = _ => exists r end;
        split; [apply Stdlib.Strings.String.eqb_neq; reflexivity|reflexivity].
@@ -721,14 +723,15 @@ Proof.
        split; [apply Stdlib.Strings.String.eqb_neq; reflexivity|reflexivity].
 Qed.
 
-(** And every merge that goes through names an existing bid made by
+(** Outside a monopoly every merge that goes through names an existing bid made by
     someone else, sent by the term leader. *)
 Theorem merge_needs_leader_and_others_bid : forall (m m' : obj) (a i tree on : string) (outs : list (list string)),
+  monopoly m = false ->
   apply m a ["merge", i, tree, on] = (m', outs, "") ->
   exists b, bid_by m (num i) = Some b /\ bidder b <> a /\ is_leader m a = true.
 Proof.
-  intros m m' a i tree on outs H.
-  unfold apply in H. cbn beta iota zeta in H.
+  intros m m' a i tree on outs Hmono H.
+  unfold apply in H. cbn beta iota zeta in H. rewrite Hmono in H. cbn [negb andb] in H.
   Ltac why_differs H :=
     apply (f_equal (fun p => Stdlib.Strings.String.eqb (snd p) "")) in H;
     cbn in H; discriminate H.
@@ -1080,9 +1083,10 @@ Proof.
   assert (Hn : merge_n m p = length (roster_now m)).
   { unfold merge_n, merge_roster. destruct (bid_by m (pbid p)) as [b|];
       [rewrite (scope_all m (bid_repo m b) He)|]; reflexivity. }
+  assert (H1 : monopoly m = false) by (unfold monopoly; apply Nat.eqb_neq; lia).
   assert (H2 : (length (roster_now m) =? 2) = false) by (apply Nat.eqb_neq; lia).
   assert (H3 : (length (roster_now m) =? 3) = false) by (apply Nat.eqb_neq; lia).
-  unfold merge_quorum. rewrite H2, H3, Hk.
+  unfold merge_quorum. rewrite H1, H2, H3, Hk.
   change (quorum (merge_n m p) = quorum_at (agents m) (roster_changes m) (mheight m) /\
     reject_quorum (merge_n m p) = reject_quorum_at (agents m) (roster_changes m) (mheight m)).
   rewrite Hn. split; reflexivity.
@@ -1150,8 +1154,8 @@ Theorem three_node_merge_needs_a_counted_yes : forall (m : obj) (p : proposal),
   1 <= length (filter snd (counted_votes m p)).
 Proof.
   intros m p Hsize Hyes.
-  assert (Hneed : merge_quorum m p = 2) by (unfold merge_quorum; rewrite Hsize; reflexivity).
-  assert (Hsmall : small_market m = true) by (unfold small_market; rewrite Hsize; reflexivity).
+  assert (Hneed : merge_quorum m p = 2) by (unfold merge_quorum, monopoly; rewrite Hsize; reflexivity).
+  assert (Hsmall : small_market m = true) by (unfold small_market, monopoly; rewrite Hsize; reflexivity).
   rewrite Hneed in Hyes. unfold counted_approvals in Hyes. cbv zeta in Hyes.
   rewrite Hsmall in Hyes. cbn [negb] in Hyes. rewrite Bool.andb_false_r in Hyes.
   destruct (mem (pby p) (merge_roster m p)); simpl in Hyes; lia.

@@ -103,6 +103,10 @@ preamble (a : obj) (role : string) : string :=
   (append role (append prompt_role_end (append (perspective a)
   prompt_untrusted_policy))))).
 
+market_preamble (a m : obj) (role : string) : string :=
+  append (preamble a role) (if monopoly m then prompt_monopoly_mode else
+    if small_market m then prompt_oligopoly_mode else "").
+
 edit_text (e : edit) : string :=
   if negb (seq (eold e) "") then append (fence (append prompt_replace_label (epath e)) (eold e)) (fence prompt_with_label (enew e))
   else if seq (enew e) "" then fence prompt_delete_label (epath e)
@@ -159,7 +163,7 @@ leader_context (m : obj) (repo : string) : string :=
   end.
 
 draft_prompt (a m : obj) : string :=
-  append (append (preamble a draft_role) (leader_context m ""))
+  append (append (market_preamble a m draft_role) (leader_context m ""))
   (append draft_goal_heading (append (goal_text a)
   (append draft_plan_context
   (append (fold_left (fun s t => append s (fence (append (task_label m t) (trepo t)) (spec t))) (tasks m) "")
@@ -179,12 +183,12 @@ rejections (m : obj) (t : task) : string :=
   end.
 
 patch_prompt (a m : obj) (t : task) : string :=
-  append (preamble a (append patch_role_prefix (prompt_name (trepo t))))
+  append (market_preamble a m (append patch_role_prefix (prompt_name (trepo t))))
   (append (fence patch_task_label (spec t)) (append (merged_text m t) (append (rejections m t) (append patch_plan_context
   patch_instructions)))).
 
 pick_prompt (a m : obj) (t : task) (bs : list bid) : string :=
-  append (append (preamble a pick_role) (leader_context m (trepo t)))
+  append (append (market_preamble a m pick_role) (leader_context m (trepo t)))
   (append (fence pick_task_label (spec t)) (append (merged_text m t)
   (append (match bs with [] => pick_no_bids | _ => "" end)
   (append (fold_left (fun s b => append s (append pick_bid_label (append (show (bidn b)) (append pick_by_label (append (prompt_name (bidder b))
@@ -193,7 +197,7 @@ pick_prompt (a m : obj) (t : task) (bs : list bid) : string :=
   pick_instructions))))).
 
 attest_prompt (a m : obj) (t : string) (b : bid) : string :=
-  append (preamble a attest_role)
+  append (market_preamble a m attest_role)
   (append (fence attest_task_label t) (append (fence attest_note_label (note b))
   (append (if seq (note b) mark_note
            then append attest_plan_mark_guidance (match task_by m (btask b) with Some tk => merged_text m tk | None => "" end)
@@ -403,13 +407,13 @@ lead (a m : obj) : obj * list (list string) :=
      some) are left to a leader whose node checks them: no pick, mark or
      close here, and the market doesn't count them against this term *)
   let mine := filter (in_scope m (me a)) in
-  (* a leader's own pending bids don't count: no one reviews them this term,
+  (* Outside a monopoly, a leader's own pending bids don't count: no one reviews them this term,
      so waiting for them would keep the task open for as long as it leads *)
   (* a task stays open across merges: its rejections count from its last
      merge, and each merge gives it task_blocks more *)
   let merged_on t := filter is_merged (for_task t) in
   let last_merge t := fold_left (fun n b => Nat.max n (bidn b)) (merged_on t) 0 in
-  let stuck t := negb (existsb (fun b => is_pending (bst b) && negb (seq (bidder b) (me a))) (for_task t))
+  let stuck t := negb (existsb (fun b => is_pending (bst b) && (monopoly m || negb (seq (bidder b) (me a)))) (for_task t))
                  && ((param m "task_rejects" <=? length (filter (fun b => (last_merge t <? bidn b) && match bst b with Rejected => true | _ => false end) (for_task t)))
                      || (param m "task_blocks" * (1 + length (merged_on t)) <=? h - posted_at t)) in
   (* done when this leader judged it so, and the bid it named has merged *)
@@ -451,7 +455,7 @@ lead (a m : obj) : obj * list (list string) :=
   let st := fold_left (fun (st : obj * list (list string)) (t : task) =>
       (* a task whose mark merged closes above: no pick for it *)
       if mark_merged_on t then st else
-      let cands := filter (fun b => (btask b =? tid t) && is_pending (bst b) && negb (seq (bidder b) (me a))) (bids m) in
+      let cands := filter (fun b => (btask b =? tid t) && is_pending (bst b) && (monopoly m || negb (seq (bidder b) (me a)))) (bids m) in
       (* no bids waiting on a task that has merges: is it done, or done for
          now? asked once a version *)
       if (length cands =? 0) then
@@ -487,7 +491,7 @@ lead (a m : obj) : obj * list (list string) :=
 
 bid_duty (a m : obj) : obj * list (list string) :=
   let a := release_inflight a m in
-  if seq (leader m) "" || is_leader m (me a) then (a, []) else
+  if seq (leader m) "" || (is_leader m (me a) && negb (monopoly m)) then (a, []) else
   if (0 <? get_or 0 (me a) (lastbid m)) && (mheight m <? get_or 0 (me a) (lastbid m) + param m "bid_cooldown") then (a, []) else
   fold_left (fun (st : obj * list (list string)) (t : task) =>
     let (a, o) := st in

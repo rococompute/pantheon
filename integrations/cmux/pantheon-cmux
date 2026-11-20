@@ -568,14 +568,19 @@ market_title() {
   if [ "$#" -gt 0 ]; then f_=$1 state_=${2:-available}; else
     status_observe; f_=$STATUS_FILE state_=$STATUS_STATE
   fi
-  if [ "$state_" != available ]; then printf 'Market (status %s)' "$state_"; return 0; fi
+  label_=Market
+  if [ -f "$f_" ]; then
+    mode_=$(awk '$1 == "market-mode" { print $2; exit }' "$f_")
+    case $mode_ in monopoly) label_=Monopoly ;; oligopoly) label_=Oligopoly ;; esac
+  fi
+  if [ "$state_" != available ]; then printf '%s (status %s)' "$label_" "$state_"; return 0; fi
   [ -f "$f_" ] || { printf 'Market'; return 0; }
-  grep -q '^finished:' "$f_" && { printf 'Done'; return 0; }
-  awk 'NR == 1 { for (i = 1; i < NF; i++) if ($i == "leader") l = $(i + 1) }
+  grep -q '^finished:' "$f_" && { if [ "$label_" = Market ]; then printf 'Done'; else printf '%s (Done)' "$label_"; fi; return 0; }
+  awk -v label="$label_" 'NR == 1 { for (i = 1; i < NF; i++) if ($i == "leader") l = $(i + 1) }
     /^no more tasks: [0-9]+ of [0-9]+/ { v = $4 "/" $6; sub(/,$/, "", v); v = v " to done" }
     END { p = (l == "" || l ~ /^\(/) ? "" : l " leader"
           if (v != "") p = (p == "" ? v : p ", " v)
-          printf "%s", (p == "" ? "Market" : "Market (" p ")") }' "$f_"
+          printf "%s", (p == "" ? label : label " (" p ")") }' "$f_"
 }
 
 render_plan() {

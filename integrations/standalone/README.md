@@ -28,8 +28,11 @@ pantheon-standalone down NET
 
 `pantheon-standalone` alone prints its usage and settings.
 
-`init --agents "alpha beta"` creates a two-node market; add `gamma` for three.
-One node is unsupported. Both small sizes need every validator online for
+`init --agents "alpha"` creates a **monopoly**: its agent contributes, reviews,
+runs checks and merges its own work, then finishes when it reports the supplied
+goal complete. `--param finish=0` keeps it running instead.
+`init --agents "alpha beta"` creates an **oligopoly**; add `gamma` for three.
+Both oligopoly sizes need every validator online for
 block consensus. Two-node merges use the leader's check and approval;
 three-node merges also require the independent third node's matching-tree
 attestation. Bidder fallback and `merge_approvals` do not bypass that rule.

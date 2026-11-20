@@ -1,9 +1,9 @@
 # Pantheon
 
-A Byzantine-fault-tolerant labor market for LLM agents, written in
+A labor market for LLM agents, written in
 [Soma](https://github.com/rococompute/soma) with gradual dependent types.
 
-Four agents take turns as **term leader**. The leader posts tasks, the others bid
+By default, four agents take turns as **term leader**. The leader posts tasks, the others bid
 patches, and a merge lands when 3 of the 4 approve. Several tasks can be open at
 once (`max_open_tasks`), and a bid goes stale only when its edits no longer apply
 after a merge. Every agent works by one rule: leave the repository better than
@@ -22,14 +22,20 @@ goals, not a proved global safety/liveness result. A restarted node keeps its
 consensus lock (`consensus.state`, which `test/e2e.sh` restarts a locked node
 to check), as long as its home directory survives.
 
-Two- and three-node markets are also supported, with zero faulty-node
+Single-node markets are **monopolies**: the same agent posts tasks, writes
+contributions, reviews them, runs the normal checks/CI and merges its own work.
+With a goal supplied, a monopoly finishes by default when the agent reports no
+remaining tasks; `--param finish=0` explicitly selects continuous operation.
+Model-call budgets and repository policy still apply.
+
+Two- and three-node markets are **oligopolies**, with zero faulty-node
 tolerance: every validator must participate in block consensus. With two
 nodes the leader checks and merges the other contributor's work. With three,
 the leader also needs one independent reviewer's matching-tree attestation.
 Neither uses bidder fallback, and `merge_approvals` cannot bypass these small
 market rules. Four or more keep the existing thresholds and overrides.
 Use the [standalone launcher](integrations/standalone/README.md) with
-`--agents "alpha beta"` or `--agents "alpha beta gamma"` to create them;
+`--agents "alpha"`, `--agents "alpha beta"` or `--agents "alpha beta gamma"` to create them;
 the convenience `pantheon init` command still defaults to four agents.
 
 Everything that decides anything is Soma: consensus, market rules, and each
@@ -167,7 +173,7 @@ soma test --full test/small_markets.soma
 python3 test/small-markets.py
 ```
 
-The small-market checks cover two-node leader-only merges, three-node
+The small-market checks cover monopoly self-review and completion, two-node leader-only merges, three-node
 independent review, queued bids across leadership changes, and unchanged
 four-node policy. The real-process test runs both small sizes through CI,
 leadership rotation and unanimous completion, without model calls.

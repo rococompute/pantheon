@@ -98,10 +98,10 @@ commands need not do so. Trusted toolchains and build-cache provenance matter.
 | `bid_eq_dec` | Bid equality is decidable; no bid validity claim. |
 | `merged_only_through_finalize_with_quorum_approvals` | A Merged bid record absent from the input comes from finalize with pending proposal and merge_quorum approvals (n - f of the bid's roster by default); not a tree-agreement proof or an assertion of fresh finalization for old records. |
 | `bidders_for_at_most_two` | Selection returns at most two bidders even for malformed rosters; no fairness guarantee. |
-| `bidders_for_excludes_leader` | The selected bidders exclude the current leader; no claim about earlier leaders' bids. |
-| `self_merge_makes_no_proposal` | A merge naming the sender's bid fails with a reason and unchanged state; no liveness guarantee. |
+| `bidders_for_excludes_leader` | Outside a monopoly, selected bidders exclude the current leader; no claim about earlier leaders' bids. |
+| `self_merge_makes_no_proposal` | Outside a monopoly, a merge naming the sender's bid fails with a reason and unchanged state; no liveness guarantee. |
 | `moved_head_merge_makes_no_proposal` | A merge naming a head its bid's repository has moved past (`moved_since`) fails with a reason and unchanged state; does not prove the named tree is right. |
-| `merge_needs_leader_and_others_bid` | A successful merge command is from the leader and names someone else's existing bid; does not prove finalization. |
+| `merge_needs_leader_and_others_bid` | Outside a monopoly, a successful merge command is from the leader and names someone else's existing bid; does not prove finalization. |
 | `apply_reveal` | Expands the reveal branch and its guards; no cryptographic assumption proved. |
 | `getf_setf_same` | Lookup of an updated key returns its value; only a record helper. |
 | `reveals_after_reveal` | Updating reveals then tips retains the reveals list; no reveal validity claim. |

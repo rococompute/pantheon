@@ -3,6 +3,12 @@
 `pantheon-cmux` runs a network (a directory made by `pantheon init`) as one
 [cmux](https://cmux.com) workspace on a Mac.
 
+The committed mode labels one-node markets **Monopoly** and two/three-node
+markets **Oligopoly** in workspace titles and the plan's heading. Completion
+keeps that label: **Monopoly (Done)** or **Oligopoly (Done)**. Four or more
+retain **Market** / **Done**. A monopoly agent contributes and reviews its own
+work, with the normal checks and CI, and defaults to finishing when done.
+
 - **Left half: the network.** A live markdown view of `NET/.cmux/plan.md`,
   which the watchdog rewrites when it changes: the goal's opening paragraph
   under **Market

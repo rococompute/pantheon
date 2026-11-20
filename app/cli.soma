@@ -443,9 +443,9 @@ build_genesis (home net : string) (k : unit -> nprog unit) : nprog unit :=
   (* Two/three nodes have no fault tolerance and need every validator for
      block consensus. Four or more tolerate f = (n - 1) / 3 faults. *)
   let n := show (length files) in
-  if length files <? 2 then
-    cli_fail (cat ["genesis must have at least 2 parts, got ", n, " (", pdir, " has ", n,
-                   " parts; two/three agents require every validator online, and four is the fewest that tolerate one fault. Each agent runs `pantheon keygen` and adds its public.json there)"])
+  if length files <? 1 then
+    cli_fail (cat ["genesis must have at least 1 part, got ", n, " (", pdir, " has ", n,
+                   " parts; one is a monopoly, two/three an oligopoly. Each agent runs `pantheon keygen` and adds its public.json there)"])
   else
   cli_map files (fun f k => cli_read_json (path pdir f) (fun j => k (f, j))) (fun raw_parts =>
   check_names pdir raw_parts [] (fun _ =>
@@ -1216,7 +1216,11 @@ cmd_leader_chain (home : string) : nprog unit :=
 
 (** ---- the commands ---- *)
 
-usage : string := "pantheon: a private BFT labor market where LLM agents take turns as term leader.
+usage : string := "pantheon: a labor market where LLM agents write and review contributions.
+
+Modes: one node is a monopoly (self-review and merge, finish when done);
+two/three nodes are an oligopoly; four or more retain the BFT quorum policy.
+Choose participants with integrations/standalone/pantheon-standalone init --agents.
 
   One machine:
   pantheon init DIR --repo NAME=GIT-CHECKOUT [--repo ...] [--base-port P] [--block-ms N] [--param name=value]... [--allow-closed-plan]
@@ -1224,7 +1228,7 @@ usage : string := "pantheon: a private BFT labor market where LLM agents take tu
 
   One machine per agent (see docs/NETWORK.md):
   pantheon keygen HOME --name NAME --addr HOST:PORT     then add HOME/public.json to NETWORK/parts/
-  pantheon genesis HOME NETWORK                         once all parts are in (at least 2)
+  pantheon genesis HOME NETWORK                         once all parts are in (at least 1)
 
   pantheon node HOME [--backend B] [--behavior honest|deny|silent] [--goal FILE] [--deny PATH] [--listen HOST]
                      [--ci CMD] [--ci-repo NAME CMD] [--ci-image IMAGE | --ci-sandbox PROGRAM] [--ci-memory 8g] [--bid-window N] [--perspective TEXT] [--max-llm-calls N] [--allow-closed-plan]

@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -91,6 +92,28 @@ class TestStatusViews(unittest.TestCase):
         plan = (self.state / "plan.md").read_text()
         self.assertIn("the accepted plan", plan)
         self.assertNotIn("a newer unobserved plan", plan)
+
+    def test_market_mode_labels_survive_leading_and_completion(self):
+        for mode, label in (("monopoly", "Monopoly"), ("oligopoly", "Oligopoly")):
+            with self.subTest(mode=mode):
+                self.status("codex-1", 4)
+                path = self.net / "codex-1/status.txt"
+                path.write_text(path.read_text()+f"market-mode {mode}\n")
+                title = self.run_functions("market_title")
+                self.assertEqual(title.returncode, 0, title.stderr)
+                self.assertEqual(title.stdout, f"{label} (codex-1 leader)")
+                rendered = self.run_functions("render_plan")
+                self.assertEqual(rendered.returncode, 0, rendered.stderr)
+                self.assertIn(f"## {label} (codex-1 leader)", (self.state / "plan.md").read_text())
+                page = self.state / "plan.html"
+                subprocess.run([sys.executable, str(repo / "integrations/c11/plan-html.py"),
+                                str(self.state / "plan.md"), str(page)], check=True)
+                self.assertIn(f"<title>{label} (codex-1 leader)</title>", page.read_text())
+                path.write_text(path.read_text()+"finished: every agent found no more tasks\n")
+                # Directly render this accepted snapshot; source selection
+                # correctly rejects same-height changing contents.
+                title = self.run_functions(f'market_title "{path}" available')
+                self.assertEqual(title.stdout, f"{label} (Done)")
 
     def test_conflicting_or_behind_views_cannot_finish_or_roll_back_the_view(self):
         self.status("claude-1", 4)

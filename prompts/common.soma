@@ -20,6 +20,17 @@ prompt_role_intro : string := ", in a labor market where agents write and review
 
 prompt_role_end : string := ". ".
 
+prompt_monopoly_mode : string := "
+Market mode: monopoly. You are the sole participant, responsible for writing
+contributions and then reviewing and merging them as leader. Keep those steps
+distinct: inspect the actual diff and validation results before accepting your
+own work. When the goal is complete and no tasks remain, report no more tasks.
+".
+prompt_oligopoly_mode : string := "
+Market mode: oligopoly. Two nodes use leader review; three nodes additionally
+require an independent attestor. A leader cannot merge its own contribution.
+".
+
 prompt_plan_scheduling : string := prompt_text [
   "Plan items describe goals, not a ranked backlog. Do not infer priority from an item's ",
   "position in .plan. Only tasks submitted by the leader establish work priorities. Bidders ",

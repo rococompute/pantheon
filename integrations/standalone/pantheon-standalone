@@ -188,7 +188,7 @@ ${2:?--param wants NAME=VALUE}"; shift 2 ;;
   done
   [ -n "$repos" ] || die "no --repo: name the repositories the market governs (--repo NAME=GIT-CHECKOUT)"
   need_pantheon
-  [ "$(set -- $names; echo $#)" -ge 2 ] || die "--agents: a network needs at least 2 agents, got: $names"
+  [ "$(set -- $names; echo $#)" -ge 1 ] || die "--agents: a network needs at least 1 agent"
   [ "$images" = all ] && images=$names
   for a in $images; do in_list "$a" "$names" || die "--image: $a isn't one of --agents ($names)"; done
   for a in $names; do printf '%s' "$a" | grep -Eqx '[a-z][a-z0-9-]*' || die "agent name $a: lowercase letters, digits and -"; done
@@ -232,7 +232,9 @@ print(json.dumps({"block_ms": int(os.environ["R_BLOCK"]), "params": params, "rep
   done
   echo $images > "$ST/images"
   [ -z "$images" ] || echo "$gw" > "$ST/gateway"
-  say "made $NET: agents $names$([ -n "$images" ] && echo "; unikernels: $images, on the vmnet network at ${gw%.*}.0/24")"
+  kind_=market
+  case $(set -- $names; echo $#) in 1) kind_=monopoly ;; 2|3) kind_=oligopoly ;; esac
+  say "made $NET: $kind_; agents $names$([ -n "$images" ] && echo "; unikernels: $images, on the vmnet network at ${gw%.*}.0/24")"
   say "start it with: pantheon-standalone up $dir [--docker ...] -- --goal FILE"
 }
 

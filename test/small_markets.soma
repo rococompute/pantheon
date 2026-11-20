@@ -1,5 +1,5 @@
 (** Small-market review is separate from unanimous block consensus. *)
-Import core.util core.market.
+Import core.util core.market core.agent.
 Require Soma.Host.
 roster (n : nat) : list string := firstn n ["a1", "a2", "a3", "a4"].
 base (n : nat) : obj :=
@@ -29,6 +29,18 @@ scoped_four : obj := setf (proposed 4) "excluded"
   (map (fun a : string => (a, "calc"))
     (filter (fun a => negb (seq a "a1") && negb (seq a (bidder_of (queued 4)))) (roster 4))).
 checks : list (string * bool) := [
+  ("one: mode is monopoly", seq (market_mode (base 1)) "monopoly"),
+  ("one: sole leader is an eligible contributor", seq (bidder_of (queued 1)) "a1" && seq (bid_status (queued 1) 1) "pending"),
+  ("one: agent requests its own contribution", existsb (fun q : list string => bid_for q "1") (queue (fst (bid_duty (new_agent "a1") (applied (base 1) "a1" ["post", "calc", "solo task"]))))),
+  ("one: leader reviews its own contribution", existsb (fun q : list string => match q with ["merge", "1"] => true | _ => false end) (queue (fst (lead (new_agent "a1") (queued 1))))),
+  ("one: merge still requests a checked tree", existsb (fun out : list string => seq (hd "" out) "check") (snd (flush (enqueue (new_agent "a1") ["merge", "1"]) (queued 1)))),
+  ("one: checked self-authored contribution merges", (need (proposed 1) =? 1) && seq (bid_status (settled (proposed 1)) 1) "merged"),
+  ("one: default is run until done", param (base 1) "finish" =? 1),
+  ("one: explicit continuous operation remains available", param (setf (base 1) "params" ([("finish", 0)] : list (string * nat))) "finish" =? 0),
+  ("one: its sole completion vote finishes", finished (applied (base 1) "a1" ["finish"])),
+  ("one: model sees responsibility for self-review", contains "sole participant" (market_preamble (new_agent "a1") (base 1) "review")),
+  ("two/three: mode is oligopoly", seq (market_mode (base 2)) "oligopoly" && seq (market_mode (base 3)) "oligopoly"),
+  ("four: mode remains market", seq (market_mode (base 4)) "market"),
   ("two: leader merges immediately", (need (proposed 2) =? 1) && seq (bid_status (settled (proposed 2)) 1) "merged"),
   ("two: author cannot merge its queued contribution", negb (seq (snd (apply switched "a2" ["merge", "1", "tree1", "tree0"])) "")),
   ("two: contribution survives leadership change", seq (bid_status switched 1) "pending"),

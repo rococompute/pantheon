@@ -119,7 +119,13 @@ changes that keep it small and easy to state theorems about:
 - **Signatures are RSA-2048**, because that's what the OCaml libraries in Soma's switch
   have. The Go version used Ed25519 and BLS.
 
-Two/three-node markets use separate merge review rules. With two, the leader's
+A one-node market is a **monopoly**. Its sole participant posts, bids, reviews
+its own candidates, runs the existing merge checks and CI, and merges. Only
+this mode permits an ordinary self-authored merge. It defaults to `finish=1`
+(an explicit `finish=0` overrides it); one completed leader vote finishes it.
+The existing signed chain, head/tree guards, path policy and budgets remain.
+
+Two/three-node markets are **oligopolies**, with separate merge review rules. With two, the leader's
 checked proposal suffices. With three, the leader needs one other node to attest
 to the same tree; the contributor and leader cannot attest. Bidder fallback is
 disabled for both sizes, including for old proposals, and `merge_approvals`
