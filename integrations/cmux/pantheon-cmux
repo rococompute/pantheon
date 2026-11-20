@@ -25,6 +25,9 @@
 #                                  pass a minute; --check: what it sees of the diplomats now, nudging
 #                                  no one; --once: one pass, nudging
 #   pantheon-cmux down NET         close the workspace, which stops its nodes and sessions
+#   pantheon-cmux render-plan NET --goal FILE --output FILE [--plain]
+#                                  render committed market state without a terminal frontend;
+#                                  --plain emits Markdown without HTML disclosure blocks
 #
 # Isolation: every pane runs as you, and the node homes in NET hold the
 # agents' keys. Every diplomat runs without asking (claude
@@ -879,8 +882,50 @@ cmd_down() {
   [ -z "$rec" ] || say "its record (chain, statuses, logs, repositories) is kept in $rec"
 }
 
+cmd_render_plan() {
+  MUX_STATE=.agora-view
+  net_arg "${1:-}" render-plan
+  shift
+  goal_="" output_="" plain_=0
+  while [ "$#" -gt 0 ]; do
+    case $1 in
+      --goal) [ "$#" -ge 2 ] || die "--goal needs a file"; goal_=$2; shift ;;
+      --output) [ "$#" -ge 2 ] || die "--output needs a file"; output_=$2; shift ;;
+      --plain) plain_=1 ;;
+      *) die "unknown render-plan option: $1" ;;
+    esac
+    shift
+  done
+  [ -f "$goal_" ] && [ -n "$output_" ] || die "render-plan requires --goal FILE --output FILE"
+  mkdir -p "$ST"
+  printf '%s\n' "$goal_" > "$ST/goal"
+  # Rendering is an observer: no mux calls, node startup, hooks or nudges.
+  mux_plan_changed() { :; }
+  render_plan
+  python3 - "$ST/plan.md" "$output_" "$plain_" <<'PY'
+import html, os, re, sys, tempfile
+from pathlib import Path
+source, target = map(Path, sys.argv[1:3])
+text = source.read_text()
+if sys.argv[3] == '1':
+    text = re.sub(r'^</?details>\s*$', '', text, flags=re.M)
+    text = re.sub(r'^<summary>(.*?)</summary>$', r'**\1**', text, flags=re.M)
+    text = html.unescape(text)
+if target.exists() and target.read_text() == text:
+    sys.exit(0)
+target.parent.mkdir(parents=True, exist_ok=True)
+fd, temporary = tempfile.mkstemp(prefix=target.name + '.', dir=target.parent)
+try:
+    with os.fdopen(fd, 'w') as stream:
+        stream.write(text)
+    os.replace(temporary, target)
+finally:
+    if os.path.exists(temporary): os.unlink(temporary)
+PY
+}
+
 c=${1:-}; [ $# -gt 0 ] && shift
 case $c in
-  up|watchdog|down) "cmd_$c" "$@" ;;
+  up|watchdog|down|render-plan) "cmd_$(printf '%s' "$c" | tr - _)" "$@" ;;
   *) awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "$0"; [ -z "$c" ] || [ "$c" = help ] || [ "$c" = -h ] || exit 1 ;;
 esac

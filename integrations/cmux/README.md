@@ -49,7 +49,14 @@ work, with the normal checks and CI, and defaults to finishing when done.
 pantheon-cmux up NET [--diplomats "A B"] [--backends A=B,...] [--layout plan|grid] [-- NODE ARGS...]
 pantheon-cmux watchdog NET [--check|--once]
 pantheon-cmux down NET            # close the workspace: nodes and sessions stop
+pantheon-cmux render-plan NET --goal FILE --output FILE [--plain]
 ```
+
+`render-plan` exposes the same committed-state plan renderer to headless
+frontends such as Agora. It starts no nodes, sessions, hooks, or watchdog and
+makes no multiplexer calls. `--plain` emits native-reader-friendly Markdown
+without HTML disclosure wrappers. Output is replaced atomically only when its
+content changes; market rules and status selection are unchanged.
 
 `pantheon-cmux` alone prints its usage and settings.
 
